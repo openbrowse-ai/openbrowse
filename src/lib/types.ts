@@ -84,6 +84,16 @@ export interface Conversation {
   spaceId: string | null;
   ownedGroupId: number | null;
   ownedTabIds: number[];
+  todos?: TodoItem[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority?: "high" | "medium" | "low";
   createdAt: number;
   updatedAt: number;
 }

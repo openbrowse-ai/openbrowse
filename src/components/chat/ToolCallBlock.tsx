@@ -10,6 +10,8 @@ import { SnapshotResult } from "./tool-results/snapshot";
 import { ScreenshotResult } from "./tool-results/screenshot";
 import { CodeResult } from "./tool-results/execute-code";
 
+import { getToolPreview } from "./tool-previews";
+
 type ResultRenderer = (props: { args: Record<string, unknown>; result: unknown }) => ReactNode;
 
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
@@ -43,6 +45,8 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   updateMemory: { pending: "Updating memory...", done: "Updated memory" },
   deleteMemory: { pending: "Deleting memory...", done: "Deleted memory" },
   recallMemory: { pending: "Recalling memory...", done: "Recalled memory" },
+  todoWrite: { pending: "Updating plan...", done: "Updated plan" },
+  extract: { pending: "Extracting data...", done: "Extracted data" },
 };
 
 const TAB_TOOLS = new Set([
@@ -193,15 +197,27 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
 
       {expanded && !pending && (
         <div className="ml-3 mt-1 border-l border-muted pl-3 pb-1 overflow-hidden">
-          {resolvedResult !== undefined ? (
-            <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground max-h-48 overflow-y-auto styled-scrollbar">
-              {typeof resolvedResult === "string" ? resolvedResult : JSON.stringify(resolvedResult, null, 2)}
-            </pre>
-          ) : Object.keys(args).length > 0 ? (
-            <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
-              {JSON.stringify(args, null, 2)}
-            </pre>
-          ) : null}
+          {(() => {
+            const previewRenderer = getToolPreview(mcpToolName ?? toolName);
+            if (previewRenderer) {
+              return previewRenderer(args);
+            }
+            if (resolvedResult !== undefined) {
+              return (
+                <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground max-h-48 overflow-y-auto styled-scrollbar">
+                  {typeof resolvedResult === "string" ? resolvedResult : JSON.stringify(resolvedResult, null, 2)}
+                </pre>
+              );
+            }
+            if (Object.keys(args).length > 0) {
+              return (
+                <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground">
+                  {JSON.stringify(args, null, 2)}
+                </pre>
+              );
+            }
+            return null;
+          })()}
         </div>
       )}
     </div>

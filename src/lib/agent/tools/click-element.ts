@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getActiveUserTab, sendToContentScript, waitForTabLoad } from "../active-tab";
-import { sendCommand } from "../cdp-session";
+import { sendCommand, isDetachError } from "../cdp-session";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -33,10 +33,17 @@ export const clickElementTool: BrowserTool<Input, Output> = {
 
     const previousSnapshot = getPreviousSnapshot(tabId);
 
-    if (target.startsWith("@e")) {
-      await clickByRef(tabId, target);
-    } else {
-      await clickBySelector(tabId, target);
+    try {
+      if (target.startsWith("@e")) {
+        await clickByRef(tabId, target);
+      } else {
+        await clickBySelector(tabId, target);
+      }
+    } catch (err) {
+      if (!isDetachError(err)) throw err;
+      // If the page detached during the click sequence, it means the click 
+      // successfully triggered a navigation. We swallow the error and proceed 
+      // to wait for the new page to load.
     }
 
     invalidateRefs(tabId);

@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { SerializedUIPart } from "./types";
+import type { SerializedUIPart, TodoItem } from "./types";
 
 interface ChatDB extends DBSchema {
   conversations: {
@@ -10,6 +10,7 @@ interface ChatDB extends DBSchema {
       spaceId: string | null;
       ownedGroupId: number | null;
       ownedTabIds: number[];
+      todos?: TodoItem[];
       createdAt: number;
       updatedAt: number;
     };
@@ -49,7 +50,7 @@ let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null;
 
 function getDb(): Promise<IDBPDatabase<ChatDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 4, {
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 5, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -101,6 +102,20 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           };
           migrateConversations();
         }
+
+        if (oldVersion < 5) {
+          const convStore = transaction.objectStore("conversations");
+          const migrateConversationsTodos = async () => {
+            let cursor = await convStore.openCursor();
+            while (cursor) {
+              const record = cursor.value as Record<string, unknown>;
+              if (record.todos === undefined) record.todos = [];
+              cursor.update(record as ChatDB["conversations"]["value"]);
+              cursor = await cursor.continue();
+            }
+          };
+          migrateConversationsTodos();
+        }
       },
     });
   }
@@ -129,13 +144,14 @@ export const chatDb = {
   },
 
   async createConversation(
-    conv: Omit<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds"> &
-      Partial<Pick<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds">>,
+    conv: Omit<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds" | "todos"> &
+      Partial<Pick<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds" | "todos">>,
   ): Promise<void> {
     const db = await getDb();
     await db.put("conversations", {
       ownedGroupId: null,
       ownedTabIds: [],
+      todos: [],
       ...conv,
     });
   },

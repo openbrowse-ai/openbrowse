@@ -25,7 +25,7 @@ const DETACH_ERROR_PATTERNS = [
   /No tab with given id/i,
 ];
 
-function isDetachError(err: unknown): boolean {
+export function isDetachError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return DETACH_ERROR_PATTERNS.some((re) => re.test(msg));
 }

@@ -14,3 +14,5 @@ export { recallMemoryTool } from "./recall-memory";
 export { executeCodeTool } from "./execute-code";
 export { executeOnPageTool } from "./execute-on-page";
 export { extractTool } from "./extract";
+export { todoWriteTool } from "./todowrite";
+
