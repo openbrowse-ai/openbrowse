@@ -1,5 +1,11 @@
 import type { ModelDefinition } from "@/registry/providers/types";
-import type { ChatTransport, LanguageModel, ToolLoopAgentSettings, ToolSet, UIMessage } from "ai";
+import type {
+  ChatTransport,
+  LanguageModel,
+  ToolLoopAgentSettings,
+  ToolSet,
+  UIMessage,
+} from "ai";
 import { DirectChatTransport, ToolLoopAgent, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
@@ -24,6 +30,7 @@ import {
   scrollPageTool,
   selectTabTool,
   snapshotTool,
+  todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
 } from "./tools";
@@ -32,6 +39,17 @@ import type { BrowserTool } from "./types";
 const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users understand and interact with web pages.
 
 You have tools to interact with the user's browser tabs. Tools automatically target the user's active browsing tab — you do NOT need to select or switch tabs unless the user asks to work with a different one.
+
+## Planning with todoWrite
+For tasks that require multiple steps or distinct objectives, call \`todoWrite\` BEFORE acting to lay out your steps.
+As you work:
+- Keep EXACTLY ONE item "in_progress" before starting work on it
+- Mark it "completed" immediately when done — never batch completions at the end
+- Add new items if you discover follow-up work or roadblocks
+- Cancel items that become irrelevant rather than silently skipping them
+- Before providing your final text response to the user, you MUST ensure all tasks in your plan are marked "completed" or "cancelled" via a final \`todoWrite\` call.
+
+Your current plan will be appended to your instructions at every turn. Keep it in sync with reality. You may skip this for trivial, single-action requests.
 
 ## Page Interaction Workflow
 
@@ -631,6 +649,7 @@ export async function createAgentTransport(
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
     extract: toSDKTool(extractTool, "extract"),
+    todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
   };
 
   const mcpTools = getMcpRegistry().toSDKTools();
@@ -641,6 +660,26 @@ export async function createAgentTransport(
 
   if (spaceId && spaceName) {
     instructions += `\n\nYou are chatting from the space "${spaceName}" (id: ${spaceId}). When saving space-scoped memories, use this spaceId.`;
+  }
+
+  // Inject current todo plan into system prompt
+  const conv = agentConversationId
+    ? await chatDb.getConversation(agentConversationId)
+    : null;
+  if (conv?.todos && conv.todos.length > 0) {
+    instructions += `\n\n### Current Plan (todoWrite)\n`;
+    const inProgress = conv.todos.find((t) => t.status === "in_progress");
+    const completed = conv.todos.filter((t) => t.status === "completed").length;
+    instructions += `Total tasks: ${conv.todos.length} (${completed} completed)\n`;
+    if (inProgress) {
+      instructions += `Currently working on: ${inProgress.content}\n`;
+    } else {
+      instructions += `No task currently marked in_progress.\n`;
+    }
+    instructions += `\nFull list:\n`;
+    instructions += conv.todos
+      .map((t, i) => `${i + 1}. [${t.status.toUpperCase()}] ${t.content}`)
+      .join("\n");
   }
 
   const memories = await memoryDb.list(spaceId);

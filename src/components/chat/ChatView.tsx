@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
+import { TodoPanel } from "./TodoPanel";
 
 interface ChatViewProps {
   conversationId: string | null;
@@ -195,15 +195,28 @@ const providerModels = useMemo(() => {
             </button>
             <button
               type="button"
-              onClick={openSettings}
+              onClick={onSettingsClick}
               className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
               title="Settings"
             >
               <Settings2 className="size-3.5" />
             </button>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Close"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
           </div>
         </div>
       )}
+
+      {/* Todo Panel */}
+      <TodoPanel conversationId={conversationId} />
 
       {/* Messages */}
       <Conversation className="flex-1">

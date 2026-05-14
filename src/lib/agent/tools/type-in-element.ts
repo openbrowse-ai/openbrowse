@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getActiveUserTab, sendToContentScript, waitForTabLoad } from "../active-tab";
-import { sendCommand } from "../cdp-session";
+import { sendCommand, isDetachError } from "../cdp-session";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -51,10 +51,33 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     const textToType = legacyNewlineSubmit ? text.slice(0, -1) : text;
     const shouldPressEnter = submit ?? legacyNewlineSubmit;
 
-    if (target.startsWith("@e")) {
-      await typeByRef(tabId, target, textToType, clearFirst ?? true);
-    } else {
-      await typeBySelector(tabId, target, textToType, clearFirst ?? true);
+    try {
+      if (target.startsWith("@e")) {
+        await typeByRef(tabId, target, textToType, clearFirst ?? true);
+      } else {
+        await typeBySelector(tabId, target, textToType, clearFirst ?? true);
+      }
+
+      if (shouldPressEnter) {
+        await sendCommand(tabId, "Input.dispatchKeyEvent", {
+          type: "keyDown",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
+        await sendCommand(tabId, "Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key: "Enter",
+          code: "Enter",
+          windowsVirtualKeyCode: 13,
+          nativeVirtualKeyCode: 13,
+        });
+      }
+    } catch (err) {
+      if (!isDetachError(err)) throw err;
+      // If typing or pressing Enter triggered a navigation that detached the debugger,
+      // it means the submission successfully triggered a navigation.
     }
 
     if (shouldPressEnter) {

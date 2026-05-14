@@ -29,6 +29,9 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown below. Kee
 ## Goal
 - [what the user is trying to accomplish]
 
+## Plan
+- [current todo list state and progress, if any plan was created]
+
 ## Pages & Context
 - [url]: [what was learned/done there]
 
