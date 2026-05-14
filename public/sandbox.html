@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8" /></head>
+<body>
+<script>
+"use strict";
+
+const TIMEOUT_MS = 30000;
+const MAX_OUTPUT_BYTES = 1048576;
+
+window.addEventListener("message", async (e) => {
+  const { id, code, input } = e.data;
+  if (!id || !code) return;
+
+  let timeoutId = null;
+  let resolved = false;
+
+  function reply(result) {
+    if (resolved) return;
+    resolved = true;
+    if (timeoutId) clearTimeout(timeoutId);
+    e.source.postMessage({ id, ...result }, "*");
+  }
+
+  timeoutId = setTimeout(() => {
+    reply({ error: "Execution timed out after 30s", logs: [] });
+  }, TIMEOUT_MS);
+
+  const __logs = [];
+  const origLog = console.log;
+  const origWarn = console.warn;
+  const origInfo = console.info;
+  const fmt = (a) => { try { return typeof a === "string" ? a : JSON.stringify(a); } catch { return String(a); } };
+  console.log = (...args) => __logs.push(args.map(fmt).join(" "));
+  console.warn = (...args) => __logs.push("[warn] " + args.map(fmt).join(" "));
+  console.info = (...args) => __logs.push("[info] " + args.map(fmt).join(" "));
+
+  try {
+    const fn = new Function("__input", code);
+    const result = await fn(input);
+
+    console.log = origLog;
+    console.warn = origWarn;
+    console.info = origInfo;
+
+    try {
+      const serialized = JSON.stringify(result);
+      if (serialized && serialized.length > MAX_OUTPUT_BYTES) {
+        reply({ error: "Output exceeds 1MB limit", logs: __logs });
+        return;
+      }
+    } catch {
+      reply({ error: "Result not serializable", logs: __logs });
+      return;
+    }
+
+    reply({ result, logs: __logs });
+  } catch (err) {
+    console.log = origLog;
+    console.warn = origWarn;
+    console.info = origInfo;
+    reply({ error: err instanceof Error ? err.message : String(err), logs: __logs });
+  }
+});
+</script>
+</body>
+</html>

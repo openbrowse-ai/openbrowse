@@ -1,0 +1,14 @@
+{
+  "title": "Docs",
+  "pages": [
+    "intro",
+    "quickstart",
+    "---Use---",
+    "agent",
+    "command-palette",
+    "---Configure---",
+    "models-and-providers",
+    "---Develop---",
+    "contributing"
+  ]
+}

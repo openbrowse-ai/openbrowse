@@ -1,0 +1,34 @@
+---
+title: Architecture
+description: How the OpenBrowse codebase is organized.
+---
+
+OpenBrowse is a Chrome extension built with [WXT](https://wxt.dev/), React, and the [Vercel AI SDK](https://sdk.vercel.ai/).
+
+## Entrypoints
+
+```
+src/entrypoints/
+├── background/     # Service worker — tab events, messaging, MCP client
+├── content/        # Content script — overlay injection
+├── home/           # New tab / home page
+├── offscreen/      # Offscreen document — AI inference (WebLLM, cloud APIs)
+├── overlay/        # Command palette UI (⌥K)
+├── settings/       # Settings page
+└── sidepanel/      # Chrome side panel — agent chat
+```
+
+## Key Directories
+
+- `src/components/` — Shared React components
+- `src/hooks/` — Shared React hooks
+- `src/lib/agent/` — Agent logic, tools, memory
+- `src/registry/connectors/` — MCP connector definitions
+
+## Data Flow
+
+1. User interacts via side panel or overlay
+2. Messages route through the background service worker
+3. AI inference happens in the offscreen document (isolates heavy computation)
+4. Tool calls execute via content scripts or the background worker
+5. Results stream back to the UI

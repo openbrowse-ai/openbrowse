@@ -1,0 +1,31 @@
+---
+title: Development Setup
+description: Set up the OpenBrowse development environment.
+---
+
+## Prerequisites
+
+- Node.js 20+
+- pnpm 9+
+- Chrome or Chromium-based browser
+
+## Setup
+
+```bash
+git clone https://github.com/openbrowse-ai/openbrowse.git
+cd openbrowse
+pnpm install
+pnpm dev
+```
+
+This starts WXT in development mode with hot reload. Load the extension from `.output/chrome-mv3-dev`.
+
+## Docs Site
+
+```bash
+cd docs
+pnpm install
+pnpm dev
+```
+
+Runs the documentation site at `http://localhost:3000`.
