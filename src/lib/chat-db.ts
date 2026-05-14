@@ -115,6 +115,9 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
             }
           };
           migrateConversationsTodos();
+          
+          // Add activatedSkills to CompactionState - no schema changes needed,
+          // as it's an optional array inside the value object.
         }
 
         if (oldVersion < 6) {

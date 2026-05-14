@@ -1,11 +1,26 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "wxt";
+import fs from "node:fs";
+import path from "node:path";
+import { walkSkills } from "./src/build/walk-skills";
 
 export default defineConfig({
   srcDir: "src",
   modules: ["@wxt-dev/module-react"],
   webExt: {
     chromiumArgs: ["--user-data-dir=.wxt/chrome-data"],
+  },
+  hooks: {
+    "build:publicAssets": (wxt, assets) => {
+      const skillsDir = path.resolve(wxt.config.root, "public/skills");
+      if (fs.existsSync(skillsDir)) {
+        const manifest = walkSkills(skillsDir);
+        assets.push({
+          relativeDest: "skills-manifest.json",
+          contents: JSON.stringify(manifest, null, 2),
+        });
+      }
+    },
   },
   vite: () => ({
     plugins: [tailwindcss()],

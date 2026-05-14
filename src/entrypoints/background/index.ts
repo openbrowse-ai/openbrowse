@@ -129,6 +129,14 @@ export default defineBackground({
       }
     });
 
+    // Initialize agent skills and bootstrap bundled skills
+    import("./skill-registry").then(async ({ backgroundSkillRegistry }) => {
+      await backgroundSkillRegistry.init();
+      
+      const { BUNDLED_SKILLS, bootstrapBundledSkills } = await import("@/lib/skills/bundled");
+      await bootstrapBundledSkills();
+    });
+
     import("./tab-scoping").then(({ initTabScoping, onFocusConversation }) => {
       initTabScoping();
       onFocusConversation((windowId, conversationId) => {
@@ -411,6 +419,19 @@ export default defineBackground({
           } catch (err) {
             console.error("[MCP bg] Error:", err);
             sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      if (message.type?.startsWith("SKILL_")) {
+        (async () => {
+          try {
+            const { handleSkillMessage } = await import("./skill-messages");
+            handleSkillMessage(message, sendResponse);
+          } catch (err) {
+            console.error("[SKILL bg] Error:", err);
+            sendResponse({ success: false, error: String(err) });
           }
         })();
         return true;

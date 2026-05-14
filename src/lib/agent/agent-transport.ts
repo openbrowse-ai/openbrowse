@@ -33,8 +33,13 @@ import {
   todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
+  skillTool,
+  readOpfsFileTool,
+  installSkillTool,
+  createSkillTool,
 } from "./tools";
 import type { BrowserTool } from "./types";
+import { getSkillsRegistry } from "@/lib/skills/registry";
 
 const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users understand and interact with web pages.
 
@@ -676,6 +681,10 @@ export async function createAgentTransport(
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
+    skill: toSDKTool(skillTool, "skill"),
+    read_opfs_file: toSDKTool(readOpfsFileTool, "read_opfs_file"),
+    install_skill: toSDKTool(installSkillTool, "install_skill"),
+    create_skill: toSDKTool(createSkillTool, "create_skill"),
   };
 
   const mcpTools = getMcpRegistry().toSDKTools();
@@ -784,6 +793,26 @@ export async function createAgentTransport(
         return response.result;
       },
     });
+  }
+
+  // --- Skills Injection ---
+  await getSkillsRegistry().init();
+  const skillsState = getSkillsRegistry().getState();
+  
+  // Apply per-space allow/deny
+  const availableSkills = skillsState.skills.filter(skill => {
+    const spaceConfig = skillsState.spaceConfigs.find(
+      c => c.spaceId === spaceId && c.skillName === skill.name
+    );
+    return !spaceConfig || spaceConfig.state !== "deny";
+  });
+
+  if (availableSkills.length > 0) {
+    const skillsSection = availableSkills
+      .map(s => `- ${s.name}: ${s.description}`)
+      .join("\n");
+      
+    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use read_opfs_file({ path }).\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
   const tools = { ...browserTools, ...mcpTools };
