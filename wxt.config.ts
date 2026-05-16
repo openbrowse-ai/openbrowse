@@ -40,6 +40,7 @@ export default defineConfig({
       "alarms",
       "bookmarks",
       "history",
+      "sessions",
       "sidePanel",
       "scripting",
       "debugger",

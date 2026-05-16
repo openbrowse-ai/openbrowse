@@ -565,18 +565,40 @@ export default defineBackground({
               tidyState = tidyData[tidyKey] ?? null;
             }
 
-            const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-            const historyItems = await chrome.history.search({ text: "", maxResults: 200, startTime: thirtyDaysAgo });
-            const openUrls = new Set(windowTabs.map((t) => t.url));
-            const recentlyClosed = historyItems
-              .filter((h) => h.url && !openUrls.has(h.url))
-              .map((h) => ({
-                url: h.url!,
-                title: h.title ?? "",
-                favicon: "",
-                lastVisitTime: h.lastVisitTime ?? 0,
-                visitCount: h.visitCount ?? 0,
-              }));
+            const recentlyClosed: { url: string; title: string; favicon: string; lastVisitTime: number; visitCount: number; sessionId?: string }[] = [];
+            try {
+              const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+              const seenUrls = new Set<string>();
+              const openUrls = new Set(windowTabs.map((t) => t.url));
+              for (const s of sessions) {
+                if (s.tab && s.tab.url && !openUrls.has(s.tab.url) && !seenUrls.has(s.tab.url)) {
+                  seenUrls.add(s.tab.url);
+                  recentlyClosed.push({
+                    url: s.tab.url,
+                    title: s.tab.title ?? "",
+                    favicon: s.tab.favIconUrl ?? "",
+                    lastVisitTime: s.lastModified ? s.lastModified * 1000 : Date.now(),
+                    visitCount: 1,
+                    sessionId: s.tab.sessionId,
+                  });
+                } else if (s.window && s.window.tabs) {
+                  for (const t of s.window.tabs) {
+                    if (!t.url || openUrls.has(t.url) || seenUrls.has(t.url)) continue;
+                    seenUrls.add(t.url);
+                    recentlyClosed.push({
+                      url: t.url,
+                      title: t.title ?? "",
+                      favicon: t.favIconUrl ?? "",
+                      lastVisitTime: s.lastModified ? s.lastModified * 1000 : Date.now(),
+                      visitCount: 1,
+                      sessionId: t.sessionId,
+                    });
+                  }
+                }
+              }
+            } catch {
+              // chrome.sessions may be unavailable in some contexts; fall back gracefully.
+            }
 
             const bookmarkTree = await chrome.bookmarks.getTree();
             const bookmarks: { url: string; title: string; favicon: string }[] = [];
@@ -604,8 +626,10 @@ export default defineBackground({
       if (message.type === "SEARCH_HISTORY") {
         (async () => {
           try {
-            const { query, maxResults = 50 } = message as { type: string; query: string; maxResults?: number };
-            const historyItems = await chrome.history.search({ text: query, maxResults });
+            const { query, maxResults = 200 } = message as { type: string; query: string; maxResults?: number };
+            // chrome.history.search defaults startTime to 24h ago; pass 0 to search the full history
+            // (Chrome internally caps the candidate pool, and maxResults bounds the response).
+            const historyItems = await chrome.history.search({ text: query, maxResults, startTime: 0 });
             const results = historyItems
               .filter((h) => h.url)
               .map((h) => ({
@@ -1100,9 +1124,24 @@ export default defineBackground({
           try {
             const url = message.url as string;
             const source = message.source as string | undefined;
+            const sessionId = (message as { sessionId?: string }).sessionId;
             const windowId = sender.tab?.windowId;
             let focusedTabId: number | undefined;
-            if (windowId) {
+
+            // If a sessionId is provided (true Recently Closed), restore via sessions API
+            // — this preserves scroll, history, etc.
+            if (sessionId) {
+              try {
+                const restored = await chrome.sessions.restore(sessionId);
+                if (restored?.tab?.id) {
+                  focusedTabId = restored.tab.id;
+                }
+              } catch {
+                // fall through to URL-based open
+              }
+            }
+
+            if (!focusedTabId && windowId) {
               const tabs = await chrome.tabs.query({ windowId });
               const existing = tabs.find((t) => t.url === url);
               if (existing?.id) {
