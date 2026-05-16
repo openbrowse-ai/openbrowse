@@ -12,6 +12,9 @@ import { ConfigureSpaceView } from "./components/ConfigureSpaceView";
 import { SpaceColorPicker } from "./components/SpaceColorPicker";
 import { AutoTidyBanner } from "./components/AutoTidyBanner";
 import { adjustColorsForMode, buildGradientBorder } from "@/lib/color-utils";
+import { MatchList } from "./components/match/MatchList";
+import { buildMatches, MAX_RESULTS, type Match } from "./search/matches";
+import { loadShortcuts, recordShortcutSelection } from "./search/shortcuts";
 
 export interface OverlayTab {
   id: number;
@@ -28,38 +31,7 @@ export interface OverlayTab {
   kind: "tab" | "favorite" | "closed" | "bookmark";
   lastVisitTime?: number;
   visitCount?: number;
-}
-
-function fuzzyScore(query: string, target: string): number {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  if (t.includes(q)) return 1000 + (q.length / t.length) * 100;
-
-  let qi = 0;
-  let score = 0;
-  let consecutive = 0;
-  let lastMatchIdx = -2;
-
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) {
-      qi++;
-      consecutive = ti === lastMatchIdx + 1 ? consecutive + 1 : 1;
-      score += consecutive * 2;
-      if (ti === 0 || t[ti - 1] === "/" || t[ti - 1] === "." || t[ti - 1] === " " || t[ti - 1] === "-") {
-        score += 5;
-      }
-      lastMatchIdx = ti;
-    }
-  }
-
-  return qi === q.length ? score : 0;
-}
-
-function frecencyScore(tab: { lastVisitTime?: number; visitCount?: number }): number {
-  const visits = tab.visitCount ?? 1;
-  const ageMs = Date.now() - (tab.lastVisitTime ?? 0);
-  const ageDays = Math.max(ageMs / (1000 * 60 * 60 * 24), 0.1);
-  return visits / ageDays;
+  sessionId?: string;
 }
 
 function closeOverlay() {
@@ -68,6 +40,47 @@ function closeOverlay() {
 
 function showToast(message: string, undoData?: any) {
   window.parent.postMessage({ type: "OPENBROWSE_TOAST", message, undoData }, "*");
+}
+
+/**
+ * Convert a Match back into an OverlayTab-shaped object so the existing
+ * execAction / footer code can keep operating on a single shape.
+ */
+function matchToOverlayTab(m: Match, windowId: number | null): OverlayTab {
+  let kind: OverlayTab["kind"];
+  switch (m.source) {
+    case "tab":
+    case "tab-other-space":
+      kind = "tab";
+      break;
+    case "favorite-open":
+    case "favorite-closed":
+      kind = "favorite";
+      break;
+    case "bookmark":
+      kind = "bookmark";
+      break;
+    case "history":
+    case "closed":
+      kind = "closed";
+      break;
+  }
+  return {
+    id: m.tabId ?? -1,
+    url: m.url,
+    title: m.title,
+    favicon: m.favicon,
+    pinned: m.pinned ?? false,
+    active: m.active ?? false,
+    windowId: m.windowId ?? windowId ?? -1,
+    spaceName: m.spaceName,
+    spaceIcon: m.spaceIcon,
+    sectionName: m.sectionName,
+    kind,
+    lastVisitTime: m.lastVisitTime,
+    visitCount: m.visitCount,
+    sessionId: (m as Match & { sessionId?: string }).sessionId,
+  };
 }
 
 export function OverlayApp() {
@@ -139,7 +152,7 @@ export function OverlayApp() {
         if (res.spaces) setSpaces(res.spaces);
         if (res.activeSpaceId && !spaceIdOverridden.current) setActiveSpaceId(res.activeSpaceId);
         setRecentlyClosed(
-          (res.recentlyClosed ?? []).map((rc: { url: string; title: string; favicon: string; lastVisitTime: number; visitCount: number }) => ({
+          (res.recentlyClosed ?? []).map((rc: { url: string; title: string; favicon: string; lastVisitTime: number; visitCount: number; sessionId?: string }) => ({
             id: -1,
             url: rc.url,
             title: rc.title,
@@ -150,6 +163,7 @@ export function OverlayApp() {
             kind: "closed" as const,
             lastVisitTime: rc.lastVisitTime,
             visitCount: rc.visitCount,
+            sessionId: rc.sessionId,
           })),
         );
         setFavoriteAssociationsList(res.favoriteAssociations ?? []);
@@ -291,10 +305,10 @@ export function OverlayApp() {
     return map;
   }, [tidyState]);
 
+  const hasQuery = useMemo(() => query.trim().length > 0, [query]);
+
   const enrichedTabs = useMemo(() => {
-    const baseTabs = query.trim()
-      ? [...tabs, ...allTabs]
-      : tabs;
+    const baseTabs = hasQuery ? [...tabs, ...allTabs] : tabs;
     return baseTabs.map((t) => {
       const sectionId = tidyState?.tabAssignments[t.id];
       const manualTitle = tidyState?.manualTitles?.[t.id];
@@ -311,22 +325,7 @@ export function OverlayApp() {
         sectionName: sectionId ? sectionById.get(sectionId) : undefined,
       };
     });
-  }, [tabs, allTabs, query, tidyState, sectionById]);
-
-  const filteredTabs = useMemo(() => {
-    if (isActionMode) return enrichedTabs;
-    if (!query.trim()) return enrichedTabs;
-    const q = query.trim();
-    const scored = enrichedTabs
-      .map((t) => {
-        const titleScore = Math.max(...(t.searchTitles?.map((s) => fuzzyScore(q, s)) ?? [0]));
-        const urlScore = fuzzyScore(q, t.url);
-        return { tab: t, score: Math.max(titleScore, urlScore) };
-      })
-      .filter((s) => s.score > 0);
-    scored.sort((a, b) => b.score - a.score);
-    return scored.map((s) => s.tab);
-  }, [enrichedTabs, query, isActionMode]);
+  }, [tabs, allTabs, hasQuery, tidyState, sectionById]);
 
   const closedFavorites = useMemo((): OverlayTab[] => {
     if (!activeSpace) return [];
@@ -345,46 +344,75 @@ export function OverlayApp() {
       }));
   }, [activeSpace, favoriteAssociationsList, windowId]);
 
-  const filteredRecentlyClosed = useMemo(() => {
-    const liveUrls = new Set(enrichedTabs.map((t) => t.url));
+  // Load Shortcuts personalization data once (used inside buildMatches via cache).
+  const [shortcutsLoaded, setShortcutsLoaded] = useState(false);
+  useEffect(() => {
+    loadShortcuts().then(() => setShortcutsLoaded(true));
+  }, []);
 
-    if (!query.trim()) {
-      const deduped = recentlyClosed.filter((t) => !liveUrls.has(t.url) && !favoriteUrls.has(t.url));
-      return deduped.sort((a, b) => frecencyScore(b) - frecencyScore(a));
+  const isFlatMode = hasQuery || historyMode;
+
+  /**
+   * Unified ranked match list — used whenever the user is searching or in
+   * history mode. Empty state (no query, not in history mode) falls back to
+   * the legacy sectioned `OverlayTabList`.
+   */
+  const matches = useMemo<Match[]>(() => {
+    if (isActionMode || !isFlatMode) return [];
+    // Reference shortcutsLoaded to recompute when personalization arrives.
+    void shortcutsLoaded;
+
+    // Split current-window tabs vs. cross-space tabs for the new pipeline.
+    const currentTabs = enrichedTabs.filter((t) => !t.spaceName);
+    const otherSpaceTabs = enrichedTabs.filter((t) => !!t.spaceName);
+
+    const all = buildMatches({
+      query: query.trim(),
+      tabs: currentTabs,
+      otherSpaceTabs,
+      closedFavorites,
+      bookmarks,
+      recentlyClosed,
+      history: historySearchResults,
+      tidyState,
+      sectionById,
+      favoriteUrls,
+      associatedTabIds,
+      associations: favoriteAssociationsList,
+    });
+    return all.slice(0, MAX_RESULTS);
+  }, [
+    isActionMode,
+    isFlatMode,
+    query,
+    enrichedTabs,
+    closedFavorites,
+    bookmarks,
+    recentlyClosed,
+    historySearchResults,
+    tidyState,
+    sectionById,
+    favoriteUrls,
+    associatedTabIds,
+    favoriteAssociationsList,
+    shortcutsLoaded,
+  ]);
+
+  /**
+   * Legacy sectioned list — used only for the empty (no-query, no-history-mode)
+   * default view. Includes pinned, favorites, tidy sections, ungrouped, and
+   * recently-closed bottom block.
+   */
+  const orderedTabs = useMemo(() => {
+    if (isActionMode) return enrichedTabs;
+    if (isFlatMode) {
+      // When in flat mode, return matches converted to OverlayTab for footer/keyboard ops.
+      return matches.map((m) => matchToOverlayTab(m, windowId));
     }
 
-    const results = historySearchResults.filter(
-      (t) => !liveUrls.has(t.url) && !favoriteUrls.has(t.url),
-    );
-    return results.sort((a, b) => frecencyScore(b) - frecencyScore(a));
-  }, [recentlyClosed, historySearchResults, query, enrichedTabs, favoriteUrls]);
-
-  const filteredBookmarks = useMemo(() => {
-    if (!query.trim()) return [];
-    const liveUrls = new Set(enrichedTabs.map((t) => t.url));
-    const closedUrls = new Set(filteredRecentlyClosed.map((t) => t.url));
-    const q = query.trim();
-    return bookmarks
-      .filter((b) => !liveUrls.has(b.url) && !favoriteUrls.has(b.url) && !closedUrls.has(b.url))
-      .map((b) => ({ b, score: Math.max(fuzzyScore(q, b.title), fuzzyScore(q, b.url)) }))
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5)
-      .map((s) => s.b);
-  }, [bookmarks, query, enrichedTabs, filteredRecentlyClosed, favoriteUrls]);
-
-  const orderedTabs = useMemo(() => {
-    if (isActionMode) return filteredTabs;
-    if (historyMode) return filteredRecentlyClosed;
-    const q = query.toLowerCase();
-
-    const favItems = closedFavorites.filter(
-      (f) => !q || fuzzyScore(query.trim(), f.title) > 0 || fuzzyScore(query.trim(), f.url) > 0,
-    );
-
-    const pinned = filteredTabs.filter((t) => t.pinned);
-    const openFavs = filteredTabs.filter((t) => !t.pinned && associatedTabIds.has(t.id));
-    const active = filteredTabs.filter((t) => !t.pinned && !associatedTabIds.has(t.id));
+    const pinned = enrichedTabs.filter((t) => t.pinned);
+    const openFavs = enrichedTabs.filter((t) => !t.pinned && associatedTabIds.has(t.id));
+    const active = enrichedTabs.filter((t) => !t.pinned && !associatedTabIds.has(t.id));
 
     const sectionMap = new Map<string, OverlayTab[]>();
     const ungrouped: OverlayTab[] = [];
@@ -398,39 +426,87 @@ export function OverlayApp() {
       }
     }
 
-    const result: OverlayTab[] = [...pinned, ...favItems, ...openFavs];
+    const result: OverlayTab[] = [...pinned, ...closedFavorites, ...openFavs];
     for (const sectionTabs of sectionMap.values()) {
       result.push(...sectionTabs);
     }
-    const closedToShow = query.trim() ? filteredRecentlyClosed : filteredRecentlyClosed.slice(0, 8);
-    result.push(...ungrouped, ...filteredBookmarks, ...closedToShow);
+    const closedToShow = recentlyClosed
+      .filter((t) => !enrichedTabs.some((e) => e.url === t.url) && !favoriteUrls.has(t.url))
+      .slice(0, 8);
+    result.push(...ungrouped, ...closedToShow);
     return result;
-  }, [filteredTabs, closedFavorites, associatedTabIds, isActionMode, query, historyMode, filteredRecentlyClosed, filteredBookmarks]);
+  }, [
+    isActionMode,
+    isFlatMode,
+    matches,
+    windowId,
+    enrichedTabs,
+    associatedTabIds,
+    closedFavorites,
+    recentlyClosed,
+    favoriteUrls,
+  ]);
 
   const initialFocusSet = useRef(false);
   useEffect(() => {
-    if (!initialFocusSet.current && orderedTabs.length > 0 && !query) {
+    if (!initialFocusSet.current && orderedTabs.length > 0 && !query && !historyMode) {
       const activeIndex = orderedTabs.findIndex((t) => t.active);
       if (activeIndex >= 0) {
         setFocusIndex(activeIndex);
         initialFocusSet.current = true;
       }
     }
-  }, [orderedTabs, query]);
+  }, [orderedTabs, query, historyMode]);
 
   useEffect(() => {
     if (initialFocusSet.current) setFocusIndex(0);
   }, [query]);
 
+  // Reset focus when entering/exiting flat-mode.
+  useEffect(() => {
+    setFocusIndex(0);
+  }, [isFlatMode]);
+
+  /**
+   * Inline autocomplete: if the top match is a personalized Shortcut and its
+   * title or compact URL has the current query as a case-insensitive prefix,
+   * surface a ghost suffix in the input. Conservative — only on Shortcuts to
+   * avoid suggestions feeling intrusive.
+   */
+  const inlineCompletion = useMemo(() => {
+    const q = query.trim();
+    if (!q || isActionMode || !matches.length) return "";
+    const top = matches[0];
+    if (!top.isShortcut) return "";
+    const candidates: string[] = [];
+    if (top.title) candidates.push(top.title);
+    try {
+      const u = new URL(top.url);
+      const compact = u.hostname.replace(/^www\./, "") + (u.pathname === "/" ? "" : u.pathname);
+      candidates.push(compact);
+    } catch {
+      candidates.push(top.url);
+    }
+    const qLower = q.toLowerCase();
+    for (const c of candidates) {
+      if (c.toLowerCase().startsWith(qLower) && c.length > q.length) {
+        // Preserve original case from the candidate so the displayed text reads naturally.
+        return c.slice(q.length);
+      }
+    }
+    return "";
+  }, [matches, query, isActionMode]);
+
   useEffect(() => {
     const q = query.trim();
-    if (!q) {
+    // In history mode we want to fetch even with empty query (show recent history).
+    if (!q && !historyMode) {
       setHistorySearchResults([]);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      chrome.runtime.sendMessage({ type: "SEARCH_HISTORY", query: q, maxResults: 50 }).then((res) => {
+      chrome.runtime.sendMessage({ type: "SEARCH_HISTORY", query: q, maxResults: 200 }).then((res) => {
         if (cancelled) return;
         if (res?.ok) {
           setHistorySearchResults(
@@ -449,9 +525,9 @@ export function OverlayApp() {
           );
         }
       });
-    }, 150);
+    }, 80);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query, windowId]);
+  }, [query, windowId, historyMode]);
 
   const handleFocusIndex = useCallback((i: number) => {
     if (actionsOpen) return;
@@ -529,15 +605,19 @@ export function OverlayApp() {
       }
 
       if ((target.kind === "closed" || target.kind === "bookmark") && action === "open") {
+        // Record personalization signal: user picked this URL for this query.
+        if (query.trim()) recordShortcutSelection(query, target.url, target.title);
         await chrome.runtime.sendMessage({
           type: "OVERLAY_OPEN_URL",
           url: target.url,
+          sessionId: target.sessionId,
         });
         closeOverlay();
         return;
       }
 
       if (target.kind === "favorite" && action === "open") {
+        if (query.trim()) recordShortcutSelection(query, target.url, target.title);
         await chrome.runtime.sendMessage({
           type: "OVERLAY_OPEN_URL",
           url: target.url,
@@ -562,6 +642,12 @@ export function OverlayApp() {
 
       if (action === "favorite" || action === "pin") {
         generateTitleIfNeeded(target);
+      }
+
+      // Personalization: record any "open"/"switch" selection from a search
+      // query so future searches surface this URL faster.
+      if (action === "open" && query.trim()) {
+        recordShortcutSelection(query, target.url, target.title);
       }
 
       const res = await chrome.runtime.sendMessage({
@@ -590,7 +676,7 @@ export function OverlayApp() {
         fetchTabs();
       }
     },
-    [focusedTab, fetchTabs, generateTitleIfNeeded, spaces, favoriteUrls],
+    [focusedTab, fetchTabs, generateTitleIfNeeded, spaces, favoriteUrls, query],
   );
 
   const execGlobalAction = useCallback(
@@ -634,6 +720,9 @@ export function OverlayApp() {
         closeOverlay();
       }
     },
+    // NOTE: relies on `handleOpenConfigureSpace` being a stable callback (its
+    // own deps are []). Adding it to deps would cause a TDZ error since it's
+    // declared further down in this component.
     [],
   );
 
@@ -1009,6 +1098,7 @@ export function OverlayApp() {
           onSwitchSpace={handleSwitchSpace}
           historyMode={historyMode}
           onOpenChat={() => execGlobalAction("chat")}
+          inlineCompletion={inlineCompletion}
           onExitHistory={() => {
             setHistoryMode(false);
             setQuery("");
@@ -1069,6 +1159,27 @@ export function OverlayApp() {
             onSwitchSpace={handleSwitchSpace}
             onReorderSpaces={handleReorderSpaces}
           />
+        ) : isFlatMode ? (
+          <MatchList
+            matches={matches}
+            focusIndex={focusIndex}
+            onFocusIndex={handleFocusIndex}
+            onAccept={(m) => execAction("open", matchToOverlayTab(m, windowId))}
+            onClose={(m) => execAction("close", matchToOverlayTab(m, windowId))}
+            onTogglePin={(m) =>
+              execAction(m.pinned ? "unpin" : "pin", matchToOverlayTab(m, windowId))
+            }
+            onToggleFavorite={(m) => {
+              const isFav =
+                m.source === "favorite-open" ||
+                m.source === "favorite-closed" ||
+                favoriteUrls.has(m.url);
+              execAction(isFav ? "unfavorite" : "favorite", matchToOverlayTab(m, windowId));
+            }}
+            emptyMessage={
+              historyMode && !query.trim() ? "No history yet." : "No matching results."
+            }
+          />
         ) : (
           <OverlayTabList
             tabs={orderedTabs}
@@ -1086,8 +1197,8 @@ export function OverlayApp() {
             favoriteUrls={favoriteUrls}
             associatedTabIds={associatedTabIds}
             favoriteAssociations={favoriteAssociationsMap}
-            isSearching={query.trim().length > 0}
-            historyMode={historyMode}
+            isSearching={false}
+            historyMode={false}
             generatingTitles={generatingTitles}
           />
         )}

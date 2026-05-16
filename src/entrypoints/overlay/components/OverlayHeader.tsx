@@ -4,6 +4,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ArrowLeft, Clock, Search, Sparkles } from "lucide-react";
 import { SpacePicker } from "./SpacePicker";
 
+function isCaretAtEnd(el: HTMLInputElement): boolean {
+  return el.selectionStart === el.value.length && el.selectionEnd === el.value.length;
+}
+
 interface OverlayHeaderProps {
   activeSpace: Space | null;
   spaces: Space[];
@@ -20,6 +24,8 @@ interface OverlayHeaderProps {
   onExitHistory?: () => void;
   onConfigureSpace?: () => void;
   onOpenChat?: () => void;
+  /** Optional ghost-suffix for inline autocomplete. Rendered after `query`. */
+  inlineCompletion?: string;
 }
 
 export function OverlayHeader({
@@ -38,6 +44,7 @@ export function OverlayHeader({
   onExitHistory,
   onConfigureSpace,
   onOpenChat,
+  inlineCompletion,
 }: OverlayHeaderProps) {
   if (creatingSpace) {
     return (
@@ -107,20 +114,41 @@ export function OverlayHeader({
         ) : (
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
         )}
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape" && query) {
-              e.preventDefault();
-              e.stopPropagation();
-              onQueryChange("");
-            }
-          }}
-          placeholder={placeholder}
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        />
+        <div className="relative flex-1 flex items-center">
+          {inlineCompletion && (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 flex items-center text-sm whitespace-pre"
+            >
+              <span className="invisible">{query}</span>
+              <span className="text-muted-foreground/50">{inlineCompletion}</span>
+            </div>
+          )}
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && query) {
+                e.preventDefault();
+                e.stopPropagation();
+                onQueryChange("");
+                return;
+              }
+              if (
+                inlineCompletion &&
+                (e.key === "Tab" || (e.key === "ArrowRight" && isCaretAtEnd(e.currentTarget)))
+              ) {
+                e.preventDefault();
+                e.stopPropagation();
+                onQueryChange(query + inlineCompletion);
+                return;
+              }
+            }}
+            placeholder={placeholder}
+            className="relative flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+        </div>
         {query ? (
           <button
             onClick={() => {
