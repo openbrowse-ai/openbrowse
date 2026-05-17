@@ -1,6 +1,8 @@
 packages:
   - docs
 
-ignoredBuiltDependencies:
-  - esbuild
-  - spawn-sync
+allowBuilds:
+  esbuild: false
+  msw: false
+  sharp: true
+  spawn-sync: false
