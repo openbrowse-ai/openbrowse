@@ -340,6 +340,11 @@ let indicatorQueue: Promise<void> = Promise.resolve();
 
 let agentConversationId: string | null = null;
 let agentConversationMessages: string[] = [];
+// Tab id of the panel/popover that initiated this agent run. Used as the
+// implicit host tab to bind to a fresh conversation on the first tab tool
+// call (so the agent has a target without the user manually clicking
+// "Work on this tab").
+let agentHostTabId: number | null = null;
 
 let lastTotalTokens = 0;
 let currentModelDef: ModelDefinition | undefined;
@@ -383,21 +388,25 @@ export function resetTokenTracking() {
 export function setAgentContext(
   conversationId: string | null,
   messages: string[],
+  hostTabId: number | null = null,
 ) {
   if (agentConversationId && agentConversationId !== conversationId) {
     clearHandles(agentConversationId);
   }
   agentConversationId = conversationId;
   agentConversationMessages = messages;
+  agentHostTabId = hostTabId;
 }
 
 export function getAgentContext(): {
   conversationId: string | null;
   messages: string[];
+  hostTabId: number | null;
 } {
   return {
     conversationId: agentConversationId,
     messages: agentConversationMessages,
+    hostTabId: agentHostTabId,
   };
 }
 
@@ -484,6 +493,36 @@ function toSDKTool<TInput, TOutput>(
       setTargetTabId(pinnedTabId);
     }
     if (isTabTool) {
+      // Implicit host-tab binding: on the first tab-interacting tool call
+      // for a conversation that hasn't owned any tabs yet, bind the panel's
+      // host tab so the agent has a working target. Skipped when the host
+      // tab is unknown, an extension/chrome page, or already in the group.
+      if (agentConversationId && agentHostTabId != null && getTargetTabId() == null) {
+        try {
+          const conv = await chatDb.getConversation(agentConversationId);
+          if (conv && conv.ownedTabIds.length === 0) {
+            const hostTab = await chrome.tabs.get(agentHostTabId).catch(() => null);
+            const hostUrl = hostTab?.url ?? "";
+            const isInternal =
+              hostUrl.startsWith("chrome://") ||
+              hostUrl.startsWith("chrome-extension://") ||
+              hostUrl.startsWith("devtools://");
+            if (hostTab && !isInternal && !hostTab.pinned) {
+              await chrome.runtime
+                .sendMessage({
+                  type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
+                  conversationId: agentConversationId,
+                  tabId: agentHostTabId,
+                })
+                .catch(() => {});
+              setTargetTabId(agentHostTabId);
+            }
+          }
+        } catch {
+          // Best-effort; the agent's own bootstrap fallback (getActiveUserTab)
+          // will pick up where this leaves off.
+        }
+      }
       try {
         const tab = await getActiveUserTab();
         if (tab.id && tab.title) {

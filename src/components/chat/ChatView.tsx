@@ -33,6 +33,28 @@ interface ChatViewProps {
   showBackButton?: boolean;
   onBack?: () => void;
   showHeader?: boolean;
+  /**
+   * Whether this ChatView is being rendered inside a detached popover window.
+   * When true, the "Sharing [tab]" pill is anchored to the origin tab the
+   * popover was detached from rather than the popover's own (extension) tab.
+   */
+  isPopupMode?: boolean;
+  /**
+   * The browser window the popover was detached from. Used as a fallback
+   * for resolving the origin tab if the original origin tab was closed.
+   */
+  originWindowId?: number | null;
+  /**
+   * The tab the popover was detached from. The "Sharing [tab]" pill renders
+   * this tab. When the tab is closed, the pill hides; when a tab matching
+   * the origin URL reopens in the same window (e.g., user restores from
+   * history), the pill reappears.
+   */
+  originTabId?: number | null;
+  /**
+   * The URL of the origin tab at detach time, used to detect restoration.
+   */
+  originUrl?: string | null;
 }
 
 export function ChatView({
@@ -44,7 +66,20 @@ export function ChatView({
   showBackButton,
   onBack,
   showHeader = true,
+  isPopupMode = false,
+  originWindowId,
+  originTabId,
+  originUrl,
 }: ChatViewProps) {
+  // Track the live origin tab id in popup mode. May change if the original
+  // origin tab is closed and later restored from history (the URL matches a
+  // freshly-opened tab in the origin window). Side-panel mode ignores this.
+  const [liveOriginTabId, setLiveOriginTabId] = useState<number | null>(originTabId ?? null);
+
+  useEffect(() => {
+    setLiveOriginTabId(originTabId ?? null);
+  }, [originTabId]);
+
   const {
     messages,
     input,
@@ -65,7 +100,16 @@ export function ChatView({
     stop,
     error,
     clearError,
-  } = useAgentChat({ conversationId, spaceId, onNewConversation });
+  } = useAgentChat({
+    conversationId,
+    spaceId,
+    onNewConversation,
+    // In popup mode, host tab is the live origin tab (may be null if it
+    // was closed and not yet restored). In side-panel mode, defer to
+    // useAgentChat's auto-resolution from the active tab in the current
+    // window (which, in per-tab mode, IS the host tab).
+    hostTabIdOverride: isPopupMode ? liveOriginTabId : undefined,
+  });
 
 const providerModels = useMemo(() => {
     return providers
@@ -99,9 +143,68 @@ const providerModels = useMemo(() => {
   const [activeTab, setActiveTab] = useState<{ title: string; favicon: string; url: string } | null>(null);
 
   useEffect(() => {
-    async function getActiveTab() {
+    if (!isPopupMode) return;
+    if (originUrl == null || originWindowId == null) return;
+
+    // If the origin tab is gone (closed or never set), watch for a tab in
+    // the origin window matching originUrl — the user may restore via
+    // Cmd+Shift+T or history. Adopt the new tabId when it appears.
+    function adoptIfMatch(tab: chrome.tabs.Tab | undefined) {
+      if (!tab || tab.id == null) return false;
+      if (tab.windowId !== originWindowId) return false;
+      if (tab.url !== originUrl) return false;
+      setLiveOriginTabId(tab.id);
+      return true;
+    }
+
+    const onCreated = (tab: chrome.tabs.Tab) => {
+      if (liveOriginTabId != null) return; // still alive
+      adoptIfMatch(tab);
+    };
+    const onUpdated = (
+      _id: number,
+      _info: chrome.tabs.OnUpdatedInfo,
+      tab: chrome.tabs.Tab,
+    ) => {
+      if (liveOriginTabId != null) return;
+      adoptIfMatch(tab);
+    };
+    const onRemoved = (id: number) => {
+      if (id === liveOriginTabId) setLiveOriginTabId(null);
+    };
+
+    chrome.tabs.onCreated.addListener(onCreated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    return () => {
+      chrome.tabs.onCreated.removeListener(onCreated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    };
+  }, [isPopupMode, originUrl, originWindowId, liveOriginTabId]);
+
+  useEffect(() => {
+    async function refresh() {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        let tab: chrome.tabs.Tab | undefined;
+        if (isPopupMode) {
+          // Popup pill is anchored to the origin tab. If origin tab is gone
+          // (and not yet restored), the pill hides — no fallback to the
+          // origin window's currently-active tab.
+          if (liveOriginTabId == null) {
+            setActiveTab(null);
+            return;
+          }
+          try {
+            tab = await chrome.tabs.get(liveOriginTabId);
+          } catch {
+            setLiveOriginTabId(null);
+            setActiveTab(null);
+            return;
+          }
+        } else {
+          [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        }
         if (tab?.url && !tab.url.startsWith("chrome://") && !tab.url.startsWith(chrome.runtime.getURL(""))) {
           setActiveTab({ title: tab.title ?? "Untitled", favicon: tab.favIconUrl ?? "", url: tab.url });
         } else {
@@ -111,16 +214,22 @@ const providerModels = useMemo(() => {
         setActiveTab(null);
       }
     }
-    getActiveTab();
-    const onActivated = () => getActiveTab();
-    const onUpdated = () => getActiveTab();
+    refresh();
+    const onActivated = () => refresh();
+    const onUpdated = (id: number) => {
+      if (isPopupMode) {
+        if (liveOriginTabId != null && id === liveOriginTabId) refresh();
+      } else {
+        refresh();
+      }
+    };
     chrome.tabs.onActivated.addListener(onActivated);
     chrome.tabs.onUpdated.addListener(onUpdated);
     return () => {
       chrome.tabs.onActivated.removeListener(onActivated);
       chrome.tabs.onUpdated.removeListener(onUpdated);
     };
-  }, []);
+  }, [isPopupMode, liveOriginTabId]);
 
   const startEdit = useCallback(
     (messageId: string) => {
