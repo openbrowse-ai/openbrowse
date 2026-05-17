@@ -5,14 +5,24 @@ import { Toaster } from "@/components/ui/sonner";
 import App from "./App";
 import "./app.css";
 
-const sidepanelPort = chrome.runtime.connect({ name: "sidepanel" });
-chrome.windows.getCurrent().then((w) => {
-  if (w.id != null) {
-    try {
-      sidepanelPort.postMessage({ type: "SIDEPANEL_HELLO", windowId: w.id });
-    } catch {}
-  }
-});
+// `sidepanel.html` is loaded both in Chrome's side panel and inside the
+// detached popup window. The "sidepanel" port + SIDEPANEL_HELLO is the
+// signal the background uses to populate `sidePanelOpenByWindow` for
+// toast / focus emission. The popup is not a real side panel, so skip
+// the port handshake when running in popup mode to avoid polluting
+// that map with the popup's window id.
+const isPopupMode = new URLSearchParams(window.location.search).get("mode") === "popup";
+
+if (!isPopupMode) {
+  const sidepanelPort = chrome.runtime.connect({ name: "sidepanel" });
+  chrome.windows.getCurrent().then((w) => {
+    if (w.id != null) {
+      try {
+        sidepanelPort.postMessage({ type: "SIDEPANEL_HELLO", windowId: w.id });
+      } catch {}
+    }
+  });
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

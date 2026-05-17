@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { ChatPicker } from "@/components/chat/ChatPicker";
 import { SpaceSwitcher } from "./components/SpaceSwitcher";
-import { Download, ExternalLink, Link as LinkIcon, MessageSquarePlus, MoreVertical, Settings } from "lucide-react";
+import { Download, ExternalLink, MessageSquarePlus, MoreVertical, Settings, PictureInPicture, PanelRight } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -20,11 +20,37 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 
+function readPopupParams() {
+  if (typeof window === "undefined") {
+    return {
+      isPopupMode: false,
+      originWindowId: null,
+      originTabId: null,
+      originUrl: null,
+      initialConversationId: null,
+    };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const isPopupMode = params.get("mode") === "popup";
+  const owid = params.get("originWindowId");
+  const otid = params.get("originTabId");
+  const ourl = params.get("originUrl");
+  const cid = params.get("conversationId");
+  return {
+    isPopupMode,
+    originWindowId: owid ? Number(owid) : null,
+    originTabId: otid ? Number(otid) : null,
+    originUrl: ourl && ourl.length > 0 ? ourl : null,
+    initialConversationId: cid && cid.length > 0 ? cid : null,
+  };
+}
+
 export default function App() {
   useTheme();
+  const { isPopupMode, originWindowId, originTabId, originUrl, initialConversationId } = readPopupParams();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(initialConversationId);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(new Set());
   const activeConversationIdRef = useRef(activeConversationId);
@@ -34,6 +60,21 @@ export default function App() {
     async function init() {
       const allSpaces = await storage.getSpaces();
       setSpaces(allSpaces);
+
+      // In popup mode, the popup's own window isn't a real space.
+      // Resolve the active space from the origin window if known, otherwise
+      // fall back to the first space.
+      if (isPopupMode) {
+        if (originWindowId != null) {
+          const space = await storage.getSpaceByWindowId(originWindowId);
+          if (space) {
+            setActiveSpaceId(space.id);
+            return;
+          }
+        }
+        if (allSpaces.length > 0) setActiveSpaceId(allSpaces[0].id);
+        return;
+      }
 
       const currentWindow = await chrome.windows.getCurrent();
       if (currentWindow.id) {
@@ -55,7 +96,7 @@ export default function App() {
             windowId: currentWindow.id,
           });
           if (owned?.ok && owned.conversationId) {
-            setActiveConversationId(owned.conversationId);
+            setActiveConversationId((prev) => prev ?? owned.conversationId);
           }
         } catch {}
         return;
@@ -71,7 +112,7 @@ export default function App() {
     };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
+  }, [isPopupMode, originWindowId]);
 
   useEffect(() => {
     let myWindowId: number | undefined;
@@ -138,40 +179,6 @@ export default function App() {
     setActiveConversationId(null);
   }, []);
 
-  const [activeTab, setActiveTab] = useState<{ tabId: number; pinned: boolean; windowId: number } | null>(null);
-  useEffect(() => {
-    async function refreshActiveTab() {
-      const w = await chrome.windows.getCurrent();
-      if (w.id == null) return;
-      const [tab] = await chrome.tabs.query({ active: true, windowId: w.id });
-      if (tab?.id != null) {
-        setActiveTab({ tabId: tab.id, pinned: tab.pinned === true, windowId: w.id });
-      } else {
-        setActiveTab(null);
-      }
-    }
-    refreshActiveTab();
-    const onActivated = () => refreshActiveTab();
-    const onUpdated = (_id: number, info: chrome.tabs.OnUpdatedInfo) => {
-      if (info.pinned != null || info.status === "complete") refreshActiveTab();
-    };
-    chrome.tabs.onActivated.addListener(onActivated);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    return () => {
-      chrome.tabs.onActivated.removeListener(onActivated);
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-    };
-  }, []);
-
-  const handleBindActiveTab = useCallback(async () => {
-    if (!activeConversationId || !activeTab || activeTab.pinned) return;
-    await chrome.runtime.sendMessage({
-      type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
-      conversationId: activeConversationId,
-      tabId: activeTab.tabId,
-    });
-  }, [activeConversationId, activeTab]);
-
   const handleOpenFullView = useCallback(async () => {
     const currentWindow = await chrome.windows.getCurrent();
     const hash = activeConversationId ? `#${activeConversationId}` : "";
@@ -179,9 +186,9 @@ export default function App() {
       type: "OVERLAY_GLOBAL_ACTION",
       action: "full-view",
       hash,
-      windowId: currentWindow.id,
+      windowId: isPopupMode && originWindowId != null ? originWindowId : currentWindow.id,
     });
-  }, [activeConversationId]);
+  }, [activeConversationId, isPopupMode, originWindowId]);
 
   const handleExportChat = useCallback(async () => {
     if (!activeConversationId) return;
@@ -249,6 +256,130 @@ export default function App() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  const handleDetach = useCallback(async () => {
+    const w = await chrome.windows.getCurrent();
+    let tabId: number | null = null;
+    let url: string | null = null;
+    if (w.id != null) {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, windowId: w.id });
+        tabId = tab?.id ?? null;
+        url = tab?.url ?? null;
+      } catch {}
+    }
+    await chrome.runtime.sendMessage({
+      type: "DETACH_SIDEPANEL",
+      activeConversationId,
+      activeSpaceId,
+      originWindowId: w.id ?? null,
+      originTabId: tabId,
+      originUrl: url,
+    });
+  }, [activeConversationId, activeSpaceId]);
+
+  // The tab id we want to reattach to, kept up to date so the click handler
+  // can call chrome.sidePanel.open({tabId}) synchronously off the user
+  // gesture. Falls through origin tab → active tab in origin window → active
+  // tab in last focused normal window. Only maintained in popup mode.
+  const reattachTargetRef = useRef<number | null>(originTabId ?? null);
+
+  useEffect(() => {
+    if (!isPopupMode) return;
+
+    let cancelled = false;
+    async function compute() {
+      let next: number | null = null;
+      if (originTabId != null) {
+        try {
+          const t = await chrome.tabs.get(originTabId);
+          if (t.id != null) next = t.id;
+        } catch {}
+      }
+      if (next == null && originWindowId != null) {
+        try {
+          await chrome.windows.get(originWindowId);
+          const [t] = await chrome.tabs.query({ active: true, windowId: originWindowId });
+          if (t?.id != null) next = t.id;
+        } catch {}
+      }
+      if (next == null) {
+        try {
+          const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+          if (w.id != null) {
+            const [t] = await chrome.tabs.query({ active: true, windowId: w.id });
+            if (t?.id != null) next = t.id;
+          }
+        } catch {}
+      }
+      if (!cancelled) reattachTargetRef.current = next;
+    }
+
+    compute();
+    const refresh = () => compute();
+    chrome.tabs.onActivated.addListener(refresh);
+    chrome.tabs.onRemoved.addListener(refresh);
+    chrome.windows.onFocusChanged.addListener(refresh);
+    return () => {
+      cancelled = true;
+      chrome.tabs.onActivated.removeListener(refresh);
+      chrome.tabs.onRemoved.removeListener(refresh);
+      chrome.windows.onFocusChanged.removeListener(refresh);
+    };
+  }, [isPopupMode, originTabId, originWindowId]);
+
+  const handleReattach = useCallback(() => {
+    // chrome.sidePanel.open() requires a synchronous user gesture. Read the
+    // precomputed target from the ref and call open() inline — no awaits or
+    // .then() continuations before it.
+    const tabId = reattachTargetRef.current;
+    if (tabId != null) {
+      // Register the panel for this tab and open it. The manifest has no
+      // default global panel, so setOptions is required before open().
+      // Fire-and-forget; Chrome processes these sequentially.
+      chrome.sidePanel.setOptions({ tabId, path: "sidepanel.html", enabled: true }).catch(() => {});
+      chrome.sidePanel.open({ tabId }).catch(() => {});
+    }
+
+    // Async cleanup: activate the target tab, focus its window, and close
+    // the popup. Safe to do off-gesture since none of these require user
+    // activation.
+    void (async () => {
+      if (tabId != null) {
+        chrome.runtime.sendMessage({ type: "MARK_USER_OPENED_SIDEPANEL", tabId }).catch(() => {});
+        // Activate the target tab so the just-opened panel is visible.
+        // Without this, if the user navigated to a different tab in the
+        // origin window before reattaching, focusing the window alone
+        // would leave that other tab active and the panel hidden (since
+        // we registered the panel only for tabId).
+        chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      }
+      let targetWindowId: number | undefined;
+      if (originWindowId != null) {
+        try {
+          const w = await chrome.windows.get(originWindowId);
+          if (w.type === "normal") targetWindowId = w.id;
+        } catch {
+          // origin gone
+        }
+      }
+      if (targetWindowId == null) {
+        try {
+          const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+          if (w.id != null) targetWindowId = w.id;
+        } catch {}
+      }
+
+      if (targetWindowId != null) {
+        chrome.windows.update(targetWindowId, { focused: true }).catch(() => {});
+      }
+
+      try {
+        const popup = await chrome.windows.getCurrent();
+        if (popup.id != null) await chrome.windows.remove(popup.id);
+      } catch {}
+    })();
+  }, [originWindowId]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && e.code === "KeyN") {
@@ -275,20 +406,6 @@ export default function App() {
           </>
         )}
         <div className="flex-1" />
-        {activeConversationId && activeTab && !activeTab.pinned && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={handleBindActiveTab}
-                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <LinkIcon className="size-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Work on this tab</TooltipContent>
-          </Tooltip>
-        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -304,6 +421,34 @@ export default function App() {
             <Kbd>⌥N</Kbd>
           </TooltipContent>
         </Tooltip>
+        {!isPopupMode && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={handleDetach}
+                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PictureInPicture className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Detach to popover</TooltipContent>
+          </Tooltip>
+        )}
+        {isPopupMode && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={handleReattach}
+                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PanelRight className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Reattach to side panel</TooltipContent>
+          </Tooltip>
+        )}
         <ChatPicker
           spaceId={activeSpaceId}
           activeConversationId={activeConversationId}
@@ -346,6 +491,10 @@ export default function App() {
           spaceId={activeSpaceId}
           onNewConversation={handleNewConversation}
           showHeader={false}
+          isPopupMode={isPopupMode}
+          originWindowId={isPopupMode ? originWindowId : null}
+          originTabId={isPopupMode ? originTabId : null}
+          originUrl={isPopupMode ? originUrl : null}
         />
       </div>
     </div>

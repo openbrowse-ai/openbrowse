@@ -1,5 +1,5 @@
 import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
-import { isSidePanelOpenForWindow } from "./tab-scoping";
+import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
 
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
@@ -36,8 +36,80 @@ export default defineBackground({
     let agentWorkingColor: string | null = null;
     const pendingNotifications = new Map<string, { conversationId: string; origin: "sidepanel" | "home" }>();
 
-    chrome.windows.getLastFocused().then((w) => {
-      lastFocusedWindowId = w.id;
+    // windowId → active tabId. Maintained synchronously off chrome.tabs events
+    // so chrome.sidePanel.open({tabId}) can be called inline from a user
+    // gesture without breaking the activation chain by awaiting a tabs.query.
+    const activeTabByWindow = new Map<number, number>();
+
+    // Helper to dry up the gesture-sensitive side panel open paths.
+    // Because the manifest does not declare a `side_panel.default_path`,
+    // Chrome treats this extension as having NO global side panel by
+    // default. We register the panel per-tab here, giving us native
+    // per-tab scoping with no need to pre-disable other tabs.
+    function openSidePanelOnTab(tabId: number) {
+      // Eagerly mark as user-opened. This acts as a fallback for Chrome <141
+      // which doesn't support chrome.sidePanel.onOpened.
+      markUserOpenedSidePanel(tabId);
+      // Register the panel for this tab. Without this call, Chrome has no
+      // record of a panel for this tab and open() will reject.
+      chrome.sidePanel
+        .setOptions({ tabId, path: "sidepanel.html", enabled: true })
+        .catch(() => {});
+      chrome.sidePanel.open({ tabId }).catch(() => {});
+    }
+
+    // Chrome lifecycle events keep `userOpenedSidePanelTabs` in sync
+    // automatically when present. `onOpened` is Chrome 141+; `onClosed`
+    // is Chrome 142+. Both are feature-detected; callers also eagerly
+    // mark/unmark on user gestures as a fallback for older Chrome.
+    if (chrome.sidePanel.onOpened) {
+      chrome.sidePanel.onOpened.addListener((info) => {
+        if (info.tabId != null) markUserOpenedSidePanel(info.tabId);
+      });
+    }
+    if (chrome.sidePanel.onClosed) {
+      chrome.sidePanel.onClosed.addListener((info) => {
+        if (info.tabId != null) {
+          markUserClosedSidePanel(info.tabId);
+          chrome.sidePanel
+            .setOptions({ tabId: info.tabId, path: "sidepanel.html", enabled: false })
+            .catch(() => {});
+        }
+      });
+    }
+
+    // Track the most recently focused *normal* browser window. We
+    // deliberately exclude `popup`/`devtools` windows so that focusing
+    // the detached popover doesn't redirect gesture-bridged actions
+    // (Alt+I, search, notifications) to the popup's window — those
+    // need to target the user's real browsing window.
+    chrome.windows.getLastFocused({ windowTypes: ["normal"] }).then((w) => {
+      if (w.id != null) lastFocusedWindowId = w.id;
+    });
+
+    // Seed activeTabByWindow on startup. We no longer need to pre-disable
+    // every existing tab — without a default global panel, Chrome naturally
+    // shows nothing on tabs that haven't called setOptions.
+    chrome.windows.getAll({ populate: true }).then((wins) => {
+      for (const w of wins) {
+        if (w.id == null) continue;
+        const active = w.tabs?.find((t) => t.active);
+        if (active?.id != null) activeTabByWindow.set(w.id, active.id);
+      }
+    });
+
+    chrome.tabs.onActivated.addListener((info) => {
+      activeTabByWindow.set(info.windowId, info.tabId);
+    });
+
+    chrome.tabs.onCreated.addListener((tab) => {
+      if (tab.id != null && tab.windowId != null && tab.active) {
+        activeTabByWindow.set(tab.windowId, tab.id);
+      }
+    });
+
+    chrome.windows.onRemoved.addListener((windowId) => {
+      activeTabByWindow.delete(windowId);
     });
 
     // Connect MCP servers on startup
@@ -57,31 +129,48 @@ export default defineBackground({
           .catch(() => {});
       });
     });
-    chrome.windows.onFocusChanged.addListener((windowId) => {
-      if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-        lastFocusedWindowId = windowId;
+    chrome.windows.onFocusChanged.addListener(async (windowId) => {
+      if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+      // Only track focus on normal browser windows. Popup-type windows
+      // (such as our detached popover) and devtools windows must not
+      // override lastFocusedWindowId, otherwise gesture-bridged actions
+      // would target the popup instead of the user's real window.
+      try {
+        const w = await chrome.windows.get(windowId);
+        if (w.type === "normal") lastFocusedWindowId = windowId;
+      } catch {
+        // Window vanished between focus event and lookup — ignore.
       }
     });
 
     chrome.commands.onCommand.addListener((command) => {
       if (command === "open-chat") {
-        // chrome.sidePanel.open() requires a user gesture and must be called
-        // synchronously inside the command handler — no await before it.
         const windowId = lastFocusedWindowId;
+
+        const toggleOnTab = (tabId: number) => {
+          const opened = isUserOpenedSidePanel(tabId);
+          if (opened && chrome.sidePanel.close) {
+            markUserClosedSidePanel(tabId);
+            chrome.sidePanel.close({ tabId }).catch(() => {});
+            chrome.sidePanel
+              .setOptions({ tabId, path: "sidepanel.html", enabled: false })
+              .catch(() => {});
+          } else {
+            openSidePanelOnTab(tabId);
+          }
+        };
+
         if (windowId == null) {
-          // Best-effort: resolve the window then open. Will only work if Chrome
-          // still considers this a user-gesture context (it usually does for
-          // command events).
-          chrome.windows.getLastFocused().then((w) => {
-            if (w.id != null) chrome.sidePanel.open({ windowId: w.id });
+          chrome.windows.getLastFocused({ windowTypes: ["normal"] }).then((w) => {
+            if (w.id == null) return;
+            const tabId = activeTabByWindow.get(w.id);
+            if (tabId != null) toggleOnTab(tabId);
           });
           return;
         }
-        if (isSidePanelOpenForWindow(windowId) && chrome.sidePanel.close) {
-          chrome.sidePanel.close({ windowId });
-        } else {
-          chrome.sidePanel.open({ windowId });
-        }
+
+        const tabId = activeTabByWindow.get(windowId);
+        if (tabId != null) toggleOnTab(tabId);
         return;
       }
 
@@ -89,7 +178,7 @@ export default defineBackground({
         // openHomePage uses chrome.tabs APIs, which don't require a user
         // gesture, so we can safely await.
         (async () => {
-          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused()).id;
+          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
           if (windowId == null) return;
           await openHomePage(windowId);
         })();
@@ -98,7 +187,7 @@ export default defineBackground({
 
       if (command === "open-search") {
         (async () => {
-          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused()).id;
+          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
           if (!windowId) return;
 
           const [tab] = await chrome.tabs.query({ active: true, windowId });
@@ -361,9 +450,7 @@ export default defineBackground({
           try {
             const tabId = sender.tab?.id;
             if (tabId != null) {
-              await chrome.sidePanel.open({ tabId });
-            } else if (sender.tab?.windowId != null) {
-              await chrome.sidePanel.open({ windowId: sender.tab.windowId });
+              openSidePanelOnTab(tabId);
             }
             sendResponse({ ok: true });
           } catch (err) {
@@ -1252,13 +1339,79 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === "DETACH_SIDEPANEL") {
+        (async () => {
+          try {
+            const m = message as {
+              type: string;
+              activeConversationId?: string | null;
+              activeSpaceId?: string | null;
+              originWindowId?: number | null;
+              originTabId?: number | null;
+              originUrl?: string | null;
+            };
+            const originWindowId =
+              m.originWindowId ??
+              sender.tab?.windowId ??
+              lastFocusedWindowId ??
+              (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+
+            // Resolve origin tab if not provided, by looking up the active
+            // tab in the origin window.
+            let originTabId = m.originTabId ?? null;
+            let originUrl = m.originUrl ?? null;
+            if (originTabId == null && originWindowId != null) {
+              try {
+                const [tab] = await chrome.tabs.query({ active: true, windowId: originWindowId });
+                if (tab?.id != null) {
+                  originTabId = tab.id;
+                  originUrl = tab.url ?? null;
+                }
+              } catch {}
+            }
+
+            // Close the side panel on the origin tab. With no global panel
+            // declared in the manifest, this is the only kind of panel that
+            // can exist for this extension.
+            const closePanel = chrome.sidePanel.close;
+            if (closePanel && originTabId != null) {
+              markUserClosedSidePanel(originTabId);
+              closePanel({ tabId: originTabId }).catch(() => {});
+              chrome.sidePanel
+                .setOptions({ tabId: originTabId, path: "sidepanel.html", enabled: false })
+                .catch(() => {});
+            }
+
+            const params = new URLSearchParams({ mode: "popup" });
+            if (originWindowId != null) params.set("originWindowId", String(originWindowId));
+            if (originTabId != null) params.set("originTabId", String(originTabId));
+            if (originUrl) params.set("originUrl", originUrl);
+            if (m.activeConversationId) params.set("conversationId", m.activeConversationId);
+
+            const popupWindow = await chrome.windows.create({
+              type: "popup",
+              url: chrome.runtime.getURL(`/sidepanel.html?${params.toString()}`),
+              width: 420,
+              height: 700,
+              focused: true,
+            });
+            void popupWindow;
+            sendResponse({ ok: true });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
       if (message.type === "OPEN_SIDEPANEL_SEARCH") {
         (async () => {
           try {
-            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused()).id;
+            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
             if (windowId) {
               chrome.storage.session.set({ focusSearch: true });
-              chrome.sidePanel.open({ windowId });
+              const tabId = sender.tab?.id ?? activeTabByWindow.get(windowId);
+              if (tabId != null) openSidePanelOnTab(tabId);
             }
             sendResponse({ ok: true });
           } catch (err) {
@@ -1268,11 +1421,18 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === "MARK_USER_OPENED_SIDEPANEL") {
+        const tabId = message.tabId as number | undefined;
+        if (tabId != null) markUserOpenedSidePanel(tabId);
+        sendResponse({ ok: true });
+        return false;
+      }
+
       if (message.type === "OPEN_NEW_SPACE_OVERLAY" || message.type === "OPEN_OVERLAY_ACTION") {
         const action = message.action ?? "new-space";
         (async () => {
           try {
-            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused()).id;
+            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
             if (!windowId) { sendResponse({ ok: false }); return; }
             const [tab] = await chrome.tabs.query({ active: true, windowId });
             if (!tab?.id) { sendResponse({ ok: false }); return; }
@@ -1346,7 +1506,8 @@ export default defineBackground({
               const spaces = await storage.getSpaces();
               const space = spaces.find((s) => s.id === message.spaceId);
               if (space?.windowId) {
-                await chrome.sidePanel.open({ windowId: space.windowId });
+                const tabId = activeTabByWindow.get(space.windowId);
+                if (tabId != null) openSidePanelOnTab(tabId);
               }
             }
             sendResponse({ ok: true });
@@ -1751,8 +1912,11 @@ export default defineBackground({
       pendingNotifications.delete(notificationId);
       chrome.notifications.clear(notificationId);
       if (info.origin === "sidepanel") {
-        const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused()).id;
-        if (windowId) chrome.sidePanel.open({ windowId });
+        const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+        if (windowId) {
+          const tabId = activeTabByWindow.get(windowId);
+          if (tabId != null) openSidePanelOnTab(tabId);
+        }
       } else {
         const homeUrl = chrome.runtime.getURL("/home.html");
         const [existing] = await chrome.tabs.query({ url: homeUrl + "*" });

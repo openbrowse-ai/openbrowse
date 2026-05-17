@@ -10,6 +10,18 @@ export default defineConfig({
   vite: () => ({
     plugins: [tailwindcss()],
   }),
+  hooks: {
+    // WXT auto-injects `side_panel.default_path` whenever a `sidepanel`
+    // entrypoint exists. We deliberately don't want that — declaring a
+    // global side panel makes Chrome show it on every tab by default,
+    // which fights against per-tab scoping (the global panel leaks
+    // onto other tabs in the window). Stripping this leaves Chrome
+    // with no default panel; we register per-tab via setOptions when
+    // the user explicitly opens it, giving us native per-tab isolation.
+    "build:manifestGenerated": (_wxt, manifest) => {
+      delete (manifest as { side_panel?: unknown }).side_panel;
+    },
+  },
   manifest: ({ mode }) => ({
     name: "OpenBrowse",
     description: "The open source browser agent.",
@@ -28,9 +40,6 @@ export default defineConfig({
       "128": "icon/128.png",
     },
     action: {},
-    side_panel: {
-      default_path: "sidepanel.html",
-    },
     permissions: [
       "tabs",
       "tabGroups",

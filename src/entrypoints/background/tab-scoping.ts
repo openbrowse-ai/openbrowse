@@ -4,6 +4,23 @@ const tabOwnership = new Map<number, string>();
 const groupOwnership = new Map<number, string>();
 const sidePanelOpenByWindow = new Map<number, boolean>();
 
+// Tabs the user explicitly opened the side panel on. Ephemeral (cleared on
+// extension reload). Chrome 141+ onOpened/onClosed syncs this automatically;
+// older versions rely on explicit helper calls on gesture.
+const userOpenedSidePanelTabs = new Set<number>();
+
+export function markUserOpenedSidePanel(tabId: number) {
+  userOpenedSidePanelTabs.add(tabId);
+}
+
+export function markUserClosedSidePanel(tabId: number) {
+  userOpenedSidePanelTabs.delete(tabId);
+}
+
+export function isUserOpenedSidePanel(tabId: number): boolean {
+  return userOpenedSidePanelTabs.has(tabId);
+}
+
 const DISMISSED_STORAGE_KEY = "agent_toast_dismissed_tabs";
 
 async function getDismissedTabs(): Promise<Set<number>> {
@@ -141,6 +158,19 @@ export function isSidePanelOpenForWindow(windowId: number): boolean {
   return sidePanelOpenByWindow.get(windowId) ?? false;
 }
 
+export function applyDesiredPanelState(tabId: number) {
+  // A tab should have the side panel registered (and enabled) if it's owned
+  // by a conversation (agent is active in the group) OR the user explicitly
+  // opened it there. Otherwise, leave it unregistered so Chrome shows
+  // nothing on that tab. The manifest declares no global side panel, so
+  // there's no default fallback to fight against.
+  const owned = tabOwnership.has(tabId);
+  const userOpened = userOpenedSidePanelTabs.has(tabId);
+  chrome.sidePanel
+    .setOptions({ tabId, path: "sidepanel.html", enabled: owned || userOpened })
+    .catch(() => {});
+}
+
 async function setPanelEnabledForTab(tabId: number, enabled: boolean) {
   try {
     if (enabled) {
@@ -222,7 +252,7 @@ async function clearTabOwnership(tabId: number) {
   const convId = tabOwnership.get(tabId);
   if (!convId) return;
   tabOwnership.delete(tabId);
-  setPanelEnabledForTab(tabId, false);
+  applyDesiredPanelState(tabId);
   emitToast(tabId, false);
 
   const conv = await chatDb.getConversation(convId);
@@ -239,7 +269,7 @@ async function clearGroupOwnership(groupId: number) {
   for (const [tabId, cid] of tabOwnership) {
     if (cid === convId) {
       tabOwnership.delete(tabId);
-      setPanelEnabledForTab(tabId, false);
+      applyDesiredPanelState(tabId);
       emitToast(tabId, false);
     }
   }
@@ -290,9 +320,10 @@ async function rebuildIndexesFromStorage() {
 
 function installListeners() {
   chrome.tabs.onActivated.addListener(async (info) => {
+    applyDesiredPanelState(info.tabId);
+    
     const convId = tabOwnership.get(info.tabId);
     if (convId) {
-      await setPanelEnabledForTab(info.tabId, true);
       if (sidePanelOpenByWindow.get(info.windowId)) {
         emitFocus(info.windowId, convId);
         emitToast(info.tabId, false);
@@ -300,12 +331,12 @@ function installListeners() {
         emitToast(info.tabId, true);
       }
     } else {
-      await setPanelEnabledForTab(info.tabId, false);
       emitToast(info.tabId, false);
     }
   });
 
   chrome.tabs.onRemoved.addListener((tabId) => {
+    userOpenedSidePanelTabs.delete(tabId);
     if (!tabOwnership.has(tabId)) return;
     clearTabOwnership(tabId);
   });

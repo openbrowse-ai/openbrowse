@@ -61,6 +61,14 @@ interface UseAgentChatOptions {
   conversationId: string | null;
   spaceId: string | null;
   onNewConversation: (id: string) => void;
+  /**
+   * Override for the host tab id used by the agent's implicit
+   * first-tool-call binding. When `undefined`, useAgentChat resolves the
+   * panel's host tab from the active tab in the current window. Pass an
+   * explicit value (or `null`) when the panel is rendered in a popover and
+   * `currentWindow` would resolve to the popup itself.
+   */
+  hostTabIdOverride?: number | null;
 }
 
 function generateId() {
@@ -282,12 +290,29 @@ export function useAgentChat({
   conversationId,
   spaceId,
   onNewConversation,
+  hostTabIdOverride,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     DEFAULT_AGENT_SETTINGS,
   );
   const [input, setInput] = useState("");
+
+  // Latest host tab override; the resolver below reads it via ref so
+  // resolveHostTabId() doesn't need to be a dep of every effect that uses it.
+  const hostTabOverrideRef = useRef<number | null | undefined>(hostTabIdOverride);
+  hostTabOverrideRef.current = hostTabIdOverride;
+
+  const resolveHostTabId = useCallback(async (): Promise<number | null> => {
+    const override = hostTabOverrideRef.current;
+    if (override !== undefined) return override;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab?.id ?? null;
+    } catch {
+      return null;
+    }
+  }, []);
   const [isCompacting, setIsCompacting] = useState(false);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
@@ -600,7 +625,9 @@ export function useAgentChat({
             .map((m) => m.content)
             .filter(Boolean);
           assembleMessagesForLLM(conversationId, conversationTexts).then((assembled) => {
-            setAgentContext(conversationId, assembled);
+            resolveHostTabId().then((hostTabId) => {
+              setAgentContext(conversationId, assembled, hostTabId);
+            });
           });
           sendMessage();
         }
@@ -740,7 +767,9 @@ export function useAgentChat({
         .map((m) => m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(""))
         .filter(Boolean);
       assembleMessagesForLLM(convId, [...existingMessages, baseText]).then((assembled) => {
-        setAgentContext(convId, assembled);
+        resolveHostTabId().then((hostTabId) => {
+          setAgentContext(convId, assembled, hostTabId);
+        });
       });
 
       if (isNew) {
