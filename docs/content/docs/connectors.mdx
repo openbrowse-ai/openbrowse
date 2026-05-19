@@ -1,0 +1,37 @@
+---
+title: Connectors
+description: Connect external services to the agent via MCP.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Connectors let the agent interact with your external services using the **Model Context Protocol (MCP)**. When you enable a connector, it provides new tools that the agent can use dynamically during conversations.
+
+<Callout type="info">
+  MCP (Model Context Protocol) is an open standard that allows AI models to securely access external data sources and tools.
+</Callout>
+
+## How It Works
+
+1. Go to **Settings → Connectors** in OpenBrowse.
+2. Browse the available connectors by category.
+3. Click a connector and authenticate (via OAuth, API key, or personal access token).
+4. The connector's tools instantly become available to the agent.
+
+For example, once you connect GitHub, you can simply ask the agent:
+> _"Summarize the latest comments on PR #123 in my repository."_
+
+The agent will use its new GitHub MCP tools to fetch the PR, read the comments, and provide you with a summary without you having to leave your current tab.
+
+## Built-in Categories
+
+OpenBrowse ships with several built-in connectors:
+
+- **Developer Tools** — GitHub, Linear, Sentry, Vercel
+- **Productivity** — Notion, Slack
+- **Databases** — Supabase
+- **Analytics** — Stripe
+
+## Adding Custom Connectors
+
+Because OpenBrowse supports the open MCP standard, any MCP-compatible server can be added as a custom connector. You can provide the server URL and authentication details in Settings to extend the agent's capabilities with your own internal tools or third-party MCP servers.

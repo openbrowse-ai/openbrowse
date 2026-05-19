@@ -1,14 +1,24 @@
 {
   "title": "Docs",
   "pages": [
-    "intro",
-    "quickstart",
-    "---Use---",
-    "agent",
-    "command-palette",
+    "---Introduction---",
+    "overview",
+    "comparison",
+    "basic-usage",
+    "---Agent---",
+    "agent-overview",
+    "tools",
+    "memory",
+    "connectors",
+    "---Command Palette---",
+    "command-palette-overview",
+    "spaces",
+    "tab-management",
     "---Configure---",
     "models-and-providers",
-    "---Develop---",
-    "contributing"
+    "---Reference---",
+    "ai-resources",
+    "contributing",
+    "faq"
   ]
 }

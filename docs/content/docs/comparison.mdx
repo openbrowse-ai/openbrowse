@@ -1,0 +1,27 @@
+---
+title: Comparison
+description: How OpenBrowse compares to existing browser AI tools.
+---
+
+OpenBrowse is built to be a model-agnostic, open source alternative to single-vendor browser agents like Claude for Chrome, Gemini in Chrome, and Perplexity Comet. 
+
+Because OpenBrowse isn't tied to a specific AI provider, you can use the best model for the job — whether that's a lightweight local model for privacy and speed, or a frontier model like Claude 4.6 Sonnet for complex automation.
+
+| Feature | OpenBrowse | Claude for Chrome | Gemini in Chrome | Perplexity Comet |
+| --- | --- | --- | --- | --- |
+| **Open Source** | ✅ Yes (MIT) | ❌ No | ❌ No | ❌ No |
+| **Model Choice** | ✅ Any (OpenAI, Anthropic, Google, Local) | ❌ Claude only | ❌ Gemini only | ❌ Proprietary |
+| **Local / Offline** | ✅ Yes (WebLLM, Chrome AI) | ❌ No | ❌ No | ❌ No |
+| **Bring Your Own Key** | ✅ Yes | ❌ No (Subscription) | ❌ No | ❌ No |
+| **MCP Connectors** | ✅ Yes | ❌ No | ❌ No | ❌ No |
+| **Cost** | Free (Bring your own API key) | Requires Pro subscription | Requires Advanced | Included with Pro |
+
+## Why model-agnostic matters
+
+Different models are good at different things. You might want to use a fast, free local model (like Llama 3.2 3B via WebLLM) to quickly summarize a page or tidy your tabs, but switch to a frontier model (like GPT-5.5) when you need the agent to perform complex DOM interactions and fill out forms. 
+
+OpenBrowse lets you swap models instantly from the side panel.
+
+## Why MCP matters
+
+Most browser agents can only see the web page you are looking at. OpenBrowse supports the Model Context Protocol (MCP), meaning it can connect to your external tools. You can ask OpenBrowse to "read this GitHub issue and find the related PRs", and it will use its MCP connection to GitHub to fulfill the request.

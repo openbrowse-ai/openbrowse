@@ -1,0 +1,26 @@
+---
+title: WebLLM
+description: Run open-weights models locally in your browser via WebGPU.
+---
+
+OpenBrowse embeds [WebLLM](https://webllm.mlc.ai/) to run powerful open-weights models (like Llama 3, Phi-3, and Mistral) directly in your browser.
+
+This allows you to get cloud-level capabilities without paying for API usage or sacrificing privacy, as all inference happens locally on your device using WebGPU.
+
+## Setup
+
+1. Go to **Settings → Models** or open the model picker in the side panel.
+2. Select **WebLLM**.
+3. Choose a model from the list.
+
+The first time you select a WebLLM model, OpenBrowse will download its weights to your browser's local cache. This can take a few minutes depending on the model's size and your internet connection. 
+
+Once downloaded, the model will be instantly available for all future sessions, completely offline.
+
+## Hardware Requirements
+
+WebLLM relies on WebGPU. You need:
+
+- A modern browser that supports WebGPU (Chrome 113+).
+- A capable GPU (integrated or discrete) with sufficient memory.
+- For 8B parameter models, 8GB+ of Unified Memory/VRAM is recommended. For 3B models, 4GB+ is typically sufficient.

@@ -1,0 +1,41 @@
+---
+title: Overview
+description: The OpenBrowse browser agent can read, click, navigate, execute code, and connect to external services.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The OpenBrowse agent is an AI-powered browser automation tool that runs in your side panel. It can interact with web pages, manage tabs, remember context across sessions, and connect to external services via MCP.
+
+<Callout type="info">
+  Press `⌥I` (or `Alt+I` on Windows/Linux) or click the OpenBrowse extension icon to open the agent side panel.
+</Callout>
+
+## How it works
+
+When you give the agent a task, it uses a loop of thought and action. It reasons about what you want to achieve, looks at the current page (using tools like `snapshot`), and then takes actions (like `clickElement` or `navigate`) to fulfill the request.
+
+Here's an example of what you can ask:
+> "Find the cheapest full-size mechanical keyboard on this page and add it to my cart."
+
+The agent will:
+1. **Analyze** the page to find the list of products.
+2. **Reason** about which product matches your criteria.
+3. **Execute** a click on the "Add to cart" button.
+
+## Capabilities
+
+The agent is equipped with a comprehensive set of [Tools](/docs/tools), allowing it to:
+
+- **Browse** — Read page content, take screenshots, scroll, navigate.
+- **Interact** — Click elements, type text, select tabs.
+- **Execute** — Run JavaScript on pages or in isolated workers.
+- **Remember** — Persistent memory across conversations (see [Memory](/docs/memory)).
+- **Plan** — Create and manage structured to-do lists for complex, multi-step tasks.
+- **Connect** — MCP connectors for GitHub, Linear, Slack, and more (see [Connectors](/docs/connectors)).
+
+## Best practices
+
+- **Be specific:** The more context you provide, the better the agent can fulfill your request.
+- **Use Spaces:** The agent is aware of your current Space and its context. If you are in your "Work" space, it will prefer tools and memory associated with that space.
+- **Watch the tools:** The agent explains what tools it's calling. You have full visibility into its actions.

@@ -1,0 +1,25 @@
+---
+title: Chrome Built-in AI
+description: Use Chrome's integrated Gemini Nano model, fully offline.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+OpenBrowse can run entirely offline using Chrome's built-in AI, also known as Gemini Nano. This model is integrated directly into the Chrome browser and requires no separate installation or API key.
+
+<Callout type="warn">
+  Chrome's built-in AI is currently in early preview. Its tool-calling capabilities are limited, which may affect the agent's ability to perform complex tasks compared to a cloud provider.
+</Callout>
+
+## Setup
+
+No setup is required. By default, OpenBrowse will try to use the Chrome built-in AI if it is available on your machine.
+
+1. Open the model picker in the side panel or go to **Settings → Models**.
+2. Select **Chrome Built-in AI**.
+
+If the model is not yet downloaded, Chrome will automatically download the necessary files in the background the first time you try to use it. Subsequent uses will load the model instantly from your local disk.
+
+## Privacy
+
+Because the model runs entirely within your browser, no data (including page content, chat history, or task instructions) is ever sent to Google or any other cloud provider.

@@ -1,0 +1,33 @@
+---
+title: Tab Management
+description: Favorites, history, and AI-powered tab organization.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+OpenBrowse provides powerful tools to keep your browsing organized, combining traditional management features with AI-driven cleanup.
+
+## AI Tidy
+
+When you have dozens of tabs open, it's easy to lose track of what you're working on. **AI Tidy** uses your configured AI model to analyze your open tabs and automatically organize them.
+
+To use it, open the command palette (`⌥K`), select multiple tabs, and choose the Tidy action. The AI will:
+
+1. **Group by Topic:** Analyze the content and group related tabs into semantic sections (e.g., "React Documentation", "Flight Tickets").
+2. **Rename Titles:** Clean up messy or SEO-stuffed tab titles so they are concise and easy to read.
+
+### Auto-Tidy
+
+If you prefer a hands-off approach, you can enable **Auto-Tidy** in settings. The agent will periodically analyze your tabs in the background and organize them into topics automatically, ensuring you always return to a clean workspace.
+
+## History & Recently Closed
+
+Accidentally closed a tab? The command palette tracks both your recently closed tabs and your full browser history natively.
+
+Press `⌥K` and start typing. OpenBrowse searches everything simultaneously. When you select a recently closed tab, it restores it perfectly, preserving its back/forward history stack and scroll position just as you left it.
+
+## Favorites
+
+[Space Favorites](/docs/spaces#space-favorites) allow you to pin frequently-used tabs. Because they persist across sessions and are scoped to the current [Space](/docs/spaces), they act as your contextual bookmarks.
+
+You can access your favorites by opening the OpenBrowse home tab (`⌥⇧I`) or directly from the command palette (`⌥K`).

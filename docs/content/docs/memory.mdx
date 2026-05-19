@@ -1,0 +1,40 @@
+---
+title: Memory
+description: The agent's persistent memory system for context across conversations.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The OpenBrowse agent features a persistent memory system. It can save, recall, update, and delete memories to keep track of your preferences, project context, and prior interactions across different sessions.
+
+<Callout type="info" title="Privacy First">
+  Memories are stored locally in your browser's extension storage. They are never sent to external servers or used for training.
+</Callout>
+
+## Space-Scoped Memory
+
+Memories are contextual. When the agent saves a memory, it is often scoped to the **Space** you are currently in. 
+
+For example, if you tell the agent "Remember that my staging server is `https://staging.myapp.com`" while in your "Work" space, the agent will recall that fact when you are working in that space, but won't clutter your "Personal" space with work URLs.
+
+## How the Agent Uses Memory
+
+The agent will automatically decide when to save or update memories based on your conversation. However, you can also explicitly instruct the agent to remember something:
+
+- _"Remember that I prefer my code in TypeScript."_
+- _"Save this PR link to memory."_
+- _"Update the staging URL in memory to the new domain."_
+
+## Managing Memories
+
+The agent manages memories autonomously using its tool suite (`saveMemory`, `recallMemory`, `updateMemory`, `deleteMemory`). 
+
+<Callout type="warn" title="Approval Required">
+  Updating or deleting existing memories requires your explicit approval to prevent the agent from accidentally overwriting important context.
+</Callout>
+
+### Common Use Cases
+
+- **Preferences:** Remember how you like tasks summarized or formatted.
+- **Projects:** Keep track of ongoing work, relevant URLs, and active PRs across sessions.
+- **Automation:** Store selectors or steps for a website you frequently automate.

@@ -1,0 +1,45 @@
+---
+title: Overview
+description: The global overlay for tab search, space switching, and quick actions.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Command Palette is the central hub for navigating your browser. It is injected as a lightweight overlay, meaning it works instantly on any page without forcing you to switch tabs or lose your context.
+
+<Callout type="info">
+  Press `⌥K` (or `Alt+K` on Windows/Linux) to open the command palette from anywhere.
+</Callout>
+
+## Anatomy of the Palette
+
+When you open the command palette, you have immediate access to several powerful features:
+
+### 1. Unified Ranked Search
+Start typing to instantly filter a unified list of everything you might want to navigate to. This searches simultaneously across:
+- Your active open tabs in the current Space.
+- Tabs open in other Spaces.
+- Your Space Favorites.
+- Your browser Bookmarks.
+- Recently closed tabs.
+- Your full browser history.
+
+### 2. Space Switching
+Hit `Tab` or select the Space switcher at the top to jump between your defined Spaces (e.g., Work, Personal, Research).
+
+### 3. Quick Actions
+Use keyboard shortcuts or the action menu to perform operations on tabs:
+- **Close** tabs without switching to them.
+- **Move** tabs between Spaces.
+- **Pin** tabs to your Space Favorites.
+
+### 4. History (Recently Closed & Full History)
+Accidentally closed a tab? The command palette tracks your recently closed tabs and your full browser history. When you restore a recently closed tab, OpenBrowse natively preserves its back/forward history stack and scroll position.
+
+### 5. Personalization & Autocomplete
+The command palette learns your habits. When you type a search query and select a specific result, OpenBrowse remembers that association. Over time, your most frequent selections will naturally rise to the top of the search results.
+
+For your absolute top hits, OpenBrowse will display an inline "ghost text" autocomplete suggestion inside the search bar. You can instantly accept this suggestion by pressing `Tab` or `→` (Arrow Right).
+
+### 6. AI Commands
+The command palette integrates with your configured AI model to offer smart actions like [AI Tidy](/docs/tab-management#ai-tidy), which groups your tabs by semantic topic and cleans up messy titles.
