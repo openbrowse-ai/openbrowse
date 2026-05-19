@@ -1,0 +1,12 @@
+{
+  "title": "Models & Providers",
+  "pages": [
+    "chrome-ai",
+    "web-llm",
+    "ollama",
+    "openai",
+    "anthropic",
+    "google",
+    "openai-compatible"
+  ]
+}

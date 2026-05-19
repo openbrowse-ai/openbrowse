@@ -1,0 +1,36 @@
+---
+title: Models & Providers
+description: Configure AI models — run locally or bring your own API key.
+---
+
+OpenBrowse works with any AI provider. Run entirely local with no API key, or connect to cloud providers.
+
+Because OpenBrowse uses the Model Context Protocol (MCP) and relies on tool-calling capabilities, some models will perform better than others.
+
+## Local Models (No API Key)
+
+| Provider                                                   | Setup                                        |
+| ---------------------------------------------------------- | -------------------------------------------- |
+| [Chrome Built-in AI](/docs/models-and-providers/chrome-ai) | No setup needed — works out of the box       |
+| [WebLLM](/docs/models-and-providers/web-llm)               | Download a model directly in your browser    |
+| [Ollama](/docs/models-and-providers/ollama)                | Run an Ollama server locally on your machine |
+
+## Cloud Providers (BYOK)
+
+| Provider                                                               | Setup                       |
+| ---------------------------------------------------------------------- | --------------------------- |
+| [OpenAI](/docs/models-and-providers/openai)                            | Requires API key            |
+| [Anthropic](/docs/models-and-providers/anthropic)                      | Requires API key            |
+| [Google Gemini](/docs/models-and-providers/google)                     | Requires API key            |
+| [OpenAI-Compatible APIs](/docs/models-and-providers/openai-compatible) | Requires API key + base URL |
+
+## Configuration
+
+To switch models or add your API key:
+
+1. Go to **Settings → Models** or open the side panel (`⌥I`) and click the model picker at the bottom.
+2. Select a provider.
+3. Enter your API key (if using a cloud provider).
+4. Choose a default model from the list.
+
+Your API keys are stored locally in extension storage and never sent to OpenBrowse servers.

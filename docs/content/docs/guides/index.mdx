@@ -1,0 +1,26 @@
+---
+title: Local Model Only
+description: Run OpenBrowse completely offline with local AI models.
+---
+
+OpenBrowse can run 100% on-device using local models. This ensures your browsing data, page content, and chat history never leave your machine.
+
+## Using Chrome Built-in AI
+
+Chrome ships with an integrated version of Gemini Nano that runs locally.
+
+1. Open the OpenBrowse side panel (`⌥I`).
+2. Click the model selector at the bottom.
+3. Choose **Chrome Built-in AI**.
+
+No download is required if Chrome has already initialized the model in the background.
+
+## Using WebLLM
+
+For more capable open-weights models (like Llama 3 or Phi-3), OpenBrowse embeds WebLLM.
+
+1. Open the OpenBrowse side panel (`⌥I`).
+2. Click the model selector at the bottom.
+3. Select a **WebLLM** model from the list.
+
+The first time you select a WebLLM model, OpenBrowse will download the model weights to your browser's local cache. Subsequent uses will load instantly and work completely offline.

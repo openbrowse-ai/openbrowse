@@ -17,14 +17,26 @@ export function Footer() {
         <div className="grid grid-cols-2 gap-8 text-sm sm:grid-cols-3">
           <div className="flex flex-col gap-2">
             <p className="font-medium">Docs</p>
-            <Link href="/docs/quickstart" className="text-muted-foreground hover:text-foreground">
-              Quickstart
+            <Link href="/docs/basic-usage" className="text-muted-foreground hover:text-foreground">
+              Basic Usage
+            </Link>
+            <Link href="/docs/comparison" className="text-muted-foreground hover:text-foreground">
+              Comparison
             </Link>
             <Link href="/docs/agent" className="text-muted-foreground hover:text-foreground">
               Agent
             </Link>
             <Link href="/docs/models-and-providers" className="text-muted-foreground hover:text-foreground">
               Models
+            </Link>
+          </div>
+          <div className="flex flex-col gap-2">
+            <p className="font-medium">Community</p>
+            <a href="https://github.com/nicepkg/openbrowse" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground">
+              GitHub
+            </a>
+            <Link href="/docs/reference/contributing" className="text-muted-foreground hover:text-foreground">
+              Contributing
             </Link>
           </div>
           <div className="flex flex-col gap-2">

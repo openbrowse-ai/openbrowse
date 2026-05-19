@@ -1,0 +1,41 @@
+---
+title: Ollama
+description: Connect to a local Ollama server.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+If you already use [Ollama](https://ollama.com/) to run local models on your machine, you can easily connect OpenBrowse to your local server.
+
+## Setup
+
+1. Make sure your Ollama app is running locally.
+2. Go to **Settings → Models**.
+3. Select **Ollama**.
+4. Set your base URL (usually `http://127.0.0.1:11434` or `http://localhost:11434`).
+
+## Resolving CORS Issues
+
+By default, Ollama restricts which domains can connect to its local server. Because OpenBrowse runs as a Chrome extension, you need to configure Ollama to accept requests from the extension's origin.
+
+<Callout type="info" title="Setting OLLAMA_ORIGINS">
+  You must add your extension ID (e.g. `chrome-extension://*`) to the `OLLAMA_ORIGINS` environment variable.
+</Callout>
+
+### On macOS
+If you run Ollama via the macOS app:
+1. Open terminal and run: `launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"`
+2. Restart the Ollama application.
+
+### On Windows
+1. Open the Start menu, search for "Environment Variables", and click "Edit the system environment variables".
+2. Click "Environment Variables...".
+3. Under "User variables", click "New...".
+4. Set Variable name to `OLLAMA_ORIGINS` and Variable value to `chrome-extension://*`.
+5. Restart your terminal and Ollama application.
+
+### On Linux
+If you run Ollama via systemd:
+1. Run `systemctl edit ollama.service`
+2. Under `[Service]`, add: `Environment="OLLAMA_ORIGINS=chrome-extension://*"`
+3. Save, then run `systemctl daemon-reload` and `systemctl restart ollama`

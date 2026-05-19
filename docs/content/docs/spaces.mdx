@@ -1,0 +1,38 @@
+---
+title: Spaces
+description: Organize your tabs by context with window-based spaces and color themes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+OpenBrowse organizes your browsing into **Spaces**. A Space is a 1:1 mapping to a Chrome window, giving each window its own identity, context, and organization.
+
+## Visual Identity
+
+When you create a Space, you give it a name and choose an accent color. That color theme is applied to the entire OpenBrowse experience within that window:
+
+- The command palette (`⌥K`)
+- The agent side panel (`⌥I`)
+- The OpenBrowse home tab (`⌥⇧I`)
+
+This color-coding helps you instantly recognize which context you are working in.
+
+## Contextual Agent & Memory
+
+Spaces are more than just visual themes; they provide context to the AI agent.
+
+When you chat with the agent in a specific space, it uses that space's context. Memories saved by the agent are scoped to the active space. If you tell the agent "Remember my Jira board is at `https://jira.mycompany.com`" in your **Work** space, it won't bleed that context into your **Personal** space.
+
+## Space Favorites
+
+Each space has its own independent set of pinned favorite URLs. 
+
+These favorites appear on the home tab (`⌥⇧I`) when you are in that space's window. This allows you to have your work-related tools (Jira, GitHub, Figma) pinned in your Work space, and your personal sites (YouTube, Reddit) pinned in your Personal space.
+
+<Callout type="tip">
+  You can quickly pin the current tab to your Space Favorites by opening the Command Palette (`⌥K`) and selecting the "Favorite" action.
+</Callout>
+
+## Creating and Switching Spaces
+
+Press `⌥K` to open the command palette. From the space switcher at the top, you can search for an existing space to jump to it, or type a new name and press `Enter` to create a new space (which instantly opens a new Chrome window).
