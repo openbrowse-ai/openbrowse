@@ -105,6 +105,17 @@ export interface ChatMessage {
   content: string;
   parts: SerializedUIPart[];
   createdAt: number;
+  /**
+   * True for assistant messages that are an auto-compaction summary. The
+   * compaction-user message that triggered this summary is the message
+   * immediately preceding it (its `parts` contain a `CompactionPart`).
+   *
+   * Set on the assistant message instead of the user message because the
+   * "completed compaction" predicate (used by `filterCompactedMessages`)
+   * needs to know the summary is fully written; the assistant message's
+   * presence + this flag is the natural signal.
+   */
+  summary?: boolean;
 }
 
 export type SerializedUIPart =
@@ -113,7 +124,28 @@ export type SerializedUIPart =
   | { type: "file"; mediaType: string; url: string }
   | { type: "source-url"; sourceId: string; url: string; title?: string }
   | { type: "step-start" }
+  | CompactionPart
   | SerializedToolPart;
+
+/**
+ * Marker part that lives on a synthetic user message inserted into the chat
+ * stream when the conversation is compacted. The next assistant message in
+ * the stream carries the summary text (with `summary: true` on the message
+ * record).
+ *
+ * - `auto`: true when triggered by the token threshold; false for manual
+ *   `/compact` (follow-up).
+ * - `overflow`: true when triggered by a context-overflow API error path.
+ * - `tailStartMessageId`: id of the first message in the verbatim tail. The
+ *   transport's `filterCompactedMessages` uses this to drop the head from
+ *   the model view.
+ */
+export interface CompactionPart {
+  type: "compaction";
+  auto: boolean;
+  overflow?: boolean;
+  tailStartMessageId?: string;
+}
 
 export interface SerializedToolPart {
   type: "dynamic-tool";
@@ -226,15 +258,6 @@ export interface AutoTidyNotification {
   archivedCount: number;
   sectionCount: number;
   tabCount: number;
-}
-
-export interface CompactionState {
-  conversationId: string;
-  summary: string;
-  tailStartMessageId: string;
-  previousSummary?: string;
-  compactedAt: number;
-  attempts: number;
 }
 
 export interface HistoryItem {

@@ -28,20 +28,15 @@ interface ChatDB extends DBSchema {
       content: string;
       parts: SerializedUIPart[];
       createdAt: number;
+      /**
+       * True for assistant messages that are auto-compaction summaries.
+       * The preceding user message is the compaction marker. See
+       * `CompactionPart` in types.ts.
+       */
+      summary?: boolean;
     };
     indexes: {
       "by-conversation": string;
-    };
-  };
-  compaction: {
-    key: string;
-    value: {
-      conversationId: string;
-      summary: string;
-      tailStartMessageId: string;
-      previousSummary?: string;
-      compactedAt: number;
-      attempts: number;
     };
   };
 }
@@ -50,7 +45,10 @@ let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null;
 
 function getDb(): Promise<IDBPDatabase<ChatDB>> {
   if (!dbPromise) {
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 5, {
+    // v6: drops the legacy `compaction` object store. Compaction events
+    // now live as messages in the `messages` store (see CompactionPart and
+    // the `summary` flag on assistant messages).
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 6, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -85,7 +83,9 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
         }
 
         if (oldVersion < 3) {
-          db.createObjectStore("compaction", { keyPath: "conversationId" });
+          // The `compaction` store was created here historically. We no
+          // longer need it (compaction is message-based), so we don't
+          // create it. v6 below removes any pre-existing copy.
         }
 
         if (oldVersion < 4) {
@@ -115,6 +115,14 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
             }
           };
           migrateConversationsTodos();
+        }
+
+        if (oldVersion < 6) {
+          // Drop the legacy `compaction` object store. Compaction events
+          // are now persisted as regular messages in the `messages` store.
+          if (db.objectStoreNames.contains("compaction" as never)) {
+            db.deleteObjectStore("compaction" as never);
+          }
         }
       },
     });
@@ -169,9 +177,8 @@ export const chatDb = {
 
   async deleteConversation(id: string): Promise<void> {
     const db = await getDb();
-    const tx = db.transaction(["conversations", "messages", "compaction"], "readwrite");
+    const tx = db.transaction(["conversations", "messages"], "readwrite");
     await tx.objectStore("conversations").delete(id);
-    await tx.objectStore("compaction").delete(id);
     const msgIndex = tx.objectStore("messages").index("by-conversation");
     let cursor = await msgIndex.openCursor(id);
     while (cursor) {
@@ -225,20 +232,5 @@ export const chatDb = {
       await tx.store.delete(msg.id);
     }
     await tx.done;
-  },
-
-  async getCompactionState(conversationId: string): Promise<ChatDB["compaction"]["value"] | undefined> {
-    const db = await getDb();
-    return db.get("compaction", conversationId);
-  },
-
-  async saveCompactionState(state: ChatDB["compaction"]["value"]): Promise<void> {
-    const db = await getDb();
-    await db.put("compaction", state);
-  },
-
-  async deleteCompactionState(conversationId: string): Promise<void> {
-    const db = await getDb();
-    await db.delete("compaction", conversationId);
   },
 };

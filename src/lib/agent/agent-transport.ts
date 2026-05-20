@@ -6,7 +6,7 @@ import type {
   ToolSet,
   UIMessage,
 } from "ai";
-import { DirectChatTransport, ToolLoopAgent, tool } from "ai";
+import { ToolLoopAgent, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
 import { getMcpRegistry } from "../mcp";
@@ -14,6 +14,7 @@ import { sendMcpMessage } from "../mcp/messages";
 import { memoryDb } from "../memory-db";
 import type { Settings } from "../types";
 import { shouldCompact } from "./compaction";
+import { CompactingChatTransport } from "./compacting-transport";
 import { clearHandles } from "./tab-handles";
 import {
   clickElementTool,
@@ -40,6 +41,16 @@ const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users u
 
 You have tools to interact with the user's browser tabs. Tools automatically target the user's active browsing tab — you do NOT need to select or switch tabs unless the user asks to work with a different one.
 
+## Working autonomously
+
+Long tasks are normal — many browser tasks take 20+ tool calls. Plan with todoWrite, then work through the plan to completion.
+
+Do the task as asked. Do not propose a simpler version, do not offer "a quicker alternative", and do not substitute a less thorough approach to save effort. If the task is genuinely ambiguous, pick the most reasonable interpretation and proceed.
+
+Do not ask permission questions like "should I continue?", "want me to keep going?", or "would you like me to do X instead?". Pick the next step and take it. Course-correct if it turns out wrong.
+
+When you announce a tool call, make the tool call. Don't describe what you'd do and end your turn.
+
 ## Planning with todoWrite
 For tasks that require multiple steps or distinct objectives, call \`todoWrite\` BEFORE acting to lay out your steps.
 As you work:
@@ -49,7 +60,7 @@ As you work:
 - Cancel items that become irrelevant rather than silently skipping them
 - Before providing your final text response to the user, you MUST ensure all tasks in your plan are marked "completed" or "cancelled" via a final \`todoWrite\` call.
 
-Your current plan will be appended to your instructions at every turn. Keep it in sync with reality. You may skip this for trivial, single-action requests.
+Your current plan will be appended to your instructions at every turn. Keep it in sync with reality. You may skip this for trivial, single-action requests. For non-trivial tasks, expect 5-15 todo items shaped around outcomes (e.g. "Find the cheapest mechanical keyboard under $150") rather than individual clicks. Long plans are fine.
 
 ## Page Interaction Workflow
 
@@ -92,10 +103,10 @@ extract({
 - CSS selectors are a fallback only when refs are unavailable
 - Tabs are identified by handles (t1, t2, ...) from listTabs — use these with selectTab
 - Use scrollPage to see more content, then snapshot again to get updated refs
-- Do NOT call selectTab or navigate unless the user explicitly asks to switch pages or go somewhere
-- Do NOT navigate to URLs you have invented or guessed. If you don't know the exact URL, ask the user or interact with the page to find it.
-- If snapshot returns an empty result or refCount: 0, retry once; if still empty, fall back to screenshot for visual context
-- Be concise. Prefer tool calls over guessing.
+- Navigate when the task requires it. Don't switch tabs gratuitously, but don't refuse to navigate just because the user didn't say "navigate".
+- Don't navigate to URLs you have invented or guessed. Find the URL by searching on the page, following links, or running a Google query. Asking the user is a fallback, not the first step.
+- If snapshot returns an empty result or refCount: 0, try another approach: switch \`mode\` (viewport ↔ interactive), scope to a different selector, scrollPage and re-snapshot, or take a screenshot. Don't give up after a single retry.
+- Be concise in your text replies to the user. Take as many tool calls as the task needs.
 
 ## Code Execution
 
@@ -104,7 +115,16 @@ You have two tools for running JavaScript:
 - \`executeCode\`: Runs in an isolated sandbox. Use for computation, data transforms, API calls (fetch). No DOM access. Pass data via \`input\` parameter, access it as \`__input\` in your code. Use \`return\` to produce output.
 - \`executeOnPage\`: Runs in the active tab with full DOM/page access. Requires user approval. Use when you need to read or modify the page beyond what snapshot/clickElement/typeInElement provide — for example, scraping structured data from a product grid, or reading \`data-*\` attributes that don't appear in the accessibility tree.
 
-Prefer the existing browser tools (snapshot, clickElement, etc.) for simple interactions. Use executeOnPage only when you need complex multi-step DOM manipulation or need to access page JavaScript variables/state.`;
+Prefer the existing browser tools (snapshot, clickElement, etc.) for simple interactions. Use executeOnPage only when you need complex multi-step DOM manipulation or need to access page JavaScript variables/state.
+
+## Recovering from problems
+
+The biggest failure mode is giving up too early. Default to trying one more thing before reporting failure.
+
+- A click or type returned \`diff: null\` (no visible change): re-snapshot for fresh refs, then try a different element or selector.
+- The page is still loading: scroll or screenshot to wait, don't bail.
+- A tool errored: if the error looks transient, retry; if structural, change approach.
+- Don't retry the same exact tool call with the same input more than 2-3 times.`;
 
 const MEMORY_INSTRUCTIONS = `
 
@@ -339,7 +359,6 @@ let currentSpaceColor: string | null = null;
 let indicatorQueue: Promise<void> = Promise.resolve();
 
 let agentConversationId: string | null = null;
-let agentConversationMessages: string[] = [];
 // Tab id of the panel/popover that initiated this agent run. Used as the
 // implicit host tab to bind to a fresh conversation on the first tab tool
 // call (so the agent has a target without the user manually clicking
@@ -387,25 +406,21 @@ export function resetTokenTracking() {
 
 export function setAgentContext(
   conversationId: string | null,
-  messages: string[],
   hostTabId: number | null = null,
 ) {
   if (agentConversationId && agentConversationId !== conversationId) {
     clearHandles(agentConversationId);
   }
   agentConversationId = conversationId;
-  agentConversationMessages = messages;
   agentHostTabId = hostTabId;
 }
 
 export function getAgentContext(): {
   conversationId: string | null;
-  messages: string[];
   hostTabId: number | null;
 } {
   return {
     conversationId: agentConversationId,
-    messages: agentConversationMessages,
     hostTabId: agentHostTabId,
   };
 }
@@ -619,33 +634,6 @@ export function resetAgentIndicator() {
   }
 }
 
-export async function assembleMessagesForLLM(
-  conversationId: string,
-  messages: string[],
-): Promise<string[]> {
-  const compactionState = await chatDb.getCompactionState(conversationId);
-  if (!compactionState || !compactionState.summary) {
-    return messages;
-  }
-
-  const dbMessages = await chatDb.getMessages(conversationId);
-  const tailStartIdx = dbMessages.findIndex(
-    (m) => m.id === compactionState.tailStartMessageId,
-  );
-
-  if (tailStartIdx === -1) {
-    return messages;
-  }
-
-  const summaryContext = `[Previous conversation summary]\n${compactionState.summary}`;
-  const tailMessages = dbMessages
-    .slice(tailStartIdx)
-    .map((m) => m.content)
-    .filter(Boolean);
-
-  return [summaryContext, ...tailMessages];
-}
-
 export async function createAgentTransport(
   settings: Settings,
   agentModel: string,
@@ -828,6 +816,13 @@ export async function createAgentTransport(
     }
   }
 
+  // Per-stream "needs mid-stream compaction" signal. Set by `onStepFinish`
+  // when token usage crosses the threshold; read by `stopWhen` to break
+  // the loop after the current step completes (matching OpenCode's
+  // step-boundary behavior). Cleared at the start of each `sendMessages`
+  // by the wrapper transport so a previous turn's signal doesn't leak.
+  let needsMidStreamCompaction = false;
+
   const agent = new ToolLoopAgent({
     model,
     tools,
@@ -838,8 +833,21 @@ export async function createAgentTransport(
       if (usage.inputTokens != null || usage.outputTokens != null) {
         lastTotalTokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
       }
+      // Once needsCompaction() reports true, set the flag so stopWhen
+      // breaks the loop at the next step boundary. We don't unset on a
+      // false read — once we've decided to compact, see the decision
+      // through.
+      if (needsCompaction()) {
+        needsMidStreamCompaction = true;
+      }
     },
+    stopWhen: () => needsMidStreamCompaction,
   });
 
-  return new DirectChatTransport({ agent }) as ChatTransport<UIMessage>;
+  return new CompactingChatTransport({
+    agent,
+    onSendStart: () => {
+      needsMidStreamCompaction = false;
+    },
+  }) as unknown as ChatTransport<UIMessage>;
 }

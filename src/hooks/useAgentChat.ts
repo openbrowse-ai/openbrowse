@@ -8,7 +8,6 @@ import {
   resetTokenTracking,
   getCurrentModelDef,
   setCurrentModelDef,
-  assembleMessagesForLLM,
 } from "@/lib/agent/agent-transport";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import {
@@ -17,11 +16,13 @@ import {
   buildCompactionPrompt,
   getCompactionSystemPrompt,
   prepareMessagesForSummarization,
-  shouldStopCompacting,
+  estimateMessageTokens,
+  findCompactionEvents,
+  shouldDebounceCompaction,
   MIN_MESSAGES_FOR_COMPACTION,
   getUsableTokens,
 } from "@/lib/agent/compaction";
-import type { CompactionState } from "@/lib/types";
+import type { CompactionPart } from "@/lib/types";
 import {
   type TabMentionAttrs,
   type ImagePreview,
@@ -314,6 +315,10 @@ export function useAgentChat({
     }
   }, []);
   const [isCompacting, setIsCompacting] = useState(false);
+  // AbortController for the in-flight compaction summary call. The chat's
+  // `stop()` cancels the agent stream; this cancels the summarization
+  // LLM call separately.
+  const compactionAbortRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
@@ -437,25 +442,53 @@ export function useAgentChat({
     sendMessage,
     regenerate,
     status,
-    stop,
+    stop: chatStop,
     error,
     clearError,
     addToolApprovalResponse,
   } = useChat<AgentMessage>({ chat });
+
+  // Wrap the chat's stop() so it also aborts any in-flight compaction
+  // summarization call. Without this, clicking Stop while a summary is
+  // generating would silently let the LLM call continue and write a
+  // compaction event into the chat after the user thought they had
+  // cancelled.
+  const stop = useCallback(() => {
+    compactionAbortRef.current?.abort();
+    chatStop();
+  }, [chatStop]);
 
   const isLoading = status === "submitted" || status === "streaming";
   const isStreaming = status === "streaming";
   const wasStreamingRef = useRef(false);
 
   const runCompaction = useCallback(
-    async (convId: string, msgs: AgentMessage[]) => {
+    async (
+      convId: string,
+      msgs: AgentMessage[],
+      opts?: { auto?: boolean; overflow?: boolean },
+    ) => {
       if (msgs.length < MIN_MESSAGES_FOR_COMPACTION) return;
 
-      const existingState = await chatDb.getCompactionState(convId);
-      if (shouldStopCompacting(existingState)) return;
+      // Time-based debounce thrash detection. If we just compacted within
+      // COMPACTION_DEBOUNCE_MS, don't compact again — covers the case
+      // where the produced summary itself overflows and would otherwise
+      // loop. Reads directly from the visible message list, so the UI
+      // and the runtime agree on what counts.
+      const dbMessages = await chatDb.getMessages(convId);
+      const events = findCompactionEvents(dbMessages);
+      if (shouldDebounceCompaction(events)) return;
 
+      const auto = opts?.auto ?? true;
+      const overflow = opts?.overflow ?? false;
+
+      const abortController = new AbortController();
+      compactionAbortRef.current = abortController;
       setIsCompacting(true);
       try {
+        // Build prunable view of the current chat for tail selection +
+        // summary input. We don't apply the result back to the chat —
+        // pruning at send time happens in CompactingChatTransport.
         const prunableMessages = msgs.map((m) => ({
           id: m.id,
           role: m.role,
@@ -466,74 +499,202 @@ export function useAgentChat({
         const { pruned, freedTokens } = pruneMessageParts(prunableMessages);
         const modelDef = getCurrentModelDef();
 
-        // Check if pruning alone is enough
+        // Phase 1 fast path: if pruning oversized tool outputs alone gets
+        // us comfortably under the threshold, skip the LLM summary call
+        // entirely. We still write a CompactionPart marker so the UI
+        // renders a divider AND the transport's send-time pruning takes
+        // effect. The marker carries an empty/sentinel summary in this
+        // case (assistant message has empty text); the divider expand
+        // will show that pruning happened without an LLM-generated
+        // narrative.
+        let summaryText = "";
+        let prunedOnly = false;
         if (freedTokens > 0) {
           const currentTokens = prunableMessages.reduce(
-            (sum, m) => sum + m.parts.reduce((s, p) => s + (p.type === "text" ? p.text.length / 4 : 50), 0),
+            (sum, m) => sum + estimateMessageTokens(m.parts),
             0,
           );
-          const estimatedAfterPrune = currentTokens - freedTokens;
           const usable = getUsableTokens(modelDef);
-          if (estimatedAfterPrune < usable) {
-            const state: CompactionState = {
-              conversationId: convId,
-              summary: existingState?.summary ?? "",
-              tailStartMessageId: pruned[pruned.length - 1]?.id ?? "",
-              previousSummary: existingState?.previousSummary,
-              compactedAt: Date.now(),
-              attempts: existingState ? existingState.attempts : 0,
-            };
-            await chatDb.saveCompactionState(state);
-            return;
+          if (currentTokens - freedTokens < usable) {
+            prunedOnly = true;
           }
         }
 
-        // Phase 2: Summarize via LLM
+        // Compute tail boundary in either path — needed both to skip the
+        // summary on the prune-only path AND to write a meaningful
+        // tailStartMessageId on the CompactionPart so future compactions
+        // can stack on top.
         const { headMessages, tailStartId } = selectTail(pruned, modelDef);
         if (!tailStartId || headMessages.length === 0) return;
 
-        const conversationText = prepareMessagesForSummarization(headMessages);
-        const userPrompt = buildCompactionPrompt(existingState?.summary);
+        if (!prunedOnly) {
+          const conversationText = prepareMessagesForSummarization(headMessages);
+          // Carry the previous summary forward so the new one is an
+          // anchored update, not a fresh start. OpenCode does the same
+          // via `previousSummary` in their compaction prompt.
+          const previousSummary = events.at(-1)?.summaryText;
+          const userPrompt = buildCompactionPrompt(previousSummary);
 
-        const { generateText } = await import("ai");
-        const agentSettingsForCompaction = await storage.getAgentSettings();
-        const settingsForCompaction = await storage.getSettings();
-        const compactionModelId = agentSettingsForCompaction.compactionModel || agentSettingsForCompaction.agentModel;
+          const { generateText } = await import("ai");
+          const agentSettingsForCompaction = await storage.getAgentSettings();
+          const settingsForCompaction = await storage.getSettings();
+          const compactionModelId =
+            agentSettingsForCompaction.compactionModel ||
+            agentSettingsForCompaction.agentModel;
 
-        // Resolve provider and create model
-        const { providers } = await import("@/registry/providers");
-        const provider = providers.find((p) => p.models.some((m) => m.id === compactionModelId));
-        if (!provider) return;
+          const { providers } = await import("@/registry/providers");
+          const provider = providers.find((p) =>
+            p.models.some((m) => m.id === compactionModelId),
+          );
+          if (!provider) return;
 
-        const config = settingsForCompaction.providerConfigs[provider.id] ?? {};
-        const compactionModel = provider.createLanguageModel(config, compactionModelId);
+          const config =
+            settingsForCompaction.providerConfigs[provider.id] ?? {};
+          const compactionModel = provider.createLanguageModel(
+            config,
+            compactionModelId,
+          );
 
-        const result = await generateText({
-          model: compactionModel,
-          system: getCompactionSystemPrompt(),
-          prompt: conversationText + "\n\n" + userPrompt,
+          const result = await generateText({
+            model: compactionModel,
+            system: getCompactionSystemPrompt(),
+            prompt: conversationText + "\n\n" + userPrompt,
+            abortSignal: abortController.signal,
+          });
+          summaryText = result.text;
+        }
+
+        // If the user aborted while the summary call was in flight, bail
+        // before persisting anything.
+        if (abortController.signal.aborted) return;
+
+        // Persist the compaction event as two messages.
+        const now = Date.now();
+        const compactionUserId = generateId();
+        const summaryAssistantId = generateId();
+
+        const compactionPart: CompactionPart = {
+          type: "compaction",
+          auto,
+          ...(overflow ? { overflow: true } : {}),
+          tailStartMessageId: tailStartId,
+        };
+
+        await chatDb.saveMessage({
+          id: compactionUserId,
+          conversationId: convId,
+          role: "user",
+          content: "",
+          parts: [compactionPart],
+          createdAt: now,
         });
 
-        const summary = result.text;
-        const state: CompactionState = {
+        const summaryParts: SerializedUIPart[] = summaryText
+          ? [{ type: "text", text: summaryText }]
+          : [];
+        await chatDb.saveMessage({
+          id: summaryAssistantId,
           conversationId: convId,
-          summary,
-          tailStartMessageId: tailStartId,
-          previousSummary: existingState?.summary,
-          compactedAt: Date.now(),
-          attempts: existingState ? existingState.attempts + 1 : 0,
-        };
-        await chatDb.saveCompactionState(state);
+          role: "assistant",
+          content: summaryText,
+          parts: summaryParts,
+          createdAt: now + 1,
+          summary: true,
+        });
 
-        // Silent continue
-        sendMessage({ text: "Continue where you left off, or ask for clarification if unsure how to proceed." });
+        // Reflect both new messages in the chat instance so the UI
+        // updates immediately and so `sendMessage("Continue...")` below
+        // sees them in the messages array.
+        const compactionUiMsg: AgentMessage = {
+          id: compactionUserId,
+          role: "user",
+          parts: [
+            // The CompactionPart is a custom marker, not part of the AI
+            // SDK's UIMessage union. We carry it through the transport
+            // and the UI as an opaque part — both sides know to look
+            // for `type === "compaction"`.
+            compactionPart as unknown as AgentMessage["parts"][number],
+          ],
+        };
+        const summaryUiMsg: AgentMessage = {
+          id: summaryAssistantId,
+          role: "assistant",
+          parts: summaryText
+            ? [{ type: "text", text: summaryText }]
+            : [],
+        };
+        setMessages([...msgs, compactionUiMsg, summaryUiMsg]);
+
+        // Auto-continue: send a synthetic user message asking the agent
+        // to resume. Manual /compact (follow-up) would skip this. The
+        // wording matches OpenCode's continue prompt.
+        if (auto) {
+          // Auto-deny any pending approvals that would otherwise leave
+          // the conversation in an invalid tool_use-without-tool_result
+          // state when we send the continue message. Mirrors the same
+          // logic in handleSubmit.
+          const hasPending = msgs.some((m) =>
+            m.parts.some(
+              (p) =>
+                ((p as Record<string, unknown>).type === "dynamic-tool" ||
+                  (typeof (p as Record<string, unknown>).type === "string" &&
+                    ((p as Record<string, unknown>).type as string).startsWith(
+                      "tool-",
+                    ))) &&
+                (p as Record<string, unknown>).state === "approval-requested",
+            ),
+          );
+          if (hasPending) {
+            const reason = "Superseded by auto-compaction continue";
+            setMessages((prev) =>
+              prev.map((msg) => ({
+                ...msg,
+                parts: msg.parts.map((part) => {
+                  const p = part as Record<string, unknown>;
+                  const isTool =
+                    p.type === "dynamic-tool" ||
+                    (typeof p.type === "string" &&
+                      (p.type as string).startsWith("tool-"));
+                  if (isTool && p.state === "approval-requested" && p.approval) {
+                    const approval = p.approval as { id: string };
+                    return {
+                      ...part,
+                      state: "output-denied",
+                      approval: {
+                        id: approval.id,
+                        approved: false,
+                        reason,
+                      },
+                    } as typeof part;
+                  }
+                  return part;
+                }),
+              })),
+            );
+          }
+
+          const continueText = overflow
+            ? "The previous request exceeded the context window. The conversation was compacted. Continue where you left off, or ask for clarification if unsure how to proceed."
+            : "Continue where you left off, or ask for clarification if unsure how to proceed.";
+          sendMessage({ text: continueText });
+        }
       } catch (err) {
+        if (
+          (err as { name?: string })?.name === "AbortError" ||
+          abortController.signal.aborted
+        ) {
+          // User-initiated stop — silent.
+          return;
+        }
         console.error("[compaction] failed:", err);
       } finally {
+        if (compactionAbortRef.current === abortController) {
+          compactionAbortRef.current = null;
+        }
         setIsCompacting(false);
       }
     },
-    [sendMessage],
+    [sendMessage, setMessages],
   );
 
   useEffect(() => {
@@ -545,9 +706,14 @@ export function useAgentChat({
       resetAgentIndicator();
       if (conversationId) setAgentInactive(conversationId);
 
-      // Check if compaction is needed after response completes
+      // Check if compaction is needed after response completes. This
+      // covers both true inter-turn compaction and mid-stream compaction
+      // (where `stopWhen` in agent-transport caused the agent loop to
+      // exit early at a step boundary because tokens crossed the
+      // threshold). Either way, status flips out of streaming and we
+      // land here.
       if (conversationId && needsCompaction() && messages.length >= MIN_MESSAGES_FOR_COMPACTION) {
-        runCompaction(conversationId, messages);
+        runCompaction(conversationId, messages, { auto: true });
       }
     }
   }, [status, conversationId, messages, runCompaction]);
@@ -570,7 +736,13 @@ export function useAgentChat({
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [isLoading, stop]);
 
-  // Detect context overflow errors and auto-trigger compaction
+  // Detect context overflow errors and auto-trigger compaction.
+  //
+  // Thrash detection is done inside `runCompaction` itself
+  // (`shouldDebounceCompaction`), which reads the latest completed
+  // compaction event from the visible message list. So no per-state
+  // counter to track here — if a compaction just completed and another
+  // overflow fires, the debounce will skip the retry.
   useEffect(() => {
     if (!error || !conversationId) return;
     const msg = error.message?.toLowerCase() ?? "";
@@ -582,7 +754,7 @@ export function useAgentChat({
       msg.includes("exceeds");
     if (isOverflow && messages.length >= MIN_MESSAGES_FOR_COMPACTION) {
       clearError();
-      runCompaction(conversationId, messages);
+      runCompaction(conversationId, messages, { auto: true, overflow: true });
     }
   }, [error, conversationId, messages, clearError, runCompaction]);
 
@@ -598,6 +770,19 @@ export function useAgentChat({
   // Keying off `chat` identity guarantees we reload from DB whenever a new
   // Chat instance is selected.
   const prevLoadedChatRef = useRef<Chat<AgentMessage> | null>(null);
+
+  // Reset per-conversation tracking when the active conversation changes.
+  // Token tracking lives in agent-transport as a module global; without
+  // this reset, switching conversations carries the previous
+  // conversation's last-step token count into needsCompaction() until the
+  // next streaming step overwrites it.
+  //
+  // Compaction state itself is no longer cached in React state — the
+  // renderer derives it from the messages array via `findCompactionEvents`,
+  // and `runCompaction` reads from the DB on demand for thrash debounce.
+  useEffect(() => {
+    resetTokenTracking();
+  }, [conversationId]);
 
   // Load messages from DB when conversation changes
   useEffect(() => {
@@ -621,13 +806,13 @@ export function useAgentChat({
         setMessages(uiMsgs);
         const lastMsg = uiMsgs[uiMsgs.length - 1];
         if (lastMsg.role === "user" && transport) {
-          const conversationTexts = msgs
-            .map((m) => m.content)
-            .filter(Boolean);
-          assembleMessagesForLLM(conversationId, conversationTexts).then((assembled) => {
-            resolveHostTabId().then((hostTabId) => {
-              setAgentContext(conversationId, assembled, hostTabId);
-            });
+          // Bind the panel's host tab so the agent has a working target on
+          // its first tab tool call. Compaction-aware message assembly now
+          // lives in the transport, so we no longer prefilter the message
+          // list here — the wrapper reads chatDb compaction state at
+          // send-time.
+          resolveHostTabId().then((hostTabId) => {
+            setAgentContext(conversationId, hostTabId);
           });
           sendMessage();
         }
@@ -763,13 +948,10 @@ export function useAgentChat({
         url: img.dataUrl,
       }));
 
-      const existingMessages = messages
-        .map((m) => m.parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(""))
-        .filter(Boolean);
-      assembleMessagesForLLM(convId, [...existingMessages, baseText]).then((assembled) => {
-        resolveHostTabId().then((hostTabId) => {
-          setAgentContext(convId, assembled, hostTabId);
-        });
+      // Compaction-aware message assembly now lives in the transport. Here
+      // we just bind the host tab so tool calls have a default target.
+      resolveHostTabId().then((hostTabId) => {
+        setAgentContext(convId, hostTabId);
       });
 
       if (isNew) {

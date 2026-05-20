@@ -1,5 +1,6 @@
 import { ChatInput, type TabMentionAttrs, type ImagePreview } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
+import { CompactionDivider } from "./CompactionDivider";
 import { Logo } from "@/components/ui/logo";
 import {
   Conversation,
@@ -375,6 +376,59 @@ const providerModels = useMemo(() => {
               </div>
             )}
             {messages.map((message, i) => {
+              // Compaction-user message: replace the bubble with a
+              // CompactionDivider. The next assistant message in the
+              // stream is the summary; we render its text inside the
+              // divider's expand panel.
+              const compactionPart = message.parts.find(
+                (p) =>
+                  (p as Record<string, unknown>).type === "compaction",
+              ) as
+                | {
+                    type: "compaction";
+                    auto: boolean;
+                    overflow?: boolean;
+                  }
+                | undefined;
+              if (message.role === "user" && compactionPart) {
+                const next = messages[i + 1];
+                const summaryText =
+                  next?.role === "assistant"
+                    ? next.parts
+                        .filter(
+                          (p): p is { type: "text"; text: string } =>
+                            (p as { type: string }).type === "text",
+                        )
+                        .map((p) => p.text)
+                        .join("\n")
+                        .trim()
+                    : "";
+                return (
+                  <CompactionDivider
+                    key={message.id}
+                    summary={summaryText}
+                    hiddenCount={i}
+                    auto={compactionPart.auto}
+                    overflow={compactionPart.overflow}
+                  />
+                );
+              }
+
+              // Assistant summary message: hide from the main chat. Its
+              // content is shown via the divider's expand toggle. We
+              // detect it structurally — the previous message is a
+              // compaction-user.
+              const prev = messages[i - 1];
+              const prevIsCompactionUser =
+                prev?.role === "user" &&
+                prev.parts.some(
+                  (p) =>
+                    (p as Record<string, unknown>).type === "compaction",
+                );
+              if (message.role === "assistant" && prevIsCompactionUser) {
+                return null;
+              }
+
               const isLastAssistant =
                 message.role === "assistant" &&
                 isStreaming &&
