@@ -20,3 +20,24 @@ export function Logo({ className }: { className?: string }) {
     </>
   );
 }
+
+export function Wordmark({ className }: { className?: string }) {
+  return (
+    <>
+      <Image
+        src="/icon/wordmark.svg"
+        alt="OpenBrowse"
+        width={1831}
+        height={307}
+        className={`w-auto dark:hidden ${className ?? ""}`}
+      />
+      <Image
+        src="/icon/wordmark-dark.svg"
+        alt="OpenBrowse"
+        width={1831}
+        height={307}
+        className={`hidden w-auto dark:block ${className ?? ""}`}
+      />
+    </>
+  );
+}
