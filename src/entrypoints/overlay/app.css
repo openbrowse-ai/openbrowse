@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "../../styles/fonts.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -125,7 +126,7 @@
 }
 
 body {
-  font-family: 'IBM Plex Sans', 'Zed Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   background: transparent;
   -webkit-font-smoothing: antialiased;
@@ -137,7 +138,7 @@ html {
 }
 
 .font-mono {
-  font-family: 'Lilex', 'Zed Mono', ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 
 [data-slot="dialog-content"],

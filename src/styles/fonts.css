@@ -1,0 +1,32 @@
+/* Shared font face declarations for all extension entrypoints.
+ *
+ * Self-hosted via @fontsource so we don't depend on a CDN at runtime
+ * (CDN loads break offline use and trip strict CSPs).
+ *
+ * Display:  Young Serif    — wordmark / marketing only (currently rendered
+ *                            as SVG paths so the font isn't strictly required
+ *                            in product, but loaded for any future H1 use).
+ * Body:     IBM Plex Sans  — all UI: tab labels, chat, settings, sidepanel.
+ * Mono:     Lilex          — code blocks, keyboard chips, inline `code`.
+ *                            Programming ligatures (==, !=, =>, ...) are on
+ *                            by default; the typeface is what gives the UI
+ *                            its distinctive code-block character.
+ */
+
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
+
+@import "@fontsource/lilex/400.css";
+
+@import "@fontsource/young-serif/400.css";
+
+:root {
+  --font-sans:
+    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+  --font-mono:
+    "Lilex", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-serif: "Young Serif", ui-serif, Georgia, serif;
+}

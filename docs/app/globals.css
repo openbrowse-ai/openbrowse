@@ -94,12 +94,12 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
   code, pre, .font-mono {
-    font-family: 'Lilex', ui-monospace, monospace;
+    font-family: var(--font-mono), ui-monospace, monospace;
   }
 }
 

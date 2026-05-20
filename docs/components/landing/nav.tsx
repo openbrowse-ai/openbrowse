@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Logo } from "@/components/logo";
+import { Wordmark } from "@/components/logo";
 
 function GitHubIcon({ className }: { className?: string }) {
   return (
@@ -18,9 +18,8 @@ export function Nav() {
   return (
     <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-sm">
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
-        <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
-          <Logo className="h-6 w-6" />
-          OpenBrowse
+        <Link href="/" className="flex items-center font-semibold tracking-tight">
+          <Wordmark className="h-6" />
         </Link>
         <nav className="flex items-center gap-6 text-sm">
           <Link

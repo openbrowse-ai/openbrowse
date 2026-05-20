@@ -1,15 +1,12 @@
 import Link from "next/link";
-import { Logo } from "@/components/logo";
+import { Wordmark } from "@/components/logo";
 
 export function Footer() {
   return (
     <footer className="border-t">
       <div className="mx-auto flex max-w-6xl flex-col gap-8 px-6 py-12 sm:flex-row sm:justify-between">
         <div>
-          <div className="flex items-center gap-2">
-            <Logo className="h-6 w-6" />
-            <p className="font-semibold">OpenBrowse</p>
-          </div>
+          <Wordmark className="h-6" />
           <p className="mt-1 text-sm text-muted-foreground">
             The open source browser agent.
           </p>
@@ -28,15 +25,6 @@ export function Footer() {
             </Link>
             <Link href="/docs/models-and-providers" className="text-muted-foreground hover:text-foreground">
               Models
-            </Link>
-          </div>
-          <div className="flex flex-col gap-2">
-            <p className="font-medium">Community</p>
-            <a href="https://github.com/nicepkg/openbrowse" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground">
-              GitHub
-            </a>
-            <Link href="/docs/reference/contributing" className="text-muted-foreground hover:text-foreground">
-              Contributing
             </Link>
           </div>
           <div className="flex flex-col gap-2">

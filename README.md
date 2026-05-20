@@ -1,8 +1,13 @@
-# OpenBrowse
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/icon/wordmark-dark.svg">
+    <img src="public/icon/wordmark.svg" alt="OpenBrowse" width="400">
+  </picture>
+</p>
 
-**The open source browser agent.**
+<p align="center"><strong>The open source browser agent.</strong></p>
 
-A free, model-agnostic alternative to Claude for Chrome, Gemini in Chrome, and Perplexity Comet. Use any AI model — cloud or local — to manage, organize, and automate your browser.
+<p align="center">A free, model-agnostic alternative to Claude for Chrome, Gemini in Chrome, and Perplexity Comet. Use any AI model — cloud or local — to manage, organize, and automate your browser.</p>
 
 ## Features
 

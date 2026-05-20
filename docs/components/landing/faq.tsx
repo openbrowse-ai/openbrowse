@@ -1,4 +1,5 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ArrowRight } from "lucide-react";
+import Link from "next/link";
 
 interface QA {
   q: string;
@@ -15,16 +16,12 @@ const faqs: QA[] = [
     a: "Those are closed, single-vendor products tied to one model. OpenBrowse is open source and model-agnostic — use Claude, GPT, Gemini, a local model via WebLLM, or Chrome's built-in Gemini Nano. You bring your own key, or run with no key at all.",
   },
   {
-    q: "Do I need an API key?",
-    a: "No. OpenBrowse ships with support for Chrome Built-in AI (Gemini Nano) and WebLLM, both of which run fully on-device with no key. If you want a more capable cloud model, you can plug in your own key for OpenAI, Anthropic, Google, or any OpenAI-compatible provider.",
-  },
-  {
     q: "Is my data private?",
     a: "OpenBrowse runs locally as a Chrome extension. Page content and conversations are only sent to the AI provider you pick — if you use a local model, nothing leaves your machine. We don't run a server and don't collect usage data.",
   },
   {
-    q: "Does it work offline?",
-    a: "Yes, when paired with a local model. Chrome Built-in AI and WebLLM both work without an internet connection once the model is downloaded.",
+    q: "Do I need an API key?",
+    a: "No. OpenBrowse ships with support for Chrome Built-in AI (Gemini Nano) and WebLLM, both of which run fully on-device with no key. If you want a more capable cloud model, you can plug in your own key for OpenAI, Anthropic, Google, or any OpenAI-compatible provider.",
   },
   {
     q: "Is OpenBrowse open source?",
@@ -35,8 +32,13 @@ const faqs: QA[] = [
 export function FAQ() {
   return (
     <section className="mx-auto max-w-3xl px-6 py-24">
-      <h2 className="text-2xl font-bold tracking-tight md:text-3xl">FAQ</h2>
-      <div className="mt-8 divide-y border-y">
+      <div className="flex items-end justify-between mb-8">
+        <h2 className="text-2xl font-bold tracking-tight md:text-3xl">FAQ</h2>
+        <Link href="/docs/faq" className="text-sm font-medium hover:text-primary transition-colors inline-flex items-center gap-1">
+          See all FAQs <ArrowRight className="size-4" />
+        </Link>
+      </div>
+      <div className="divide-y border-y">
         {faqs.map((item) => (
           <details key={item.q} className="group py-4">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-left">
