@@ -34,10 +34,10 @@ import {
   typeInElementTool,
   updateMemoryTool,
   skillTool,
-  readOpfsFileTool,
   installSkillTool,
   createSkillTool,
 } from "./tools";
+import { createFsTools } from "./tools/fs";
 import type { BrowserTool } from "./types";
 import { getSkillsRegistry } from "@/lib/skills/registry";
 
@@ -112,9 +112,17 @@ extract({
 - If snapshot returns an empty result or refCount: 0, try another approach: switch \`mode\` (viewport ↔ interactive), scope to a different selector, scrollPage and re-snapshot, or take a screenshot. Don't give up after a single retry.
 - Be concise in your text replies to the user. Take as many tool calls as the task needs.
 
+## Virtual Workspace
+
+You are operating in a sandboxed, browser-based virtual file system (VFS). You have tools to Read, Write, Edit, Glob, Grep, and LS files within this workspace. 
+
+- You do NOT have a Bash tool. 
+- You cannot execute code natively. 
+- You act as an Intelligent File Generator. Build the implementation files, configure boilerplates, and write code confidently. The user will export the workspace and run the code locally on their own machine.
+
 ## Code Execution
 
-You have two tools for running JavaScript:
+You have two tools for running JavaScript (Note: these do NOT run in your Virtual Workspace):
 
 - \`executeCode\`: Runs in an isolated sandbox. Use for computation, data transforms, API calls (fetch). No DOM access. Pass data via \`input\` parameter, access it as \`__input\` in your code. Use \`return\` to produce output.
 - \`executeOnPage\`: Runs in the active tab with full DOM/page access. Requires user approval. Use when you need to read or modify the page beyond what snapshot/clickElement/typeInElement provide — for example, scraping structured data from a product grid, or reading \`data-*\` attributes that don't appear in the accessibility tree.
@@ -663,6 +671,8 @@ export async function createAgentTransport(
   const model = provider.createLanguageModel(config, agentModel);
   setCurrentAgentModel(model);
 
+  const fsTools = createFsTools(spaceId);
+
   const browserTools: Record<string, ToolSet[string]> = {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
     readPage: toSDKTool(readPageTool, "readPage"),
@@ -682,9 +692,14 @@ export async function createAgentTransport(
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
     skill: toSDKTool(skillTool, "skill"),
-    read_opfs_file: toSDKTool(readOpfsFileTool, "read_opfs_file"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
     create_skill: toSDKTool(createSkillTool, "create_skill"),
+    Read: toSDKTool(fsTools.readTool, "Read"),
+    Write: toSDKTool(fsTools.writeTool, "Write"),
+    Edit: toSDKTool(fsTools.editTool, "Edit"),
+    Glob: toSDKTool(fsTools.globTool, "Glob"),
+    Grep: toSDKTool(fsTools.grepTool, "Grep"),
+    LS: toSDKTool(fsTools.lsTool, "LS"),
   };
 
   const mcpTools = getMcpRegistry().toSDKTools();
