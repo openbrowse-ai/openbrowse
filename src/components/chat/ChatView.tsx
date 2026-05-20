@@ -21,7 +21,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { useAgentChat } from "@/hooks/useAgentChat";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TodoPanel } from "./TodoPanel";
 
 interface ChatViewProps {
@@ -39,6 +39,13 @@ interface ChatViewProps {
    * popover was detached from rather than the popover's own (extension) tab.
    */
   isPopupMode?: boolean;
+  /**
+   * Whether this ChatView is the global Option+Space popup. Distinct from
+   * `isPopupMode` (which also covers detached side panel popups). When true,
+   * the input draft is persisted to chrome.storage.session so it survives
+   * dismiss/reopen cycles via the global hotkey.
+   */
+  isGlobalChat?: boolean;
   /**
    * The browser window the popover was detached from. Used as a fallback
    * for resolving the origin tab if the original origin tab was closed.
@@ -67,6 +74,7 @@ export function ChatView({
   onBack,
   showHeader = true,
   isPopupMode = false,
+  isGlobalChat = false,
   originWindowId,
   originTabId,
   originUrl,
@@ -110,6 +118,47 @@ export function ChatView({
     // window (which, in per-tab mode, IS the host tab).
     hostTabIdOverride: isPopupMode ? liveOriginTabId : undefined,
   });
+
+  // Global Option+Space popup: persist unsent draft text across dismiss/reopen
+  // cycles using chrome.storage.session. Hydrate once on mount; debounce-write
+  // on subsequent changes. Storage is cleared automatically when the input is
+  // emptied (e.g. after a successful send).
+  const draftHydratedRef = useRef(false);
+  useEffect(() => {
+    if (!isGlobalChat) return;
+    if (draftHydratedRef.current) return;
+    chrome.storage.session
+      .get("globalChatDraft")
+      .then((stored) => {
+        const v = stored.globalChatDraft;
+        if (typeof v === "string" && v.length > 0) setInput(v);
+      })
+      .catch((err) => {
+        console.warn("[global-chat] failed to hydrate draft:", err);
+      })
+      .finally(() => {
+        draftHydratedRef.current = true;
+      });
+  }, [isGlobalChat, setInput]);
+
+  useEffect(() => {
+    if (!isGlobalChat) return;
+    if (!draftHydratedRef.current) return; // skip until hydration ran
+    const timer = setTimeout(() => {
+      if (input && input.length > 0) {
+        chrome.storage.session
+          .set({ globalChatDraft: input })
+          .catch((err) => {
+            console.warn("[global-chat] failed to persist draft:", err);
+          });
+      } else {
+        chrome.storage.session.remove("globalChatDraft").catch((err) => {
+          console.warn("[global-chat] failed to clear draft:", err);
+        });
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [isGlobalChat, input]);
 
 const providerModels = useMemo(() => {
     return providers

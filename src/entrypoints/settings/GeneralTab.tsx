@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -158,6 +159,42 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="space-y-4 pt-4 border-t">
+        <h3 className="text-sm font-medium">Keyboard Shortcuts</h3>
+        <p className="text-xs text-muted-foreground">
+          OpenBrowse ships with two AI chat shortcuts:
+        </p>
+        <ul className="list-disc list-inside text-xs text-muted-foreground space-y-1">
+          <li>
+            <strong>Alt + I</strong> (Option + I on Mac) — toggles the chat in the
+            current tab&apos;s side panel.
+          </li>
+          <li>
+            <strong>Alt + Space</strong> (Option + Space on Mac) — opens the chat
+            in a standalone popup window.
+          </li>
+        </ul>
+        <div className="bg-secondary/50 p-4 rounded-md border text-sm">
+          <p className="font-medium mb-2">Want to launch the popup from anywhere on your computer (even when Chrome isn&apos;t focused)?</p>
+          <ol className="list-decimal list-inside space-y-1 mb-3 text-muted-foreground text-xs">
+            <li>Click the link below to open Chrome&apos;s shortcut settings</li>
+            <li>Find the <strong>&quot;Open Global AI chat popup&quot;</strong> shortcut</li>
+            <li>Change the dropdown from <strong>&quot;In Chrome&quot;</strong> to <strong>&quot;Global&quot;</strong></li>
+          </ol>
+          <a
+            href="chrome://extensions/shortcuts"
+            onClick={(e) => {
+              e.preventDefault();
+              chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+            }}
+            className="inline-flex items-center text-primary hover:underline font-medium text-xs cursor-pointer"
+          >
+            Open Chrome Shortcut Settings
+            <ExternalLink className="ml-1 h-3 w-3" />
+          </a>
+        </div>
       </div>
     </div>
   );

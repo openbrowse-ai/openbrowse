@@ -179,6 +179,18 @@ export const chatDb = {
       cursor = await cursor.continue();
     }
     await tx.done;
+    // Broadcast so other extension contexts (popups, side panels, home tab)
+    // can react to a conversation disappearing — e.g. the global chat popup
+    // resetting to a fresh chat if the deleted conversation was active.
+    // chrome.runtime.sendMessage does not deliver to the sender, so the
+    // calling UI doesn't double-handle (it already refreshes locally).
+    try {
+      chrome.runtime
+        ?.sendMessage?.({ type: "CONVERSATION_DELETED", conversationId: id })
+        ?.catch?.(() => {});
+    } catch {
+      // Non-extension context (e.g. unit tests). Safe to ignore.
+    }
   },
 
   async getMessages(

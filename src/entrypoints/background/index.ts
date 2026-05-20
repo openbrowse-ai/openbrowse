@@ -1,6 +1,7 @@
 import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
 import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
+import { chatDb } from "@/lib/chat-db";
 
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
   return (data[key] as TidyState) ?? {
@@ -34,6 +35,10 @@ export default defineBackground({
     let lastFocusedWindowId: number | undefined;
     let agentWorkingTabId: number | null | undefined = null;
     let agentWorkingColor: string | null = null;
+    let globalChatPopupWindowId: number | null = null;
+    // Serializes Option+Space toggles so rapid presses can't race and spawn
+    // orphan popups (or attempt to remove a window twice).
+    let globalChatToggleInFlight: Promise<void> | null = null;
     const pendingNotifications = new Map<string, { conversationId: string; origin: "sidepanel" | "home" }>();
 
     // windowId → active tabId. Maintained synchronously off chrome.tabs events
@@ -110,6 +115,9 @@ export default defineBackground({
 
     chrome.windows.onRemoved.addListener((windowId) => {
       activeTabByWindow.delete(windowId);
+      if (windowId === globalChatPopupWindowId) {
+        globalChatPopupWindowId = null;
+      }
     });
 
     // Connect MCP servers on startup
@@ -144,6 +152,85 @@ export default defineBackground({
     });
 
     chrome.commands.onCommand.addListener((command) => {
+      if (command === "open-global-chat") {
+        // Coalesce concurrent presses: if a toggle is already running, ignore
+        // additional presses until it resolves. This prevents two presses
+        // both observing globalChatPopupWindowId == null and spawning two
+        // popups, or two presses both calling chrome.windows.remove on the
+        // same id.
+        if (globalChatToggleInFlight) return;
+        globalChatToggleInFlight = (async () => {
+          // If a global popup already exists, toggle it: close when focused,
+          // refocus when visible-but-unfocused.
+          if (globalChatPopupWindowId != null) {
+            try {
+              const win = await chrome.windows.get(globalChatPopupWindowId);
+              if (win.focused) {
+                await chrome.windows.remove(globalChatPopupWindowId);
+                globalChatPopupWindowId = null;
+              } else {
+                await chrome.windows.update(globalChatPopupWindowId, {
+                  focused: true,
+                });
+              }
+              return;
+            } catch {
+              // Window no longer exists; fall through to create a new one.
+              globalChatPopupWindowId = null;
+            }
+          }
+
+          // Restore the last conversation viewed in the global popup, if any,
+          // so reopening drops the user back into the same chat. Validate
+          // the conversation still exists so a deleted conversation can't
+          // come back from the dead.
+          let lastConversationId: string | null = null;
+          try {
+            const stored = await chrome.storage.session.get(
+              "globalChatLastConversationId",
+            );
+            const v = stored.globalChatLastConversationId;
+            if (typeof v === "string" && v) {
+              const conv = await chatDb.getConversation(v);
+              if (conv) {
+                lastConversationId = v;
+              } else {
+                // Stale id (deleted conversation). Clear it so we don't
+                // resurrect it on the next open.
+                await chrome.storage.session
+                  .remove("globalChatLastConversationId")
+                  .catch(() => {});
+              }
+            }
+          } catch (err) {
+            console.warn("[global-chat] failed to read last conversation:", err);
+          }
+
+          const params = new URLSearchParams({
+            mode: "popup",
+            globalChat: "true",
+          });
+          if (lastConversationId) {
+            params.set("conversationId", lastConversationId);
+          }
+
+          const created = await chrome.windows.create({
+            url: chrome.runtime.getURL(`/sidepanel.html?${params.toString()}`),
+            type: "popup",
+            width: 420,
+            height: 700,
+            focused: true,
+          });
+          if (created?.id != null) globalChatPopupWindowId = created.id;
+        })()
+          .catch((err) => {
+            console.warn("[global-chat] toggle failed:", err);
+          })
+          .finally(() => {
+            globalChatToggleInFlight = null;
+          });
+        return;
+      }
       if (command === "open-chat") {
         const windowId = lastFocusedWindowId;
 
