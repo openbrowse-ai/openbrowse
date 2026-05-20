@@ -77,6 +77,28 @@ export function ChatPicker({
     }
   }, [open, refresh]);
 
+  // Cross-window conversation lifecycle: refetch when another extension
+  // context (popup, side panel, home tab) creates, updates, or deletes a
+  // conversation. Only listens while the picker is open since the closed
+  // popover doesn't render the list. Broadcasts are field-filtered at
+  // chatDb so this doesn't fire on per-message `updatedAt` bumps.
+  useEffect(() => {
+    if (!open) return;
+    function onMessage(msg: unknown) {
+      if (typeof msg !== "object" || msg === null) return;
+      const t = (msg as { type?: unknown }).type;
+      if (
+        t === "CONVERSATION_CREATED" ||
+        t === "CONVERSATION_UPDATED" ||
+        t === "CONVERSATION_DELETED"
+      ) {
+        refresh();
+      }
+    }
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [open, refresh]);
+
   function formatTime(ts: number) {
     const d = new Date(ts);
     const now = new Date();

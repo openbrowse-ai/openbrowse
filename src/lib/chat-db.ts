@@ -154,6 +154,19 @@ export const chatDb = {
       todos: [],
       ...conv,
     });
+    // Broadcast so other extension contexts (home tab, side panels, popups)
+    // can refresh their conversation lists. Always sidebar-relevant.
+    try {
+      chrome.runtime
+        ?.sendMessage?.({
+          type: "CONVERSATION_CREATED",
+          conversationId: conv.id,
+          spaceId: conv.spaceId,
+        })
+        ?.catch?.(() => {});
+    } catch {
+      // Non-extension context (tests). Safe to ignore.
+    }
   },
 
   async updateConversation(
@@ -164,6 +177,27 @@ export const chatDb = {
     const existing = await db.get("conversations", id);
     if (existing) {
       await db.put("conversations", { ...existing, ...updates });
+    }
+    // Only broadcast for fields that materially affect conversation-list UIs.
+    // Excludes high-frequency churn like `updatedAt` (per message turn),
+    // `ownedTabIds`/`ownedGroupId` (tab-scoping reconciliation), and `todos`
+    // (per agent step). Same-window UIs don't refetch on those either, so
+    // broadcasting them would make cross-window behavior more aggressive
+    // than same-window — wrong direction.
+    const sidebarRelevant =
+      updates.title !== undefined || updates.spaceId !== undefined;
+    if (sidebarRelevant) {
+      try {
+        chrome.runtime
+          ?.sendMessage?.({
+            type: "CONVERSATION_UPDATED",
+            conversationId: id,
+            fields: Object.keys(updates),
+          })
+          ?.catch?.(() => {});
+      } catch {
+        // Non-extension context (tests). Safe to ignore.
+      }
     }
   },
 

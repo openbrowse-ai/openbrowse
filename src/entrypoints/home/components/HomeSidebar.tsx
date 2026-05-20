@@ -260,6 +260,26 @@ export function HomeSidebar({
     };
   }, []);
 
+  // Cross-window conversation lifecycle: refetch when another extension
+  // context (popup, side panel, etc.) creates, updates, or deletes a
+  // conversation. The broadcast is field-filtered at the source so this
+  // doesn't fire on per-message `updatedAt` bumps.
+  useEffect(() => {
+    function onMessage(msg: unknown) {
+      if (typeof msg !== "object" || msg === null) return;
+      const t = (msg as { type?: unknown }).type;
+      if (
+        t === "CONVERSATION_CREATED" ||
+        t === "CONVERSATION_UPDATED" ||
+        t === "CONVERSATION_DELETED"
+      ) {
+        refresh();
+      }
+    }
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [refresh]);
+
   useEffect(() => {
     function handleKeydown(e: KeyboardEvent) {
       if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey && e.code === "KeyN") {
