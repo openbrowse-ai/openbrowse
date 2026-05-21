@@ -47,6 +47,26 @@ export function ChatList({
     refresh();
   }, [refresh]);
 
+  // Cross-window conversation lifecycle: refetch when another extension
+  // context (popup, side panel, home tab) creates, updates, or deletes a
+  // conversation. Broadcasts are field-filtered at chatDb so this doesn't
+  // fire on per-message `updatedAt` bumps.
+  useEffect(() => {
+    function onMessage(msg: unknown) {
+      if (typeof msg !== "object" || msg === null) return;
+      const t = (msg as { type?: unknown }).type;
+      if (
+        t === "CONVERSATION_CREATED" ||
+        t === "CONVERSATION_UPDATED" ||
+        t === "CONVERSATION_DELETED"
+      ) {
+        refresh();
+      }
+    }
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [refresh]);
+
   function handleDeleteClick(e: React.MouseEvent, id: string) {
     e.stopPropagation();
     setDeleteTarget(id);

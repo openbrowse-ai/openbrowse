@@ -78,6 +78,13 @@ export default defineConfig({
         },
         description: "Open search overlay",
       },
+      "open-global-chat": {
+        suggested_key: {
+          default: "Alt+Space",
+          mac: "Alt+Space",
+        },
+        description: "Open Global AI chat popup",
+      },
       "open-chat": {
         suggested_key: {
           default: "Alt+I",
