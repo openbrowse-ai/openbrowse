@@ -19,27 +19,34 @@ function globToRegex(glob: string): RegExp {
   return new RegExp(`^${regexStr}$`);
 }
 
-function getVfsRoot(spaceId: string | null): string {
-  if (!spaceId) return `cwd`;
-  return `spaces/${spaceId}/cwd`;
+function getVfsRoot(conversationId: string | null): string {
+  if (!conversationId) return `cwd`;
+  return `conversations/${conversationId}/workspace`;
 }
 
-function resolveVfsPath(spaceId: string | null, rawPath: string): string {
-  const root = getVfsRoot(spaceId);
+function resolveVfsPath(conversationId: string | null, rawPath: string): string {
+  // Allow explicit escaping to skills directory (read-only in tools)
+  if (rawPath.startsWith('/skills/')) {
+    return rawPath.replace(/^\/+/, '');
+  }
+  const root = getVfsRoot(conversationId);
   const clean = rawPath.replace(/^\/+/, '').replace(/\.\.\//g, '');
   return `${root}/${clean}`;
 }
 
 // Strip the VFS root prefix so the LLM only sees relative paths
-function stripVfsRoot(spaceId: string | null, fullPath: string): string {
-  const root = getVfsRoot(spaceId) + '/';
+function stripVfsRoot(conversationId: string | null, fullPath: string): string {
+  if (fullPath.startsWith('skills/')) {
+    return '/' + fullPath;
+  }
+  const root = getVfsRoot(conversationId) + '/';
   if (fullPath.startsWith(root)) {
     return fullPath.slice(root.length);
   }
   return fullPath;
 }
 
-export function createFsTools(spaceId: string | null) {
+export function createFsTools(conversationId: string | null) {
   const readTool: BrowserTool<{ file_path: string; offset?: number; limit?: number }, string> = {
     name: "Read",
     description: "Reads the content of a file. Returns lines prefixed with line numbers.",
@@ -50,7 +57,7 @@ export function createFsTools(spaceId: string | null) {
     }),
     execute: async ({ file_path, offset, limit }) => {
       try {
-        const fullPath = resolveVfsPath(spaceId, file_path);
+        const fullPath = resolveVfsPath(conversationId, file_path);
         const exists = await OPFS.exists(fullPath);
         if (!exists) return `Error: File not found at ${file_path}`;
 
@@ -80,8 +87,11 @@ export function createFsTools(spaceId: string | null) {
       content: z.string(),
     }),
     execute: async ({ file_path, content }) => {
+      if (file_path.startsWith('/skills/')) {
+        return `Error: Permission denied. Cannot write to global skills directory.`;
+      }
       try {
-        const fullPath = resolveVfsPath(spaceId, file_path);
+        const fullPath = resolveVfsPath(conversationId, file_path);
         await OPFS.writeFile(fullPath, content);
         return `File created/updated at ${file_path}.`;
       } catch (e) {
@@ -100,8 +110,11 @@ export function createFsTools(spaceId: string | null) {
       replaceAll: z.boolean().optional(),
     }),
     execute: async ({ file_path, oldString, newString, replaceAll }) => {
+      if (file_path.startsWith('/skills/')) {
+        return `Error: Permission denied. Cannot edit files in global skills directory.`;
+      }
       try {
-        const fullPath = resolveVfsPath(spaceId, file_path);
+        const fullPath = resolveVfsPath(conversationId, file_path);
         if (!(await OPFS.exists(fullPath))) return `Error: File not found at ${file_path}`;
 
         const content = await OPFS.readFile(fullPath);
@@ -135,12 +148,12 @@ export function createFsTools(spaceId: string | null) {
     }),
     execute: async ({ pattern, path }) => {
       try {
-        const searchRoot = path ? resolveVfsPath(spaceId, path) : getVfsRoot(spaceId);
+        const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
         const regex = globToRegex(pattern);
         
         const matches: string[] = [];
         for await (const file of OPFS.walk(searchRoot)) {
-          const relativePath = stripVfsRoot(spaceId, file);
+          const relativePath = stripVfsRoot(conversationId, file);
           // Match against the path relative to search root to behave like standard glob
           const matchPath = path ? relativePath.replace(new RegExp(`^${path.replace(/^\/+/, '')}/`), '') : relativePath;
           if (regex.test(matchPath)) {
@@ -166,14 +179,14 @@ export function createFsTools(spaceId: string | null) {
     }),
     execute: async ({ pattern, path, include }) => {
       try {
-        const searchRoot = path ? resolveVfsPath(spaceId, path) : getVfsRoot(spaceId);
+        const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
         const searchRegex = new RegExp(pattern);
         const includeRegex = include ? globToRegex(include) : null;
         
         const results: string[] = [];
         
         for await (const file of OPFS.walk(searchRoot)) {
-          const relativePath = stripVfsRoot(spaceId, file);
+          const relativePath = stripVfsRoot(conversationId, file);
           
           if (includeRegex) {
             const fileName = relativePath.split('/').pop() || '';
@@ -210,7 +223,7 @@ export function createFsTools(spaceId: string | null) {
     execute: async ({ path }) => {
       try {
         const targetPath = (path === '.' || !path) ? '' : path;
-        const fullPath = resolveVfsPath(spaceId, targetPath);
+        const fullPath = resolveVfsPath(conversationId, targetPath);
         
         const exists = await OPFS.exists(fullPath);
         if (!exists) return `Error: Directory not found at ${path}`;

@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useSkillsState } from "@/hooks/useSkillsState";
 import { getSkillsRegistry } from "@/lib/skills/registry";
-import { Plus, Trash2, Github, BookOpen } from "lucide-react";
+import { Plus, Trash2, BookOpen } from "lucide-react";
 
 export function SkillsTab({ settings, onChange }: { settings: any; onChange: (patch: any) => void }) {
   const { skills } = useSkillsState();

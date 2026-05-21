@@ -1,6 +1,6 @@
 import { parseSource, type ParsedSource } from "./source-parser";
 import { parseSkillFrontmatter } from "./yaml-frontmatter";
-import { writeOpfsFile, removeOpfsDirectory } from "./opfs";
+import { OPFS } from "../vfs/opfs";
 import { skillsDb } from "./skills-db";
 import type { InstalledSkill } from "./types";
 
@@ -173,12 +173,12 @@ export async function discoverSkills(sourceInput: string, githubToken?: string):
  */
 export async function installSkill(preview: SkillPreview, githubToken?: string): Promise<InstalledSkill> {
   // Clear any existing directory first
-  await removeOpfsDirectory(`skills/${preview.name}`);
+  await OPFS.rm(`skills/${preview.name}`, { recursive: true });
 
   // Download and write all files
   for (const [relativePath, url] of Object.entries(preview.downloadUrls)) {
     const content = await fetchText(url, githubToken);
-    await writeOpfsFile(`skills/${preview.name}/${relativePath}`, content);
+    await OPFS.writeFile(`skills/${preview.name}/${relativePath}`, content);
   }
 
   const installedSkill: InstalledSkill = {
@@ -205,17 +205,17 @@ export async function createSkillLocally(
   body: string, 
   references?: {path: string, content: string}[]
 ): Promise<InstalledSkill> {
-  await removeOpfsDirectory(`skills/${name}`);
+  await OPFS.rm(`skills/${name}`, { recursive: true });
 
   const frontmatter = `---\nname: ${name}\ndescription: ${description}\n---\n`;
   const fullContent = frontmatter + body;
 
   const filePaths = ["SKILL.md"];
-  await writeOpfsFile(`skills/${name}/SKILL.md`, fullContent);
+  await OPFS.writeFile(`skills/${name}/SKILL.md`, fullContent);
 
   if (references) {
     for (const ref of references) {
-      await writeOpfsFile(`skills/${name}/${ref.path}`, ref.content);
+      await OPFS.writeFile(`skills/${name}/${ref.path}`, ref.content);
       filePaths.push(ref.path);
     }
   }
@@ -239,6 +239,6 @@ export async function createSkillLocally(
  * Removes a skill from OPFS and the database.
  */
 export async function uninstallSkill(name: string): Promise<void> {
-  await removeOpfsDirectory(`skills/${name}`);
+  await OPFS.rm(`skills/${name}`, { recursive: true });
   await skillsDb.delete(name);
 }

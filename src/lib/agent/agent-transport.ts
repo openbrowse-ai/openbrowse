@@ -651,6 +651,7 @@ export async function createAgentTransport(
   agentModel: string,
   spaceId: string | null = null,
   spaceName: string | null = null,
+  conversationId: string | null = null,
   thinkingConfig?: {
     enabled: boolean;
     config?: import("../types").ThinkingConfig;
@@ -671,7 +672,7 @@ export async function createAgentTransport(
   const model = provider.createLanguageModel(config, agentModel);
   setCurrentAgentModel(model);
 
-  const fsTools = createFsTools(spaceId);
+  const fsTools = createFsTools(conversationId);
 
   const browserTools: Record<string, ToolSet[string]> = {
     snapshot: toSDKTool(snapshotTool, "snapshot"),

@@ -422,6 +422,7 @@ export function useAgentChat({
         agentSettings.agentModel,
         spaceId,
         spaceName,
+        conversationId,
         agentSettings.thinkingEnabled
           ? { enabled: true, config: agentSettings.thinkingConfig }
           : undefined,

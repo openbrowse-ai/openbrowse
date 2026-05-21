@@ -1,5 +1,5 @@
 import { skillsDb } from "./skills-db";
-import { writeOpfsFile, opfsFileExists } from "./opfs";
+import { OPFS } from "../vfs/opfs";
 import { parseSkillFrontmatter } from "./yaml-frontmatter";
 import type { InstalledSkill } from "./types";
 
@@ -55,8 +55,8 @@ export async function bootstrapBundledSkills(): Promise<void> {
         const fileUrl = chrome.runtime.getURL(`skills/${bundledSkill.name}/${file}`);
         const fileResponse = await fetch(fileUrl);
         if (!fileResponse.ok) continue;
-        const blob = await fileResponse.blob();
-        await writeOpfsFile(`skills/${bundledSkill.name}/${file}`, blob);
+        const text = await fileResponse.text();
+        await OPFS.writeFile(`skills/${bundledSkill.name}/${file}`, text);
       }
 
       // Add to database

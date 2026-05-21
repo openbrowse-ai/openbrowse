@@ -1,19 +1,4 @@
-import { storage } from "@/lib/storage";
-import { chatDb } from "@/lib/chat-db";
-import type { Space } from "@/lib/types";
 import { ChatView } from "@/components/chat/ChatView";
-import { LandingPage } from "./components/LandingPage";
-import { HomeSidebar } from "./components/HomeSidebar";
-import { useActiveTabs } from "@/hooks/useActiveTabs";
-import { useTheme } from "@/hooks/useTheme";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, MoreVertical, Pencil, Trash2 } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,6 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -31,14 +17,43 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useActiveTabs } from "@/hooks/useActiveTabs";
+import { useTheme } from "@/hooks/useTheme";
+import { chatDb } from "@/lib/chat-db";
+import { storage } from "@/lib/storage";
+import type { Space } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import {
+  Download,
+  MoreVertical,
+  PanelRight,
+  Pencil,
+  Trash2,
+} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CoworkPanel } from "./components/CoworkPanel";
+import { HomeSidebar } from "./components/HomeSidebar";
+import { LandingPage } from "./components/LandingPage";
 
 export default function App() {
   useTheme();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(() => {
     const hash = window.location.hash.slice(1);
     return hash || null;
   });
@@ -46,8 +61,13 @@ export default function App() {
   const [overlayAction, setOverlayAction] = useState<string | null>(null);
   const overlayIframeRef = useRef<HTMLIFrameElement>(null);
 
-  const [conversationTitle, setConversationTitle] = useState<string | null>(null);
-  const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(new Set());
+  const [conversationTitle, setConversationTitle] = useState<string | null>(
+    null,
+  );
+  const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
+  const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
+    new Set(),
+  );
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
 
@@ -72,7 +92,9 @@ export default function App() {
     }
     init();
 
-    const listener = () => { init(); };
+    const listener = () => {
+      init();
+    };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
@@ -91,7 +113,13 @@ export default function App() {
     chrome.runtime.onMessage.addListener(listener);
 
     const handleKeydown = (e: KeyboardEvent) => {
-      if (e.key === "k" && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+      if (
+        e.key === "k" &&
+        e.altKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.shiftKey
+      ) {
         e.preventDefault();
         setShowOverlay((prev) => !prev);
       }
@@ -172,6 +200,7 @@ export default function App() {
       setConversationTitle(null);
       return;
     }
+    setIsCoworkPanelOpen(true);
     chatDb.getConversation(activeConversationId).then((conv) => {
       setConversationTitle(conv?.title ?? null);
     });
@@ -185,7 +214,11 @@ export default function App() {
     function onUpdated(e: Event) {
       const { id, title } = (e as CustomEvent).detail ?? {};
       if (id) {
-        setGeneratingTitleIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+        setGeneratingTitleIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         if (title && id === activeConversationIdRef.current) {
           setConversationTitle(title);
         }
@@ -205,24 +238,28 @@ export default function App() {
       chatDb.getConversation(activeConversationId),
       chatDb.getMessages(activeConversationId),
     ]);
-    const lines = messages.map((m) => {
-      const role = m.role === "user" ? "You" : "Assistant";
-      const partTexts: string[] = [];
-      for (const part of m.parts) {
-        if (part.type === "text" && part.text.trim()) {
-          partTexts.push(part.text);
-        } else if (part.type === "dynamic-tool") {
-          const toolLine = `**Tool: ${part.toolName}**`;
-          if (part.output) {
-            partTexts.push(`${toolLine}\n\n\`\`\`\n${typeof part.output === "string" ? part.output : JSON.stringify(part.output, null, 2)}\n\`\`\``);
-          } else {
-            partTexts.push(toolLine);
+    const lines = messages
+      .map((m) => {
+        const role = m.role === "user" ? "You" : "Assistant";
+        const partTexts: string[] = [];
+        for (const part of m.parts) {
+          if (part.type === "text" && part.text.trim()) {
+            partTexts.push(part.text);
+          } else if (part.type === "dynamic-tool") {
+            const toolLine = `**Tool: ${part.toolName}**`;
+            if (part.output) {
+              partTexts.push(
+                `${toolLine}\n\n\`\`\`\n${typeof part.output === "string" ? part.output : JSON.stringify(part.output, null, 2)}\n\`\`\``,
+              );
+            } else {
+              partTexts.push(toolLine);
+            }
           }
         }
-      }
-      if (partTexts.length === 0) return null;
-      return `## ${role}\n\n${partTexts.join("\n\n")}`;
-    }).filter(Boolean);
+        if (partTexts.length === 0) return null;
+        return `## ${role}\n\n${partTexts.join("\n\n")}`;
+      })
+      .filter(Boolean);
     const markdown = `# ${conv?.title ?? "Chat"}\n\n${lines.join("\n\n---\n\n")}`;
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
@@ -233,36 +270,56 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, [activeConversationId]);
 
-  const [renameTarget, setRenameTarget] = useState<{ id: string; title: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  const handleRenameConversation = useCallback((conv: { id: string; title: string }) => {
-    setRenameValue(conv.title);
-    setRenameTarget(conv);
-  }, []);
+  const handleRenameConversation = useCallback(
+    (conv: { id: string; title: string }) => {
+      setRenameValue(conv.title);
+      setRenameTarget(conv);
+    },
+    [],
+  );
 
   const handleRenameChat = useCallback(() => {
     if (!activeConversationId) return;
-    handleRenameConversation({ id: activeConversationId, title: conversationTitle ?? "" });
+    handleRenameConversation({
+      id: activeConversationId,
+      title: conversationTitle ?? "",
+    });
   }, [activeConversationId, conversationTitle, handleRenameConversation]);
 
   const confirmRename = useCallback(async () => {
     if (!renameTarget || !renameValue.trim()) return;
-    await chatDb.updateConversation(renameTarget.id, { title: renameValue.trim() });
+    await chatDb.updateConversation(renameTarget.id, {
+      title: renameValue.trim(),
+    });
     if (renameTarget.id === activeConversationId) {
       setConversationTitle(renameValue.trim());
     }
     setRenameTarget(null);
   }, [renameTarget, renameValue, activeConversationId]);
 
-  const handleDeleteConversation = useCallback((conv: { id: string; title: string }) => {
-    setDeleteTarget(conv);
-  }, []);
+  const handleDeleteConversation = useCallback(
+    (conv: { id: string; title: string }) => {
+      setDeleteTarget(conv);
+    },
+    [],
+  );
 
   const handleDeleteChat = useCallback(() => {
     if (!activeConversationId) return;
-    handleDeleteConversation({ id: activeConversationId, title: conversationTitle ?? "" });
+    handleDeleteConversation({
+      id: activeConversationId,
+      title: conversationTitle ?? "",
+    });
   }, [activeConversationId, conversationTitle, handleDeleteConversation]);
 
   const confirmDelete = useCallback(async () => {
@@ -296,42 +353,67 @@ export default function App() {
         onNewConversation={() => handleNewConversation("")}
         onGoHome={() => setActiveConversationId(null)}
         onOpenOverlay={() => setShowOverlay(true)}
-        onNewSpace={() => { setOverlayAction("new-space"); setShowOverlay(true); }}
-        onConfigureSpace={() => { setOverlayAction("configure-space"); setShowOverlay(true); }}
+        onNewSpace={() => {
+          setOverlayAction("new-space");
+          setShowOverlay(true);
+        }}
+        onConfigureSpace={() => {
+          setOverlayAction("configure-space");
+          setShowOverlay(true);
+        }}
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
       />
 
       <main className="flex-1 min-w-0 h-screen flex flex-col">
         {activeConversationId && (
-          <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2 border-b border-border bg-[var(--background)]">
-            <span className={`text-sm font-medium truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}>
+          <div className="sticky top-0 z-10 flex items-center justify-between px-4 pt-2 pb-px bg-background/80 backdrop-blur-md after:absolute after:inset-x-0 after:-bottom-6 after:h-6 after:bg-linear-to-b after:from-background after:to-transparent after:pointer-events-none">
+            <span
+              className={`text-sm font-medium truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}
+            >
               {conversationTitle ?? "New conversation"}
             </span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <MoreVertical className="size-4" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleRenameChat}>
-                  <Pencil className="size-3.5" />
-                  Rename
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleExportChat}>
-                  <Download className="size-3.5" />
-                  Export chat
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDeleteChat} className="text-destructive focus:text-destructive">
-                  <Trash2 className="size-3.5" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div className="flex items-center gap-1">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <MoreVertical className="size-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handleRenameChat}>
+                    <Pencil className="size-3.5" />
+                    Rename
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleExportChat}>
+                    <Download className="size-3.5" />
+                    Export chat
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={handleDeleteChat}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="size-3.5" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => setIsCoworkPanelOpen(!isCoworkPanelOpen)}
+                    className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <PanelRight className="size-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Open side panel</TooltipContent>
+              </Tooltip>
+            </div>
           </div>
         )}
         {activeConversationId ? (
@@ -354,6 +436,19 @@ export default function App() {
         )}
       </main>
 
+      {activeConversationId && (
+        <aside
+          className={cn(
+            "h-screen shrink-0 overflow-hidden bg-[var(--background)] transition-[width] duration-300 ease-in-out",
+            isCoworkPanelOpen ? "w-[340px]" : "w-0",
+          )}
+        >
+          <div className="h-full w-[340px]">
+            <CoworkPanel conversationId={activeConversationId} />
+          </div>
+        </aside>
+      )}
+
       {showOverlay && (
         <div
           className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center pt-[20vh]"
@@ -363,7 +458,9 @@ export default function App() {
         >
           <iframe
             ref={overlayIframeRef}
-            src={chrome.runtime.getURL(`/overlay.html${overlayAction ? `?action=${overlayAction}` : ""}`)}
+            src={chrome.runtime.getURL(
+              `/overlay.html${overlayAction ? `?action=${overlayAction}` : ""}`,
+            )}
             className="w-[580px] max-w-[90vw] max-h-[70vh] border-none rounded-lg"
             onLoad={(e) => (e.currentTarget as HTMLIFrameElement).focus()}
           />
@@ -372,7 +469,9 @@ export default function App() {
       {/* Rename dialog */}
       <Dialog
         open={!!renameTarget}
-        onOpenChange={(open) => { if (!open) setRenameTarget(null); }}
+        onOpenChange={(open) => {
+          if (!open) setRenameTarget(null);
+        }}
       >
         <DialogContent showCloseButton={false}>
           <DialogHeader>
@@ -419,7 +518,9 @@ export default function App() {
       {/* Delete confirmation dialog */}
       <AlertDialog
         open={!!deleteTarget}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
       >
         <AlertDialogContent
           onKeyDown={(e) => {

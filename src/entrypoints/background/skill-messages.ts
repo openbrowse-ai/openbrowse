@@ -1,5 +1,5 @@
 import { backgroundSkillRegistry } from "./skill-registry";
-import { readOpfsFile } from "@/lib/skills/opfs";
+import { OPFS } from "@/lib/vfs/opfs";
 
 export async function handleSkillMessage(message: any, sendResponse: (response?: any) => void) {
   try {
@@ -39,7 +39,7 @@ export async function handleSkillMessage(message: any, sendResponse: (response?:
       }
       case "SKILL_READ_OPFS_FILE": {
         const { path } = message;
-        const content = await readOpfsFile(path);
+        const content = await OPFS.readFile(path);
         sendResponse({ success: true, content });
         break;
       }
@@ -50,7 +50,7 @@ export async function handleSkillMessage(message: any, sendResponse: (response?:
         if (!skill) {
           throw new Error(`Skill ${name} not found`);
         }
-        const body = await readOpfsFile(`skills/${name}/SKILL.md`);
+        const body = await OPFS.readFile(`skills/${name}/SKILL.md`);
         sendResponse({ 
           success: true, 
           body, 

@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { SerializedUIPart, TodoItem } from "./types";
+import type { CompactionState, SerializedUIPart, TodoItem } from "./types";
+import { OPFS } from "./vfs/opfs";
 
 interface ChatDB extends DBSchema {
   conversations: {
@@ -249,7 +250,16 @@ export const chatDb = {
       await cursor.delete();
       cursor = await cursor.continue();
     }
+    
     await tx.done;
+
+    // Clean up ephemeral VFS container
+    try {
+      await OPFS.rm(`conversations/${id}`, { recursive: true });
+    } catch (e) {
+      console.warn("Failed to delete conversation VFS container", e);
+    }
+
     // Broadcast so other extension contexts (popups, side panels, home tab)
     // can react to a conversation disappearing — e.g. the global chat popup
     // resetting to a fresh chat if the deleted conversation was active.

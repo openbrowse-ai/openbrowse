@@ -3,12 +3,18 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { RegistryIcon } from "@/components/ui/registry-icon";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
 import { getConnectorForMcpTool } from "@/registry/connectors";
 import { getMcpRegistry } from "@/lib/mcp";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { ScreenshotResult } from "./tool-results/screenshot";
 import { CodeResult } from "./tool-results/execute-code";
+import { ReadFileResult, GlobResult, GrepResult, LSResult } from "./tool-results/fs";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -19,6 +25,10 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   screenshot: ({ result }) => <ScreenshotResult result={result} />,
   executeCode: ({ args, result }) => <CodeResult args={args} result={result} />,
   executeOnPage: ({ args, result }) => <CodeResult args={args} result={result} />,
+  Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
+  Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
+  Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
+  LS: ({ args, result }) => <LSResult args={args} result={result} />,
 };
 
 interface ToolCallBlockProps {
@@ -47,6 +57,13 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   recallMemory: { pending: "Recalling memory...", done: "Recalled memory" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
+  // Filesystem tools — friendly labels for non-developers
+  Read: { pending: "Reading file...", done: "Read file" },
+  Write: { pending: "Saving file...", done: "Saved file" },
+  Edit: { pending: "Editing file...", done: "Edited file" },
+  Glob: { pending: "Finding files...", done: "Found files" },
+  Grep: { pending: "Searching...", done: "Searched" },
+  LS: { pending: "Listing folder...", done: "Listed folder" },
 };
 
 const TAB_TOOLS = new Set([
@@ -131,72 +148,84 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
     const rendered = customRenderer({ args, result: resolvedResult });
     if (rendered !== null) {
       return (
-        <div className="flex flex-col w-full">
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 py-0.5 cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1 text-left"
-          >
-            {mcpInfo ? (
-              <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
-            ) : (
-              <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
-            )}
-            <span className="text-sm text-muted-foreground">{labels.done}</span>
-            {showTabBadge && <TabBadge toolCallId={toolCallId} />}
-            <ChevronRight
-              className={cn(
-                "size-3 text-muted-foreground/60 transition-transform",
-                expanded && "rotate-90"
+        <Collapsible
+          open={expanded}
+          onOpenChange={setExpanded}
+          className="flex flex-col w-full"
+        >
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 py-0.5 cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1 text-left"
+            >
+              {mcpInfo ? (
+                <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
+              ) : (
+                <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
-            />
-          </button>
-          {expanded && rendered}
-        </div>
+              <span className="text-sm text-muted-foreground">{labels.done}</span>
+              {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+              <ChevronRight
+                className={cn(
+                  "size-3 text-muted-foreground/60 transition-transform",
+                  expanded && "rotate-90"
+                )}
+              />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+            {rendered}
+          </CollapsibleContent>
+        </Collapsible>
       );
     }
   }
 
   // Default: collapsible with JSON fallback
   return (
-    <div className="flex flex-col w-full">
-      <button
-        type="button"
-        onClick={() => !pending && setExpanded(!expanded)}
-        className={cn(
-          "flex items-center gap-1.5 py-0.5 text-left",
-          !pending && "cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1"
-        )}
-        disabled={pending}
-      >
-        {mcpInfo ? (
-          <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
-        ) : (
-          <span
-            className={cn(
-              "size-1.5 rounded-full shrink-0",
-              pending ? "bg-blue-500 animate-pulse" : "bg-muted-foreground/40"
-            )}
-          />
-        )}
-        {pending ? (
-          <span className={cn("text-sm text-muted-foreground", !mcpInfo && "animate-pulse")}>{labels.pending}</span>
-        ) : (
-          <span className="text-sm text-muted-foreground">{labels.done}</span>
-        )}
-        {showTabBadge && <TabBadge toolCallId={toolCallId} />}
-        {!pending && (
-          <ChevronRight
-            className={cn(
-              "size-3 text-muted-foreground/60 transition-transform",
-              expanded && "rotate-90"
-            )}
-          />
-        )}
-      </button>
+    <Collapsible
+      open={expanded && !pending}
+      onOpenChange={(open) => !pending && setExpanded(open)}
+      className="flex flex-col w-full"
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex items-center gap-1.5 py-0.5 text-left",
+            !pending && "cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1"
+          )}
+          disabled={pending}
+        >
+          {mcpInfo ? (
+            <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
+          ) : (
+            <span
+              className={cn(
+                "size-1.5 rounded-full shrink-0",
+                pending ? "bg-blue-500 animate-pulse" : "bg-muted-foreground/40"
+              )}
+            />
+          )}
+          {pending ? (
+            <span className={cn("text-sm text-muted-foreground", !mcpInfo && "animate-pulse")}>{labels.pending}</span>
+          ) : (
+            <span className="text-sm text-muted-foreground">{labels.done}</span>
+          )}
+          {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+          {!pending && (
+            <ChevronRight
+              className={cn(
+                "size-3 text-muted-foreground/60 transition-transform",
+                expanded && "rotate-90"
+              )}
+            />
+          )}
+        </button>
+      </CollapsibleTrigger>
 
-      {expanded && !pending && (
-        <div className="ml-3 mt-1 border-l border-muted pl-3 pb-1 overflow-hidden">
+      <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+        <div className="ml-3 mt-1 border-l border-muted pl-3 pb-1">
           {(() => {
             const previewRenderer = getToolPreview(mcpToolName ?? toolName);
             if (previewRenderer) {
@@ -219,7 +248,7 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
             return null;
           })()}
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

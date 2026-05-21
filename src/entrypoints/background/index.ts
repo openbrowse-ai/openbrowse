@@ -133,7 +133,7 @@ export default defineBackground({
     import("./skill-registry").then(async ({ backgroundSkillRegistry }) => {
       await backgroundSkillRegistry.init();
       
-      const { BUNDLED_SKILLS, bootstrapBundledSkills } = await import("@/lib/skills/bundled");
+      const { bootstrapBundledSkills } = await import("@/lib/skills/bundled");
       await bootstrapBundledSkills();
     });
 

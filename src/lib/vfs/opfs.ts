@@ -1,3 +1,5 @@
+import { emitVfsChange } from "./events";
+
 export class OPFS {
   /**
    * Resolves a path to a directory handle.
@@ -44,6 +46,7 @@ export class OPFS {
     const writable = await handle.createWritable();
     await writable.write(content);
     await writable.close();
+    emitVfsChange(path);
   }
 
   static async readDir(path: string): Promise<string[]> {
@@ -58,6 +61,7 @@ export class OPFS {
 
   static async mkdir(path: string): Promise<void> {
     await this.getDirHandle(path, true);
+    emitVfsChange(path);
   }
 
   static async exists(path: string): Promise<boolean> {
@@ -94,6 +98,7 @@ export class OPFS {
     const dirPath = parts.join('/');
     const dirHandle = await this.getDirHandle(dirPath);
     await dirHandle.removeEntry(name, options);
+    emitVfsChange(path);
   }
 
   /**
