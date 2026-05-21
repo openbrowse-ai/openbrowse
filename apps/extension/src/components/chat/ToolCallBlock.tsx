@@ -7,7 +7,7 @@ import { RegistryIcon } from "@/components/ui/registry-icon";
 import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
 import { getMcpRegistry } from "@/lib/mcp";
 import { cn } from "@/lib/utils";
-import { getConnectorForMcpTool } from "@/registry/connectors";
+import { getConnectorForMcpTool } from "@openbrowse/connectors";
 import { ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";

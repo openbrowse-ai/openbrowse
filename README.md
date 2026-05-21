@@ -33,25 +33,31 @@ pnpm install
 pnpm dev
 ```
 
-Then go to `chrome://extensions`, enable Developer Mode, and load the `.output/chrome-mv3-dev` directory.
+Then go to `chrome://extensions`, enable Developer Mode, and load the `apps/extension/.output/chrome-mv3-dev` directory.
 
 ## Architecture
 
-OpenBrowse is a Chrome extension built with [WXT](https://wxt.dev/), React, and the [Vercel AI SDK](https://sdk.vercel.ai/).
+OpenBrowse is a pnpm monorepo. The Chrome extension (`apps/extension`) is built with [WXT](https://wxt.dev/), React, and the [Vercel AI SDK](https://sdk.vercel.ai/).
 
 ```
-src/
-├── entrypoints/
-│   ├── background/     # Service worker
-│   ├── collect/        # Full-page tab organizer
-│   ├── content/        # Overlay injection
-│   ├── offscreen/      # AI inference (WebLLM, cloud APIs)
-│   ├── overlay/        # Command palette (⌘⇧K)
-│   ├── settings/       # Settings page
-│   └── sidepanel/      # Chrome side panel
-├── components/         # Shared UI components
-├── hooks/              # Shared React hooks
-└── lib/                # Utilities, types, storage
+apps/
+├── extension/          # The OpenBrowse Chrome extension
+│   └── src/
+│       ├── entrypoints/
+│       │   ├── background/   # Service worker
+│       │   ├── content/      # Overlay injection
+│       │   ├── home/         # Full-page home/tab organizer
+│       │   ├── offscreen/    # AI inference (WebLLM, cloud APIs)
+│       │   ├── overlay/      # Command palette (Alt+K)
+│       │   ├── settings/     # Settings page
+│       │   └── sidepanel/    # Chrome side panel
+│       ├── components/       # UI components
+│       ├── hooks/            # React hooks
+│       └── lib/              # Utilities, agent loop, skills, OPFS
+└── docs/               # Documentation site (Next.js + Fumadocs)
+
+packages/
+└── connectors/         # MCP connector registry (shared)
 ```
 
 ## AI Providers

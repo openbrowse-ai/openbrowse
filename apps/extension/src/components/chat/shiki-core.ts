@@ -51,6 +51,8 @@ export const LANG_LOADERS: Record<string, () => Promise<{ default: LanguageRegis
 let highlighterPromise: Promise<HighlighterCore> | null = null;
 let highlighterSync: HighlighterCore | null = null;
 
+export function getHighlighter(syncOnly: true): HighlighterCore | null;
+export function getHighlighter(syncOnly?: false): Promise<HighlighterCore>;
 export function getHighlighter(syncOnly = false): HighlighterCore | Promise<HighlighterCore> | null {
   if (syncOnly) {
     return highlighterSync;

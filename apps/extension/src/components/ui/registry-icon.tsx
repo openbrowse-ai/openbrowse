@@ -9,17 +9,17 @@ import openaiSvg from "@/registry/providers/icons/openai.svg?raw";
 import openaiDarkSvg from "@/registry/providers/icons/openai-dark.svg?raw";
 import webLlmSvg from "@/registry/providers/icons/web-llm.svg?raw";
 
-import githubSvg from "@/registry/connectors/icons/github.svg?raw";
-import githubDarkSvg from "@/registry/connectors/icons/github-dark.svg?raw";
-import linearSvg from "@/registry/connectors/icons/linear.svg?raw";
-import notionSvg from "@/registry/connectors/icons/notion.svg?raw";
-import notionDarkSvg from "@/registry/connectors/icons/notion-dark.svg?raw";
-import sentrySvg from "@/registry/connectors/icons/sentry.svg?raw";
-import slackSvg from "@/registry/connectors/icons/slack.svg?raw";
-import stripeSvg from "@/registry/connectors/icons/stripe.svg?raw";
-import supabaseSvg from "@/registry/connectors/icons/supabase.svg?raw";
-import vercelSvg from "@/registry/connectors/icons/vercel.svg?raw";
-import vercelDarkSvg from "@/registry/connectors/icons/vercel-dark.svg?raw";
+import githubSvg from "@openbrowse/connectors/icons/github.svg?raw";
+import githubDarkSvg from "@openbrowse/connectors/icons/github-dark.svg?raw";
+import linearSvg from "@openbrowse/connectors/icons/linear.svg?raw";
+import notionSvg from "@openbrowse/connectors/icons/notion.svg?raw";
+import notionDarkSvg from "@openbrowse/connectors/icons/notion-dark.svg?raw";
+import sentrySvg from "@openbrowse/connectors/icons/sentry.svg?raw";
+import slackSvg from "@openbrowse/connectors/icons/slack.svg?raw";
+import stripeSvg from "@openbrowse/connectors/icons/stripe.svg?raw";
+import supabaseSvg from "@openbrowse/connectors/icons/supabase.svg?raw";
+import vercelSvg from "@openbrowse/connectors/icons/vercel.svg?raw";
+import vercelDarkSvg from "@openbrowse/connectors/icons/vercel-dark.svg?raw";
 
 interface IconEntry {
   light: string;
