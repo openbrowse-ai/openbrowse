@@ -133,9 +133,10 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
               let changed = false;
               if (Array.isArray(record.parts)) {
                 const newParts = record.parts.map((p) => {
-                  if (p && typeof p === "object" && p.type === "compaction") {
+                  if (p && typeof p === "object" && "type" in p && p.type === "compaction") {
                     changed = true;
-                    const { type: _type, ...data } = p as any;
+                    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                    const { type: _type, ...data } = p as Record<string, unknown>;
                     return { type: "data-compaction", data };
                   }
                   return p;

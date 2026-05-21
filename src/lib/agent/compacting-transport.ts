@@ -1,25 +1,18 @@
-import type {
-  Agent,
-  ChatTransport,
-  ToolSet,
-  UIMessage,
-  UIMessageChunk,
-} from "ai";
-import { DirectChatTransport } from "ai";
-import type { CompactionPart, SerializedUIPart } from "../types";
 import {
-  COMPACTION_USER_PROMPT,
-  prunePartsAtSendTime,
-} from "./compaction";
+  convertToModelMessages,
+  validateUIMessages,
+  type Agent,
+  type ChatTransport,
+  type InferUITools,
+  type ToolSet,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai";
+import type { AgentDataParts, AgentUIMessage, CompactionPart } from "../types";
+import { COMPACTION_USER_PROMPT, prunePartsAtSendTime } from "./compaction";
 
-interface Options {
-  // Use `any` for the agent generics: the wrapper does not consume any of
-  // the agent's per-call options, tool inferences, or output schema — it
-  // only delegates `sendMessages`/`reconnectToStream` through to a
-  // `DirectChatTransport` typed at the same UIMessage boundary the rest of
-  // the codebase uses.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  agent: Agent<any, ToolSet, any>;
+interface Options<TOOLS extends ToolSet> {
+  agent: Agent<never, TOOLS, never>;
   /**
    * Called once at the top of each `sendMessages`. The agent layer uses
    * this to clear the per-stream "needs mid-stream compaction" signal so
@@ -49,37 +42,75 @@ interface Options {
  * 3. Apply per-part pruning (truncate oversized tool outputs, drop
  *    screenshot data) so even the live tail can't ship hundreds of KB of
  *    stale payload.
- * 4. Delegate the rewritten list to a `DirectChatTransport`.
+ * 4. We skip `DirectChatTransport` and manually convert and stream via the
+ *    underlying Agent. `DirectChatTransport`'s class signature constrains
+ *    `UI_MESSAGE extends UIMessage<unknown, never, ...>` — i.e. forbids any
+ *    extended `DATA_PARTS` — which would reject our `AgentDataParts`.
+ *    Inlining the four-line equivalent (validate → convert → stream →
+ *    toUIMessageStream) lets us flow `AgentUIMessage` end-to-end without
+ *    type assertions.
  *
  * The Chat instance's in-memory messages are never mutated — the UI keeps
  * showing the full conversation; only what the LLM sees is compacted.
  *
  * If no compaction events exist, the wrapper still applies send-time
  * pruning (idempotent, near-zero overhead for short conversations).
+ *
+ * @typeParam TOOLS - The agent's tool set; flows through to
+ *   `validateUIMessages` so tool-call shapes are validated against the
+ *   agent's actual tools at the type level. Mirrors `DirectChatTransport`'s
+ *   `TOOLS` parameter.
  */
-export class CompactingChatTransport implements ChatTransport<UIMessage> {
-  private readonly inner: ChatTransport<UIMessage>;
+export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
+  implements ChatTransport<AgentUIMessage>
+{
+  private readonly agent: Agent<never, TOOLS, never>;
   private readonly onSendStart?: () => void;
 
-  constructor({ agent, onSendStart }: Options) {
-    this.inner = new DirectChatTransport({
-      agent,
-    }) as unknown as ChatTransport<UIMessage>;
+  constructor({ agent, onSendStart }: Options<TOOLS>) {
+    this.agent = agent;
     this.onSendStart = onSendStart;
   }
 
-  async sendMessages(
-    args: Parameters<ChatTransport<UIMessage>["sendMessages"]>[0],
-  ): Promise<ReadableStream<UIMessageChunk>> {
+  async sendMessages({
+    messages,
+    abortSignal,
+  }: Parameters<ChatTransport<AgentUIMessage>["sendMessages"]>[0]): Promise<
+    ReadableStream<UIMessageChunk>
+  > {
     this.onSendStart?.();
-    const rewritten = rewriteForLLM(args.messages);
-    return this.inner.sendMessages({ ...args, messages: rewritten });
+    const rewritten = rewriteForLLM(messages);
+
+    // Tie validateUIMessages' inferred UI_MESSAGE to *this transport's*
+    // TOOLS so its `tools` parameter resolves to the same shape as
+    // `agent.tools` (i.e. the precise tools the agent was constructed
+    // with). Without this hint TS defaults to the wide `UITools` map and
+    // rejects the assignment.
+    type ToolBoundUIMessage = UIMessage<
+      unknown,
+      AgentDataParts,
+      InferUITools<TOOLS>
+    >;
+    const validatedMessages = await validateUIMessages<ToolBoundUIMessage>({
+      messages: rewritten,
+      tools: this.agent.tools,
+    });
+
+    const modelMessages = await convertToModelMessages(validatedMessages, {
+      tools: this.agent.tools,
+    });
+
+    const result = await this.agent.stream({
+      prompt: modelMessages,
+      abortSignal,
+    });
+
+    return result.toUIMessageStream();
   }
 
-  reconnectToStream(
-    args: Parameters<ChatTransport<UIMessage>["reconnectToStream"]>[0],
-  ): Promise<ReadableStream<UIMessageChunk> | null> {
-    return this.inner.reconnectToStream(args);
+  reconnectToStream(): Promise<ReadableStream<UIMessageChunk> | null> {
+    // Reconnection is not supported for in-process direct agent transport.
+    return Promise.resolve(null);
   }
 }
 
@@ -87,8 +118,12 @@ export class CompactingChatTransport implements ChatTransport<UIMessage> {
  * Pure function: takes the chat's full UIMessage list and produces the
  * list to send to the model. Exported for testing and so other callers
  * (e.g. eventual `prepareStep` integrations) can share the logic.
+ *
+ * Operates on `AgentUIMessage` directly — its `DATA_PARTS = AgentDataParts`
+ * gives us a real `data-compaction` variant in the parts union, so all the
+ * helpers below narrow on `p.type === "data-compaction"` without casts.
  */
-export function rewriteForLLM(messages: UIMessage[]): UIMessage[] {
+export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
   // Step 1: repair legacy broken compaction events. An earlier version of
   // `runCompaction` had a "prune-only fast path" that wrote a compaction
   // event with an empty summary assistant. Sending that message fails the
@@ -125,14 +160,11 @@ export function rewriteForLLM(messages: UIMessage[]): UIMessage[] {
   }
 
   const rewritten = working.map((m) => {
-    let parts = asExtendedParts(m.parts);
+    let parts = m.parts;
     parts = substituteCompactionPart(parts);
     parts = prunePartsAtSendTime(parts);
-    if (parts === asExtendedParts(m.parts)) return m;
-    return {
-      ...m,
-      parts: asUIParts(parts),
-    };
+    if (parts === m.parts) return m;
+    return { ...m, parts };
   });
 
   // Final safety net: drop any message that still ended up with empty
@@ -153,12 +185,14 @@ export function rewriteForLLM(messages: UIMessage[]): UIMessage[] {
  */
 const AUTO_CONTINUE_PREFIX = "Continue where you left off";
 
-function excludeBrokenCompactionEvents(messages: UIMessage[]): UIMessage[] {
+function excludeBrokenCompactionEvents(
+  messages: AgentUIMessage[],
+): AgentUIMessage[] {
   const skipIds = new Set<string>();
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (m.role !== "user") continue;
-    const hasCompactionPart = asExtendedParts(m.parts).some(
+    const hasCompactionPart = m.parts.some(
       (p) => p.type === "data-compaction",
     );
     if (!hasCompactionPart) continue;
@@ -171,8 +205,8 @@ function excludeBrokenCompactionEvents(messages: UIMessage[]): UIMessage[] {
 
     const after = messages[i + 2];
     if (after && after.role === "user") {
-      const text = asExtendedParts(after.parts)
-        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      const text = after.parts
+        .filter((p) => p.type === "text")
         .map((p) => p.text)
         .join("");
       if (text.startsWith(AUTO_CONTINUE_PREFIX)) {
@@ -192,7 +226,7 @@ function excludeBrokenCompactionEvents(messages: UIMessage[]): UIMessage[] {
  * Persistence layer guarantees this pairing exists once a compaction is
  * complete.
  */
-function findLatestCompactionEvent(messages: UIMessage[]):
+function findLatestCompactionEvent(messages: AgentUIMessage[]):
   | {
       userIndex: number;
       summaryIndex: number;
@@ -202,13 +236,18 @@ function findLatestCompactionEvent(messages: UIMessage[]):
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "user") continue;
-    const part = asExtendedParts(m.parts).find(
-      (p): p is CompactionPart => p.type === "data-compaction",
-    );
+    // `find` narrows `part` to the data-compaction variant of
+    // `UIMessagePart<AgentDataParts, ...>`, which is structurally
+    // identical to `CompactionPart`.
+    const part = m.parts.find((p) => p.type === "data-compaction");
     if (!part) continue;
     const next = messages[i + 1];
     if (!next || next.role !== "assistant") continue;
-    return { userIndex: i, summaryIndex: i + 1, compactionPart: part };
+    return {
+      userIndex: i,
+      summaryIndex: i + 1,
+      compactionPart: part,
+    };
   }
   return undefined;
 }
@@ -218,12 +257,14 @@ function findLatestCompactionEvent(messages: UIMessage[]):
  * part for the model. Returns the same reference when nothing changed.
  */
 function substituteCompactionPart(
-  parts: SerializedUIPart[],
-): SerializedUIPart[] {
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
   let changed = false;
-  const out: SerializedUIPart[] = [];
+  const out: AgentUIMessage["parts"] = [];
   for (const p of parts) {
     if (p.type === "data-compaction") {
+      // TextUIPart is a member of `AgentUIMessage["parts"][number]`, so
+      // pushing it widens to the union with no cast.
       out.push({ type: "text", text: COMPACTION_USER_PROMPT });
       changed = true;
     } else {
@@ -231,16 +272,4 @@ function substituteCompactionPart(
     }
   }
   return changed ? out : parts;
-}
-
-// Helper to convert the AI SDK's strict parts union to our wider
-// SerializedUIPart union (which adds CompactionPart) without sprinkling
-// `as unknown as` everywhere. The chat library accepts our custom
-// DataUIPart client-side so it flows through the array seamlessly.
-function asExtendedParts(parts: UIMessage["parts"]): SerializedUIPart[] {
-  return parts as unknown as SerializedUIPart[];
-}
-
-function asUIParts(parts: SerializedUIPart[]): UIMessage["parts"] {
-  return parts as unknown as UIMessage["parts"];
 }

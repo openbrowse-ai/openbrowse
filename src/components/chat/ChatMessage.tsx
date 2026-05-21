@@ -1,9 +1,9 @@
-import type { UIMessage } from "@ai-sdk/react";
+import type { AgentUIMessage } from "@/lib/types";
 import { AssistantMessage } from "./AssistantMessage";
 import { UserMessage } from "./UserMessage";
 
 interface ChatMessageProps {
-  message: UIMessage;
+  message: AgentUIMessage;
   isStreaming?: boolean;
   onRegenerate?: () => void;
   onToolApproval?: (opts: { id: string; approved: boolean }) => void;

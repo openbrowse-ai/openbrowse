@@ -1,5 +1,10 @@
 // src/lib/agent/compaction.ts
-import type { SerializedUIPart, CompactionPart, ChatMessage } from "../types";
+import type {
+  AgentUIMessage,
+  ChatMessage,
+  CompactionPart,
+  SerializedUIPart,
+} from "../types";
 import type { ModelDefinition } from "@/registry/providers/types";
 
 // Constants
@@ -132,19 +137,20 @@ export interface PrunableMessage {
  *
  * Returns the same array reference when nothing changed (cheap fast-path for
  * messages with no large outputs).
+ *
+ * Operates on the SDK's `UIMessagePart` union directly via
+ * `AgentUIMessage["parts"]` so callers (the transport) don't have to
+ * convert to/from our `SerializedUIPart` shape. Only `dynamic-tool` parts
+ * are inspected; everything else passes through unchanged.
  */
 export function prunePartsAtSendTime(
-  parts: SerializedUIPart[],
-): SerializedUIPart[] {
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
   let changed = false;
-  const out: SerializedUIPart[] = [];
+  const out: AgentUIMessage["parts"] = [];
 
   for (const part of parts) {
-    if (
-      part.type !== "dynamic-tool" ||
-      part.state !== "output-available" ||
-      part.output === undefined
-    ) {
+    if (part.type !== "dynamic-tool" || part.state !== "output-available") {
       out.push(part);
       continue;
     }

@@ -1,4 +1,4 @@
-import type { UIMessage } from "@ai-sdk/react";
+import type { AgentUIMessage } from "@/lib/types";
 import { Check, Copy, Pencil } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -6,7 +6,7 @@ import { ReadOnlyEditor } from "@/components/tiptap/ReadOnlyEditor";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 
 interface UserMessageProps {
-  message: UIMessage;
+  message: AgentUIMessage;
   onEdit?: () => void;
   dimmed?: boolean;
 }

@@ -1,4 +1,4 @@
-import type { DataUIPart } from "ai";
+import type { UIMessage } from "ai";
 import type { McpServerConfig } from "./mcp/types";
 
 export interface FavoriteTab {
@@ -143,12 +143,39 @@ export type SerializedUIPart =
  */
 export interface CompactionPart {
   type: "data-compaction";
-  data: {
-    auto: boolean;
-    overflow?: boolean;
-    tailStartMessageId?: string;
-  };
+  data: CompactionData;
 }
+
+export interface CompactionData {
+  auto: boolean;
+  overflow?: boolean;
+  tailStartMessageId?: string;
+}
+
+/**
+ * Custom `DATA_PARTS` map for our `UIMessage`. Keying `compaction` here
+ * registers a `data-compaction` variant on `UIMessagePart<AgentDataParts, ...>`
+ * with `data: CompactionData`. This is what lets us narrow on
+ * `p.type === "data-compaction"` without any casts.
+ *
+ * The SDK type machinery generates the variant from this map; if you add a
+ * new application-specific data part, add it here and the rest of the
+ * codebase will pick it up via `AgentUIMessage`.
+ */
+export type AgentDataParts = {
+  compaction: CompactionData;
+};
+
+/**
+ * The `UIMessage` flavor we use throughout the app. The default `metadata`
+ * generic (`unknown`) and tool generic (`UITools`) are kept; only the
+ * `DATA_PARTS` slot is narrowed to our `AgentDataParts`.
+ *
+ * Component code, the chat hook, and the `CompactingChatTransport` all
+ * type-check against this so the discriminated union of `parts` includes
+ * `{ type: "data-compaction"; data: CompactionData; id?: string }`.
+ */
+export type AgentUIMessage = UIMessage<unknown, AgentDataParts>;
 
 export interface SerializedToolPart {
   type: "dynamic-tool";

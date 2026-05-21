@@ -4,7 +4,6 @@ import type {
   LanguageModel,
   ToolLoopAgentSettings,
   ToolSet,
-  UIMessage,
 } from "ai";
 import { ToolLoopAgent, tool } from "ai";
 import { z } from "zod";
@@ -12,7 +11,7 @@ import { chatDb } from "../chat-db";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
 import { memoryDb } from "../memory-db";
-import type { Settings } from "../types";
+import type { AgentUIMessage, Settings } from "../types";
 import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
 import { clearHandles } from "./tab-handles";
@@ -643,7 +642,7 @@ export async function createAgentTransport(
     enabled: boolean;
     config?: import("../types").ThinkingConfig;
   },
-): Promise<ChatTransport<UIMessage> | null> {
+): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
 
   const { providers } = await import("@/registry/providers");

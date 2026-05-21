@@ -20,7 +20,6 @@ import {
   shouldDebounceCompaction,
   MIN_MESSAGES_FOR_COMPACTION,
 } from "@/lib/agent/compaction";
-import type { CompactionPart } from "@/lib/types";
 import {
   type TabMentionAttrs,
   type ImagePreview,
@@ -37,6 +36,8 @@ import type {
   SerializedUIPart,
   Settings,
   ThinkingConfig,
+  AgentUIMessage,
+  CompactionPart,
 } from "@/lib/types";
 import { Chat, useChat } from "@ai-sdk/react";
 import {
@@ -50,11 +51,10 @@ import type {
   SourceUrlUIPart,
   StepStartUIPart,
   TextUIPart,
-  UIMessage,
 } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type AgentMessage = UIMessage;
+type AgentMessage = AgentUIMessage;
 
 interface UseAgentChatOptions {
   conversationId: string | null;
@@ -94,6 +94,9 @@ function serializeParts(parts: AgentMessage["parts"]): SerializedUIPart[] {
         ];
       case "step-start":
         return [{ type: "step-start" }];
+      case "data-compaction":
+        // `part.data` is `CompactionData` thanks to AgentDataParts.
+        return [{ type: "data-compaction", data: part.data }];
       case "dynamic-tool":
         return [
           {
@@ -164,6 +167,10 @@ function deserializePart(
       } satisfies SourceUrlUIPart;
     case "step-start":
       return { type: "step-start" } satisfies StepStartUIPart;
+    case "data-compaction":
+      // Reuse the shared `CompactionPart` shape — by construction it
+      // matches the data-compaction variant of `AgentMessage["parts"][number]`.
+      return { type: "data-compaction", data: p.data } satisfies CompactionPart;
     case "dynamic-tool":
       return deserializeToolPart(p);
     default:
