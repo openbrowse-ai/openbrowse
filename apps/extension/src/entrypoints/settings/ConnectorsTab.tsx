@@ -20,8 +20,8 @@ import { RegistryIcon } from "@/components/ui/registry-icon";
 import { useMcpState } from "@/hooks/useMcpState";
 import type { McpServerConfig, McpToolPermission } from "@/lib/mcp/types";
 import type { Settings } from "@/lib/types";
-import { connectors } from "@/registry/connectors";
-import type { ConnectorDefinition } from "@/registry/connectors/types";
+import { connectors } from "@openbrowse/connectors";
+import type { ConnectorDefinition } from "@openbrowse/connectors";
 import {
   ChevronLeft,
   ExternalLink,

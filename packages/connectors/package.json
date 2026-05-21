@@ -1,0 +1,24 @@
+{
+  "name": "@openbrowse/connectors",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./icons/*": "./src/icons/*"
+  },
+  "peerDependencies": {
+    "react": "^19"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "react": "^19.2.4",
+    "typescript": "^5.9.3"
+  }
+}
+

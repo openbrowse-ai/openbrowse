@@ -1,0 +1,40 @@
+---
+title: Tools Reference
+description: Complete reference for all browser agent tools.
+---
+
+The agent has access to the following tools:
+
+## Browsing
+
+| Tool | Description |
+|------|-------------|
+| `readPage` | Read the content of the active tab (URL, title, body text, links) |
+| `screenshot` | Capture a screenshot of the active tab |
+| `scrollPage` | Scroll the page up, down, or to a specific position |
+| `navigate` | Navigate the active tab to a URL |
+| `listTabs` | List all open tabs across windows |
+| `selectTab` | Switch to a specific tab |
+
+## Interaction
+
+| Tool | Description |
+|------|-------------|
+| `clickElement` | Click an element on the page by selector or text |
+| `typeInElement` | Type text into an input field |
+
+## Execution
+
+| Tool | Description |
+|------|-------------|
+| `executeCode` | Run JavaScript in an isolated worker |
+| `executeOnPage` | Run JavaScript in the context of the active page |
+
+## Memory
+
+| Tool | Description |
+|------|-------------|
+| `saveMemory` | Save information to persistent memory |
+| `recallMemory` | Recall previously saved memories |
+| `updateMemory` | Update an existing memory entry |
+| `deleteMemory` | Delete a memory entry |

@@ -35,6 +35,10 @@ web-ext.config.ts
 .claude/
 
 # Internal docs
-docs/superpowers/
+apps/docs/superpowers/
 .superpowers/
 .worktrees/
+
+# Local agent/skills tooling
+.agents/
+skills-lock.json

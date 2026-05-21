@@ -1,12 +1,14 @@
-# Connector Registry
+# @openbrowse/connectors
 
 The connector registry defines MCP (Model Context Protocol) server integrations available in OpenBrowse. Each connector provides the metadata, authentication config, and optional result formatting needed to give users a polished experience when interacting with external tools.
+
+This package is consumed by both `apps/extension` (for the runtime tool-call UI) and `apps/docs` (for the public connector pages at `/connectors`).
 
 ## Adding a new connector
 
 ### 1. Create the definition file
 
-Create `src/registry/connectors/{id}.ts`:
+Create `packages/connectors/src/{id}.ts`:
 
 ```ts
 import type { ConnectorDefinition, ToolResultLabel } from "./types";
@@ -56,17 +58,17 @@ export const definition: ConnectorDefinition = {
 
 ### 2. Add an icon
 
-Place your SVG icon at `src/registry/connectors/icons/{id}.svg`.
+Place your SVG icon at `packages/connectors/src/icons/{id}.svg`.
 
 - Must be a square SVG (ideally 16×16 or 24×24 viewBox)
 - Keep it simple — it renders at 14–16px in the chat UI
 - For dark mode, add a `{id}-dark.svg` and set `icon: { light: "{id}.svg", dark: "{id}-dark.svg" }`
 
-Then register it in `src/components/ui/registry-icon.tsx`:
+Then register it in the extension's `apps/extension/src/components/ui/registry-icon.tsx`:
 
 ```ts
-import myToolSvg from "@/registry/connectors/icons/my-tool.svg?raw";
-// optionally: import myToolDarkSvg from "@/registry/connectors/icons/my-tool-dark.svg?raw";
+import myToolSvg from "@openbrowse/connectors/icons/my-tool.svg?raw";
+// optionally: import myToolDarkSvg from "@openbrowse/connectors/icons/my-tool-dark.svg?raw";
 
 // Add to the icons record:
 "my-tool": { light: myToolSvg },
@@ -74,7 +76,7 @@ import myToolSvg from "@/registry/connectors/icons/my-tool.svg?raw";
 
 ### 3. Register the connector
 
-In `src/registry/connectors/index.ts`:
+In `packages/connectors/src/index.ts`:
 
 ```ts
 import { definition as myTool } from "./my-tool";
@@ -88,7 +90,7 @@ export const connectors: ConnectorDefinition[] = [
 ### 4. Verify TypeScript compiles
 
 ```sh
-npx tsc --noEmit
+pnpm -F openbrowse compile
 ```
 
 ## Customizing tool call UI with `formatResult`
@@ -167,22 +169,25 @@ The JSON payload inside tool results is server-specific. Always check the server
 ## File structure
 
 ```
-src/registry/connectors/
+packages/connectors/
 ├── README.md           ← you are here
-├── types.ts            ← ConnectorDefinition, parseToolResult, etc.
-├── index.ts            ← registry array + lookup functions
-├── icons/              ← SVG icons ({id}.svg, optional {id}-dark.svg)
-│   ├── github.svg
-│   ├── github-dark.svg
-│   └── ...
-├── github.ts           ← one file per connector
-├── linear.ts
-├── notion.ts
-├── sentry.ts
-├── slack.ts
-├── stripe.ts
-├── supabase.ts
-└── vercel.ts
+├── package.json
+├── tsconfig.json
+└── src/
+    ├── types.ts            ← ConnectorDefinition, parseToolResult, etc.
+    ├── index.ts            ← registry array + lookup functions
+    ├── icons/              ← SVG icons ({id}.svg, optional {id}-dark.svg)
+    │   ├── github.svg
+    │   ├── github-dark.svg
+    │   └── ...
+    ├── github.ts           ← one file per connector
+    ├── linear.ts
+    ├── notion.ts
+    ├── sentry.ts
+    ├── slack.ts
+    ├── stripe.ts
+    ├── supabase.ts
+    └── vercel.ts
 ```
 
 ## Guidelines

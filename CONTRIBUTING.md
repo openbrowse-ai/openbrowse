@@ -16,24 +16,43 @@ pnpm install
 pnpm dev
 ```
 
-After `pnpm dev`, go to `chrome://extensions`, enable Developer Mode, and load the unpacked extension from the `.output/chrome-mv3-dev` directory.
+After `pnpm dev`, go to `chrome://extensions`, enable Developer Mode, and load the unpacked extension from the `apps/extension/.output/chrome-mv3-dev` directory.
 
 ## Project Structure
 
+OpenBrowse is a pnpm monorepo:
+
 ```
-src/
-├── entrypoints/
-│   ├── background/     # Service worker — space management, messaging
-│   ├── collect/        # Full-page tab organizer (collect.html)
-│   ├── content/        # Content script — overlay injection, toasts
-│   ├── offscreen/      # Offscreen document — AI inference (WebLLM, cloud)
-│   ├── overlay/        # In-page command palette (⌘⇧K)
-│   ├── settings/       # Settings page
-│   └── sidepanel/      # Chrome side panel
-├── components/         # Shared React components
-├── hooks/              # Shared React hooks
-└── lib/                # Shared utilities, types, storage
+apps/
+├── extension/          # WXT Chrome extension (the OpenBrowse browser agent)
+│   └── src/
+│       ├── entrypoints/
+│       │   ├── background/   # Service worker — space management, messaging
+│       │   ├── content/      # Content script — overlay injection, toasts
+│       │   ├── home/         # Full-page home/tab organizer
+│       │   ├── offscreen/    # Offscreen document — AI inference (WebLLM, cloud)
+│       │   ├── overlay/      # In-page command palette (Alt+K)
+│       │   ├── settings/     # Settings page
+│       │   └── sidepanel/    # Chrome side panel
+│       ├── components/       # React components
+│       ├── hooks/            # React hooks
+│       ├── lib/              # Utilities, agent loop, MCP client, skills, OPFS
+│       └── registry/
+│           └── providers/    # LLM provider definitions (factories + metadata)
+└── docs/               # Next.js + Fumadocs documentation site
+
+packages/
+└── connectors/         # @openbrowse/connectors — MCP connector registry
+                        # (shared between extension and docs)
 ```
+
+Common scripts (run from repo root):
+
+- `pnpm dev` — run the extension in dev mode (Chrome)
+- `pnpm dev:firefox` — run the extension in dev mode (Firefox)
+- `pnpm dev:docs` — run the docs site
+- `pnpm build` — build everything
+- `pnpm compile` — typecheck every workspace
 
 ## Tech Stack
 

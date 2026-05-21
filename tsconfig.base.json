@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  }
+}
