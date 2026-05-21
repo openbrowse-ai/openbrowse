@@ -1,5 +1,8 @@
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "wxt";
+import fs from "node:fs";
+import path from "node:path";
+import { walkSkills } from "./src/build/walk-skills";
 
 export default defineConfig({
   srcDir: "src",
@@ -7,10 +10,17 @@ export default defineConfig({
   webExt: {
     chromiumArgs: ["--user-data-dir=.wxt/chrome-data"],
   },
-  vite: () => ({
-    plugins: [tailwindcss()],
-  }),
   hooks: {
+    "build:publicAssets": (wxt, assets) => {
+      const skillsDir = path.resolve(wxt.config.root, "public/skills");
+      if (fs.existsSync(skillsDir)) {
+        const manifest = walkSkills(skillsDir);
+        assets.push({
+          relativeDest: "skills-manifest.json",
+          contents: JSON.stringify(manifest, null, 2),
+        });
+      }
+    },
     // WXT auto-injects `side_panel.default_path` whenever a `sidepanel`
     // entrypoint exists. We deliberately don't want that — declaring a
     // global side panel makes Chrome show it on every tab by default,
@@ -22,6 +32,9 @@ export default defineConfig({
       delete (manifest as { side_panel?: unknown }).side_panel;
     },
   },
+  vite: () => ({
+    plugins: [tailwindcss()],
+  }),
   manifest: ({ mode }) => ({
     name: "OpenBrowse",
     description: "The open source browser agent.",

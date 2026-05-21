@@ -1,24 +1,46 @@
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { RegistryIcon } from "@/components/ui/registry-icon";
+import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
+import { getMcpRegistry } from "@/lib/mcp";
+import { cn } from "@/lib/utils";
+import { getConnectorForMcpTool } from "@/registry/connectors";
 import { ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
-import { RegistryIcon } from "@/components/ui/registry-icon";
-import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
-import { getConnectorForMcpTool } from "@/registry/connectors";
-import { getMcpRegistry } from "@/lib/mcp";
-import { SnapshotResult } from "./tool-results/snapshot";
-import { ScreenshotResult } from "./tool-results/screenshot";
 import { CodeResult } from "./tool-results/execute-code";
+import {
+  GlobResult,
+  GrepResult,
+  LSResult,
+  ReadFileResult,
+} from "./tool-results/fs";
+import { ScreenshotResult } from "./tool-results/screenshot";
+import { SkillResult } from "./tool-results/skill";
+import { SnapshotResult } from "./tool-results/snapshot";
 
 import { getToolPreview } from "./tool-previews";
 
-type ResultRenderer = (props: { args: Record<string, unknown>; result: unknown }) => ReactNode;
+type ResultRenderer = (props: {
+  args: Record<string, unknown>;
+  result: unknown;
+}) => ReactNode;
 
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   snapshot: ({ result }) => <SnapshotResult result={result} />,
   screenshot: ({ result }) => <ScreenshotResult result={result} />,
   executeCode: ({ args, result }) => <CodeResult args={args} result={result} />,
-  executeOnPage: ({ args, result }) => <CodeResult args={args} result={result} />,
+  executeOnPage: ({ args, result }) => (
+    <CodeResult args={args} result={result} />
+  ),
+  Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
+  Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
+  Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
+  LS: ({ args, result }) => <LSResult args={args} result={result} />,
+  skill: ({ args, result }) => <SkillResult args={args} result={result} />,
 };
 
 interface ToolCallBlockProps {
@@ -47,18 +69,42 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   recallMemory: { pending: "Recalling memory...", done: "Recalled memory" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
+  // Filesystem tools — friendly labels for non-developers
+  Read: { pending: "Reading file...", done: "Read file" },
+  Write: { pending: "Saving file...", done: "Saved file" },
+  Edit: { pending: "Editing file...", done: "Edited file" },
+  Glob: { pending: "Finding files...", done: "Found files" },
+  Grep: { pending: "Searching...", done: "Searched" },
+  LS: { pending: "Listing folder...", done: "Listed folder" },
+
+  // Skill tools
+  skill: { pending: "Loading skill...", done: "Loaded skill" },
+  create_skill: { pending: "Creating skill...", done: "Created skill" },
+  install_skill: { pending: "Installing skill...", done: "Installed skill" },
+  read_opfs_file: {
+    pending: "Reading bundled file...",
+    done: "Read bundled file",
+  },
 };
 
 const TAB_TOOLS = new Set([
-  "readPage", "screenshot", "navigate", "clickElement",
-  "typeInElement", "scrollPage", "selectTab", "executeOnPage", "snapshot",
+  "readPage",
+  "screenshot",
+  "navigate",
+  "clickElement",
+  "typeInElement",
+  "scrollPage",
+  "selectTab",
+  "executeOnPage",
+  "snapshot",
 ]);
 
 export function TabBadge({ toolCallId }: { toolCallId: string }) {
   const info = toolTabInfoStore.get(toolCallId);
   if (!info) return null;
 
-  const truncatedTitle = info.title.length > 24 ? info.title.slice(0, 22) + "…" : info.title;
+  const truncatedTitle =
+    info.title.length > 24 ? info.title.slice(0, 22) + "…" : info.title;
 
   return (
     <button
@@ -71,7 +117,11 @@ export function TabBadge({ toolCallId }: { toolCallId: string }) {
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-muted-foreground bg-muted/50 hover:bg-muted hover:text-foreground transition-colors ml-1.5 max-w-[160px] shrink-0"
     >
       {info.favIconUrl ? (
-        <img src={info.favIconUrl} alt="" className="size-3 shrink-0 rounded-sm" />
+        <img
+          src={info.favIconUrl}
+          alt=""
+          className="size-3 shrink-0 rounded-sm"
+        />
       ) : (
         <Globe className="size-3 shrink-0" />
       )}
@@ -86,22 +136,34 @@ function parseMcpToolName(toolKey: string): string | null {
   return match[1].replace(/_/g, " ").replace(/-/g, " ");
 }
 
-export function ToolCallBlock({ toolName, toolCallId, args, result, state }: ToolCallBlockProps) {
+export function ToolCallBlock({
+  toolName,
+  toolCallId,
+  args,
+  result,
+  state,
+}: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const pending = state === "call";
   const denied = state === "denied";
   const resolvedResult = result ?? toolResultStore.get(toolCallId);
   const serverIdMatch = toolName.match(/^mcp_([^_]+)_/);
   const serverUrl = serverIdMatch
-    ? getMcpRegistry().getStates().find((s) => s.config.id === serverIdMatch[1])?.config.url
+    ? getMcpRegistry()
+        .getStates()
+        .find((s) => s.config.id === serverIdMatch[1])?.config.url
     : undefined;
   const mcpInfo = getConnectorForMcpTool(toolName, serverUrl);
-  const mcpName = mcpInfo ? mcpInfo.toolName.replace(/_/g, " ").replace(/-/g, " ") : parseMcpToolName(toolName);
-  const connectorLabels = mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
-  const labels = TOOL_LABELS[toolName] ?? connectorLabels ?? {
-    pending: mcpName ? `Running ${mcpName}...` : `${toolName}...`,
-    done: mcpName ? mcpName : toolName,
-  };
+  const mcpName = mcpInfo
+    ? mcpInfo.toolName.replace(/_/g, " ").replace(/-/g, " ")
+    : parseMcpToolName(toolName);
+  const connectorLabels =
+    mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
+  const labels = TOOL_LABELS[toolName] ??
+    connectorLabels ?? {
+      pending: mcpName ? `Running ${mcpName}...` : `${toolName}...`,
+      done: mcpName ? mcpName : toolName,
+    };
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 
@@ -110,9 +172,13 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
     return (
       <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
         <X className="size-3 shrink-0 text-muted-foreground/60" />
-        <span className="text-muted-foreground/70 line-through">{labels.done}</span>
+        <span className="text-muted-foreground/70 line-through">
+          {labels.done}
+        </span>
         {showTabBadge && <TabBadge toolCallId={toolCallId} />}
-        <span className="text-[11px] text-muted-foreground/60 ml-1">Denied</span>
+        <span className="text-[11px] text-muted-foreground/60 ml-1">
+          Denied
+        </span>
       </div>
     );
   }
@@ -121,8 +187,9 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
   const builtinRenderer = BUILTIN_RESULT_RENDERERS[toolName];
   const mcpToolName = mcpInfo?.toolName;
   const connectorRenderer = mcpInfo?.connector.renderResult;
-  const customRenderer: ResultRenderer | undefined = builtinRenderer
-    ?? (connectorRenderer && mcpToolName
+  const customRenderer: ResultRenderer | undefined =
+    builtinRenderer ??
+    (connectorRenderer && mcpToolName
       ? ({ result }) => connectorRenderer(mcpToolName, result)
       : undefined);
 
@@ -131,72 +198,102 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
     const rendered = customRenderer({ args, result: resolvedResult });
     if (rendered !== null) {
       return (
-        <div className="flex flex-col w-full">
-          <button
-            type="button"
-            onClick={() => setExpanded(!expanded)}
-            className="flex items-center gap-1.5 py-0.5 cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1 text-left"
-          >
-            {mcpInfo ? (
-              <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
-            ) : (
-              <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
-            )}
-            <span className="text-sm text-muted-foreground">{labels.done}</span>
-            {showTabBadge && <TabBadge toolCallId={toolCallId} />}
-            <ChevronRight
-              className={cn(
-                "size-3 text-muted-foreground/60 transition-transform",
-                expanded && "rotate-90"
+        <Collapsible
+          open={expanded}
+          onOpenChange={setExpanded}
+          className="flex flex-col w-full"
+        >
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 py-0.5 cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1 text-left"
+            >
+              {mcpInfo ? (
+                <RegistryIcon
+                  id={mcpInfo.connector.id}
+                  className="size-3.5 shrink-0"
+                />
+              ) : (
+                <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
-            />
-          </button>
-          {expanded && rendered}
-        </div>
+              <span className="text-sm text-muted-foreground">
+                {labels.done}
+              </span>
+              {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+              <ChevronRight
+                className={cn(
+                  "size-3 text-muted-foreground/60 transition-transform",
+                  expanded && "rotate-90",
+                )}
+              />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+            {rendered}
+          </CollapsibleContent>
+        </Collapsible>
       );
     }
   }
 
   // Default: collapsible with JSON fallback
   return (
-    <div className="flex flex-col w-full">
-      <button
-        type="button"
-        onClick={() => !pending && setExpanded(!expanded)}
-        className={cn(
-          "flex items-center gap-1.5 py-0.5 text-left",
-          !pending && "cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1"
-        )}
-        disabled={pending}
-      >
-        {mcpInfo ? (
-          <RegistryIcon id={mcpInfo.connector.id} className="size-3.5 shrink-0" />
-        ) : (
-          <span
-            className={cn(
-              "size-1.5 rounded-full shrink-0",
-              pending ? "bg-blue-500 animate-pulse" : "bg-muted-foreground/40"
-            )}
-          />
-        )}
-        {pending ? (
-          <span className={cn("text-sm text-muted-foreground", !mcpInfo && "animate-pulse")}>{labels.pending}</span>
-        ) : (
-          <span className="text-sm text-muted-foreground">{labels.done}</span>
-        )}
-        {showTabBadge && <TabBadge toolCallId={toolCallId} />}
-        {!pending && (
-          <ChevronRight
-            className={cn(
-              "size-3 text-muted-foreground/60 transition-transform",
-              expanded && "rotate-90"
-            )}
-          />
-        )}
-      </button>
+    <Collapsible
+      open={expanded && !pending}
+      onOpenChange={(open) => !pending && setExpanded(open)}
+      className="flex flex-col w-full"
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "flex items-center gap-1.5 py-0.5 text-left",
+            !pending &&
+              "cursor-pointer rounded-sm hover:bg-accent/50 transition-colors px-1 -mx-1",
+          )}
+          disabled={pending}
+        >
+          {mcpInfo ? (
+            <RegistryIcon
+              id={mcpInfo.connector.id}
+              className="size-3.5 shrink-0"
+            />
+          ) : (
+            <span
+              className={cn(
+                "size-1.5 rounded-full shrink-0",
+                pending
+                  ? "bg-blue-500 animate-pulse"
+                  : "bg-muted-foreground/40",
+              )}
+            />
+          )}
+          {pending ? (
+            <span
+              className={cn(
+                "text-sm text-muted-foreground",
+                !mcpInfo && "animate-pulse",
+              )}
+            >
+              {labels.pending}
+            </span>
+          ) : (
+            <span className="text-sm text-muted-foreground">{labels.done}</span>
+          )}
+          {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+          {!pending && (
+            <ChevronRight
+              className={cn(
+                "size-3 text-muted-foreground/60 transition-transform",
+                expanded && "rotate-90",
+              )}
+            />
+          )}
+        </button>
+      </CollapsibleTrigger>
 
-      {expanded && !pending && (
-        <div className="ml-3 mt-1 border-l border-muted pl-3 pb-1 overflow-hidden">
+      <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+        <div className="ml-3 mt-1 border-l border-muted pl-3 pb-1">
           {(() => {
             const previewRenderer = getToolPreview(mcpToolName ?? toolName);
             if (previewRenderer) {
@@ -205,7 +302,9 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
             if (resolvedResult !== undefined) {
               return (
                 <pre className="whitespace-pre-wrap font-mono text-xs text-muted-foreground max-h-48 overflow-y-auto styled-scrollbar">
-                  {typeof resolvedResult === "string" ? resolvedResult : JSON.stringify(resolvedResult, null, 2)}
+                  {typeof resolvedResult === "string"
+                    ? resolvedResult
+                    : JSON.stringify(resolvedResult, null, 2)}
                 </pre>
               );
             }
@@ -219,7 +318,7 @@ export function ToolCallBlock({ toolName, toolCallId, args, result, state }: Too
             return null;
           })()}
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

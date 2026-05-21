@@ -1,4 +1,5 @@
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
+import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -320,7 +321,7 @@ export function ChatInput({
     extensions: [
       StarterKit.configure({ hardBreak: false }),
       Placeholder.configure({
-        placeholder: "Ask anything... Type @ to mention a tab",
+        placeholder: "Ask anything... Type @ to mention a tab, / for skills",
         showOnlyWhenEditable: false,
       }),
       Markdown,
@@ -349,6 +350,7 @@ export function ChatInput({
         },
       }),
       TabMention,
+      SkillSlash,
     ],
     editable: true,
     editorProps: {

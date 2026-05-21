@@ -1,35 +1,40 @@
-import { ChatInput, type TabMentionAttrs, type ImagePreview } from "./ChatInput";
+import {
+  ChatInput,
+  type ImagePreview,
+  type TabMentionAttrs,
+} from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
-import { Logo } from "@/components/ui/logo";
 import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import { Logo } from "@/components/ui/logo";
+import { useAgentChat } from "@/hooks/useAgentChat";
 import { cn } from "@/lib/utils";
 import { providers } from "@/registry/providers";
 import {
-  Settings2,
-  MessageSquarePlus,
-  ArrowLeft,
   AlertCircle,
-  RefreshCw,
-  X,
-  Sparkles,
+  ArrowLeft,
   FileText,
-  Link,
   HelpCircle,
+  Link,
+  MessageSquarePlus,
+  RefreshCw,
+  Settings2,
+  Sparkles,
+  X,
 } from "lucide-react";
-import { useAgentChat } from "@/hooks/useAgentChat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { TodoPanel } from "./TodoPanel";
 
 interface ChatViewProps {
   conversationId: string | null;
   spaceId: string | null;
   onNewConversation: (id: string) => void;
   onOpenConversations?: () => void;
+  onSettingsClick?: () => void;
+  onClose?: () => void;
   className?: string;
   showBackButton?: boolean;
   onBack?: () => void;
@@ -75,6 +80,13 @@ interface ChatViewProps {
    * The URL of the origin tab at detach time, used to detect restoration.
    */
   originUrl?: string | null;
+  /**
+   * Optional initial value for the chat input editor. Used by the "Try in
+   * chat" flow from settings — when the home page opens with a `?prefill=`
+   * URL parameter, this is forwarded down so the agent input is pre-populated
+   * (e.g. with `/skill-name `).
+   */
+  initialInput?: string;
 }
 
 export function ChatView({
@@ -82,22 +94,25 @@ export function ChatView({
   spaceId,
   onNewConversation,
   onOpenConversations: _onOpenConversations,
+  onSettingsClick,
+  onClose,
   className,
   showBackButton,
   onBack,
   showHeader = true,
-  onSettingsClick,
-  onClose,
   isPopupMode = false,
   isGlobalChat = false,
   originWindowId,
   originTabId,
   originUrl,
+  initialInput,
 }: ChatViewProps) {
   // Track the live origin tab id in popup mode. May change if the original
   // origin tab is closed and later restored from history (the URL matches a
   // freshly-opened tab in the origin window). Side-panel mode ignores this.
-  const [liveOriginTabId, setLiveOriginTabId] = useState<number | null>(originTabId ?? null);
+  const [liveOriginTabId, setLiveOriginTabId] = useState<number | null>(
+    originTabId ?? null,
+  );
 
   useEffect(() => {
     setLiveOriginTabId(originTabId ?? null);
@@ -132,6 +147,7 @@ export function ChatView({
     // useAgentChat's auto-resolution from the active tab in the current
     // window (which, in per-tab mode, IS the host tab).
     hostTabIdOverride: isPopupMode ? liveOriginTabId : undefined,
+    initialInput,
   });
 
   // Global Option+Space popup: persist unsent draft text across dismiss/reopen
@@ -175,21 +191,24 @@ export function ChatView({
     return () => clearTimeout(timer);
   }, [isGlobalChat, input]);
 
-const providerModels = useMemo(() => {
+  const providerModels = useMemo(() => {
     return providers
       .map((provider) => {
         const enabledModels = provider.models.filter((m) =>
-          settings.enabledModels.includes(`${provider.id}:${m.id}`)
+          settings.enabledModels.includes(`${provider.id}:${m.id}`),
         );
         if (enabledModels.length === 0) return null;
 
         let enabled = true;
         if (provider.setup === "byok") {
           const config = settings.providerConfigs[provider.id] ?? {};
-          const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
+          const requiredFields =
+            provider.configSchema?.filter((f) => f.required) ?? [];
           enabled = requiredFields.every((f) => !!config[f.key]);
         } else if (provider.setup === "web-llm") {
-          enabled = enabledModels.some((m) => settings.downloadedModels.includes(m.id));
+          enabled = enabledModels.some((m) =>
+            settings.downloadedModels.includes(m.id),
+          );
         }
 
         return {
@@ -200,11 +219,19 @@ const providerModels = useMemo(() => {
         };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
-  }, [settings.enabledModels, settings.providerConfigs, settings.downloadedModels]);
+  }, [
+    settings.enabledModels,
+    settings.providerConfigs,
+    settings.downloadedModels,
+  ]);
 
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [preEditInput, setPreEditInput] = useState("");
-  const [activeTab, setActiveTab] = useState<{ title: string; favicon: string; url: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<{
+    title: string;
+    favicon: string;
+    url: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!isPopupMode) return;
@@ -267,10 +294,21 @@ const providerModels = useMemo(() => {
             return;
           }
         } else {
-          [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          [tab] = await chrome.tabs.query({
+            active: true,
+            currentWindow: true,
+          });
         }
-        if (tab?.url && !tab.url.startsWith("chrome://") && !tab.url.startsWith(chrome.runtime.getURL(""))) {
-          setActiveTab({ title: tab.title ?? "Untitled", favicon: tab.favIconUrl ?? "", url: tab.url });
+        if (
+          tab?.url &&
+          !tab.url.startsWith("chrome://") &&
+          !tab.url.startsWith(chrome.runtime.getURL(""))
+        ) {
+          setActiveTab({
+            title: tab.title ?? "Untitled",
+            favicon: tab.favIconUrl ?? "",
+            url: tab.url,
+          });
         } else {
           setActiveTab(null);
         }
@@ -340,7 +378,7 @@ const providerModels = useMemo(() => {
     : -1;
 
   return (
-    <div className={cn("flex flex-col h-full", className)}>
+    <div className={cn("flex flex-col h-full pt-1", className)}>
       {/* Header */}
       {showHeader && (
         <div className="flex items-center justify-between px-3 py-2 border-b border-border">
@@ -390,9 +428,6 @@ const providerModels = useMemo(() => {
         </div>
       )}
 
-      {/* Todo Panel */}
-      <TodoPanel conversationId={conversationId} />
-
       {/* Messages */}
       <Conversation className="flex-1">
         <ConversationContent className="p-3">
@@ -430,7 +465,9 @@ const providerModels = useMemo(() => {
                     <button
                       key={label}
                       type="button"
-                      onClick={() => { setInput(label); }}
+                      onClick={() => {
+                        setInput(label);
+                      }}
                       className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors text-left"
                     >
                       <Icon className="size-3.5 shrink-0" />
@@ -493,7 +530,9 @@ const providerModels = useMemo(() => {
                   isStreaming={isLastAssistant}
                   dimmed={isDimmed}
                   onRegenerate={
-                    message.role === "assistant" && !isLoading && !editingMessageId
+                    message.role === "assistant" &&
+                    !isLoading &&
+                    !editingMessageId
                       ? () => handleRegenerate(message.id)
                       : undefined
                   }
@@ -533,7 +572,11 @@ const providerModels = useMemo(() => {
         {activeTab && messages.length === 0 && !editingMessageId && (
           <div className="flex items-center gap-2 px-2 py-1.5 mb-1.5 rounded-md bg-accent/50">
             {activeTab.favicon && (
-              <img src={activeTab.favicon} alt="" className="size-4 rounded-sm shrink-0" />
+              <img
+                src={activeTab.favicon}
+                alt=""
+                className="size-4 rounded-sm shrink-0"
+              />
             )}
             <span className="text-xs text-muted-foreground truncate min-w-0">
               Sharing &ldquo;{activeTab.title}&rdquo;
@@ -576,8 +619,7 @@ const providerModels = useMemo(() => {
           selectedModelCapabilities={
             providers
               .flatMap((p) => p.models)
-              .find((m) => m.id === agentSettings.agentModel)
-              ?.capabilities
+              .find((m) => m.id === agentSettings.agentModel)?.capabilities
           }
           autoFocus
           focusTrigger={`${conversationId ?? "new"}-${editingMessageId ?? ""}`}

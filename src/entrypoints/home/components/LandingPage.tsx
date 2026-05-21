@@ -24,6 +24,11 @@ interface LandingPageProps {
   tabCount: number;
   pinnedCount: number;
   onNewConversation: (id: string) => void;
+  /**
+   * Pre-seeded value for the chat input (consumed once on mount). Used by the
+   * "Try in chat" flow from settings.
+   */
+  initialInput?: string;
 }
 
 const SUGGESTIONS = [
@@ -38,9 +43,10 @@ export function LandingPage({
   tabCount,
   pinnedCount,
   onNewConversation,
+  initialInput,
 }: LandingPageProps) {
   const recentTabs = useRecentTabs(space?.windowId ?? null);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput ?? "");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
 

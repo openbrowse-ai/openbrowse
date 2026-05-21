@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
 @import "../../styles/fonts.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -148,4 +149,46 @@ body {
 [data-slot="command"] {
   box-shadow: none !important;
   ring: none;
+}
+
+/* Shiki dual-theme switching.
+ * Shiki emits `--shiki-light` / `--shiki-dark` (and bg variants) on each token.
+ * We apply the light theme by default and override with the dark theme when
+ * `.dark` is on an ancestor (set by useTheme on <html>).
+ *
+ * Background is only applied to the outer `.shiki` block — applying it to
+ * inner spans would render dark patches behind every token (since CSS vars
+ * cascade) and create the appearance of broken per-line backgrounds. */
+.shiki {
+  background-color: var(--shiki-light-bg);
+}
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+
+.dark .shiki {
+  background-color: var(--shiki-dark-bg);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* Line-number gutter for `<CodeViewer lineNumbers>`. Shiki wraps each source
+ * line in `<span class="line">`, so we increment a counter on each one and
+ * render its value via a `::before` pseudo-element. */
+.with-line-numbers .shiki code {
+  counter-reset: line;
+}
+.with-line-numbers .shiki .line::before {
+  content: counter(line);
+  counter-increment: line;
+  display: inline-block;
+  width: 2.5rem;
+  padding-right: 1rem;
+  text-align: right;
+  color: var(--color-muted-foreground);
+  opacity: 0.6;
+  user-select: none;
 }

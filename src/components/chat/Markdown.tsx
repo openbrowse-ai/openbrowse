@@ -1,6 +1,8 @@
 import { cn } from "@/lib/utils";
 import { Streamdown } from "streamdown";
 import "streamdown/styles.css";
+import "./markdown.css";
+import { codePlugin } from "./shiki-streamdown-plugin";
 
 interface MarkdownProps {
   source: string;
@@ -18,6 +20,7 @@ export function Markdown({ source, className, isStreaming = false }: MarkdownPro
       animated
       isAnimating={isStreaming}
       caret={isStreaming ? "circle" : undefined}
+      plugins={{ code: codePlugin }}
     >
       {source}
     </Streamdown>

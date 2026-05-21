@@ -1,3 +1,4 @@
+import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
   ChatTransport,
@@ -17,23 +18,28 @@ import { CompactingChatTransport } from "./compacting-transport";
 import { clearHandles } from "./tab-handles";
 import {
   clickElementTool,
+  createSkillTool,
   deleteMemoryTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
+  installSkillTool,
   listTabsTool,
   navigateTool,
+  readOpfsFileTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
   screenshotTool,
   scrollPageTool,
   selectTabTool,
+  skillTool,
   snapshotTool,
   todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
 } from "./tools";
+import { createFsTools } from "./tools/fs";
 import type { BrowserTool } from "./types";
 
 const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users understand and interact with web pages.
@@ -107,9 +113,17 @@ extract({
 - If snapshot returns an empty result or refCount: 0, try another approach: switch \`mode\` (viewport ↔ interactive), scope to a different selector, scrollPage and re-snapshot, or take a screenshot. Don't give up after a single retry.
 - Be concise in your text replies to the user. Take as many tool calls as the task needs.
 
+## Virtual Workspace
+
+You are operating in a sandboxed, browser-based virtual file system (VFS). You have tools to Read, Write, Edit, Glob, Grep, and LS files within this workspace.
+
+- You do NOT have a Bash tool.
+- You cannot execute code natively.
+- You act as an Intelligent File Generator. Build the implementation files, configure boilerplates, and write code confidently. The user will export the workspace and run the code locally on their own machine.
+
 ## Code Execution
 
-You have two tools for running JavaScript:
+You have two tools for running JavaScript (Note: these do NOT run in your Virtual Workspace):
 
 - \`executeCode\`: Runs in an isolated sandbox. Use for computation, data transforms, API calls (fetch). No DOM access. Pass data via \`input\` parameter, access it as \`__input\` in your code. Use \`return\` to produce output.
 - \`executeOnPage\`: Runs in the active tab with full DOM/page access. Requires user approval. Use when you need to read or modify the page beyond what snapshot/clickElement/typeInElement provide — for example, scraping structured data from a product grid, or reading \`data-*\` attributes that don't appear in the accessibility tree.
@@ -511,11 +525,17 @@ function toSDKTool<TInput, TOutput>(
       // for a conversation that hasn't owned any tabs yet, bind the panel's
       // host tab so the agent has a working target. Skipped when the host
       // tab is unknown, an extension/chrome page, or already in the group.
-      if (agentConversationId && agentHostTabId != null && getTargetTabId() == null) {
+      if (
+        agentConversationId &&
+        agentHostTabId != null &&
+        getTargetTabId() == null
+      ) {
         try {
           const conv = await chatDb.getConversation(agentConversationId);
           if (conv && conv.ownedTabIds.length === 0) {
-            const hostTab = await chrome.tabs.get(agentHostTabId).catch(() => null);
+            const hostTab = await chrome.tabs
+              .get(agentHostTabId)
+              .catch(() => null);
             const hostUrl = hostTab?.url ?? "";
             const isInternal =
               hostUrl.startsWith("chrome://") ||
@@ -633,11 +653,13 @@ export function resetAgentIndicator() {
   }
 }
 
+
 export async function createAgentTransport(
   settings: Settings,
   agentModel: string,
   spaceId: string | null = null,
   spaceName: string | null = null,
+  conversationId: string | null = null,
   thinkingConfig?: {
     enabled: boolean;
     config?: import("../types").ThinkingConfig;
@@ -658,6 +680,8 @@ export async function createAgentTransport(
   const model = provider.createLanguageModel(config, agentModel);
   setCurrentAgentModel(model);
 
+  const fsTools = createFsTools(conversationId);
+
   const browserTools: Record<string, ToolSet[string]> = {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
     readPage: toSDKTool(readPageTool, "readPage"),
@@ -676,6 +700,16 @@ export async function createAgentTransport(
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
+    skill: toSDKTool(skillTool, "skill"),
+    install_skill: toSDKTool(installSkillTool, "install_skill"),
+    create_skill: toSDKTool(createSkillTool, "create_skill"),
+    read_opfs_file: toSDKTool(readOpfsFileTool, "read_opfs_file"),
+    Read: toSDKTool(fsTools.readTool, "Read"),
+    Write: toSDKTool(fsTools.writeTool, "Write"),
+    Edit: toSDKTool(fsTools.editTool, "Edit"),
+    Glob: toSDKTool(fsTools.globTool, "Glob"),
+    Grep: toSDKTool(fsTools.grepTool, "Grep"),
+    LS: toSDKTool(fsTools.lsTool, "LS"),
   };
 
   const mcpTools = getMcpRegistry().toSDKTools();
@@ -784,6 +818,28 @@ export async function createAgentTransport(
         return response.result;
       },
     });
+  }
+
+  // --- Skills Injection ---
+  await getSkillsRegistry().init();
+  const skillsState = getSkillsRegistry().getState();
+
+  // Apply global enabled flag + per-space allow/deny override
+  const availableSkills = skillsState.skills.filter((skill) => {
+    // Global toggle (defaults to enabled if undefined for backward compat)
+    if (skill.enabled === false) return false;
+    const spaceConfig = skillsState.spaceConfigs.find(
+      (c) => c.spaceId === spaceId && c.skillName === skill.name,
+    );
+    return !spaceConfig || spaceConfig.state !== "deny";
+  });
+
+  if (availableSkills.length > 0) {
+    const skillsSection = availableSkills
+      .map((s) => `- ${s.name}: ${s.description}`)
+      .join("\n");
+
+    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use read_opfs_file({ path }).\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
   const tools = { ...browserTools, ...mcpTools };

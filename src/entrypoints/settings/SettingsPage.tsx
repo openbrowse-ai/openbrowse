@@ -8,16 +8,18 @@ import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
 import { storage } from "@/lib/storage";
 import type { Settings, AgentSettings } from "@/lib/types";
 import { GeneralTab } from "./GeneralTab";
-import { ModelsTab } from "./ModelsTab";
-import { ConnectorsTab } from "./ConnectorsTab";
-import { SpacesTab } from "./SpacesTab";
 import { MemoryTab } from "./MemoryTab";
+import { ModelsTab } from "./ModelsTab";
+import { SpacesTab } from "./SpacesTab";
+import { SkillsTab } from "./SkillsTab";
+import { ConnectorsTab } from "./ConnectorsTab";
 
 const TABS = [
   { id: "general", label: "General" },
   { id: "spaces", label: "Spaces" },
   { id: "models", label: "Models" },
   { id: "connectors", label: "Connectors" },
+  { id: "skills", label: "Skills" },
   { id: "memory", label: "Memory" },
 ] as const;
 
@@ -170,6 +172,18 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 } else {
                   await storage.setSettings({ ...current, ...patch });
                 }
+              }}
+            />
+          )}
+
+          {activeTab === "skills" && (
+            <SkillsTab
+              settings={settings}
+              onChange={async (patch) => {
+                const updated = { ...settings, ...patch };
+                setSettings(updated);
+                setSavedSettings(updated);
+                await storage.setSettings(updated);
               }}
             />
           )}

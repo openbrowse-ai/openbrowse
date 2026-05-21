@@ -68,6 +68,12 @@ interface UseAgentChatOptions {
    * `currentWindow` would resolve to the popup itself.
    */
   hostTabIdOverride?: number | null;
+  /**
+   * Initial value of the chat input editor. Used by the "Try in chat" flow
+   * to pre-seed the input with a slash command when the home page opens
+   * with a `?prefill=` URL parameter.
+   */
+  initialInput?: string;
 }
 
 function generateId() {
@@ -297,12 +303,13 @@ export function useAgentChat({
   spaceId,
   onNewConversation,
   hostTabIdOverride,
+  initialInput,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     DEFAULT_AGENT_SETTINGS,
   );
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialInput ?? "");
 
   // Latest host tab override; the resolver below reads it via ref so
   // resolveHostTabId() doesn't need to be a dep of every effect that uses it.
@@ -422,6 +429,7 @@ export function useAgentChat({
         agentSettings.agentModel,
         spaceId,
         spaceName,
+        conversationId,
         agentSettings.thinkingEnabled
           ? { enabled: true, config: agentSettings.thinkingConfig }
           : undefined,
