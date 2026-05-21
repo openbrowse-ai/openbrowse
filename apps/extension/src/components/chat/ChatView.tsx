@@ -33,8 +33,6 @@ interface ChatViewProps {
   spaceId: string | null;
   onNewConversation: (id: string) => void;
   onOpenConversations?: () => void;
-  onSettingsClick?: () => void;
-  onClose?: () => void;
   className?: string;
   showBackButton?: boolean;
   onBack?: () => void;

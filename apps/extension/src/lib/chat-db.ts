@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { CompactionState, SerializedUIPart, TodoItem } from "./types";
+import type { SerializedUIPart, TodoItem } from "./types";
 import { OPFS } from "./vfs/opfs";
 
 interface ChatDB extends DBSchema {
@@ -117,7 +117,7 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           };
           migrateConversationsTodos();
           
-          // Add activatedSkills to CompactionState - no schema changes needed,
+          // Add activatedSkills to compaction data — no schema changes needed,
           // as it's an optional array inside the value object.
         }
 
