@@ -1,5 +1,10 @@
 // src/lib/agent/compaction.ts
-import type { SerializedUIPart, CompactionState } from "../types";
+import type {
+  AgentUIMessage,
+  ChatMessage,
+  CompactionPart,
+  SerializedUIPart,
+} from "../types";
 import type { ModelDefinition } from "@/registry/providers/types";
 
 // Constants
@@ -11,8 +16,18 @@ export const PROTECTED_TURNS = 2;
 export const TAIL_TURNS = 2;
 export const MIN_PRESERVE_RECENT_TOKENS = 2_000;
 export const MAX_PRESERVE_RECENT_TOKENS = 8_000;
-export const MAX_THRASH_ATTEMPTS = 3;
 export const MIN_MESSAGES_FOR_COMPACTION = 4;
+/**
+ * Time-based debounce for thrash detection. If the latest completed
+ * compaction in the conversation finished less than this many milliseconds
+ * ago, skip running another compaction. This prevents the
+ * compaction-summarizes-but-summary-still-overflows infinite loop without
+ * keeping a hidden attempts counter.
+ *
+ * 30s is a sane default — covers a runaway summary cycle but doesn't block
+ * a genuinely long agent run that crosses the threshold a second time.
+ */
+export const COMPACTION_DEBOUNCE_MS = 30_000;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_OUTPUT = 8_000;
 
@@ -107,6 +122,66 @@ export interface PrunableMessage {
   role: "user" | "assistant" | "system";
   parts: SerializedUIPart[];
   createdAt: number;
+}
+
+/**
+ * Per-message-part pruner used by the compacting transport at send time.
+ *
+ * Differs from `pruneMessages`:
+ * - Operates on a single message's `parts` (no protected-tail logic — the
+ *   transport already preserves the verbatim tail above this layer).
+ * - Always trims oversized tool outputs (no `PRUNE_PROTECT` cumulative budget
+ *   — that gates the *decision* to compact in `runCompaction`, not what we
+ *   send to the model).
+ * - Idempotent — running it twice produces identical output.
+ *
+ * Returns the same array reference when nothing changed (cheap fast-path for
+ * messages with no large outputs).
+ *
+ * Operates on the SDK's `UIMessagePart` union directly via
+ * `AgentUIMessage["parts"]` so callers (the transport) don't have to
+ * convert to/from our `SerializedUIPart` shape. Only `dynamic-tool` parts
+ * are inspected; everything else passes through unchanged.
+ */
+export function prunePartsAtSendTime(
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
+  let changed = false;
+  const out: AgentUIMessage["parts"] = [];
+
+  for (const part of parts) {
+    if (part.type !== "dynamic-tool" || part.state !== "output-available") {
+      out.push(part);
+      continue;
+    }
+
+    const outputStr =
+      typeof part.output === "string"
+        ? part.output
+        : JSON.stringify(part.output);
+
+    if (
+      part.toolName === "screenshot" ||
+      part.toolName === "screenshotPage"
+    ) {
+      out.push({ ...part, output: "[screenshot removed during compaction]" });
+      changed = true;
+      continue;
+    }
+
+    if (outputStr.length > TOOL_OUTPUT_MAX_CHARS) {
+      out.push({
+        ...part,
+        output: outputStr.substring(0, TOOL_OUTPUT_MAX_CHARS) + "...",
+      });
+      changed = true;
+      continue;
+    }
+
+    out.push(part);
+  }
+
+  return changed ? out : parts;
 }
 
 export function pruneMessages(
@@ -324,24 +399,129 @@ export function prepareMessagesForSummarization(
   return formatted.join("\n\n");
 }
 
-// Anti-Thrashing Helpers
+// Compaction-event helpers (message-based architecture)
 
-export function shouldStopCompacting(
-  state: CompactionState | undefined
+/**
+ * A "completed compaction" is a user message containing a `CompactionPart`
+ * immediately followed by an assistant message marked `summary: true`.
+ *
+ * The pair represents one auto- or manually-triggered compaction event.
+ * The pre-compaction head can be safely dropped from the LLM view; the
+ * UI keeps the full history.
+ */
+export interface CompactionEvent {
+  /** Index of the user message carrying the CompactionPart. */
+  userIndex: number;
+  /** Index of the assistant message carrying the summary text. */
+  summaryIndex: number;
+  /** The CompactionPart on the user message (carries `tailStartMessageId`). */
+  part: CompactionPart;
+  /** Plain-text summary extracted from the assistant message. */
+  summaryText: string;
+  /** Timestamp the assistant summary was created at (ms). */
+  completedAt: number;
+}
+
+/**
+ * Walks `messages` in order and identifies completed compaction events.
+ *
+ * A compaction is "completed" when the user-with-CompactionPart is
+ * immediately followed by an assistant with `summary: true`. Returns
+ * events in chronological order.
+ */
+export function findCompactionEvents(
+  messages: { role: string; parts: any[]; summary?: boolean; createdAt?: number }[],
+): CompactionEvent[] {
+  const events: CompactionEvent[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const part = m.parts.find(
+      (p): p is CompactionPart => p.type === "data-compaction",
+    );
+    if (!part) continue;
+    const next = messages[i + 1];
+    if (!next || next.role !== "assistant" || !next.summary) continue;
+    const summaryText = next.parts
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text)
+      .join("\n")
+      .trim();
+    events.push({
+      userIndex: i,
+      summaryIndex: i + 1,
+      part,
+      summaryText,
+      completedAt: next.createdAt ?? 0,
+    });
+  }
+  return events;
+}
+
+/**
+ * Time-based debounce: returns true if a recent compaction event finished
+ * within `COMPACTION_DEBOUNCE_MS`, indicating we shouldn't run another one
+ * yet. Replaces the legacy `attempts` counter.
+ */
+export function shouldDebounceCompaction(
+  events: CompactionEvent[],
+  nowMs: number = Date.now(),
 ): boolean {
-  return state !== undefined && state.attempts >= MAX_THRASH_ATTEMPTS;
+  const last = events.at(-1);
+  if (!last) return false;
+  return nowMs - last.completedAt < COMPACTION_DEBOUNCE_MS;
 }
 
-export function incrementAttempts(state: CompactionState): CompactionState {
-  return {
-    ...state,
-    attempts: state.attempts + 1,
-  };
+/**
+ * Reorders messages for the LLM view. For the latest completed compaction,
+ * the pre-event head is dropped; the compaction-user message is kept (its
+ * CompactionPart will be replaced with synthetic prompt text by the
+ * transport before sending), followed by the summary assistant, the
+ * retained tail (anchored at `tailStartMessageId` if present, else the
+ * messages immediately after the event), and any post-event messages.
+ *
+ * Returns the original array (unchanged) if there are no completed
+ * compactions.
+ */
+export function filterCompactedMessages<
+  T extends { id: string; role: string; parts: any[] },
+>(messages: T[]): T[] {
+  const events = findCompactionEvents(messages);
+  const last = events.at(-1);
+  if (!last) return messages;
+
+  const tailStartId = last.part.data.tailStartMessageId;
+  const tailIdx = tailStartId
+    ? messages.findIndex((m) => m.id === tailStartId)
+    : -1;
+
+  // Tail boundary either points back to a message in the pre-compaction
+  // head (the normal case — we drop everything before it but keep that
+  // message), or it's missing/stale (defensive: fall back to dropping
+  // everything before the compaction event itself).
+  const retainedTailStart =
+    tailIdx >= 0 && tailIdx < last.userIndex ? tailIdx : last.userIndex;
+
+  return [
+    // 1. The compaction-user marker (the transport substitutes its
+    //    CompactionPart with a "What did we do so far?" text part for the
+    //    model view).
+    messages[last.userIndex],
+    // 2. The summary assistant message.
+    messages[last.summaryIndex],
+    // 3. The retained tail — messages from the tail boundary up to (but
+    //    not including) the compaction-user message.
+    ...messages.slice(retainedTailStart, last.userIndex),
+    // 4. Everything after the summary message (auto-continue + subsequent
+    //    turns).
+    ...messages.slice(last.summaryIndex + 1),
+  ];
 }
 
-export function resetAttempts(state: CompactionState): CompactionState {
-  return {
-    ...state,
-    attempts: 0,
-  };
-}
+/**
+ * Compose the prompt content the model sees in place of a CompactionPart.
+ * Keeping this as a single source of truth avoids drift between the
+ * transport (which substitutes at send time) and any future consumer.
+ */
+export const COMPACTION_USER_PROMPT = "What did we do so far?";
+

@@ -1,4 +1,4 @@
-import type { UIMessage } from "@ai-sdk/react";
+import type { AgentUIMessage } from "@/lib/types";
 import { Reasoning } from "@/components/ai-elements/reasoning";
 import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
@@ -9,7 +9,7 @@ import { capturedToolOrigins, allowToolOnSite } from "@/lib/agent/agent-transpor
 import "@/components/chat/tool-previews";
 
 interface AssistantMessageProps {
-  message: UIMessage;
+  message: AgentUIMessage;
   isStreaming?: boolean;
   onRegenerate?: () => void;
   onToolApproval?: (opts: { id: string; approved: boolean }) => void;

@@ -1,5 +1,6 @@
 import { ChatInput, type TabMentionAttrs, type ImagePreview } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
+import { CompactionDivider } from "./CompactionDivider";
 import { Logo } from "@/components/ui/logo";
 import {
   Conversation,
@@ -33,6 +34,18 @@ interface ChatViewProps {
   showBackButton?: boolean;
   onBack?: () => void;
   showHeader?: boolean;
+  /**
+   * Optional handler for the header's settings button. Only relevant when
+   * `showHeader` is true; the button is rendered unconditionally inside the
+   * header but is a no-op without this handler.
+   */
+  onSettingsClick?: () => void;
+  /**
+   * Optional handler for the header's close button. The button only renders
+   * when this prop is supplied (header use cases without a close action,
+   * e.g. embedded panes, simply omit it).
+   */
+  onClose?: () => void;
   /**
    * Whether this ChatView is being rendered inside a detached popover window.
    * When true, the "Sharing [tab]" pill is anchored to the origin tab the
@@ -73,6 +86,8 @@ export function ChatView({
   showBackButton,
   onBack,
   showHeader = true,
+  onSettingsClick,
+  onClose,
   isPopupMode = false,
   isGlobalChat = false,
   originWindowId,
@@ -351,14 +366,16 @@ const providerModels = useMemo(() => {
             >
               <MessageSquarePlus className="size-3.5" />
             </button>
-            <button
-              type="button"
-              onClick={onSettingsClick}
-              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-              title="Settings"
-            >
-              <Settings2 className="size-3.5" />
-            </button>
+            {onSettingsClick && (
+              <button
+                type="button"
+                onClick={onSettingsClick}
+                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Settings"
+              >
+                <Settings2 className="size-3.5" />
+              </button>
+            )}
             {onClose && (
               <button
                 type="button"
@@ -424,6 +441,46 @@ const providerModels = useMemo(() => {
               </div>
             )}
             {messages.map((message, i) => {
+              // Compaction-user message: replace the bubble with a
+              // CompactionDivider. The next assistant message in the
+              // stream is the summary; we render its text inside the
+              // divider's expand panel.
+              const compactionPart = message.parts.find(
+                (p) => p.type === "data-compaction",
+              );
+              if (message.role === "user" && compactionPart) {
+                const next = messages[i + 1];
+                const summaryText =
+                  next?.role === "assistant"
+                    ? next.parts
+                        .filter((p) => p.type === "text")
+                        .map((p) => p.text)
+                        .join("\n")
+                        .trim()
+                    : "";
+                return (
+                  <CompactionDivider
+                    key={message.id}
+                    summary={summaryText}
+                    hiddenCount={i}
+                    auto={compactionPart.data.auto}
+                    overflow={compactionPart.data.overflow}
+                  />
+                );
+              }
+
+              // Assistant summary message: hide from the main chat. Its
+              // content is shown via the divider's expand toggle. We
+              // detect it structurally — the previous message is a
+              // compaction-user.
+              const prev = messages[i - 1];
+              const prevIsCompactionUser =
+                prev?.role === "user" &&
+                prev.parts.some((p) => p.type === "data-compaction");
+              if (message.role === "assistant" && prevIsCompactionUser) {
+                return null;
+              }
+
               const isLastAssistant =
                 message.role === "assistant" &&
                 isStreaming &&

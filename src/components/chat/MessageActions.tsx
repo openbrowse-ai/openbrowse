@@ -1,4 +1,4 @@
-import type { UIMessage } from "@ai-sdk/react";
+import type { AgentUIMessage } from "@/lib/types";
 import { Check, Copy, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/tooltip";
 
 interface MessageActionsProps {
-  message: UIMessage;
+  message: AgentUIMessage;
   onRegenerate?: () => void;
 }
 
