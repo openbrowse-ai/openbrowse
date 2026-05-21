@@ -136,11 +136,24 @@ interface RawCandidate {
   visitCount?: number;
 }
 
+/**
+ * Per-source ranking weights.
+ *
+ * The frecency multiplier (see `frecencyScore` callsite below) is bounded at
+ * 1.6× and is only applied to sources with visit-count/last-visit data
+ * (`history`, `closed`). To keep currently-open content ranked above heavily
+ * visited history for similar match scores, every "open tab" source weight
+ * is set safely above `history` × max-frecency-multiplier (1.0 × 1.6 = 1.6).
+ *
+ * This mirrors how Chrome's omnibox keeps the OpenTab provider scored above
+ * heavily-visited history entries even when canonical-URL dedup doesn't
+ * collapse them into a single row (e.g. `vercel.com/` vs `vercel.com/dash`).
+ */
 const SOURCE_WEIGHTS: Record<MatchSource, number> = {
-  tab: 1.4,
-  "favorite-open": 1.45,
+  tab: 2.0,
+  "favorite-open": 2.05,
   "favorite-closed": 1.3,
-  "tab-other-space": 1.2,
+  "tab-other-space": 1.8,
   bookmark: 1.1,
   closed: 1.05,
   history: 1.0,
