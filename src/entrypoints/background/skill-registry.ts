@@ -1,5 +1,9 @@
+import {
+  discoverSkills,
+  installSkill,
+  uninstallSkill,
+} from "@/lib/skills/installer";
 import { skillsDb } from "@/lib/skills/skills-db";
-import { discoverSkills, installSkill, uninstallSkill } from "@/lib/skills/installer";
 import type { InstalledSkill, SpaceSkillConfig } from "@/lib/skills/types";
 
 export interface SkillsRegistryState {
@@ -33,20 +37,37 @@ class BackgroundSkillRegistry {
     this.broadcastStateChange();
   }
 
-  async install(source: string, githubToken?: string): Promise<InstalledSkill[]> {
-    const previews = await discoverSkills(source, githubToken);
+  async install(
+    source: string,
+    githubToken?: string,
+    specificSkill?: string,
+  ): Promise<InstalledSkill[]> {
+    let previews = await discoverSkills(source, githubToken);
+
+    if (specificSkill) {
+      previews = previews.filter((p) => p.name === specificSkill);
+      if (previews.length === 0) {
+        throw new Error(`Skill "${specificSkill}" not found in source.`);
+      }
+    }
+
     const installed: InstalledSkill[] = [];
-    
+
     for (const preview of previews) {
       const skill = await installSkill(preview, githubToken);
       installed.push(skill);
     }
-    
+
     await this.refreshFromDb();
     return installed;
   }
 
-  async create(name: string, description: string, body: string, references?: {path: string, content: string}[]): Promise<InstalledSkill> {
+  async create(
+    name: string,
+    description: string,
+    body: string,
+    references?: { path: string; content: string }[],
+  ): Promise<InstalledSkill> {
     const { createSkillLocally } = await import("@/lib/skills/installer");
     const skill = await createSkillLocally(name, description, body, references);
     await this.refreshFromDb();
@@ -58,16 +79,29 @@ class BackgroundSkillRegistry {
     await this.refreshFromDb();
   }
 
-  async setSpaceState(spaceId: string, skillName: string, state: "allow" | "deny"): Promise<void> {
+  async setSpaceState(
+    spaceId: string,
+    skillName: string,
+    state: "allow" | "deny",
+  ): Promise<void> {
     await skillsDb.setSpaceState(spaceId, skillName, state);
     await this.refreshFromDb();
   }
 
+  async setEnabled(name: string, enabled: boolean): Promise<void> {
+    const skill = await skillsDb.get(name);
+    if (!skill) throw new Error(`Skill "${name}" not found`);
+    await skillsDb.save({ ...skill, enabled });
+    await this.refreshFromDb();
+  }
+
   broadcastStateChange() {
-    chrome.runtime.sendMessage({ 
-      type: "SKILL_STATE_CHANGED", 
-      state: this.getStates() 
-    }).catch(() => {});
+    chrome.runtime
+      .sendMessage({
+        type: "SKILL_STATE_CHANGED",
+        state: this.getStates(),
+      })
+      .catch(() => {});
   }
 }
 

@@ -8,6 +8,13 @@ export interface InstalledSkill {
   fileIndex: string[]; // relative paths of all files written to OPFS
   installedAt: number;
   lastChecked?: number; // for update polling
+  /**
+   * Global enabled flag. When `false`, the skill is hidden from the agent's
+   * "Available Skills" catalog regardless of per-space config. Defaults to
+   * `true` (omitted = enabled) for backward compatibility with existing
+   * stored skills.
+   */
+  enabled?: boolean;
 }
 
 export interface SpaceSkillConfig {

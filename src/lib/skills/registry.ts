@@ -1,6 +1,5 @@
-import { sendSkillMessage } from "./messages";
 import type { SkillsRegistryState } from "@/entrypoints/background/skill-registry";
-import type { InstalledSkill } from "./types";
+import { sendSkillMessage } from "./messages";
 
 class SkillsRegistry {
   private state: SkillsRegistryState = { skills: [], spaceConfigs: [] };
@@ -41,16 +40,34 @@ class SkillsRegistry {
     }
   }
 
-  async install(source: string, githubToken?: string) {
-    return sendSkillMessage({ type: "SKILL_INSTALL", source, githubToken });
+  async install(source: string, githubToken?: string, specificSkill?: string) {
+    return sendSkillMessage({
+      type: "SKILL_INSTALL",
+      source,
+      githubToken,
+      specificSkill,
+    });
   }
 
   async uninstall(name: string) {
     return sendSkillMessage({ type: "SKILL_UNINSTALL", name });
   }
 
-  async setSpaceState(spaceId: string, skillName: string, state: "allow" | "deny") {
-    return sendSkillMessage({ type: "SKILL_SET_SPACE_STATE", spaceId, skillName, state });
+  async setSpaceState(
+    spaceId: string,
+    skillName: string,
+    state: "allow" | "deny",
+  ) {
+    return sendSkillMessage({
+      type: "SKILL_SET_SPACE_STATE",
+      spaceId,
+      skillName,
+      state,
+    });
+  }
+
+  async setEnabled(name: string, enabled: boolean) {
+    return sendSkillMessage({ type: "SKILL_SET_ENABLED", name, enabled });
   }
 }
 
@@ -62,3 +79,6 @@ export function getSkillsRegistry(): SkillsRegistry {
   }
   return registryInstance;
 }
+
+// Eagerly initialize the registry so state is loaded before the user types `/`
+getSkillsRegistry().init().catch(console.error);

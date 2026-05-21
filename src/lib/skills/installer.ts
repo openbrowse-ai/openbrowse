@@ -1,8 +1,8 @@
-import { parseSource, type ParsedSource } from "./source-parser";
-import { parseSkillFrontmatter } from "./yaml-frontmatter";
 import { OPFS } from "../vfs/opfs";
 import { skillsDb } from "./skills-db";
+import { parseSource } from "./source-parser";
 import type { InstalledSkill } from "./types";
+import { parseSkillFrontmatter } from "./yaml-frontmatter";
 
 export interface SkillPreview {
   name: string;
@@ -31,13 +31,19 @@ const SCRIPT_EXTENSIONS = [".sh", ".py", ".rb", ".ps1", ".bat"];
 async function fetchJson(url: string, token?: string) {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  
+
   const res = await fetch(url, { headers });
   if (!res.ok) {
-    if (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0") {
-      throw new Error("GitHub API rate limit exceeded. Please add a GitHub token in Settings or try again later.");
+    if (
+      res.status === 403 &&
+      res.headers.get("x-ratelimit-remaining") === "0"
+    ) {
+      throw new Error(
+        "GitHub API rate limit exceeded. Please add a GitHub token in Settings or try again later.",
+      );
     }
-    throw new Error(`Failed to fetch ${url}: ${res.statusText}`);
+    const statusText = res.statusText || `HTTP ${res.status}`;
+    throw new Error(`Failed to fetch ${url}: ${statusText}`);
   }
   return res.json();
 }
@@ -45,16 +51,22 @@ async function fetchJson(url: string, token?: string) {
 async function fetchText(url: string, token?: string) {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  
+
   const res = await fetch(url, { headers });
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.statusText}`);
+  if (!res.ok) {
+    const statusText = res.statusText || `HTTP ${res.status}`;
+    throw new Error(`Failed to fetch ${url}: ${statusText}`);
+  }
   return res.text();
 }
 
 /**
  * Scans a parsed source and finds all installable skills.
  */
-export async function discoverSkills(sourceInput: string, githubToken?: string): Promise<SkillPreview[]> {
+export async function discoverSkills(
+  sourceInput: string,
+  githubToken?: string,
+): Promise<SkillPreview[]> {
   const parsed = parseSource(sourceInput);
   if (parsed.kind === "invalid") {
     throw new Error(parsed.reason);
@@ -64,65 +76,89 @@ export async function discoverSkills(sourceInput: string, githubToken?: string):
     // Single file download
     const content = await fetchText(parsed.url, githubToken);
     const { frontmatter } = parseSkillFrontmatter(content);
-    
-    return [{
-      name: frontmatter.name,
-      description: frontmatter.description,
-      hasScripts: false,
-      scriptTypes: [],
-      filePaths: ["SKILL.md"],
-      downloadUrls: { "SKILL.md": parsed.url },
-      source: parsed.url,
-      metadata: frontmatter,
-    }];
+
+    return [
+      {
+        name: frontmatter.name,
+        description: frontmatter.description,
+        hasScripts: false,
+        scriptTypes: [],
+        filePaths: ["SKILL.md"],
+        downloadUrls: { "SKILL.md": parsed.url },
+        source: parsed.url,
+        metadata: frontmatter,
+      },
+    ];
   }
 
   // GitHub repo flow
   const { owner, repo, ref, subpath } = parsed;
-  
+
   // 1. Resolve default branch if no ref
   let resolvedRef = ref;
   if (!resolvedRef) {
-    const repoInfo = await fetchJson(`https://api.github.com/repos/${owner}/${repo}`, githubToken);
+    const repoInfo = await fetchJson(
+      `https://api.github.com/repos/${owner}/${repo}`,
+      githubToken,
+    );
     resolvedRef = repoInfo.default_branch;
   }
 
   // 2. Fetch full tree
   const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${resolvedRef}?recursive=1`;
   const treeData = await fetchJson(treeUrl, githubToken);
-  
+
   // 3. Find all files (exclude directories)
-  const allFiles = treeData.tree.filter((node: any) => node.type === "blob").map((node: any) => node.path) as string[];
-  const skillPaths = allFiles.filter(p => p.endsWith("SKILL.md"));
-  
+  const allFiles = treeData.tree
+    .filter((node: any) => node.type === "blob")
+    .map((node: any) => node.path) as string[];
+  const skillPaths = allFiles.filter((p) => p.endsWith("SKILL.md"));
+
   // 4. Filter to search paths (or exact subpath if specified)
-  const validSkillRoots = skillPaths.map(p => p.slice(0, -9)).filter(root => { // -9 to remove "SKILL.md"
-    const normalizedRoot = root.replace(/\/$/, "");
-    if (subpath) {
-      return normalizedRoot === subpath || normalizedRoot.startsWith(subpath + "/");
-    }
-    // If no subpath specified, match any path that is reasonably a skill directory
-    // (either in standard paths, or under any 'skills' or 'plugins' subdirectory)
-    const parentDir = normalizedRoot.includes("/") ? normalizedRoot.split("/").slice(0, -1).join("/") : "";
-    if (STANDARD_SKILL_PATHS.includes(parentDir) || parentDir === normalizedRoot || STANDARD_SKILL_PATHS.includes(normalizedRoot)) {
-      return true;
-    }
-    return normalizedRoot.includes("/skills/") || normalizedRoot.startsWith("skills/") || normalizedRoot.startsWith("plugins/");
-  });
+  const validSkillRoots = skillPaths
+    .map((p) => p.slice(0, -9))
+    .filter((root) => {
+      // -9 to remove "SKILL.md"
+      const normalizedRoot = root.replace(/\/$/, "");
+      if (subpath) {
+        return (
+          normalizedRoot === subpath || normalizedRoot.startsWith(subpath + "/")
+        );
+      }
+      // If no subpath specified, match any path that is reasonably a skill directory
+      // (either in standard paths, or under any 'skills' or 'plugins' subdirectory)
+      const parentDir = normalizedRoot.includes("/")
+        ? normalizedRoot.split("/").slice(0, -1).join("/")
+        : "";
+      if (
+        STANDARD_SKILL_PATHS.includes(parentDir) ||
+        parentDir === normalizedRoot ||
+        STANDARD_SKILL_PATHS.includes(normalizedRoot)
+      ) {
+        return true;
+      }
+      return (
+        normalizedRoot.includes("/skills/") ||
+        normalizedRoot.startsWith("skills/") ||
+        normalizedRoot.startsWith("plugins/")
+      );
+    });
 
   const previews: SkillPreview[] = [];
 
   for (const root of validSkillRoots) {
     const rootPrefix = root ? `${root}/` : "";
-    
+
     // Find all files belonging to this skill (siblings in the same directory or subdirectories)
-    const skillFiles = allFiles.filter(p => p.startsWith(rootPrefix) && p !== rootPrefix.slice(0, -1));
-    
+    const skillFiles = allFiles.filter(
+      (p) => p.startsWith(rootPrefix) && p !== rootPrefix.slice(0, -1),
+    );
+
     // Download SKILL.md to parse frontmatter
     const skillMdPath = root ? `${root}/SKILL.md` : "SKILL.md";
     const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${skillMdPath}`;
     const content = await fetchText(rawUrl, githubToken);
-    
+
     let frontmatter;
     try {
       const parsedYaml = parseSkillFrontmatter(content);
@@ -133,20 +169,27 @@ export async function discoverSkills(sourceInput: string, githubToken?: string):
     }
 
     // Determine scripts
-    const relativeFiles = skillFiles.map(p => root ? p.slice(rootPrefix.length) : p);
-    const scriptFiles = relativeFiles.filter(p => p.startsWith("scripts/"));
-    
-    const scriptTypes = Array.from(new Set(
-      scriptFiles.map(f => {
-        const ext = f.substring(f.lastIndexOf("."));
-        return SCRIPT_EXTENSIONS.includes(ext) ? ext.slice(1) : "unknown";
-      }).filter(t => t !== "unknown")
-    ));
+    const relativeFiles = skillFiles.map((p) =>
+      root ? p.slice(rootPrefix.length) : p,
+    );
+    const scriptFiles = relativeFiles.filter((p) => p.startsWith("scripts/"));
+
+    const scriptTypes = Array.from(
+      new Set(
+        scriptFiles
+          .map((f) => {
+            const ext = f.substring(f.lastIndexOf("."));
+            return SCRIPT_EXTENSIONS.includes(ext) ? ext.slice(1) : "unknown";
+          })
+          .filter((t) => t !== "unknown"),
+      ),
+    );
 
     const downloadUrls: Record<string, string> = {};
     for (const file of relativeFiles) {
       const fullPath = rootPrefix ? `${rootPrefix}${file}` : file;
-      downloadUrls[file] = `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${fullPath}`;
+      downloadUrls[file] =
+        `https://raw.githubusercontent.com/${owner}/${repo}/${resolvedRef}/${fullPath}`;
     }
 
     previews.push({
@@ -162,7 +205,9 @@ export async function discoverSkills(sourceInput: string, githubToken?: string):
   }
 
   if (previews.length === 0) {
-    throw new Error(`No valid skills found at ${sourceInput}. Checked standard paths and subpaths.`);
+    throw new Error(
+      `No valid skills found at ${sourceInput}. Checked standard paths and subpaths.`,
+    );
   }
 
   return previews;
@@ -171,7 +216,10 @@ export async function discoverSkills(sourceInput: string, githubToken?: string):
 /**
  * Downloads and writes a skill to OPFS, and saves it to the database.
  */
-export async function installSkill(preview: SkillPreview, githubToken?: string): Promise<InstalledSkill> {
+export async function installSkill(
+  preview: SkillPreview,
+  githubToken?: string,
+): Promise<InstalledSkill> {
   // Clear any existing directory first
   await OPFS.rm(`skills/${preview.name}`, { recursive: true });
 
@@ -200,10 +248,10 @@ export async function installSkill(preview: SkillPreview, githubToken?: string):
  * Creates and installs a skill locally from string content.
  */
 export async function createSkillLocally(
-  name: string, 
-  description: string, 
-  body: string, 
-  references?: {path: string, content: string}[]
+  name: string,
+  description: string,
+  body: string,
+  references?: { path: string; content: string }[],
 ): Promise<InstalledSkill> {
   await OPFS.rm(`skills/${name}`, { recursive: true });
 

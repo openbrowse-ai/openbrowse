@@ -50,6 +50,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "fflate": "^0.8.3",
     "frimousse": "^0.3.0",
     "idb": "^8.0.3",
     "lucide-react": "^1.8.0",
@@ -59,8 +60,10 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-hotkeys-hook": "^5.2.4",
+    "react-markdown": "^10.1.0",
     "react-medium-image-zoom": "^5.4.5",
     "shadcn": "^4.4.0",
+    "shiki": "^4.0.2",
     "sonner": "^2.0.7",
     "streamdown": "^2.5.0",
     "tailwind-merge": "^3.5.0",
@@ -70,6 +73,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@types/chrome": "^0.1.40",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

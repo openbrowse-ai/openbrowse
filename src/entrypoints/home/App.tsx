@@ -57,6 +57,24 @@ export default function App() {
     const hash = window.location.hash.slice(1);
     return hash || null;
   });
+  // Prefill consumed once on mount — used by the "Try in chat" flow from
+  // Settings. Reading from URL synchronously avoids a flicker, and we
+  // history.replaceState the param away so a refresh doesn't re-seed.
+  const [initialInput] = useState<string | undefined>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const prefill = params.get("prefill");
+    if (!prefill) return undefined;
+    // Strip the param from the URL without disturbing the hash (which
+    // carries the active conversation id).
+    params.delete("prefill");
+    const newSearch = params.toString();
+    const newUrl =
+      window.location.pathname +
+      (newSearch ? `?${newSearch}` : "") +
+      window.location.hash;
+    history.replaceState(null, "", newUrl);
+    return prefill;
+  });
   const [showOverlay, setShowOverlay] = useState(false);
   const [overlayAction, setOverlayAction] = useState<string | null>(null);
   const overlayIframeRef = useRef<HTMLIFrameElement>(null);
@@ -424,6 +442,7 @@ export default function App() {
             onNewConversation={handleNewConversation}
             showHeader={false}
             className="flex-1 min-h-0"
+            initialInput={initialInput}
           />
         ) : (
           <LandingPage
@@ -432,6 +451,7 @@ export default function App() {
             tabCount={allActiveTabs.length}
             pinnedCount={pinnedCount}
             onNewConversation={handleNewConversation}
+            initialInput={initialInput}
           />
         )}
       </main>

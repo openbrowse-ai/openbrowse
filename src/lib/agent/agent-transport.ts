@@ -1,3 +1,4 @@
+import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
   ChatTransport,
@@ -17,29 +18,29 @@ import { CompactingChatTransport } from "./compacting-transport";
 import { clearHandles } from "./tab-handles";
 import {
   clickElementTool,
+  createSkillTool,
   deleteMemoryTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
+  installSkillTool,
   listTabsTool,
   navigateTool,
+  readOpfsFileTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
   screenshotTool,
   scrollPageTool,
   selectTabTool,
+  skillTool,
   snapshotTool,
   todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
-  skillTool,
-  installSkillTool,
-  createSkillTool,
 } from "./tools";
 import { createFsTools } from "./tools/fs";
 import type { BrowserTool } from "./types";
-import { getSkillsRegistry } from "@/lib/skills/registry";
 
 const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users understand and interact with web pages.
 
@@ -114,10 +115,10 @@ extract({
 
 ## Virtual Workspace
 
-You are operating in a sandboxed, browser-based virtual file system (VFS). You have tools to Read, Write, Edit, Glob, Grep, and LS files within this workspace. 
+You are operating in a sandboxed, browser-based virtual file system (VFS). You have tools to Read, Write, Edit, Glob, Grep, and LS files within this workspace.
 
-- You do NOT have a Bash tool. 
-- You cannot execute code natively. 
+- You do NOT have a Bash tool.
+- You cannot execute code natively.
 - You act as an Intelligent File Generator. Build the implementation files, configure boilerplates, and write code confidently. The user will export the workspace and run the code locally on their own machine.
 
 ## Code Execution
@@ -524,11 +525,17 @@ function toSDKTool<TInput, TOutput>(
       // for a conversation that hasn't owned any tabs yet, bind the panel's
       // host tab so the agent has a working target. Skipped when the host
       // tab is unknown, an extension/chrome page, or already in the group.
-      if (agentConversationId && agentHostTabId != null && getTargetTabId() == null) {
+      if (
+        agentConversationId &&
+        agentHostTabId != null &&
+        getTargetTabId() == null
+      ) {
         try {
           const conv = await chatDb.getConversation(agentConversationId);
           if (conv && conv.ownedTabIds.length === 0) {
-            const hostTab = await chrome.tabs.get(agentHostTabId).catch(() => null);
+            const hostTab = await chrome.tabs
+              .get(agentHostTabId)
+              .catch(() => null);
             const hostUrl = hostTab?.url ?? "";
             const isInternal =
               hostUrl.startsWith("chrome://") ||
@@ -646,6 +653,7 @@ export function resetAgentIndicator() {
   }
 }
 
+
 export async function createAgentTransport(
   settings: Settings,
   agentModel: string,
@@ -695,6 +703,7 @@ export async function createAgentTransport(
     skill: toSDKTool(skillTool, "skill"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
     create_skill: toSDKTool(createSkillTool, "create_skill"),
+    read_opfs_file: toSDKTool(readOpfsFileTool, "read_opfs_file"),
     Read: toSDKTool(fsTools.readTool, "Read"),
     Write: toSDKTool(fsTools.writeTool, "Write"),
     Edit: toSDKTool(fsTools.editTool, "Edit"),
@@ -814,20 +823,22 @@ export async function createAgentTransport(
   // --- Skills Injection ---
   await getSkillsRegistry().init();
   const skillsState = getSkillsRegistry().getState();
-  
-  // Apply per-space allow/deny
-  const availableSkills = skillsState.skills.filter(skill => {
+
+  // Apply global enabled flag + per-space allow/deny override
+  const availableSkills = skillsState.skills.filter((skill) => {
+    // Global toggle (defaults to enabled if undefined for backward compat)
+    if (skill.enabled === false) return false;
     const spaceConfig = skillsState.spaceConfigs.find(
-      c => c.spaceId === spaceId && c.skillName === skill.name
+      (c) => c.spaceId === spaceId && c.skillName === skill.name,
     );
     return !spaceConfig || spaceConfig.state !== "deny";
   });
 
   if (availableSkills.length > 0) {
     const skillsSection = availableSkills
-      .map(s => `- ${s.name}: ${s.description}`)
+      .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
-      
+
     instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use read_opfs_file({ path }).\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 

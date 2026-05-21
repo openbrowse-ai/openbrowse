@@ -5,7 +5,6 @@ import {
 } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
-import { Logo } from "@/components/ui/logo";
 import {
   Conversation,
   ConversationContent,
@@ -27,7 +26,6 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useAgentChat } from "@/hooks/useAgentChat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface ChatViewProps {
@@ -82,6 +80,13 @@ interface ChatViewProps {
    * The URL of the origin tab at detach time, used to detect restoration.
    */
   originUrl?: string | null;
+  /**
+   * Optional initial value for the chat input editor. Used by the "Try in
+   * chat" flow from settings — when the home page opens with a `?prefill=`
+   * URL parameter, this is forwarded down so the agent input is pre-populated
+   * (e.g. with `/skill-name `).
+   */
+  initialInput?: string;
 }
 
 export function ChatView({
@@ -95,13 +100,12 @@ export function ChatView({
   showBackButton,
   onBack,
   showHeader = true,
-  onSettingsClick,
-  onClose,
   isPopupMode = false,
   isGlobalChat = false,
   originWindowId,
   originTabId,
   originUrl,
+  initialInput,
 }: ChatViewProps) {
   // Track the live origin tab id in popup mode. May change if the original
   // origin tab is closed and later restored from history (the URL matches a
@@ -143,6 +147,7 @@ export function ChatView({
     // useAgentChat's auto-resolution from the active tab in the current
     // window (which, in per-tab mode, IS the host tab).
     hostTabIdOverride: isPopupMode ? liveOriginTabId : undefined,
+    initialInput,
   });
 
   // Global Option+Space popup: persist unsent draft text across dismiss/reopen

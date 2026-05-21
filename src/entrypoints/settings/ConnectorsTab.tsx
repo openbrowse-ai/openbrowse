@@ -206,7 +206,7 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
   return (
     <div className="flex h-full -m-4">
       {/* Left panel — connector list */}
-      <div className="w-52 shrink-0 border-r border-border flex flex-col">
+      <div className="w-64 shrink-0 border-r border-border flex flex-col">
         {/* List header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-border">
           <span className="text-sm font-medium">Connectors</span>
@@ -216,7 +216,7 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
                 <Plus className="h-4 w-4" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" side="bottom" className="w-52">
+            <DropdownMenuContent align="center" side="bottom" className="w-64">
               <DropdownMenuItem onClick={() => setBrowseOpen(true)}>
                 <Search className="h-4 w-4" />
                 Browse connectors
@@ -722,10 +722,7 @@ function ConnectedDetail({
           <Button
             size="sm"
             onClick={onReconnect}
-            disabled={
-              connecting ||
-              (requiresManual && !server.auth?.clientId)
-            }
+            disabled={connecting || (requiresManual && !server.auth?.clientId)}
           >
             {connecting ? "Connecting…" : "Connect"}
           </Button>

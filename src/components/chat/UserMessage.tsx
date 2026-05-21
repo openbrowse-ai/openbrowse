@@ -1,9 +1,13 @@
 import type { AgentUIMessage } from "@/lib/types";
+import { ReadOnlyEditor } from "@/components/tiptap/ReadOnlyEditor";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { Check, Copy, Pencil } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ReadOnlyEditor } from "@/components/tiptap/ReadOnlyEditor";
-import { ZoomableImage } from "@/components/ui/zoomable-image";
 
 interface UserMessageProps {
   message: AgentUIMessage;
@@ -46,7 +50,9 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
   }, [text]);
 
   return (
-    <div className={`group/message flex flex-col items-end gap-1 ${dimmed ? "opacity-40" : ""}`}>
+    <div
+      className={`group/message flex flex-col items-end gap-1 ${dimmed ? "opacity-40" : ""}`}
+    >
       {imageUrls.length > 0 && (
         <div className="max-w-[85%] flex flex-wrap justify-end gap-1">
           {imageUrls.map((url, i) => (
@@ -60,10 +66,10 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
         </div>
       )}
       {text && (
-        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-primary text-primary-foreground break-words">
+        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
           <ReadOnlyEditor
             content={text}
-            className="prose-invert [&>p]:!my-0 [&_.tab-mention]:bg-primary-foreground/20"
+            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
           />
         </div>
       )}
@@ -76,10 +82,16 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
                 onClick={handleCopy}
                 className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
-                {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+                {copied ? (
+                  <Check className="size-3" />
+                ) : (
+                  <Copy className="size-3" />
+                )}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{copied ? "Copied!" : "Copy"}</TooltipContent>
+            <TooltipContent side="bottom">
+              {copied ? "Copied!" : "Copy"}
+            </TooltipContent>
           </Tooltip>
           {onEdit && (
             <Tooltip>
