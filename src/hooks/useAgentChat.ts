@@ -16,11 +16,9 @@ import {
   buildCompactionPrompt,
   getCompactionSystemPrompt,
   prepareMessagesForSummarization,
-  estimateMessageTokens,
   findCompactionEvents,
   shouldDebounceCompaction,
   MIN_MESSAGES_FOR_COMPACTION,
-  getUsableTokens,
 } from "@/lib/agent/compaction";
 import type { CompactionPart } from "@/lib/types";
 import {
@@ -215,7 +213,7 @@ const chatInstances = new Map<string, ChatInstance>();
 
 function getOrCreateChat(
   conversationId: string,
-  transport: ChatTransport<UIMessage> | null,
+  transport: ChatTransport<AgentMessage> | null,
   origin: "sidepanel" | "home" = "sidepanel",
 ): Chat<AgentMessage> {
   const existing = chatInstances.get(conversationId);
@@ -280,7 +278,7 @@ function getOrCreateChat(
 }
 
 // A "null" chat for when there's no active conversation
-function createNullChat(transport: ChatTransport<UIMessage> | null): Chat<AgentMessage> {
+function createNullChat(transport: ChatTransport<AgentMessage> | null): Chat<AgentMessage> {
   return new Chat<AgentMessage>({
     transport: transport ?? undefined,
     generateId,
@@ -402,7 +400,7 @@ export function useAgentChat({
     });
   }, [agentSettings.agentModel]);
 
-  const [transport, setTransport] = useState<ChatTransport<UIMessage> | null>(null);
+  const [transport, setTransport] = useState<ChatTransport<AgentMessage> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -496,77 +494,77 @@ export function useAgentChat({
           createdAt: 0,
         }));
 
-        const { pruned, freedTokens } = pruneMessageParts(prunableMessages);
+        const { pruned } = pruneMessageParts(prunableMessages);
         const modelDef = getCurrentModelDef();
 
-        // Phase 1 fast path: if pruning oversized tool outputs alone gets
-        // us comfortably under the threshold, skip the LLM summary call
-        // entirely. We still write a CompactionPart marker so the UI
-        // renders a divider AND the transport's send-time pruning takes
-        // effect. The marker carries an empty/sentinel summary in this
-        // case (assistant message has empty text); the divider expand
-        // will show that pruning happened without an LLM-generated
-        // narrative.
-        let summaryText = "";
-        let prunedOnly = false;
-        if (freedTokens > 0) {
-          const currentTokens = prunableMessages.reduce(
-            (sum, m) => sum + estimateMessageTokens(m.parts),
-            0,
-          );
-          const usable = getUsableTokens(modelDef);
-          if (currentTokens - freedTokens < usable) {
-            prunedOnly = true;
-          }
-        }
-
-        // Compute tail boundary in either path — needed both to skip the
-        // summary on the prune-only path AND to write a meaningful
-        // tailStartMessageId on the CompactionPart so future compactions
-        // can stack on top.
+        // Compute the tail boundary. The CompactionPart will anchor here so
+        // the transport's filterCompactedMessages knows where to keep the
+        // verbatim tail and where to drop the head.
         const { headMessages, tailStartId } = selectTail(pruned, modelDef);
         if (!tailStartId || headMessages.length === 0) return;
 
-        if (!prunedOnly) {
-          const conversationText = prepareMessagesForSummarization(headMessages);
-          // Carry the previous summary forward so the new one is an
-          // anchored update, not a fresh start. OpenCode does the same
-          // via `previousSummary` in their compaction prompt.
-          const previousSummary = events.at(-1)?.summaryText;
-          const userPrompt = buildCompactionPrompt(previousSummary);
+        // Always run summarization. We previously had a "prune-only fast
+        // path" that skipped the LLM call when pruning would free enough
+        // tokens, writing a compaction event with an empty summary
+        // assistant message. That broke the AI SDK's Zod validation
+        // ("Message must contain at least one part") on the next send and
+        // produced no real benefit — `prunePartsAtSendTime` already runs
+        // unconditionally on every send via the transport, more
+        // aggressively than `pruneMessages` (no PRUNE_PROTECT budget). So
+        // the only effect of the fast path was a useless empty message.
+        //
+        // OpenCode treats pruning as a separate, silent operation from
+        // compaction events; we now match that. If the threshold check
+        // triggered runCompaction, we always summarize.
+        const conversationText = prepareMessagesForSummarization(headMessages);
+        // Carry the previous summary forward so the new one is an
+        // anchored update, not a fresh start. OpenCode does the same
+        // via `previousSummary` in their compaction prompt.
+        const previousSummary = events.at(-1)?.summaryText;
+        const userPrompt = buildCompactionPrompt(previousSummary);
 
-          const { generateText } = await import("ai");
-          const agentSettingsForCompaction = await storage.getAgentSettings();
-          const settingsForCompaction = await storage.getSettings();
-          const compactionModelId =
-            agentSettingsForCompaction.compactionModel ||
-            agentSettingsForCompaction.agentModel;
+        const { generateText } = await import("ai");
+        const agentSettingsForCompaction = await storage.getAgentSettings();
+        const settingsForCompaction = await storage.getSettings();
+        const compactionModelId =
+          agentSettingsForCompaction.compactionModel ||
+          agentSettingsForCompaction.agentModel;
 
-          const { providers } = await import("@/registry/providers");
-          const provider = providers.find((p) =>
-            p.models.some((m) => m.id === compactionModelId),
-          );
-          if (!provider) return;
+        const { providers } = await import("@/registry/providers");
+        const provider = providers.find((p) =>
+          p.models.some((m) => m.id === compactionModelId),
+        );
+        if (!provider) return;
 
-          const config =
-            settingsForCompaction.providerConfigs[provider.id] ?? {};
-          const compactionModel = provider.createLanguageModel(
-            config,
-            compactionModelId,
-          );
+        const config =
+          settingsForCompaction.providerConfigs[provider.id] ?? {};
+        const compactionModel = provider.createLanguageModel(
+          config,
+          compactionModelId,
+        );
 
-          const result = await generateText({
-            model: compactionModel,
-            system: getCompactionSystemPrompt(),
-            prompt: conversationText + "\n\n" + userPrompt,
-            abortSignal: abortController.signal,
-          });
-          summaryText = result.text;
-        }
+        const result = await generateText({
+          model: compactionModel,
+          system: getCompactionSystemPrompt(),
+          prompt: conversationText + "\n\n" + userPrompt,
+          abortSignal: abortController.signal,
+        });
+        const summaryText = result.text.trim();
 
         // If the user aborted while the summary call was in flight, bail
         // before persisting anything.
         if (abortController.signal.aborted) return;
+
+        // Defensive: if the model returned empty text, don't persist a
+        // compaction event with an empty assistant message — that would
+        // fail Zod validation on subsequent sends. Just abort the
+        // compaction silently; the next overflow trigger will retry.
+        if (!summaryText) {
+          console.warn(
+            "[compaction] summary model returned empty text; skipping event",
+          );
+          return;
+        }
 
         // Persist the compaction event as two messages.
         const now = Date.now();
@@ -574,10 +572,12 @@ export function useAgentChat({
         const summaryAssistantId = generateId();
 
         const compactionPart: CompactionPart = {
-          type: "compaction",
-          auto,
-          ...(overflow ? { overflow: true } : {}),
-          tailStartMessageId: tailStartId,
+          type: "data-compaction",
+          data: {
+            auto,
+            ...(overflow ? { overflow: true } : {}),
+            tailStartMessageId: tailStartId,
+          },
         };
 
         await chatDb.saveMessage({
@@ -589,9 +589,9 @@ export function useAgentChat({
           createdAt: now,
         });
 
-        const summaryParts: SerializedUIPart[] = summaryText
-          ? [{ type: "text", text: summaryText }]
-          : [];
+        const summaryParts: SerializedUIPart[] = [
+          { type: "text", text: summaryText },
+        ];
         await chatDb.saveMessage({
           id: summaryAssistantId,
           conversationId: convId,
@@ -608,20 +608,12 @@ export function useAgentChat({
         const compactionUiMsg: AgentMessage = {
           id: compactionUserId,
           role: "user",
-          parts: [
-            // The CompactionPart is a custom marker, not part of the AI
-            // SDK's UIMessage union. We carry it through the transport
-            // and the UI as an opaque part — both sides know to look
-            // for `type === "compaction"`.
-            compactionPart as unknown as AgentMessage["parts"][number],
-          ],
+          parts: [compactionPart],
         };
         const summaryUiMsg: AgentMessage = {
           id: summaryAssistantId,
           role: "assistant",
-          parts: summaryText
-            ? [{ type: "text", text: summaryText }]
-            : [],
+          parts: [{ type: "text", text: summaryText }],
         };
         setMessages([...msgs, compactionUiMsg, summaryUiMsg]);
 

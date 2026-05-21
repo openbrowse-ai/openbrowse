@@ -89,13 +89,23 @@ export class CompactingChatTransport implements ChatTransport<UIMessage> {
  * (e.g. eventual `prepareStep` integrations) can share the logic.
  */
 export function rewriteForLLM(messages: UIMessage[]): UIMessage[] {
-  let working = messages;
+  // Step 1: repair legacy broken compaction events. An earlier version of
+  // `runCompaction` had a "prune-only fast path" that wrote a compaction
+  // event with an empty summary assistant. Sending that message fails the
+  // AI SDK's Zod validation ("Message must contain at least one part").
+  // We detect those broken events (compaction-user immediately followed
+  // by an assistant with no parts) and excise the whole event — the
+  // user-with-CompactionPart, the empty summary, and any adjacent
+  // synthetic auto-continue user that followed. Stale-data only; new code
+  // never produces this shape.
+  const repaired = excludeBrokenCompactionEvents(messages);
+  let working = repaired;
 
-  const event = findLatestCompactionEvent(messages);
+  const event = findLatestCompactionEvent(repaired);
   if (event) {
-    const tailStartId = event.compactionPart.tailStartMessageId;
+    const tailStartId = event.compactionPart.data.tailStartMessageId;
     const tailIdx = tailStartId
-      ? messages.findIndex((m) => m.id === tailStartId)
+      ? repaired.findIndex((m) => m.id === tailStartId)
       : -1;
     const retainedTailStart =
       tailIdx >= 0 && tailIdx < event.userIndex ? tailIdx : event.userIndex;
@@ -103,27 +113,76 @@ export function rewriteForLLM(messages: UIMessage[]): UIMessage[] {
     working = [
       // The compaction-user marker — substituted to "What did we do so far?"
       // before sending (see substituteCompactionPart below).
-      messages[event.userIndex],
+      repaired[event.userIndex],
       // The summary assistant message.
-      messages[event.summaryIndex],
+      repaired[event.summaryIndex],
       // Retained tail (messages from tailStartMessageId up to but not
       // including the compaction-user).
-      ...messages.slice(retainedTailStart, event.userIndex),
+      ...repaired.slice(retainedTailStart, event.userIndex),
       // Everything after the summary (auto-continue + subsequent turns).
-      ...messages.slice(event.summaryIndex + 1),
+      ...repaired.slice(event.summaryIndex + 1),
     ];
   }
 
-  return working.map((m) => {
-    let parts = m.parts as unknown as SerializedUIPart[];
+  const rewritten = working.map((m) => {
+    let parts = asExtendedParts(m.parts);
     parts = substituteCompactionPart(parts);
     parts = prunePartsAtSendTime(parts);
-    if (parts === (m.parts as unknown as SerializedUIPart[])) return m;
+    if (parts === asExtendedParts(m.parts)) return m;
     return {
       ...m,
-      parts: parts as unknown as UIMessage["parts"],
+      parts: asUIParts(parts),
     };
   });
+
+  // Final safety net: drop any message that still ended up with empty
+  // parts after substitution + pruning. Should be unreachable now that
+  // `excludeBrokenCompactionEvents` runs first, but cheap insurance.
+  return rewritten.filter((m) => m.parts.length > 0);
+}
+
+/**
+ * Removes broken auto-compaction events (compaction-user immediately
+ * followed by an assistant with no parts). Also strips the synthetic
+ * auto-continue user message that typically follows the broken pair, to
+ * avoid leaving the conversation with adjacent user messages that
+ * Anthropic rejects.
+ *
+ * The "Continue where you left off..." text is the canonical auto-continue
+ * sentinel; we match by exact prefix to keep the heuristic conservative.
+ */
+const AUTO_CONTINUE_PREFIX = "Continue where you left off";
+
+function excludeBrokenCompactionEvents(messages: UIMessage[]): UIMessage[] {
+  const skipIds = new Set<string>();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role !== "user") continue;
+    const hasCompactionPart = asExtendedParts(m.parts).some(
+      (p) => p.type === "data-compaction",
+    );
+    if (!hasCompactionPart) continue;
+    const next = messages[i + 1];
+    if (!next || next.role !== "assistant") continue;
+    if (next.parts.length > 0) continue;
+
+    skipIds.add(m.id);
+    skipIds.add(next.id);
+
+    const after = messages[i + 2];
+    if (after && after.role === "user") {
+      const text = asExtendedParts(after.parts)
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join("");
+      if (text.startsWith(AUTO_CONTINUE_PREFIX)) {
+        skipIds.add(after.id);
+      }
+    }
+  }
+
+  if (skipIds.size === 0) return messages;
+  return messages.filter((m) => !skipIds.has(m.id));
 }
 
 /**
@@ -143,8 +202,8 @@ function findLatestCompactionEvent(messages: UIMessage[]):
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "user") continue;
-    const part = (m.parts as unknown as SerializedUIPart[]).find(
-      (p): p is CompactionPart => p.type === "compaction",
+    const part = asExtendedParts(m.parts).find(
+      (p): p is CompactionPart => p.type === "data-compaction",
     );
     if (!part) continue;
     const next = messages[i + 1];
@@ -164,7 +223,7 @@ function substituteCompactionPart(
   let changed = false;
   const out: SerializedUIPart[] = [];
   for (const p of parts) {
-    if (p.type === "compaction") {
+    if (p.type === "data-compaction") {
       out.push({ type: "text", text: COMPACTION_USER_PROMPT });
       changed = true;
     } else {
@@ -172,4 +231,16 @@ function substituteCompactionPart(
     }
   }
   return changed ? out : parts;
+}
+
+// Helper to convert the AI SDK's strict parts union to our wider
+// SerializedUIPart union (which adds CompactionPart) without sprinkling
+// `as unknown as` everywhere. The chat library accepts our custom
+// DataUIPart client-side so it flows through the array seamlessly.
+function asExtendedParts(parts: UIMessage["parts"]): SerializedUIPart[] {
+  return parts as unknown as SerializedUIPart[];
+}
+
+function asUIParts(parts: SerializedUIPart[]): UIMessage["parts"] {
+  return parts as unknown as UIMessage["parts"];
 }

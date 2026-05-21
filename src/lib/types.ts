@@ -1,3 +1,4 @@
+import type { DataUIPart } from "ai";
 import type { McpServerConfig } from "./mcp/types";
 
 export interface FavoriteTab {
@@ -141,10 +142,12 @@ export type SerializedUIPart =
  *   the model view.
  */
 export interface CompactionPart {
-  type: "compaction";
-  auto: boolean;
-  overflow?: boolean;
-  tailStartMessageId?: string;
+  type: "data-compaction";
+  data: {
+    auto: boolean;
+    overflow?: boolean;
+    tailStartMessageId?: string;
+  };
 }
 
 export interface SerializedToolPart {

@@ -423,13 +423,15 @@ export interface CompactionEvent {
  * immediately followed by an assistant with `summary: true`. Returns
  * events in chronological order.
  */
-export function findCompactionEvents(messages: ChatMessage[]): CompactionEvent[] {
+export function findCompactionEvents(
+  messages: { role: string; parts: any[]; summary?: boolean; createdAt?: number }[],
+): CompactionEvent[] {
   const events: CompactionEvent[] = [];
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i];
     if (m.role !== "user") continue;
     const part = m.parts.find(
-      (p): p is CompactionPart => p.type === "compaction",
+      (p): p is CompactionPart => p.type === "data-compaction",
     );
     if (!part) continue;
     const next = messages[i + 1];
@@ -444,7 +446,7 @@ export function findCompactionEvents(messages: ChatMessage[]): CompactionEvent[]
       summaryIndex: i + 1,
       part,
       summaryText,
-      completedAt: next.createdAt,
+      completedAt: next.createdAt ?? 0,
     });
   }
   return events;
@@ -475,13 +477,15 @@ export function shouldDebounceCompaction(
  * Returns the original array (unchanged) if there are no completed
  * compactions.
  */
-export function filterCompactedMessages<T extends ChatMessage>(messages: T[]): T[] {
+export function filterCompactedMessages<
+  T extends { id: string; role: string; parts: any[] },
+>(messages: T[]): T[] {
   const events = findCompactionEvents(messages);
   const last = events.at(-1);
   if (!last) return messages;
 
-  const tailStartId = last.part.tailStartMessageId;
-  const tailIndex = tailStartId
+  const tailStartId = last.part.data.tailStartMessageId;
+  const tailIdx = tailStartId
     ? messages.findIndex((m) => m.id === tailStartId)
     : -1;
 
@@ -490,7 +494,7 @@ export function filterCompactedMessages<T extends ChatMessage>(messages: T[]): T
   // message), or it's missing/stale (defensive: fall back to dropping
   // everything before the compaction event itself).
   const retainedTailStart =
-    tailIndex >= 0 && tailIndex < last.userIndex ? tailIndex : last.userIndex;
+    tailIdx >= 0 && tailIdx < last.userIndex ? tailIdx : last.userIndex;
 
   return [
     // 1. The compaction-user marker (the transport substitutes its

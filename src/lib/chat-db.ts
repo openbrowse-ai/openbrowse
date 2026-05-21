@@ -45,10 +45,10 @@ let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null;
 
 function getDb(): Promise<IDBPDatabase<ChatDB>> {
   if (!dbPromise) {
-    // v6: drops the legacy `compaction` object store. Compaction events
-    // now live as messages in the `messages` store (see CompactionPart and
-    // the `summary` flag on assistant messages).
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 6, {
+    // v7: migrates legacy `{ type: "compaction", auto, ... }` parts
+    // to the AI SDK's DataUIPart contract:
+    // `{ type: "data-compaction", data: { auto, ... } }`.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 7, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -123,6 +123,32 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           if (db.objectStoreNames.contains("compaction" as never)) {
             db.deleteObjectStore("compaction" as never);
           }
+        }
+        if (oldVersion < 7) {
+          const msgStore = transaction.objectStore("messages");
+          const migrateCompactionParts = async () => {
+            let cursor = await msgStore.openCursor();
+            while (cursor) {
+              const record = cursor.value as Record<string, unknown>;
+              let changed = false;
+              if (Array.isArray(record.parts)) {
+                const newParts = record.parts.map((p) => {
+                  if (p && typeof p === "object" && p.type === "compaction") {
+                    changed = true;
+                    const { type: _type, ...data } = p as any;
+                    return { type: "data-compaction", data };
+                  }
+                  return p;
+                });
+                if (changed) {
+                  record.parts = newParts;
+                  cursor.update(record as ChatDB["messages"]["value"]);
+                }
+              }
+              cursor = await cursor.continue();
+            }
+          };
+          migrateCompactionParts();
         }
       },
     });

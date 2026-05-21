@@ -24,6 +24,7 @@ import {
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { TodoPanel } from "./TodoPanel";
+import type { CompactionPart } from "@/lib/types";
 
 interface ChatViewProps {
   conversationId: string | null;
@@ -380,16 +381,9 @@ const providerModels = useMemo(() => {
               // CompactionDivider. The next assistant message in the
               // stream is the summary; we render its text inside the
               // divider's expand panel.
-              const compactionPart = message.parts.find(
-                (p) =>
-                  (p as Record<string, unknown>).type === "compaction",
-              ) as
-                | {
-                    type: "compaction";
-                    auto: boolean;
-                    overflow?: boolean;
-                  }
-                | undefined;
+              const compactionPart = (
+                message.parts as unknown as CompactionPart[]
+              ).find((p) => p.type === "data-compaction");
               if (message.role === "user" && compactionPart) {
                 const next = messages[i + 1];
                 const summaryText =
@@ -408,8 +402,8 @@ const providerModels = useMemo(() => {
                     key={message.id}
                     summary={summaryText}
                     hiddenCount={i}
-                    auto={compactionPart.auto}
-                    overflow={compactionPart.overflow}
+                    auto={compactionPart.data.auto}
+                    overflow={compactionPart.data.overflow}
                   />
                 );
               }
@@ -421,10 +415,7 @@ const providerModels = useMemo(() => {
               const prev = messages[i - 1];
               const prevIsCompactionUser =
                 prev?.role === "user" &&
-                prev.parts.some(
-                  (p) =>
-                    (p as Record<string, unknown>).type === "compaction",
-                );
+                prev.parts.some((p) => p.type === "data-compaction");
               if (message.role === "assistant" && prevIsCompactionUser) {
                 return null;
               }

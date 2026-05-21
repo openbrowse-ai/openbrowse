@@ -849,5 +849,5 @@ export async function createAgentTransport(
     onSendStart: () => {
       needsMidStreamCompaction = false;
     },
-  }) as unknown as ChatTransport<UIMessage>;
+  });
 }
