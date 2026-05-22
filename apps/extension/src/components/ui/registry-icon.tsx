@@ -102,14 +102,14 @@ export function RegistryIcon({ id, className = "w-4 h-4" }: RegistryIconProps) {
   if (!entry.dark) {
     return (
       <span
-        className={`inline-flex items-center justify-center ${className}`}
+        className={`inline-flex items-center justify-center [&_svg]:w-full [&_svg]:h-full ${className}`}
         dangerouslySetInnerHTML={{ __html: entry.light }}
       />
     );
   }
 
   return (
-    <span className={`inline-flex items-center justify-center ${className}`}>
+    <span className={`inline-flex items-center justify-center [&_svg]:w-full [&_svg]:h-full ${className}`}>
       <span className="contents dark:hidden" dangerouslySetInnerHTML={{ __html: entry.light }} />
       <span className="hidden dark:contents" dangerouslySetInnerHTML={{ __html: entry.dark }} />
     </span>
