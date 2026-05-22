@@ -678,7 +678,10 @@ export async function createAgentTransport(
 
   const { providers } = await import("@/registry/providers");
   const provider = providers.find((p) =>
-    p.models.some((m) => m.id === agentModel),
+    p.models.some((m) => m.id === agentModel) &&
+    settings.enabledModels.includes(`${p.id}:${agentModel}`)
+  ) || providers.find((p) =>
+    p.models.some((m) => m.id === agentModel)
   );
   if (!provider) return null;
 

@@ -72,6 +72,9 @@ export function LandingPage({
   const isConfigured = useMemo(() => {
     if (!agentSettings.agentModel) return false;
     const selectedProvider = providers.find((p) =>
+      p.models.some((m) => m.id === agentSettings.agentModel) &&
+      settings.enabledModels.includes(`${p.id}:${agentSettings.agentModel}`)
+    ) || providers.find((p) =>
       p.models.some((m) => m.id === agentSettings.agentModel)
     );
     if (!selectedProvider) return false;
@@ -84,7 +87,7 @@ export function LandingPage({
       return settings.downloadedModels.includes(agentSettings.agentModel);
     }
     return true;
-  }, [providers, agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
+  }, [providers, agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels, settings.enabledModels]);
 
   const providerModels = useMemo(() => {
     return providers

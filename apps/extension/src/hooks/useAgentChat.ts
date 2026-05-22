@@ -386,6 +386,9 @@ export function useAgentChat({
   const isConfigured = useMemo(() => {
     if (!agentSettings.agentModel) return false;
     const provider = registryProviders.find((p) =>
+      p.models.some((m) => m.id === agentSettings.agentModel) &&
+      settings.enabledModels.includes(`${p.id}:${agentSettings.agentModel}`)
+    ) || registryProviders.find((p) =>
       p.models.some((m) => m.id === agentSettings.agentModel)
     );
     if (!provider) return false;
@@ -398,21 +401,27 @@ export function useAgentChat({
       return settings.downloadedModels.includes(agentSettings.agentModel);
     }
     return true;
-  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
+  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels, settings.enabledModels, registryProviders]);
 
   useEffect(() => {
     if (!agentSettings.agentModel) return;
     import("@/registry/providers").then(({ providers }) => {
-      for (const provider of providers) {
+      const provider = providers.find((p) =>
+        p.models.some((m) => m.id === agentSettings.agentModel) &&
+        settings.enabledModels.includes(`${p.id}:${agentSettings.agentModel}`)
+      ) || providers.find((p) =>
+        p.models.some((m) => m.id === agentSettings.agentModel)
+      );
+      if (provider?.setup === "web-llm" || provider?.setup === "browser-ai") {
         const model = provider.models.find((m) => m.id === agentSettings.agentModel);
-        if (model) {
-          setCurrentModelDef(model);
+        if (model?.capabilities.includes("vision")) {
+          setHasVisionSupport(true);
           return;
         }
       }
-      setCurrentModelDef(undefined);
+      setHasVisionSupport(true);
     });
-  }, [agentSettings.agentModel]);
+  }, [agentSettings.agentModel, settings.enabledModels]);
 
   const [transport, setTransport] = useState<ChatTransport<AgentMessage> | null>(null);
 
