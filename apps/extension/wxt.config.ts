@@ -80,6 +80,16 @@ export default defineConfig({
     name: "OpenBrowse",
     description: "The open source browser agent.",
     version: "0.1.0",
+    // Pins the extension ID to the Chrome Web Store listing. Required so
+    // that storage from manual / unpacked installs (loaded from a release
+    // zip) carries over to the Web Store install: same `key` -> same
+    // extension ID -> same `chrome-extension://<id>` origin -> same
+    // chrome.storage / IndexedDB / OPFS state.
+    //
+    // Do NOT change or remove this value. Once published, rotating the
+    // key would orphan every existing user's data and the Web Store
+    // would reject the upload anyway.
+    key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmDCDXBbSJxZqfAPibiexjYp5CkVDhh9QHwn2Vb82gScMWpx6LNg4H8YLlnUnXr1wHUS2wTv7LYB5QPCzo2X8XSe44lJWD8TJNHdz+OQNNjAa52z4uNdN36evxUMwz0ro8oFnlY6vPJfoXCwekg0IMoyxJUwSTksdMthK66DlKplI7NOCtM4SmFacrPgfBiX58Kjg5k8vhiYtREgsSqnMSVb+BK1B0ZO6jsNsBeI8LC7kHhHLz4PUZLwzUMyrvzAENKtkTdv+kLpUDmMTFmNI6JoMmfaJwXto5eQhe42Itzp2PF/4ka2AkBeS6uo7JTwxsScSnBtCQoarqnfsDskESQIDAQAB",
     content_security_policy: {
       extension_pages:
         "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
