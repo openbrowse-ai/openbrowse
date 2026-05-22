@@ -53,3 +53,38 @@ apps/
 packages/
 └── connectors/  — @openbrowse/connectors registry, shared between the two
 ```
+
+## Cutting a release
+
+OpenBrowse doesn't have release CI yet — releases are produced manually.
+
+1. Bump `version` in `apps/extension/package.json` and the `version`
+   field in the `manifest` block of `apps/extension/wxt.config.ts`.
+   Keep them in sync.
+2. From the repo root:
+   ```bash
+   pnpm zip
+   ```
+   This builds the extension and packages it as
+   `apps/extension/.output/openbrowse-<version>-chrome.zip`.
+3. Tag the commit and push:
+   ```bash
+   git tag v<version>
+   git push origin v<version>
+   ```
+4. Create a GitHub Release for that tag and attach the zip. The docs'
+   [Install page](/docs/overview#manual-install-current) links to
+   `releases/latest`, so the new zip becomes the recommended download
+   automatically.
+5. Upload the same zip to the Chrome Web Store dashboard as a new
+   version of the listing.
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="warn" title="Never change the manifest `key`">
+  `apps/extension/wxt.config.ts` pins the extension's public key so that
+  manual installs share an extension ID with the Chrome Web Store
+  listing. Rotating or removing this value would orphan every existing
+  user's storage (`chrome.storage`, IndexedDB, OPFS) and the Web Store
+  would reject the upload anyway. Treat the field as immutable.
+</Callout>
