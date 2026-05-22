@@ -68,11 +68,21 @@ export interface ModelDefinition {
    */
   capabilities: ("chat" | "tools" | "vision" | "thinking")[];
 
-  /** Qualitative intelligence rating for comparison UI. */
+  /**
+   * Qualitative intelligence rating for comparison UI.
+   * @deprecated models.dev doesn't expose this signal; surfaces only on
+   * legacy hand-curated providers. New providers will leave this unset.
+   */
   intelligence?: Intelligence;
 
-  /** Qualitative speed rating for comparison UI. */
+  /**
+   * Qualitative speed rating for comparison UI.
+   * @deprecated see `intelligence`.
+   */
   speed?: Speed;
+
+  /** Whether this model should show a "Recommended" badge in the picker. */
+  recommended?: boolean;
 
   /** Maximum input context window in tokens. */
   contextWindow?: number;
@@ -85,6 +95,12 @@ export interface ModelDefinition {
 
   /** Approximate download size for local models (e.g. "4.3 GB"). */
   downloadSize?: string;
+
+  /**
+   * Lifecycle status from models.dev (deprecated/alpha/beta). Used by the
+   * UI to gate preview models behind a settings toggle.
+   */
+  status?: "alpha" | "beta" | "deprecated";
 }
 
 export interface ProviderDefinition {
