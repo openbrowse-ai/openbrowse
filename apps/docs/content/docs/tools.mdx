@@ -5,59 +5,96 @@ description: Complete reference for all browser agent tools.
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The agent comes equipped with a comprehensive suite of tools to interact with your browser. When you ask the agent to perform a task, it autonomously selects and uses these tools to get the job done.
+The agent comes equipped with a comprehensive suite of tools. When you ask it to perform a task, it autonomously selects and chains these tools to get the job done.
 
 <Callout type="warn" title="Security & Approvals">
-  For sensitive actions (like `executeOnPage` or modifying memory), the agent will ask for your explicit approval before running the tool. You can choose to allow it once, or "Always allow on this site" to streamline your workflow.
+  Sensitive actions (like `executeOnPage` or modifying memory) prompt for your
+  explicit approval. Choose **Allow once**, or **Always allow on this site** to
+  streamline repeat workflows.
 </Callout>
 
 ## Browsing & Interaction
 
-The agent can navigate the web and interact with elements just like a human user.
+The agent navigates the web and interacts with elements just like a human user.
 
-| Tool | Description | Example Usage |
-|------|-------------|---------------|
-| `navigate` | Navigate the active tab to a URL. | `navigate("https://github.com")` |
-| `snapshot` | Capture a structural snapshot of the DOM. | `snapshot()` |
-| `readPage` | Extract text, links, and metadata from the page. | `readPage()` |
-| `screenshot` | Capture a visual screenshot of the viewport. | `screenshot()` |
-| `scrollPage` | Scroll up, down, or to a specific position. | `scrollPage({ direction: "down" })` |
-| `clickElement` | Click a specific element on the page. | `clickElement("@e42")` |
-| `typeInElement` | Type text into an input field or textarea. | `typeInElement("@e7", "Hello world")` |
+| Tool | Description |
+| --- | --- |
+| `navigate` | Navigate the active tab to a URL. |
+| `snapshot` | Capture a structural accessibility-tree snapshot of the active page. |
+| `readPage` | Extract text, links, and metadata from the page. |
+| `screenshot` | Capture a visual screenshot of the viewport. |
+| `scrollPage` | Scroll up, down, or to a specific position. |
+| `clickElement` | Click a specific element by its snapshot ref. |
+| `typeInElement` | Type text into an input field or textarea. |
 
 ## Tab Management
 
-The agent can see your open tabs and help you manage them.
+| Tool | Description |
+| --- | --- |
+| `listTabs` | List all open tabs across windows and spaces. |
+| `selectTab` | Switch focus to a specific tab. |
+
+## Extraction
 
 | Tool | Description |
-|------|-------------|
-| `listTabs` | See all open tabs across your spaces. |
-| `selectTab` | Switch focus to a specific tab. |
+| --- | --- |
+| `extract` | Extract structured data from the active page using its accessibility tree. Takes an instruction and an optional JSON Schema; preferred over raw DOM-scraping via `executeOnPage` for text-based data like search results, product lists, table rows, or articles. URL fields are substituted with numeric IDs and rehydrated to prevent hallucination. |
 
 ## Code Execution
 
-The agent can run JavaScript to perform complex extractions or manipulate the page.
+The agent can execute code in three sandboxed environments depending on what it's doing.
 
 | Tool | Description | Security |
-|------|-------------|----------|
-| `executeCode` | Run JavaScript in an isolated worker to process data. | Safe (Isolated) |
-| `executeOnPage` | Run JavaScript directly in the active page's context. | **Requires Approval** |
+| --- | --- | --- |
+| `executeCode` | Run JavaScript in an isolated worker (no DOM access). Best for data processing. | Safe (Isolated) |
+| `executeOnPage` | Run JavaScript directly in the active page's context. Use when you need DOM access. | **Requires Approval** |
+| `executePython` | Run CPython 3 in [Pyodide](https://pyodide.org), bundled in a sandboxed iframe. The conversation's [workspace](/docs/workspace) is mounted at `/workspace`; `/skills` is mounted read-only. Optional network access via `pyfetch`. | Safe (Sandboxed) |
+
+For Python specifically, the agent loads the bundled [`python-env` skill](/docs/skills) on demand to pick up Pyodide-specific gotchas (no `subprocess`, mismatched import names like `import fitz` for `pymupdf`, top-level `await`, latin-1 PDF unicode pitfalls, etc.).
+
+## Filesystem
+
+These tools operate on the conversation's per-conversation virtual [Workspace](/docs/workspace), backed by OPFS.
+
+| Tool | Description |
+| --- | --- |
+| `Read` | Read a file. Returns lines prefixed with line numbers; supports `offset` + `limit`. |
+| `Write` | Create or overwrite a file. Auto-creates parent directories. |
+| `Edit` | Exact string replacement in an existing file. |
+| `Glob` | Find files matching a glob pattern (e.g. `src/**/*.ts`). |
+| `Grep` | Regex search across file contents. Returns `path:line:content`. |
+| `LS` | List files and directories in a folder. |
+
+## Skills
+
+Skills let the agent load curated, on-demand instructions instead of carrying everything in its system prompt. See [Skills](/docs/skills) for the full picture.
+
+| Tool | Description |
+| --- | --- |
+| `skill` | Load a specific skill's `SKILL.md` into the conversation. |
+| `install_skill` | Install a skill from a GitHub repository or URL. |
+| `create_skill` | Author and persist a new skill into the local registry. |
+| `read_opfs_file` | Read any file under a skill's folder (for supporting docs/scripts). |
 
 ## Task Planning
 
-For complex, multi-step operations, the agent can create a structured plan to keep track of its progress.
+For complex, multi-step operations, the agent maintains a structured plan visible in the side panel's Cowork → Progress card.
 
 | Tool | Description |
-|------|-------------|
-| `todoWrite` | Create or update a persistent task list pinned in the side panel. |
+| --- | --- |
+| `todoWrite` | Create or update the conversation's persistent task list. Status changes (pending → in_progress → completed) drive the Progress UI. |
 
 ## Memory
 
-The agent has a persistent memory system to remember context across conversations. See [Memory](/docs/memory) for more details.
+Persistent memory across conversations. See [Memory](/docs/memory) for details.
 
 | Tool | Description |
-|------|-------------|
+| --- | --- |
 | `saveMemory` | Store a new piece of information. |
 | `recallMemory` | Search previously saved memories. |
 | `updateMemory` | Update an existing memory entry. |
 | `deleteMemory` | Remove a memory entry. |
+
+## Connectors (MCP)
+
+Any [Connector](/docs/connectors) you enable adds its own MCP tools to the agent's toolset dynamically. Names are namespaced by connector (e.g. `github_search_issues`, `linear_create_issue`).

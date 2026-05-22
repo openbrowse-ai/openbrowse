@@ -12,7 +12,8 @@ description: Guidelines for submitting pull requests to OpenBrowse.
 
 - Keep PRs focused — one feature or fix per PR
 - Write descriptive commit messages
-- Ensure `pnpm compile` passes (TypeScript type checking)
+- Ensure `pnpm compile` passes (typechecks every workspace in parallel)
+- Ensure `pnpm test` passes (vitest, currently scoped to the extension package)
 - Test your changes in Chrome with the extension loaded
 
 ## Branch Naming

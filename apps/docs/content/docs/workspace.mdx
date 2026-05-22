@@ -1,0 +1,69 @@
+---
+title: Workspace
+description: The per-conversation virtual filesystem the agent reads, writes, and tracks.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Each agent conversation gets its own **virtual workspace** — a sandboxed filesystem where the agent can read, write, edit, and search files just like it would in a coding IDE. The workspace lives in your browser's [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) (origin-private filesystem) and never leaves your machine.
+
+<Callout type="info">
+  The workspace is purely a scratchpad for the agent. It's separate from your
+  Chrome downloads and your real filesystem. You can inspect, download, or
+  delete its contents from the side panel UI.
+</Callout>
+
+## Per-conversation isolation
+
+Workspaces are scoped per conversation, so a new chat starts with an empty filesystem. When you delete a conversation, its workspace is recursively cleaned up.
+
+Internally, files are namespaced under `conversations/<conversation-id>/workspace/` in OPFS. The agent only sees relative paths — `notes.md`, `data/results.csv` — so the layout is portable across conversations.
+
+A read-only `/skills/` mount is also exposed to the agent so it can pull supporting files from installed [skills](/docs/skills) without leaving the workspace abstraction.
+
+## The Cowork side panel
+
+When you open the agent side panel, the **Cowork** aside attaches alongside the chat. It surfaces what the agent is doing in two collapsible cards:
+
+- **Progress.** The current `todoWrite` plan — pending, in-progress, and completed tasks. Updates live as the agent reorders or marks items done.
+- **Working folder.** A live tree of the workspace's files. Click any file to open it in the file viewer modal (Markdown preview / code with line numbers via Shiki).
+
+The aside auto-opens when you switch into a conversation that has either a plan or workspace files. Toggle it via the panel-right button in the side panel header.
+
+## Filesystem tools
+
+The agent operates on the workspace through six Claude-Code-style tools (see the [Tools Reference](/docs/tools#filesystem) for the full signatures):
+
+| Tool | Behavior |
+| --- | --- |
+| `Read` | Read a file. Returns lines prefixed with line numbers; supports `offset` + `limit` for paging. |
+| `Write` | Create or overwrite a file. Auto-creates parent directories. |
+| `Edit` | Exact string replacement in an existing file. The agent must `Read` first to verify indentation/content. |
+| `Glob` | Find files by glob pattern (e.g. `src/**/*.ts`). |
+| `Grep` | Regex search across file contents. Returns `path:line:content`. |
+| `LS` | List a directory. Trailing-slash convention marks subfolders. |
+
+Reads and writes emit a coarse `vfs:change` event. The Cowork panel subscribes and refreshes the working-folder tree reactively, so files appear (and previews update) as the agent operates.
+
+## Tool result rendering
+
+The chat transcript renders rich previews for each filesystem operation rather than raw JSON:
+
+- **Read / Glob / Grep / LS** → result renderers showing the file content, matched paths, or directory listing inline.
+- **Write** → a "Saved file" preview with a peek at the new content.
+- **Edit** → a diff-style preview showing exactly what changed.
+
+This makes it easy to skim long sessions and verify the agent did what you expected before approving the next step.
+
+## Friendly labels
+
+In the chat, filesystem tool calls show as human-readable actions instead of API names:
+
+| API name | Chat label |
+| --- | --- |
+| `Read` | Read file |
+| `Write` | Saved file |
+| `Edit` | Edited file |
+| `Glob` | Found files |
+| `Grep` | Searched files |
+| `LS` | Listed folder |

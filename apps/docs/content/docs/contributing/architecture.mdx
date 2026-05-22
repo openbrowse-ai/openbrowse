@@ -3,32 +3,63 @@ title: Architecture
 description: How the OpenBrowse codebase is organized.
 ---
 
-OpenBrowse is a Chrome extension built with [WXT](https://wxt.dev/), React, and the [Vercel AI SDK](https://sdk.vercel.ai/).
+OpenBrowse is a pnpm monorepo. The product is a Chrome extension built with [WXT](https://wxt.dev/), React, and the [Vercel AI SDK](https://ai-sdk.dev/). The docs site is a Next.js + Fumadocs app.
 
-## Entrypoints
+## Monorepo Layout
 
 ```
-src/entrypoints/
-├── background/     # Service worker — tab events, messaging, MCP client
+apps/
+├── extension/   — WXT Chrome extension (the product)
+└── docs/        — Next.js + Fumadocs site (this site)
+packages/
+└── connectors/  — @openbrowse/connectors registry, shared by extension + docs
+```
+
+The `connectors` package is the only deliberately cross-app concern: the docs site renders `/connectors` and `/connectors/[id]` from the same data the extension uses to populate Settings → Connectors. Provider/model metadata lives in the extension's `registry/models-dev/` snapshot, fetched live at runtime from [models.dev](https://models.dev).
+
+## Extension Entrypoints
+
+```
+apps/extension/src/entrypoints/
+├── background/     # Service worker — tab events, messaging, MCP client, models.dev refresh
 ├── content/        # Content script — overlay injection
 ├── home/           # New tab / home page
-├── offscreen/      # Offscreen document — AI inference (WebLLM, cloud APIs)
+├── offscreen/      # Offscreen document — AI inference (WebLLM, cloud APIs), Pyodide
 ├── overlay/        # Command palette UI (⌥K)
 ├── settings/       # Settings page
-└── sidepanel/      # Chrome side panel — agent chat
+└── sidepanel/      # Chrome side panel — agent chat (also rendered as the popout popup)
 ```
 
 ## Key Directories
 
-- `src/components/` — Shared React components
-- `src/hooks/` — Shared React hooks
-- `src/lib/agent/` — Agent logic, tools, memory
-- `src/registry/connectors/` — MCP connector definitions
+```
+apps/extension/src/
+├── components/             # Shared React components (chat UI, tool result renderers, ...)
+├── hooks/                  # Shared React hooks
+├── lib/
+│   ├── agent/              # Agent transport, tool definitions, memory, compaction
+│   │   └── tools/          # Per-tool implementations (clickElement, executePython, fs, ...)
+│   ├── python/             # Pyodide message protocol
+│   └── vfs/                # OPFS abstraction + change event bus (per-conversation workspaces)
+├── registry/
+│   ├── models-dev/         # Vendored models.dev snapshot, Zod schemas, refresh logic
+│   └── providers/          # Static provider entries (browser-ai, web-llm, openai-compatible)
+└── entrypoints/...
+
+public/
+└── skills/                 # Bundled agent skills (python-env, find-skills)
+```
+
+Connector metadata lives in the `@openbrowse/connectors` workspace package and is imported directly where needed (e.g. `src/components/ui/registry-icon.tsx`); there is no extension-side re-export.
 
 ## Data Flow
 
-1. User interacts via side panel or overlay
-2. Messages route through the background service worker
-3. AI inference happens in the offscreen document (isolates heavy computation)
-4. Tool calls execute via content scripts or the background worker
-5. Results stream back to the UI
+1. User interacts via the side panel (or popover, or overlay).
+2. The agent transport composes the system prompt (memory, todos, MCP tools) and the toolset.
+3. Tool calls execute where they belong:
+   - Browser tools (`clickElement`, `readPage`, etc.) → content scripts via the background worker.
+   - `executeCode` / `executeOnPage` → workers / page context.
+   - `executePython` → bundled Pyodide running in a sandboxed iframe (via the offscreen document).
+   - Filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `LS`) → per-conversation OPFS workspace.
+   - MCP tools → the connector's MCP server.
+4. Results stream back to the UI; the Cowork side panel reflects workspace + todo changes via the `vfs:change` event bus.
