@@ -592,7 +592,7 @@ export function ChatInput({
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
                                 <RegistryIcon id={model.providerId} className="size-3.5 mr-1" />
-                                {model.name}
+                                <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -630,7 +630,7 @@ export function ChatInput({
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
                                 <RegistryIcon id={model.providerId} className="size-3.5 mr-1 text-muted-foreground opacity-50" />
-                                {model.name}
+                                <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -673,9 +673,9 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                {model.name}
+                                <span className="flex-1 truncate">{model.name}</span>
                                 {!group.enabled && (
-                                  <span className="ml-auto text-[10px] text-muted-foreground mr-2">
+                                  <span className="text-[10px] text-muted-foreground mr-2">
                                     Not configured
                                   </span>
                                 )}
@@ -709,7 +709,7 @@ export function ChatInput({
                       setModelSelectorOpen(false);
                       chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") });
                     }}
-                    className="w-full flex items-center justify-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                    className="w-full flex items-center justify-center gap-2 rounded-sm px-2 py-1 text-xs outline-hidden select-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                   >
                     Configure <Kbd className="ml-1 text-[10px] h-4 py-0">⌥⌘C</Kbd>
                   </button>
