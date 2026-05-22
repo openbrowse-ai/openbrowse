@@ -579,7 +579,7 @@ export function ChatInput({
 
                   {pickerSections.favorites.length > 0 && (
                     <ComboboxGroup>
-                      <ComboboxLabel>Favorites</ComboboxLabel>
+                      <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">Favorites</ComboboxLabel>
                       {pickerSections.favorites.map((model) => {
                         const compoundId = `${model.providerId}:${model.id}`;
                         return (
@@ -617,7 +617,7 @@ export function ChatInput({
 
                   {pickerSections.recommended.length > 0 && (
                     <ComboboxGroup>
-                      <ComboboxLabel>Recommended</ComboboxLabel>
+                      <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">Recommended</ComboboxLabel>
                       {pickerSections.recommended.map((model) => {
                         const compoundId = `${model.providerId}:${model.id}`;
                         return (
@@ -655,7 +655,7 @@ export function ChatInput({
 
                   {pickerSections.providers.map((group) => (
                     <ComboboxGroup key={group.provider}>
-                      <ComboboxLabel>
+                      <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">
                         <span className="flex items-center gap-1.5">
                           <RegistryIcon id={group.provider} className="size-3.5" />
                           {group.label}
