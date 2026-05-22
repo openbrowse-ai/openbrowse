@@ -133,6 +133,7 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
             modelStates={modelStates}
             onDownload={handleDownload}
             onDelete={handleDelete}
+            query={query}
           />
         ))}
 
@@ -152,6 +153,7 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
                 modelStates={modelStates}
                 onDownload={handleDownload}
                 onDelete={handleDelete}
+                query={query}
               />
             ))}
           </>

@@ -19,6 +19,7 @@ interface ProviderSectionProps {
   modelStates: Record<string, ModelState>;
   onDownload: (providerId: string, modelId: string) => void;
   onDelete: (providerId: string, modelId: string) => void;
+  query?: string;
 }
 
 export function ProviderSection({
@@ -28,8 +29,10 @@ export function ProviderSection({
   modelStates,
   onDownload,
   onDelete,
+  query,
 }: ProviderSectionProps) {
   const [configOpen, setConfigOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const providerConfig = settings.providerConfigs[provider.id] ?? {};
   const isConfigured = provider.setup !== "byok" || Object.keys(providerConfig).length > 0;
@@ -68,6 +71,18 @@ export function ProviderSection({
     });
   }
 
+  const q = (query || "").trim().toLowerCase();
+  const providerMatches = q ? (provider.name.toLowerCase().includes(q) || provider.id.toLowerCase().includes(q)) : false;
+
+  const filteredModels = provider.models.filter((m) => {
+    if (!q) return true;
+    if (m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)) return true;
+    return providerMatches;
+  });
+
+  const visibleModels = expanded ? filteredModels : filteredModels.slice(0, 10);
+  const hiddenCount = filteredModels.length - visibleModels.length;
+
   return (
     <div className="rounded-lg border p-4">
       {/* Header */}
@@ -96,7 +111,7 @@ export function ProviderSection({
       {/* Models list */}
       {(isConfigured || provider.setup !== "byok") && (
         <div className="flex flex-col gap-1 mt-2">
-          {provider.models.map((model) => (
+          {visibleModels.map((model) => (
             <ModelRow
               key={model.id}
               model={model}
@@ -110,6 +125,26 @@ export function ProviderSection({
               onDelete={() => onDelete(provider.id, model.id)}
             />
           ))}
+
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="self-start mt-2 text-xs text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+            >
+              Show {hiddenCount} more models
+            </button>
+          )}
+
+          {expanded && filteredModels.length > 10 && (
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="self-start mt-2 text-xs text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+            >
+              Show fewer
+            </button>
+          )}
         </div>
       )}
 
