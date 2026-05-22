@@ -1,0 +1,64 @@
+name: Refresh models.dev snapshot
+
+# Runs the snapshot refresher against models.dev/api.json on a schedule
+# and opens a PR if anything changed. This keeps the bundled fallback
+# fresh without manual maintenance.
+
+on:
+  schedule:
+    # Daily at 04:00 UTC.
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-models
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Refresh snapshot
+        run: pnpm refresh:models
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if git diff --quiet apps/extension/src/registry/models-dev/snapshot.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR if snapshot changed
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/refresh-models-snapshot
+          delete-branch: true
+          title: "chore: refresh models.dev snapshot"
+          commit-message: "chore: refresh models.dev snapshot"
+          body: |
+            Automated refresh of the bundled `models.dev` snapshot.
+
+            See `.github/workflows/refresh-models.yml` for the schedule.
+          labels: |
+            automated
+            models.dev

@@ -12,8 +12,8 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Logo } from "@/components/ui/logo";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { useProviders } from "@/hooks/useProviders";
 import { cn } from "@/lib/utils";
-import { providers } from "@/registry/providers";
 import {
   AlertCircle,
   ArrowLeft,
@@ -125,6 +125,7 @@ export function ChatView({
     isCompacting,
     isConfigured,
     settings,
+    updateSettings,
     agentSettings,
     handleSubmit,
     handleNew,
@@ -189,36 +190,44 @@ export function ChatView({
     return () => clearTimeout(timer);
   }, [isGlobalChat, input]);
 
+  const { providers } = useProviders();
+
   const providerModels = useMemo(() => {
     return providers
       .map((provider) => {
-        const enabledModels = provider.models.filter((m) =>
-          settings.enabledModels.includes(`${provider.id}:${m.id}`),
-        );
-        if (enabledModels.length === 0) return null;
-
         let enabled = true;
+        let availableModels = provider.models;
+
         if (provider.setup === "byok") {
           const config = settings.providerConfigs[provider.id] ?? {};
           const requiredFields =
             provider.configSchema?.filter((f) => f.required) ?? [];
           enabled = requiredFields.every((f) => !!config[f.key]);
+          if (!enabled) return null;
         } else if (provider.setup === "web-llm") {
-          enabled = enabledModels.some((m) =>
+          availableModels = provider.models.filter((m) =>
             settings.downloadedModels.includes(m.id),
           );
+          enabled = availableModels.length > 0;
+          if (!enabled) return null;
+        } else if (provider.setup === "browser-ai") {
+          availableModels = provider.models.filter((m) =>
+            settings.downloadedModels.includes(m.id),
+          );
+          enabled = availableModels.length > 0;
+          if (!enabled) return null;
         }
 
         return {
           provider: provider.id,
           label: provider.name,
-          models: enabledModels,
+          models: availableModels,
           enabled,
         };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
   }, [
-    settings.enabledModels,
+    providers,
     settings.providerConfigs,
     settings.downloadedModels,
   ]);
@@ -609,6 +618,13 @@ export function ChatView({
           isLoading={isLoading}
           disabled={!isConfigured}
           providerModels={providerModels}
+          favoriteModels={settings.favoriteModels}
+          onFavoriteToggle={(modelKey) => {
+            const favoriteModels = settings.favoriteModels.includes(modelKey)
+              ? settings.favoriteModels.filter((k) => k !== modelKey)
+              : [...settings.favoriteModels, modelKey];
+            updateSettings({ favoriteModels });
+          }}
           selectedModel={agentSettings.agentModel}
           onModelChange={setAgentModel}
           thinkingEnabled={agentSettings.thinkingEnabled}
@@ -617,7 +633,11 @@ export function ChatView({
           selectedModelCapabilities={
             providers
               .flatMap((p) => p.models)
-              .find((m) => m.id === agentSettings.agentModel)?.capabilities
+              .find((m) => {
+                const parts = agentSettings.agentModel.split(":");
+                const actualId = parts.length > 1 ? parts.slice(1).join(":") : agentSettings.agentModel;
+                return m.id === actualId;
+              })?.capabilities
           }
           autoFocus
           focusTrigger={`${conversationId ?? "new"}-${editingMessageId ?? ""}`}

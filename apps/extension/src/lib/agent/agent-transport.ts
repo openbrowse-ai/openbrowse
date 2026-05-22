@@ -676,9 +676,24 @@ export async function createAgentTransport(
 ): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
 
+  const [providerId, ...modelIdParts] = agentModel.split(":");
+  const actualModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : agentModel;
+  
   const { providers } = await import("@/registry/providers");
-  const provider = providers.find((p) =>
-    p.models.some((m) => m.id === agentModel),
+  const provider = providers.find((p) => {
+    // If we have a compound key, use providerId directly
+    if (modelIdParts.length > 0) return p.id === providerId;
+    // Fallback for non-compound legacy keys
+    if (!p.models.some((m) => m.id === actualModelId)) return false;
+    if (p.setup === "byok") {
+      const config = settings.providerConfigs[p.id] ?? {};
+      const requiredFields = p.configSchema?.filter((f) => f.required) ?? [];
+      return requiredFields.every((f) => !!config[f.key]);
+    } else {
+      return settings.downloadedModels.includes(actualModelId);
+    }
+  }) || providers.find((p) =>
+    p.models.some((m) => m.id === actualModelId)
   );
   if (!provider) return null;
 
@@ -686,7 +701,7 @@ export async function createAgentTransport(
   const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
   if (!requiredFields.every((f) => !!config[f.key])) return null;
 
-  const model = provider.createLanguageModel(config, agentModel);
+  const model = await provider.createLanguageModel(config, actualModelId);
   setCurrentAgentModel(model);
 
   const fsTools = createFsTools(conversationId);

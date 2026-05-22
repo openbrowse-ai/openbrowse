@@ -10,7 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { Settings, AgentSettings } from "@/lib/types";
-import { providers } from "@/registry/providers";
+import { useProviders } from "@/hooks/useProviders";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 
 interface GeneralTabProps {
@@ -21,7 +21,8 @@ interface GeneralTabProps {
 }
 
 export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsChange }: GeneralTabProps) {
-  const enabledModelOptions = settings.enabledModels.map((m) => {
+  const { providers } = useProviders();
+  const enabledModelOptions = settings.favoriteModels.map((m) => {
     const [providerId, ...rest] = m.split(":");
     const modelId = rest.join(":");
     const provider = providers.find((p) => p.id === providerId);

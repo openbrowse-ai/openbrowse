@@ -8,7 +8,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tidyModel: "",
   notificationsEnabled: true,
   providerConfigs: {},
-  enabledModels: [],
+  favoriteModels: [],
   downloadedModels: [],
   mcpServers: [],
 };
@@ -65,6 +65,7 @@ export const STORAGE_KEYS = {
   MCP_SERVERS: "mcp-servers",
   AUTO_TIDY_NOTIFICATION: "auto-tidy-notification",
   ACTIVE_AGENTS: "active-agents",
+  MODELS_DEV_CATALOG: "models-dev-catalog",
 } as const;
 
 export const HOME_PAGE_URL = "/home.html";

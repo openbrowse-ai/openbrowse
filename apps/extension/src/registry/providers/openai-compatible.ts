@@ -1,4 +1,3 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import type { ProviderDefinition } from "./types";
 
 export const definition: ProviderDefinition = {
@@ -13,7 +12,10 @@ export const definition: ProviderDefinition = {
     { key: "modelId", label: "Model ID", type: "text", required: true, placeholder: "model-name", description: "The model identifier to use" },
   ],
   models: [],
-  createLanguageModel(config, modelId) {
+  async createLanguageModel(config, modelId) {
+    // Lazy-load the SDK so the openai-compatible adapter only ships
+    // in a chunk that's downloaded when the user actually uses it.
+    const { createOpenAI } = await import("@ai-sdk/openai");
     const provider = createOpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey });
     return provider(modelId || config.modelId);
   },

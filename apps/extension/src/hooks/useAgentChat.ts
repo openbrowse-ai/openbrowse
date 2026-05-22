@@ -383,36 +383,66 @@ export function useAgentChat({
     });
   }, [spaceId]);
 
+  const [hasVisionSupport, setHasVisionSupport] = useState(true);
+
   const isConfigured = useMemo(() => {
     if (!agentSettings.agentModel) return false;
-    const provider = registryProviders.find((p) =>
-      p.models.some((m) => m.id === agentSettings.agentModel)
-    );
-    if (!provider) return false;
-    if (provider.setup === "byok") {
-      const config = settings.providerConfigs[provider.id] ?? {};
-      const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
-      return requiredFields.every((f) => !!config[f.key]);
-    }
-    if (provider.setup === "web-llm") {
-      return settings.downloadedModels.includes(agentSettings.agentModel);
-    }
-    return true;
-  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
+    
+    const [providerId, ...modelIdParts] = agentSettings.agentModel.split(":");
+    const actualModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : agentSettings.agentModel;
+
+    // Find the provider
+    const configuredProvider = registryProviders.find((p) => {
+      if (modelIdParts.length > 0) {
+        if (p.id !== providerId) return false;
+      } else {
+        if (!p.models.some((m) => m.id === actualModelId)) return false;
+      }
+      
+      if (p.setup === "byok") {
+        const config = settings.providerConfigs[p.id] ?? {};
+        const requiredFields = p.configSchema?.filter((f) => f.required) ?? [];
+        return requiredFields.every((f) => !!config[f.key]);
+      } else {
+        return settings.downloadedModels.includes(actualModelId);
+      }
+    });
+
+    return !!configuredProvider;
+  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels, registryProviders]);
 
   useEffect(() => {
     if (!agentSettings.agentModel) return;
+    const [providerId, ...modelIdParts] = agentSettings.agentModel.split(":");
+    const actualModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : agentSettings.agentModel;
+
     import("@/registry/providers").then(({ providers }) => {
-      for (const provider of providers) {
-        const model = provider.models.find((m) => m.id === agentSettings.agentModel);
-        if (model) {
-          setCurrentModelDef(model);
+      const provider = providers.find((p) => {
+        if (modelIdParts.length > 0) {
+          if (p.id !== providerId) return false;
+        } else {
+          if (!p.models.some((m) => m.id === actualModelId)) return false;
+        }
+        
+        if (p.setup === "byok") {
+          const config = settings.providerConfigs[p.id] ?? {};
+          const requiredFields = p.configSchema?.filter((f) => f.required) ?? [];
+          return requiredFields.every((f) => !!config[f.key]);
+        } else {
+          return settings.downloadedModels.includes(actualModelId);
+        }
+      }) || providers.find((p) => p.models.some((m) => m.id === actualModelId));
+
+      if (provider?.setup === "web-llm" || provider?.setup === "browser-ai") {
+        const model = provider.models.find((m) => m.id === actualModelId);
+        if (model?.capabilities.includes("vision")) {
+          setHasVisionSupport(true);
           return;
         }
       }
-      setCurrentModelDef(undefined);
+      setHasVisionSupport(true);
     });
-  }, [agentSettings.agentModel]);
+  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
 
   const [transport, setTransport] = useState<ChatTransport<AgentMessage> | null>(null);
 
@@ -553,7 +583,7 @@ export function useAgentChat({
 
         const config =
           settingsForCompaction.providerConfigs[provider.id] ?? {};
-        const compactionModel = provider.createLanguageModel(
+        const compactionModel = await provider.createLanguageModel(
           config,
           compactionModelId,
         );
@@ -1107,6 +1137,12 @@ export function useAgentChat({
     [agentSettings, setAgentSettings],
   );
 
+  const updateSettings = useCallback((patch: Partial<Settings>) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    storage.setSettings(next);
+  }, [settings]);
+
   return {
     messages,
     input,
@@ -1115,7 +1151,9 @@ export function useAgentChat({
     isStreaming,
     isCompacting,
     isConfigured,
+    hasVisionSupport,
     settings,
+    updateSettings,
     agentSettings,
     setAgentModel,
     setThinkingSettings,

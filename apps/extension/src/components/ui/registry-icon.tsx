@@ -1,14 +1,3 @@
-import anthropicSvg from "@/registry/providers/icons/anthropic.svg?raw";
-import anthropicDarkSvg from "@/registry/providers/icons/anthropic-dark.svg?raw";
-import browserAiSvg from "@/registry/providers/icons/browser-ai.svg?raw";
-import googleSvg from "@/registry/providers/icons/google.svg?raw";
-import ollamaSvg from "@/registry/providers/icons/ollama.svg?raw";
-import ollamaDarkSvg from "@/registry/providers/icons/ollama-dark.svg?raw";
-import openaiCompatibleSvg from "@/registry/providers/icons/openai-compatible.svg?raw";
-import openaiSvg from "@/registry/providers/icons/openai.svg?raw";
-import openaiDarkSvg from "@/registry/providers/icons/openai-dark.svg?raw";
-import webLlmSvg from "@/registry/providers/icons/web-llm.svg?raw";
-
 import githubSvg from "@openbrowse/connectors/icons/github.svg?raw";
 import githubDarkSvg from "@openbrowse/connectors/icons/github-dark.svg?raw";
 import linearSvg from "@openbrowse/connectors/icons/linear.svg?raw";
@@ -26,14 +15,37 @@ interface IconEntry {
   dark?: string;
 }
 
+/**
+ * Provider icons are auto-registered from `registry/providers/icons/*.svg`
+ * via Vite's import.meta.glob. Drop a new SVG into that directory and it
+ * surfaces here without code edits.
+ *
+ * Convention: `<id>.svg` is the light/default variant; the optional
+ * `<id>-dark.svg` (if present) is used in dark mode. Most provider
+ * SVGs from models.dev use `fill="currentColor"` and don't need a
+ * dark variant.
+ */
+const providerIconModules = import.meta.glob<string>(
+  "@/registry/providers/icons/*.svg",
+  { query: "?raw", import: "default", eager: true },
+);
+
+function buildProviderIcons(): Record<string, IconEntry> {
+  const out: Record<string, IconEntry> = {};
+  for (const [path, svg] of Object.entries(providerIconModules)) {
+    const m = path.match(/\/([^/]+)\.svg$/);
+    if (!m) continue;
+    const filename = m[1];
+    if (filename.endsWith("-dark")) continue;
+    const dark = providerIconModules[path.replace(".svg", "-dark.svg")];
+    out[filename] = { light: svg, ...(dark ? { dark } : {}) };
+  }
+  return out;
+}
+
 const icons: Record<string, IconEntry> = {
-  openai: { light: openaiSvg, dark: openaiDarkSvg },
-  anthropic: { light: anthropicSvg, dark: anthropicDarkSvg },
-  google: { light: googleSvg },
-  ollama: { light: ollamaSvg, dark: ollamaDarkSvg },
-  "openai-compatible": { light: openaiCompatibleSvg },
-  "browser-ai": { light: browserAiSvg },
-  "web-llm": { light: webLlmSvg },
+  ...buildProviderIcons(),
+  // Connectors live in a separate package; keep them as static imports.
   github: { light: githubSvg, dark: githubDarkSvg },
   linear: { light: linearSvg },
   notion: { light: notionSvg, dark: notionDarkSvg },
@@ -49,21 +61,55 @@ interface RegistryIconProps {
   className?: string;
 }
 
+/** Tailwind background color classes for fallback chips, picked deterministically. */
+const FALLBACK_PALETTE = [
+  "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
+  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
+  "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+  "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  "bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300",
+  "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300",
+];
+
+function fallbackChipClasses(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  return FALLBACK_PALETTE[Math.abs(hash) % FALLBACK_PALETTE.length];
+}
+
 export function RegistryIcon({ id, className = "w-4 h-4" }: RegistryIconProps) {
   const entry = icons[id];
-  if (!entry) return null;
+
+  // No registered icon → render a colored letter chip so unknown
+  // providers (e.g. newly-added models.dev entries) still get a
+  // visual distinct from the rest.
+  if (!entry || !entry.light) {
+    const letter = (id?.[0] ?? "?").toUpperCase();
+    return (
+      <span
+        className={`inline-flex items-center justify-center rounded-sm text-[10px] font-semibold ${fallbackChipClasses(
+          id ?? "",
+        )} ${className}`}
+        aria-label={`${id} icon`}
+      >
+        {letter}
+      </span>
+    );
+  }
 
   if (!entry.dark) {
     return (
       <span
-        className={`inline-flex items-center justify-center ${className}`}
+        className={`inline-flex items-center justify-center [&_svg]:w-full [&_svg]:h-full ${className}`}
         dangerouslySetInnerHTML={{ __html: entry.light }}
       />
     );
   }
 
   return (
-    <span className={`inline-flex items-center justify-center ${className}`}>
+    <span className={`inline-flex items-center justify-center [&_svg]:w-full [&_svg]:h-full ${className}`}>
       <span className="contents dark:hidden" dangerouslySetInnerHTML={{ __html: entry.light }} />
       <span className="hidden dark:contents" dangerouslySetInnerHTML={{ __html: entry.dark }} />
     </span>

@@ -2,6 +2,7 @@ console.log("Background service worker loaded up successfully!");
 import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
 import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
+import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { chatDb } from "@/lib/chat-db";
 
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
@@ -15,6 +16,8 @@ function getTidyState(data: Record<string, unknown>, key: string): TidyState {
 
 export default defineBackground({
   main() {
+    registerModelsDevRefresh();
+
     chrome.action.onClicked.addListener(async (tab) => {
       if (!tab.id || !tab.windowId) return;
       const ownExtUrl = chrome.runtime.getURL("");

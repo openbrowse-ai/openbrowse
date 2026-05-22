@@ -91,9 +91,9 @@ export const storage = {
       };
     }
 
-    // Migrate enabled model from old single-model selection
+    // Migrate favorite model from old single-model selection
     if (cloudProvider && stored.cloudModel && cloudProvider !== "openai-compatible") {
-      migrated.enabledModels = [`${cloudProvider}:${stored.cloudModel}`];
+      migrated.favoriteModels = [`${cloudProvider}:${stored.cloudModel}`];
     }
 
     // Migrate downloaded models from legacy separate storage key
