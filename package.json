@@ -11,7 +11,13 @@
     "build": "pnpm -r build",
     "build:firefox": "pnpm -F openbrowse build:firefox",
     "compile": "pnpm -r --parallel compile",
+    "test": "pnpm -F openbrowse test",
+    "refresh:models": "tsx scripts/refresh-models-snapshot.ts",
     "zip": "pnpm -F openbrowse zip",
     "zip:firefox": "pnpm -F openbrowse zip:firefox"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.4",
+    "zod": "^4.3.6"
   }
 }
