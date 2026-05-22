@@ -35,7 +35,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const [savedSettings, setSavedSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
   const [savedAgentSettings, setSavedAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
-  const [activeTab, setActiveTab] = useState<TabId>("general");
+  
+  const initialTab = (new URLSearchParams(window.location.search).get("tab") as TabId) || "general";
+  const [activeTab, setActiveTab] = useState<TabId>(TABS.some(t => t.id === initialTab) ? initialTab : "general");
 
   const dirty = JSON.stringify(settings) !== JSON.stringify(savedSettings) ||
                 JSON.stringify(agentSettings) !== JSON.stringify(savedAgentSettings);
