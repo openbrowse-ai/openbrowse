@@ -60,13 +60,13 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
     icon: { light: "openai.svg" },
     description: "GPT-5 series, o-series reasoning, and GPT-4.1 models",
     apiKeyPlaceholder: "sk-proj-...",
-    recommendedModels: ["gpt-5.5", "gpt-5-mini"],
+    recommendedModels: ["gpt-5.5", "o4-mini", "gpt-5.5-pro"],
   },
   google: {
     icon: { light: "google.svg" },
     description: "Gemini 3.x and 2.5 multimodal models",
     apiKeyPlaceholder: "AIza...",
-    recommendedModels: ["gemini-flash-latest", "gemini-2.5-pro"],
+    recommendedModels: ["gemini-3.1-pro-preview", "gemini-3.5-flash"],
   },
   xai: {
     icon: { light: "xai.svg" },
@@ -141,7 +141,7 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
         description: "Leave blank for SDK default",
       },
     ],
-    recommendedModels: ["gpt-4.1-mini", "claude-sonnet-4-6", "o4-mini"],
+    recommendedModels: ["gpt-5.5", "claude-opus-4-7", "o4-mini"],
     envVarMap: {
       AZURE_RESOURCE_NAME: "resourceName",
     },
@@ -151,9 +151,11 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
     description: "Single key access to OpenAI, Anthropic, Bedrock, Vertex, Mistral, Llama, and more — billed through Vercel",
     apiKeyPlaceholder: "Vercel AI Gateway API key",
     recommendedModels: [
-      "openai/gpt-4.1-mini",
-      "anthropic/claude-sonnet-4.6",
-      "google/gemini-2.5-pro",
+      "openai/gpt-5.5",
+      "anthropic/claude-opus-4.7",
+      "google/gemini-3.1-pro-preview",
+      "openai/o4-mini",
+      "deepseek/deepseek-v4-pro",
     ],
   },
 };
