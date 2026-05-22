@@ -1,0 +1,48 @@
+name: CI
+
+# PR-gating checks for the monorepo. Runs typecheck + tests + a docs
+# build sanity check on every PR targeting main and on every push to
+# main itself.
+#
+# Designed to be cheap (~2-3 min) so it doesn't slow review.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # One run per ref. Newer pushes cancel older still-running checks.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (all workspaces)
+        run: pnpm compile
+
+      - name: Test (extension)
+        run: pnpm test
+
+      - name: Build docs site (sanity)
+        run: pnpm -F openbrowse-docs build
