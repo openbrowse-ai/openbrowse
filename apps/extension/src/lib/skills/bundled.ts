@@ -21,9 +21,7 @@ export async function bootstrapBundledSkills(): Promise<void> {
     if (!manifest || manifest.length === 0) return;
 
     for (const bundledSkill of manifest) {
-      // Check if already installed
       const existing = await skillsDb.get(bundledSkill.name);
-      if (existing) continue;
 
       // Ensure SKILL.md exists in the bundle
       const skillMdUrl = chrome.runtime.getURL(`skills/${bundledSkill.name}/SKILL.md`);
@@ -31,6 +29,24 @@ export async function bootstrapBundledSkills(): Promise<void> {
       if (!skillMdResponse.ok) continue;
       
       const skillMdContent = await skillMdResponse.text();
+
+      if (existing) {
+        if (existing.source !== "bundled") {
+          // User installed a custom version, do not overwrite
+          continue;
+        }
+
+        try {
+          const existingContent = await OPFS.readFile(`skills/${bundledSkill.name}/SKILL.md`);
+          // If content hasn't changed, skip update
+          if (existingContent === skillMdContent) {
+            continue;
+          }
+        } catch {
+          // Could not read from OPFS, proceed with overwrite
+        }
+      }
+
       let frontmatter;
       try {
         const parsed = parseSkillFrontmatter(skillMdContent);
