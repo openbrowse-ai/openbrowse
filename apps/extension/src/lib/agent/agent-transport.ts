@@ -15,7 +15,12 @@ import { memoryDb } from "../memory-db";
 import type { AgentUIMessage, Settings } from "../types";
 import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
-import { clearHandles } from "./tab-handles";
+import { ExtensionDriver, type ToolContext } from "./driver";
+import {
+  clearHandles,
+  getOrCreateHandle as getOrCreateTabHandle,
+  resolveHandle as resolveTabHandle,
+} from "./tab-handles";
 import {
   clickElementTool,
   createSkillTool,
@@ -494,6 +499,69 @@ export async function allowToolOnSite(
   }
 }
 
+/**
+ * Singleton driver instance for the production extension. Tools receive this
+ * via the `ToolContext` threaded through `experimental_context`. Stateless;
+ * the driver itself is just a thin facade over `cdp-session`/`active-tab`.
+ */
+const extensionDriver = new ExtensionDriver();
+
+/**
+ * Build the `ToolContext` for an agent session. The context exposes the
+ * driver plus session-level orchestration callbacks (tab handle map,
+ * conversation-tab binding) that only make sense in the extension. The bench
+ * harness builds its own minimal context with `session` left undefined.
+ *
+ * Session helpers read `getAgentContext().conversationId` lazily at call
+ * time so the same context object stays valid across conversation switches.
+ */
+function buildExtensionToolContext(): ToolContext {
+  return {
+    driver: extensionDriver,
+    session: {
+      get conversationId() {
+        return getAgentContext().conversationId;
+      },
+      bindTabsToConversation: async (tabIds) => {
+        const cid = getAgentContext().conversationId;
+        if (!cid) return;
+        try {
+          await chrome.runtime.sendMessage({
+            type: "BIND_TABS_TO_CONVERSATION",
+            conversationId: cid,
+            tabIds: tabIds.map((t) => Number(t)),
+          });
+        } catch {
+          // Background asleep; rebuilds on next startup.
+        }
+      },
+      bindActiveTabToConversation: async (tabId) => {
+        const cid = getAgentContext().conversationId;
+        if (!cid) return;
+        try {
+          await chrome.runtime.sendMessage({
+            type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
+            conversationId: cid,
+            tabId: Number(tabId),
+          });
+        } catch {
+          // Background asleep; rebuilds on next startup.
+        }
+      },
+      getOrCreateHandle: (tabId) => {
+        const cid = getAgentContext().conversationId;
+        return cid
+          ? getOrCreateTabHandle(cid, Number(tabId))
+          : `t${Number(tabId)}`;
+      },
+      resolveHandle: (handle) => {
+        const cid = getAgentContext().conversationId;
+        return cid ? resolveTabHandle(cid, handle) : undefined;
+      },
+    },
+  };
+}
+
 function toSDKTool<TInput, TOutput>(
   t: BrowserTool<TInput, TOutput>,
   toolKey: string,
@@ -519,7 +587,10 @@ function toSDKTool<TInput, TOutput>(
         }
       : approvalRequired;
 
-  const execute = async (input: TInput, options: { toolCallId: string }) => {
+  const execute = async (
+    input: TInput,
+    options: { toolCallId: string; experimental_context?: unknown },
+  ) => {
     if (isTabTool) {
       agentActive = true;
       notifyAgentStatus(true, currentSpaceColor);
@@ -580,7 +651,13 @@ function toSDKTool<TInput, TOutput>(
       } catch {}
     }
     try {
-      const result = await t.execute(input);
+      // Threaded ToolContext from the SDK's experimental_context channel.
+      // Tools that haven't migrated still receive (input) — TS allows
+      // dropping the second param. Once all tools read ctx the cast can
+      // tighten to a non-optional check.
+      const ctx = (options.experimental_context as ToolContext | undefined)
+        ?? buildExtensionToolContext();
+      const result = await t.execute(input, ctx);
       toolResultStore.set(options.toolCallId, result);
       if (isTabTool) {
         try {
@@ -927,6 +1004,11 @@ export async function createAgentTransport(
     tools,
     instructions,
     ...(providerOptions && { providerOptions }),
+    // Per-call ToolContext threaded through `experimental_context` →
+    // `ToolExecutionOptions.experimental_context` → our `toSDKTool` wrapper.
+    // Session helpers read live agent state via getters so the same context
+    // object stays valid across conversation switches.
+    experimental_context: buildExtensionToolContext(),
     onStepFinish: (stepResult) => {
       const usage = stepResult.usage;
       if (usage.inputTokens != null || usage.outputTokens != null) {

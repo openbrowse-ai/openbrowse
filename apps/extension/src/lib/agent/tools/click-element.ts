@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { getActiveUserTab, sendToContentScript, waitForTabLoad } from "../active-tab";
-import { sendCommand, isDetachError } from "../cdp-session";
+import { isDetachError } from "../cdp-session";
+import type { BrowserDriver, TabId } from "../driver";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -27,22 +27,22 @@ export const clickElementTool: BrowserTool<Input, Output> = {
   description:
     "Click an element on the page. Use @ref from snapshot (preferred) or a CSS selector. The response automatically includes a diff of what changed on the page — use it to verify the action worked before acting again. If diff is null the click produced no visible change.",
   parameters,
-  execute: async ({ target }) => {
-    const tab = await getActiveUserTab();
-    const tabId = tab.id!;
+  execute: async ({ target }, ctx) => {
+    const tab = await ctx.driver.getActiveTab();
+    const tabId = tab.id;
 
     const previousSnapshot = getPreviousSnapshot(tabId);
 
     try {
       if (target.startsWith("@e")) {
-        await clickByRef(tabId, target);
+        await clickByRef(ctx.driver, tabId, target);
       } else {
-        await clickBySelector(tabId, target);
+        await clickBySelector(ctx.driver, tabId, target);
       }
     } catch (err) {
       if (!isDetachError(err)) throw err;
-      // If the page detached during the click sequence, it means the click 
-      // successfully triggered a navigation. We swallow the error and proceed 
+      // If the page detached during the click sequence, it means the click
+      // successfully triggered a navigation. We swallow the error and proceed
       // to wait for the new page to load.
     }
 
@@ -51,14 +51,14 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     // Best-effort settle: wait briefly for any navigation the click may have
     // triggered. If nothing happens, this times out silently and we move on.
     await new Promise((r) => setTimeout(r, 250));
-    await waitForTabLoad(tabId, 3000).catch(() => {});
+    await ctx.driver.waitForLoad(tabId, 3000).catch(() => {});
 
     // Auto-attach diff so the agent can verify the outcome without a follow-up
     // snapshot call. If previousSnapshot is null, we skip diff and just return
     // the fresh snapshot implicitly via the setRefs side-effect.
     if (!previousSnapshot) {
       try {
-        await captureSnapshot(tabId);
+        await captureSnapshot(ctx.driver, tabId);
       } catch {
         // page may have navigated away / tab closed; ignore
       }
@@ -66,7 +66,7 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     }
 
     try {
-      const { snapshotText } = await captureSnapshot(tabId);
+      const { snapshotText } = await captureSnapshot(ctx.driver, tabId);
       const diff = diffSnapshots(previousSnapshot, snapshotText);
       if (diff === null) {
         return {
@@ -89,7 +89,11 @@ export const clickElementTool: BrowserTool<Input, Output> = {
   },
 };
 
-async function clickByRef(tabId: number, ref: string): Promise<void> {
+async function clickByRef(
+  driver: BrowserDriver,
+  tabId: TabId,
+  ref: string,
+): Promise<void> {
   const entry = getRef(tabId, ref);
   if (!entry) {
     throw new Error(
@@ -97,7 +101,7 @@ async function clickByRef(tabId: number, ref: string): Promise<void> {
     );
   }
 
-  const boxResult = await sendCommand<{
+  const boxResult = await driver.sendCommand<{
     model?: { content: number[] };
   }>(tabId, "DOM.getBoxModel", { backendNodeId: entry.backendNodeId });
 
@@ -109,19 +113,19 @@ async function clickByRef(tabId: number, ref: string): Promise<void> {
   const x = (pts[0] + pts[2] + pts[4] + pts[6]) / 4;
   const y = (pts[1] + pts[3] + pts[5] + pts[7]) / 4;
 
-  await sendCommand(tabId, "Input.dispatchMouseEvent", {
+  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved",
     x,
     y,
   });
-  await sendCommand(tabId, "Input.dispatchMouseEvent", {
+  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mousePressed",
     x,
     y,
     button: "left",
     clickCount: 1,
   });
-  await sendCommand(tabId, "Input.dispatchMouseEvent", {
+  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
     type: "mouseReleased",
     x,
     y,
@@ -130,8 +134,12 @@ async function clickByRef(tabId: number, ref: string): Promise<void> {
   });
 }
 
-async function clickBySelector(tabId: number, selector: string): Promise<void> {
-  const result = await sendToContentScript<{
+async function clickBySelector(
+  driver: BrowserDriver,
+  tabId: TabId,
+  selector: string,
+): Promise<void> {
+  const result = await driver.sendToContentScript<{
     success: boolean;
     error?: string;
   }>(tabId, {

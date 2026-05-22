@@ -1,27 +1,9 @@
 import { z } from "zod";
 import { chatDb } from "@/lib/chat-db";
-import { getTargetTabId, setTargetTabId, waitForTabLoad } from "../active-tab";
-import { getAgentContext } from "../agent-transport";
+import { handleForTab } from "../driver";
 import { invalidateRefs } from "../ref-store";
 import { captureSnapshot } from "../snapshot-capture";
-import { getOrCreateHandle } from "../tab-handles";
 import type { BrowserTool } from "../types";
-
-async function bindTabsToConversation(
-  conversationId: string,
-  tabIds: number[],
-): Promise<void> {
-  try {
-    await chrome.runtime.sendMessage({
-      type: "BIND_TABS_TO_CONVERSATION",
-      conversationId,
-      tabIds,
-    });
-  } catch {
-    // Background may be asleep or message dropped; ownership will be
-    // reconstructed on next startup via rebuildIndexesFromStorage.
-  }
-}
 
 const parameters = z.object({
   url: z.string().describe("The URL to navigate to"),
@@ -49,20 +31,20 @@ export const navigateTool: BrowserTool<Input, Output> = {
   description:
     "Navigate to a URL. Reuses the current agent-owned tab if one exists, otherwise opens a new background tab. Pass newTab: true to force a new tab. The response automatically includes a snapshot of the landed page so you can interact immediately.",
   parameters,
-  execute: async ({ url, newTab }) => {
-    const { conversationId } = getAgentContext();
+  execute: async ({ url, newTab }, ctx) => {
+    const conversationId = ctx.session?.conversationId ?? null;
 
-    let tabId: number | null = null;
+    let tabId = null as null | ReturnType<typeof ctx.driver.getActiveTabId>;
     let createdNew = false;
 
     if (!newTab) {
-      const currentTarget = getTargetTabId();
-      if (currentTarget && conversationId) {
+      const currentTarget = ctx.driver.getActiveTabId();
+      if (currentTarget != null && conversationId) {
         const conv = await chatDb.getConversation(conversationId);
-        const agentOwned = !!conv?.ownedTabIds.includes(currentTarget);
+        const agentOwned = !!conv?.ownedTabIds.includes(Number(currentTarget));
         if (agentOwned) {
           try {
-            await chrome.tabs.update(currentTarget, { url });
+            await ctx.driver.updateTabUrl(currentTarget, url);
             tabId = currentTarget;
           } catch {
             // Tab may have been closed; fall through to create new
@@ -71,28 +53,25 @@ export const navigateTool: BrowserTool<Input, Output> = {
       }
     }
 
-    if (tabId === null) {
-      const tab = await chrome.tabs.create({ url, active: false });
-      tabId = tab.id!;
+    if (tabId == null) {
+      tabId = await ctx.driver.createTab(url, { active: false });
       createdNew = true;
     }
 
-    if (conversationId && createdNew) {
-      await bindTabsToConversation(conversationId, [tabId]);
+    if (createdNew) {
+      await ctx.session?.bindTabsToConversation?.([tabId]);
     }
 
-    setTargetTabId(tabId);
+    await ctx.driver.setActiveTab(tabId);
     invalidateRefs(tabId);
-    await waitForTabLoad(tabId);
+    await ctx.driver.waitForLoad(tabId);
 
-    const handle = conversationId
-      ? getOrCreateHandle(conversationId, tabId)
-      : `t${tabId}`;
+    const handle = handleForTab(ctx, tabId);
 
     // Auto-attach initial snapshot so the agent can act on the new page
     // without a follow-up snapshot call.
     try {
-      const { snapshotText, refs } = await captureSnapshot(tabId);
+      const { snapshotText, refs } = await captureSnapshot(ctx.driver, tabId);
       return {
         navigated: true,
         url,

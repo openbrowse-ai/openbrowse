@@ -2,9 +2,14 @@
  * Core snapshot capture logic, extracted so action tools (click/type/navigate)
  * can auto-attach post-action diffs to their responses without duplicating the
  * a11y tree logic from tools/snapshot.ts.
+ *
+ * All CDP I/O routes through the `BrowserDriver` passed in by callers, which
+ * is what makes this module portable: in production it goes through
+ * `chrome.debugger`; in the bench harness it goes through Playwright's CDP
+ * session. No `chrome.*` references in here.
  */
 
-import { sendCommand } from "./cdp-session";
+import type { BrowserDriver, TabId } from "./driver";
 import { setRefs, getPreviousSnapshot, type RefEntry } from "./ref-store";
 
 const INTERACTIVE_ROLES = new Set([
@@ -65,7 +70,8 @@ export interface CaptureResult {
  * and the previous snapshot (for diffing).
  */
 export async function captureSnapshot(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   opts: {
     mode?: "interactive" | "full";
     selector?: string;
@@ -77,28 +83,28 @@ export async function captureSnapshot(
 
   let rootBackendNodeId: number | undefined;
   if (opts.selector) {
-    const evalResult = await sendCommand<{
+    const evalResult = await driver.sendCommand<{
       result?: { objectId?: string };
     }>(tabId, "Runtime.evaluate", {
       expression: `document.querySelector(${JSON.stringify(opts.selector)})`,
       returnByValue: false,
     });
     if (evalResult.result?.objectId) {
-      const desc = await sendCommand<{
+      const desc = await driver.sendCommand<{
         node?: { backendNodeId?: number };
       }>(tabId, "DOM.describeNode", { objectId: evalResult.result.objectId });
       rootBackendNodeId = desc.node?.backendNodeId;
     }
   }
 
-  let axTree = await sendCommand<{ nodes: AXNode[] }>(
+  let axTree = await driver.sendCommand<{ nodes: AXNode[] }>(
     tabId,
     "Accessibility.getFullAXTree",
   );
 
   if (!axTree.nodes || axTree.nodes.length === 0) {
     await new Promise((r) => setTimeout(r, 300));
-    axTree = await sendCommand<{ nodes: AXNode[] }>(
+    axTree = await driver.sendCommand<{ nodes: AXNode[] }>(
       tabId,
       "Accessibility.getFullAXTree",
     );
@@ -107,12 +113,13 @@ export async function captureSnapshot(
   // Gather visibility info. We always fetch bounds (needed both for hidden
   // detection and for below-fold computation). Viewport filter runs only when
   // explicitly requested.
-  const viewport = opts.viewportOnly ? await getViewportInfo(tabId) : null;
+  const viewport = opts.viewportOnly ? await getViewportInfo(driver, tabId) : null;
   const { hiddenNodeIds, belowFoldBackendNodeIds } = await getVisibilityInfo(
+    driver,
     tabId,
     viewport,
   );
-  const cursorInteractive = await detectCursorInteractive(tabId);
+  const cursorInteractive = await detectCursorInteractive(driver, tabId);
 
   let tree = buildTree(
     axTree.nodes,
@@ -130,12 +137,12 @@ export async function captureSnapshot(
 
   if (snapshotText.length === 0 && axTree.nodes.length > 0) {
     await new Promise((r) => setTimeout(r, 400));
-    const retry = await sendCommand<{ nodes: AXNode[] }>(
+    const retry = await driver.sendCommand<{ nodes: AXNode[] }>(
       tabId,
       "Accessibility.getFullAXTree",
     );
-    const retryVis = await getVisibilityInfo(tabId, viewport);
-    const retryCursor = await detectCursorInteractive(tabId);
+    const retryVis = await getVisibilityInfo(driver, tabId, viewport);
+    const retryCursor = await detectCursorInteractive(driver, tabId);
     tree = buildTree(
       retry.nodes,
       retryVis.hiddenNodeIds,
@@ -438,12 +445,15 @@ function collectRefs(root: TreeNode): Map<string, RefEntry> {
   return refs;
 }
 
-async function getViewportInfo(tabId: number): Promise<{
+async function getViewportInfo(
+  driver: BrowserDriver,
+  tabId: TabId,
+): Promise<{
   scrollY: number;
   viewportHeight: number;
 } | null> {
   try {
-    const result = await sendCommand<{
+    const result = await driver.sendCommand<{
       result?: { value?: { sy: number; vh: number } };
     }>(tabId, "Runtime.evaluate", {
       expression: `({ sy: window.scrollY, vh: window.innerHeight })`,
@@ -467,7 +477,8 @@ async function getViewportInfo(tabId: number): Promise<{
  *    by scrolling even when no viewport filter is applied.
  */
 async function getVisibilityInfo(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   viewport: { scrollY: number; viewportHeight: number } | null,
 ): Promise<{
   hiddenNodeIds: Set<number>;
@@ -477,7 +488,7 @@ async function getVisibilityInfo(
   const belowFold = new Set<number>();
 
   try {
-    const snapshot = await sendCommand<{
+    const snapshot = await driver.sendCommand<{
       documents: {
         nodes: {
           backendNodeId: number[];
@@ -554,7 +565,7 @@ async function getVisibilityInfo(
     // If we didn't get a viewport (viewportOnly was false), take a second
     // cheap pass to compute below-fold counts for the agent's benefit.
     if (viewport == null) {
-      const vp = await getViewportInfo(tabId);
+      const vp = await getViewportInfo(driver, tabId);
       if (vp) {
         const threshold = vp.scrollY + vp.viewportHeight;
         for (let i = 0; i < doc.nodes.backendNodeId.length; i++) {
@@ -574,11 +585,14 @@ async function getVisibilityInfo(
   return { hiddenNodeIds: hidden, belowFoldBackendNodeIds: belowFold };
 }
 
-async function detectCursorInteractive(tabId: number): Promise<Set<number>> {
+async function detectCursorInteractive(
+  driver: BrowserDriver,
+  tabId: TabId,
+): Promise<Set<number>> {
   const ids = new Set<number>();
 
   try {
-    const result = await sendCommand<{
+    const result = await driver.sendCommand<{
       result?: { objectId?: string };
     }>(tabId, "Runtime.evaluate", {
       expression: `(function() {
@@ -605,7 +619,7 @@ async function detectCursorInteractive(tabId: number): Promise<Set<number>> {
 
     if (!result.result?.objectId) return ids;
 
-    const props = await sendCommand<{
+    const props = await driver.sendCommand<{
       result: { name: string; value?: { objectId?: string; subtype?: string } }[];
     }>(tabId, "Runtime.getProperties", {
       objectId: result.result.objectId,
@@ -616,7 +630,7 @@ async function detectCursorInteractive(tabId: number): Promise<Set<number>> {
       if (!/^\d+$/.test(prop.name)) continue;
       if (!prop.value?.objectId || prop.value.subtype === "null") continue;
       try {
-        const node = await sendCommand<{
+        const node = await driver.sendCommand<{
           node?: { backendNodeId?: number };
         }>(tabId, "DOM.describeNode", { objectId: prop.value.objectId });
         if (node.node?.backendNodeId) {
@@ -639,11 +653,14 @@ async function detectCursorInteractive(tabId: number): Promise<Set<number>> {
  * numeric IDs in the snapshot (anti-hallucination) and rehydrate them after
  * the LLM call.
  */
-async function collectLinkHrefs(tabId: number): Promise<Map<number, string>> {
+async function collectLinkHrefs(
+  driver: BrowserDriver,
+  tabId: TabId,
+): Promise<Map<number, string>> {
   const out = new Map<number, string>();
 
   try {
-    const evalResult = await sendCommand<{
+    const evalResult = await driver.sendCommand<{
       result?: { objectId?: string };
     }>(tabId, "Runtime.evaluate", {
       expression: `Array.from(document.querySelectorAll('a[href], area[href]'))`,
@@ -652,7 +669,7 @@ async function collectLinkHrefs(tabId: number): Promise<Map<number, string>> {
 
     if (!evalResult.result?.objectId) return out;
 
-    const props = await sendCommand<{
+    const props = await driver.sendCommand<{
       result: {
         name: string;
         value?: { objectId?: string; subtype?: string };
@@ -667,7 +684,7 @@ async function collectLinkHrefs(tabId: number): Promise<Map<number, string>> {
       if (!prop.value?.objectId || prop.value.subtype === "null") continue;
 
       try {
-        const node = await sendCommand<{
+        const node = await driver.sendCommand<{
           node?: { backendNodeId?: number };
         }>(tabId, "DOM.describeNode", { objectId: prop.value.objectId });
         const backendId = node.node?.backendNodeId;
@@ -675,7 +692,7 @@ async function collectLinkHrefs(tabId: number): Promise<Map<number, string>> {
 
         // Read the href property (already resolved to absolute URL by the
         // browser when accessed as a JS property, vs. the raw attribute).
-        const hrefResult = await sendCommand<{
+        const hrefResult = await driver.sendCommand<{
           result?: { type: string; value?: unknown };
         }>(tabId, "Runtime.callFunctionOn", {
           functionDeclaration: "function() { return this.href; }",
@@ -718,19 +735,20 @@ export interface CaptureWithUrlsResult {
  * sees full URLs, only small integers it can reference.
  */
 export async function captureSnapshotWithUrlIds(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   opts: { selector?: string } = {},
 ): Promise<CaptureWithUrlsResult> {
   let rootBackendNodeId: number | undefined;
   if (opts.selector) {
-    const evalResult = await sendCommand<{
+    const evalResult = await driver.sendCommand<{
       result?: { objectId?: string };
     }>(tabId, "Runtime.evaluate", {
       expression: `document.querySelector(${JSON.stringify(opts.selector)})`,
       returnByValue: false,
     });
     if (evalResult.result?.objectId) {
-      const desc = await sendCommand<{
+      const desc = await driver.sendCommand<{
         node?: { backendNodeId?: number };
       }>(tabId, "DOM.describeNode", { objectId: evalResult.result.objectId });
       rootBackendNodeId = desc.node?.backendNodeId;
@@ -747,16 +765,16 @@ export async function captureSnapshotWithUrlIds(
 
   // Parallelize the three independent CDP collections.
   const [axTreeRaw, visibility, cursorInteractive, hrefs] = await Promise.all([
-    sendCommand<{ nodes: AXNode[] }>(tabId, "Accessibility.getFullAXTree"),
-    getVisibilityInfo(tabId, null),
-    detectCursorInteractive(tabId),
-    collectLinkHrefs(tabId),
+    driver.sendCommand<{ nodes: AXNode[] }>(tabId, "Accessibility.getFullAXTree"),
+    getVisibilityInfo(driver, tabId, null),
+    detectCursorInteractive(driver, tabId),
+    collectLinkHrefs(driver, tabId),
   ]);
 
   let axTree = axTreeRaw;
   if (!axTree.nodes || axTree.nodes.length === 0) {
     await new Promise((r) => setTimeout(r, 300));
-    axTree = await sendCommand<{ nodes: AXNode[] }>(
+    axTree = await driver.sendCommand<{ nodes: AXNode[] }>(
       tabId,
       "Accessibility.getFullAXTree",
     );
