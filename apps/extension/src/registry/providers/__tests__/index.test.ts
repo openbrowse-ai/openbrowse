@@ -31,6 +31,16 @@ describe("providers (snapshot-derived)", () => {
     expect(providers[providers.length - 1]?.id).toBe("openai-compatible");
   });
 
+  it("exposes the new BYOK providers (xai, mistral, openrouter)", () => {
+    for (const id of ["xai", "mistral", "openrouter"]) {
+      const p = getProvider(id);
+      expect(p, `expected provider ${id} to be in the registry`).toBeDefined();
+      expect(p!.setup).toBe("byok");
+      expect(p!.models.length).toBeGreaterThan(0);
+      expect(p!.configSchema?.[0]?.key).toBe("apiKey");
+    }
+  });
+
   it("hides deprecated and alpha/beta models by default", () => {
     const anthropic = getProvider("anthropic");
     const statuses = anthropic!.models.map((m) => m.status);
