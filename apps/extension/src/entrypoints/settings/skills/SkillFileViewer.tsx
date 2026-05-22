@@ -1,15 +1,20 @@
 import { useMemo } from "react";
 import { Markdown } from "@/components/chat/Markdown";
 import { CodeViewer } from "@/components/chat/CodeViewer";
+import { classifyFile } from "@/lib/vfs/file-classify";
+import type { SkillFileContent } from "./useSkillFile";
 
 export type SkillFileViewMode = "preview" | "code";
 
 interface SkillFileViewerProps {
   /** File name (basename) — used to detect language and whether markdown preview applies. */
   fileName: string;
-  /** Raw file content. */
-  content: string;
-  /** Render mode. Ignored if file is not markdown — always renders as code. */
+  /**
+   * Loaded file content — text or a Blob URL. `null` while the parent has no
+   * file selected; show `loading` for the in-flight state.
+   */
+  content: SkillFileContent | null;
+  /** Render mode. Ignored for non-markdown text files (always renders as code). */
   mode: SkillFileViewMode;
   /** True while content is loading; renders a placeholder. */
   loading?: boolean;
@@ -61,10 +66,6 @@ function detectLanguage(fileName: string): string {
   return map[ext] ?? "text";
 }
 
-function isMarkdownFile(fileName: string): boolean {
-  return fileName.toLowerCase().endsWith(".md");
-}
-
 /**
  * Strip a leading YAML frontmatter block from a markdown source so it doesn't
  * appear as a fenced code block in the rendered preview.
@@ -74,10 +75,19 @@ function stripFrontmatter(md: string): string {
   return match ? match[1] : md;
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 /**
- * Renders a single skill file as either rich markdown preview or a Shiki-
- * highlighted code block. Pure presentational; the parent owns the fetch and
- * the mode toggle.
+ * Renders a single skill file. Dispatches by classified extension:
+ * markdown -> rich preview or Shiki, image -> <img>, pdf -> <iframe>,
+ * other binary -> "preview not available" stub, code/text -> Shiki.
+ *
+ * Pure presentational; the parent owns the fetch and the mode toggle.
  */
 export function SkillFileViewer({
   fileName,
@@ -89,7 +99,7 @@ export function SkillFileViewer({
   className,
 }: SkillFileViewerProps) {
   const language = useMemo(() => detectLanguage(fileName), [fileName]);
-  const isMarkdown = isMarkdownFile(fileName);
+  const fileClass = useMemo(() => classifyFile(fileName), [fileName]);
 
   if (loading) {
     return (
@@ -107,17 +117,59 @@ export function SkillFileViewer({
     );
   }
 
-  if (mode === "preview" && isMarkdown) {
+  if (!content) {
+    return <div className={className} />;
+  }
+
+  if (content.kind === "blob") {
+    if (fileClass === "image") {
+      return (
+        <div className={className}>
+          <img
+            src={content.blobUrl}
+            alt={fileName}
+            className="max-w-full max-h-[70vh] object-contain"
+          />
+        </div>
+      );
+    }
+    if (fileClass === "pdf") {
+      return (
+        <div className={className}>
+          <iframe
+            src={content.blobUrl}
+            title={fileName}
+            className="w-full h-[70vh] border-0"
+          />
+        </div>
+      );
+    }
     return (
       <div className={className}>
-        <Markdown source={stripFrontmatter(content)} />
+        <div className="flex flex-col items-center justify-center p-10 gap-2 text-center">
+          <span className="text-sm text-muted-foreground">
+            Binary file — preview not available
+          </span>
+          <span className="text-xs text-muted-foreground/70 font-mono">
+            {formatBytes(content.blob.size)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // content.kind === "text"
+  if (mode === "preview" && fileClass === "markdown") {
+    return (
+      <div className={className}>
+        <Markdown source={stripFrontmatter(content.text)} />
       </div>
     );
   }
 
   return (
     <CodeViewer
-      code={content}
+      code={content.text}
       language={language}
       lineNumbers={lineNumbers}
       className={`text-xs [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!m-0 [&_code]:!bg-transparent ${className ?? ""}`}

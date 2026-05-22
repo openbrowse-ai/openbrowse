@@ -9,6 +9,11 @@ import {
   testConnection,
   testConnectionFromRegistry,
 } from "./ai";
+import {
+  clearPersistedPythonLog,
+  getPersistedPythonLog,
+  getPyodideManager,
+} from "./python";
 import { sortTabs } from "./sort";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -65,6 +70,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message.modelId,
           message.context,
         );
+      case "PYTHON_EXECUTE":
+        return getPyodideManager().runPython({
+          conversationId: message.conversationId,
+          code: message.code,
+          input: message.input,
+          timeoutMs: message.timeoutMs,
+          resetState: message.resetState,
+          allowNetwork: message.allowNetwork,
+        });
+      case "PYTHON_WARMUP":
+        return getPyodideManager().warmup(message.conversationId);
+      case "PYTHON_RESET":
+        await getPyodideManager().reset(message.conversationId);
+        return { ok: true };
+      case "PYTHON_DISPOSE":
+        getPyodideManager().dispose(message.conversationId);
+        return { ok: true };
+      case "PYTHON_GET_LOG":
+        return { entries: await getPersistedPythonLog() };
+      case "PYTHON_CLEAR_LOG":
+        await clearPersistedPythonLog();
+        return { ok: true };
       default:
         return { error: "Unknown message type" };
     }

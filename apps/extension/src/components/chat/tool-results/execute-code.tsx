@@ -1,4 +1,5 @@
 import { Terminal } from "lucide-react";
+import { ExpandableText } from "./expandable-text";
 
 interface Props {
   args: Record<string, unknown>;
@@ -16,23 +17,22 @@ export function CodeResult({ args, result }: Props) {
         <span>Code</span>
       </div>
       <div className="px-3 py-2 bg-background/50 overflow-x-auto">
-        <pre className="whitespace-pre-wrap text-foreground/80">{code}</pre>
+        <ExpandableText text={code} className="text-foreground/80" maxLines={10} />
       </div>
       {resultObj && (
         <div className="border-t border-border px-3 py-2 bg-muted/30">
           {resultObj.error ? (
-            <pre className="whitespace-pre-wrap text-red-400">{resultObj.error}</pre>
-          ) : (
-            <pre className="whitespace-pre-wrap text-emerald-400">
-              {typeof resultObj.result === "string"
-                ? resultObj.result
-                : JSON.stringify(resultObj.result, null, 2)}
-            </pre>
-          )}
+            <ExpandableText text={resultObj.error} className="text-red-400" />
+          ) : resultObj.result !== undefined && resultObj.result !== null ? (
+            <ExpandableText 
+              text={typeof resultObj.result === "string" ? resultObj.result : JSON.stringify(resultObj.result, null, 2)} 
+              className="text-emerald-400" 
+            />
+          ) : null}
           {resultObj.logs && resultObj.logs.length > 0 && (
-            <pre className="whitespace-pre-wrap text-muted-foreground mt-1 pt-1 border-t border-border/50">
-              {resultObj.logs.join("\n")}
-            </pre>
+            <div className="mt-1 pt-1 border-t border-border/50">
+              <ExpandableText text={resultObj.logs.join("\n")} className="text-muted-foreground" />
+            </div>
           )}
         </div>
       )}

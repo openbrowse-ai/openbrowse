@@ -1,3 +1,4 @@
+console.log("Background service worker loaded up successfully!");
 import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
 import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
@@ -432,6 +433,57 @@ export default defineBackground({
           } catch (err) {
             console.error("[SKILL bg] Error:", err);
             sendResponse({ success: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      // Python runtime (Pyodide) lives in the offscreen document. Pages
+      // can't create offscreen contexts, so the background relays.
+      if (message.type?.startsWith("PYTHON_")) {
+        (async () => {
+          // Persist a breadcrumb at every layer so we can debug from
+          // chrome.storage.local even when the offscreen document crashes
+          // and clears its console.
+          const persist = (event: string, data?: unknown) => {
+            try {
+              chrome.storage.local.get("__python_debug_log__").then((cur) => {
+                const arr = Array.isArray(cur.__python_debug_log__)
+                  ? (cur.__python_debug_log__ as unknown[])
+                  : [];
+                arr.push({
+                  ts: Date.now(),
+                  conversationId: message.conversationId ?? "(none)",
+                  event: `bg.${event}`,
+                  data,
+                });
+                while (arr.length > 200) arr.shift();
+                chrome.storage.local.set({ __python_debug_log__: arr });
+              });
+            } catch { /* noop */ }
+          };
+          persist("PYTHON_received", { type: message.type });
+          try {
+            const { ensureOffscreenDocument } = await import("./messages");
+            await ensureOffscreenDocument();
+            persist("offscreen-ensured");
+            const { sendToOffscreen } = await import("@/lib/messages");
+            const { type, ...rest } = message;
+            const result = await sendToOffscreen({
+              type,
+              ...rest,
+            } as Parameters<typeof sendToOffscreen>[0]);
+            persist("offscreen-responded", {
+              hasResult: result !== undefined,
+              keys: result && typeof result === "object"
+                ? Object.keys(result as Record<string, unknown>)
+                : null,
+            });
+            sendResponse(result);
+          } catch (err) {
+            const error = err instanceof Error ? err.message : String(err);
+            persist("error", { error });
+            sendResponse({ error });
           }
         })();
         return true;

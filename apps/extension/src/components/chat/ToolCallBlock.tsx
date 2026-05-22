@@ -12,6 +12,7 @@ import { ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { CodeResult } from "./tool-results/execute-code";
+import { PythonResult } from "./tool-results/execute-python";
 import {
   GlobResult,
   GrepResult,
@@ -36,6 +37,7 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   executeOnPage: ({ args, result }) => (
     <CodeResult args={args} result={result} />
   ),
+  executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
   Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
   Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
@@ -61,21 +63,16 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   typeInElement: { pending: "Typing...", done: "Typed" },
   scrollPage: { pending: "Scrolling...", done: "Scrolled" },
   executeCode: { pending: "Running code...", done: "Ran code" },
-  executeOnPage: { pending: "Running on page...", done: "Ran on page" },
-  snapshot: { pending: "Taking snapshot...", done: "Snapshot" },
-  saveMemory: { pending: "Saving memory...", done: "Saved memory" },
-  updateMemory: { pending: "Updating memory...", done: "Updated memory" },
-  deleteMemory: { pending: "Deleting memory...", done: "Deleted memory" },
-  recallMemory: { pending: "Recalling memory...", done: "Recalled memory" },
-  todoWrite: { pending: "Updating plan...", done: "Updated plan" },
-  extract: { pending: "Extracting data...", done: "Extracted data" },
-  // Filesystem tools — friendly labels for non-developers
+  executeOnPage: { pending: "Running code...", done: "Ran code" },
+  executePython: { pending: "Running Python...", done: "Ran Python" },
   Read: { pending: "Reading file...", done: "Read file" },
   Write: { pending: "Saving file...", done: "Saved file" },
   Edit: { pending: "Editing file...", done: "Edited file" },
   Glob: { pending: "Finding files...", done: "Found files" },
   Grep: { pending: "Searching...", done: "Searched" },
   LS: { pending: "Listing folder...", done: "Listed folder" },
+  todoWrite: { pending: "Updating plan...", done: "Updated plan" },
+  extract: { pending: "Extracting data...", done: "Extracted data" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },

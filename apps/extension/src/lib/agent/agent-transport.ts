@@ -23,23 +23,24 @@ import {
   executeCodeTool,
   executeOnPageTool,
   extractTool,
+  createTodoWriteTool,
+  skillTool,
+  readOpfsFileTool,
   installSkillTool,
   listTabsTool,
   navigateTool,
-  readOpfsFileTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
   screenshotTool,
   scrollPageTool,
   selectTabTool,
-  skillTool,
-  snapshotTool,
-  todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
+  snapshotTool,
 } from "./tools";
 import { createFsTools } from "./tools/fs";
+import { createPythonTool } from "./tools/execute-python";
 import type { BrowserTool } from "./types";
 
 const SYSTEM_PROMPT = `You are OpenBrowse, an AI browser agent. You help users understand and interact with web pages.
@@ -123,12 +124,20 @@ You are operating in a sandboxed, browser-based virtual file system (VFS). You h
 
 ## Code Execution
 
-You have two tools for running JavaScript (Note: these do NOT run in your Virtual Workspace):
+You have three tools for running code (Note: these do NOT run in your Virtual Workspace by default):
 
-- \`executeCode\`: Runs in an isolated sandbox. Use for computation, data transforms, API calls (fetch). No DOM access. Pass data via \`input\` parameter, access it as \`__input\` in your code. Use \`return\` to produce output.
-- \`executeOnPage\`: Runs in the active tab with full DOM/page access. Requires user approval. Use when you need to read or modify the page beyond what snapshot/clickElement/typeInElement provide — for example, scraping structured data from a product grid, or reading \`data-*\` attributes that don't appear in the accessibility tree.
+- \`executeCode\`: Runs JavaScript in an isolated sandbox. Use for computation, data transforms, API calls (fetch). No DOM access. Pass data via \`input\` parameter, access it as \`__input\` in your code. Use \`return\` to produce output.
+- \`executeOnPage\`: Runs JavaScript in the active tab with full DOM/page access. Requires user approval. Use when you need to read or modify the page beyond what snapshot/clickElement/typeInElement provide — for example, scraping structured data from a product grid, or reading \`data-*\` attributes that don't appear in the accessibility tree.
+- \`executePython\`: Runs CPython 3 (Pyodide) inside the browser. **The conversation's Virtual Workspace is mounted at \`/workspace\` (cwd, read/write).** Skills are at \`/skills\` (read-only). Code runs at module level (no \`return\` at top level; last expression is the result). Top-level \`await\` is supported. Network is OFF by default — set \`allow_network: true\` for \`micropip.install\` or HTTP. No \`subprocess\`, threads, or C-extension compiling. Requires user approval.
 
-Prefer the existing browser tools (snapshot, clickElement, etc.) for simple interactions. Use executeOnPage only when you need complex multi-step DOM manipulation or need to access page JavaScript variables/state.
+Prefer the existing browser tools (snapshot, clickElement, etc.) for simple interactions. Use executeOnPage only when you need complex multi-step DOM manipulation.
+
+When to use \`executePython\` vs the fs tools:
+- **Use Read/Write/Edit/Glob/Grep/LS** for trivial single-file ops. They're cheap and don't pay Python startup cost.
+- **Use \`executePython\`** for anything that would otherwise need 4+ fs tool calls: parsing/transforming CSV/JSON/XML, statistics, summarization across many files.
+- Don't use \`executePython\` to call a webpage's JS or to manipulate the DOM — that's \`executeOnPage\`.
+
+**IMPORTANT: For the available package list, browser-env substitutions for Linux-flavored skills, idioms, and common error fixes, load the \`python-env\` skill before writing non-trivial Python.**
 
 ## Recovering from problems
 
@@ -681,6 +690,7 @@ export async function createAgentTransport(
   setCurrentAgentModel(model);
 
   const fsTools = createFsTools(conversationId);
+  const pythonTool = createPythonTool(conversationId);
 
   const browserTools: Record<string, ToolSet[string]> = {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
@@ -698,8 +708,9 @@ export async function createAgentTransport(
     deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
-    todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
+    todoWrite: toSDKTool(createTodoWriteTool(conversationId), "todoWrite"),
     skill: toSDKTool(skillTool, "skill"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
     create_skill: toSDKTool(createSkillTool, "create_skill"),
