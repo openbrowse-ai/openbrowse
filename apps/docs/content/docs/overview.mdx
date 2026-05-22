@@ -9,17 +9,49 @@ OpenBrowse is a free, open source Chrome extension that puts an AI agent in your
 
 ## Install
 
-<Callout type="info">
-  OpenBrowse is launching on the Chrome Web Store soon. The link below will go
-  live as soon as the listing is approved.
+OpenBrowse is launching on the Chrome Web Store soon. While the listing
+is being approved, you can install the latest build manually in about
+30 seconds.
+
+<Callout type="info" title="Your data carries over">
+  Manual installs share the same extension ID as the future Chrome Web
+  Store install, so when you switch over later, your conversations,
+  API keys, MCP connectors, memories, and workspaces will all persist
+  automatically.
 </Callout>
 
-1. Open the [OpenBrowse listing on the Chrome Web Store](#) _(coming soon)_.
-2. Click **Add to Chrome**, then confirm in the popup.
-3. Pin OpenBrowse to your toolbar so you can find it easily — click the puzzle
-   piece icon in the top-right of Chrome, then the pin next to OpenBrowse.
+### Manual install (current)
+
+1. Download **openbrowse-0.1.0-chrome.zip** from the latest
+   [GitHub Release](https://github.com/openbrowse-ai/openbrowse/releases/latest).
+2. Unzip it anywhere on your machine. Keep the folder around — Chrome
+   loads it from disk; deleting the folder uninstalls the extension.
+3. Open `chrome://extensions` and toggle **Developer mode** on (top
+   right of the page).
+4. Click **Load unpacked** and select the unzipped folder.
+5. Pin OpenBrowse to your toolbar so you can find it easily — click the
+   puzzle-piece icon in the top-right of Chrome, then the pin next to
+   OpenBrowse.
 
 That's it. No account, no signup.
+
+<Callout type="warn" title="Updating manual installs">
+  Manual installs don't auto-update. To pick up a new release, download
+  the new zip, replace the contents of the same folder, then click the
+  refresh icon next to OpenBrowse in `chrome://extensions`.
+</Callout>
+
+### Chrome Web Store (coming soon)
+
+Once the listing is approved, install will be a one-click affair:
+
+1. Open the OpenBrowse listing on the Chrome Web Store.
+   _(Link goes live as soon as the listing is approved.)_
+2. Click **Add to Chrome**, then confirm.
+3. If you have a manual install loaded, remove it first from
+   `chrome://extensions` — Chrome won't run two extensions with the
+   same ID simultaneously. Your data carries over to the Web Store
+   install regardless.
 
 ## What you can do
 
@@ -33,4 +65,4 @@ That's it. No account, no signup.
 
 - [Comparison](/docs/comparison) — how OpenBrowse compares to Claude for Chrome and others
 - [Basic Usage](/docs/basic-usage) — keyboard shortcuts and getting around
-- [Agent](/docs/agent) — what the browser agent can do
+- [Agent](/docs/agent-overview) — what the browser agent can do

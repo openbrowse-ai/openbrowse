@@ -36,9 +36,10 @@ apps/
 │       │   └── sidepanel/    # Chrome side panel
 │       ├── components/       # React components
 │       ├── hooks/            # React hooks
-│       ├── lib/              # Utilities, agent loop, MCP client, skills, OPFS
+│       ├── lib/              # Utilities, agent loop, MCP client, skills, OPFS / VFS
 │       └── registry/
-│           └── providers/    # LLM provider definitions (factories + metadata)
+│           ├── models-dev/   # Vendored models.dev snapshot + refresh logic
+│           └── providers/    # Static provider entries (browser-ai, web-llm, openai-compatible)
 └── docs/               # Next.js + Fumadocs documentation site
 
 packages/
@@ -53,6 +54,9 @@ Common scripts (run from repo root):
 - `pnpm dev:docs` — run the docs site
 - `pnpm build` — build everything
 - `pnpm compile` — typecheck every workspace
+- `pnpm test` — run the extension's vitest suite
+- `pnpm zip` — package the extension as a release zip
+- `pnpm refresh:models` — refresh the bundled `models.dev` snapshot
 
 ## Tech Stack
 
