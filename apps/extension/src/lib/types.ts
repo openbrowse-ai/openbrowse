@@ -261,7 +261,21 @@ export type MessageType =
         userMessage: string;
         tabs: { title: string; url: string }[];
       };
-    };
+    }
+  | {
+      type: "PYTHON_EXECUTE";
+      conversationId: string;
+      code: string;
+      input?: string;
+      timeoutMs?: number;
+      resetState?: boolean;
+      allowNetwork?: boolean;
+    }
+  | { type: "PYTHON_WARMUP"; conversationId: string }
+  | { type: "PYTHON_RESET"; conversationId: string }
+  | { type: "PYTHON_DISPOSE"; conversationId: string }
+  | { type: "PYTHON_GET_LOG" }
+  | { type: "PYTHON_CLEAR_LOG" };
 
 export type SortResult = {
   sections: { name: string; tabs: { id: string; tidiedTitle: string }[] }[];

@@ -200,9 +200,9 @@ export function SkillsTab({
     : "";
 
   const handleCopy = async () => {
-    if (!fileFile.content) return;
+    if (fileFile.content?.kind !== "text") return;
     try {
-      await navigator.clipboard.writeText(fileFile.content);
+      await navigator.clipboard.writeText(fileFile.content.text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

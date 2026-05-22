@@ -1,3 +1,4 @@
+import { formatMessageAsMarkdown } from "@/lib/format-markdown";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
@@ -268,51 +269,9 @@ export default function App() {
     ]);
     const lines = messages.map((m) => {
       const role = m.role === "user" ? "You" : "Assistant";
-      const partTexts: string[] = [];
-      for (const part of m.parts) {
-        if (part.type === "text" && part.text.trim()) {
-          partTexts.push(part.text);
-        } else if (
-          part.type === "dynamic-tool" ||
-          (typeof part.type === "string" && part.type.startsWith("tool-") && "toolCallId" in part && "input" in part)
-        ) {
-          const toolName = part.type === "dynamic-tool" ? part.toolName : part.type.slice(5);
-          const p = part as Record<string, unknown>;
-          const input = p.input as Record<string, unknown> | undefined;
-          const hasOutput = p.state === "output-available" && "output" in p;
-          const output = hasOutput ? p.output : undefined;
-
-          if (toolName === "screenshot") {
-            partTexts.push(`**Tool: screenshot**\n\n[Screenshot captured — image data redacted]`);
-            continue;
-          }
-
-          if (toolName === "executeCode" || toolName === "executeOnPage") {
-            const code = typeof input?.code === "string" ? input.code : "";
-            const sections = [`**Tool: ${toolName}**\n\n\`\`\`javascript\n${code}\n\`\`\``];
-            if (hasOutput) {
-              const out = output as { result?: unknown; logs?: string[]; error?: string } | undefined;
-              if (out?.error) {
-                sections.push(`**Error:** ${out.error}`);
-              } else if (out?.result !== undefined) {
-                sections.push(`**Result:** ${typeof out.result === "string" ? out.result : JSON.stringify(out.result, null, 2)}`);
-              }
-              if (out?.logs && out.logs.length > 0) {
-                sections.push(`**Logs:**\n\`\`\`\n${out.logs.join("\n")}\n\`\`\``);
-              }
-            }
-            partTexts.push(sections.join("\n\n"));
-            continue;
-          }
-
-          const header = `**Tool: ${toolName}**`;
-          const inputStr = input ? `**Input:**\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\`` : "";
-          const outputStr = hasOutput ? `**Output:**\n\`\`\`json\n${JSON.stringify(output, null, 2)}\n\`\`\`` : "";
-          partTexts.push([header, inputStr, outputStr].filter(Boolean).join("\n\n"));
-        }
-      }
-      if (partTexts.length === 0) return null;
-      return `## ${role}\n\n${partTexts.join("\n\n")}`;
+      const content = formatMessageAsMarkdown(m);
+      if (!content) return null;
+      return `## ${role}\n\n${content}`;
     }).filter(Boolean);
     const markdown = `# ${conv?.title ?? "Chat"}\n\n${lines.join("\n\n---\n\n")}`;
     const blob = new Blob([markdown], { type: "text/markdown" });

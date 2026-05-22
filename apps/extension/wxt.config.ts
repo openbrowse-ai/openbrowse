@@ -2,7 +2,20 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "wxt";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { walkSkills } from "./src/build/walk-skills";
+
+// Files copied from the `pyodide` npm package into `pyodide/` in the
+// extension output. Loaded at runtime by the offscreen Pyodide worker via
+// `chrome.runtime.getURL('pyodide/...')`. The set is intentionally narrow:
+// only the JS/WASM/stdlib/lockfile actually needed at runtime.
+const PYODIDE_RUNTIME_FILES = [
+  "pyodide.mjs",
+  "pyodide.asm.js",
+  "pyodide.asm.wasm",
+  "python_stdlib.zip",
+  "pyodide-lock.json",
+] as const;
 
 export default defineConfig({
   srcDir: "src",
@@ -19,6 +32,34 @@ export default defineConfig({
           relativeDest: "skills-manifest.json",
           contents: JSON.stringify(manifest, null, 2),
         });
+      }
+
+      // Bundle the Pyodide runtime from node_modules into the extension
+      // output. Done as a build hook (rather than committing to public/)
+      // so we never check 12MB of WASM into git, and so the version
+      // tracks whatever `pyodide` resolves to in the lockfile.
+      const require = createRequire(import.meta.url);
+      let pyodideDir: string | null = null;
+      try {
+        const pkgJson = require.resolve("pyodide/package.json");
+        pyodideDir = path.dirname(pkgJson);
+      } catch {
+        // pyodide not installed (e.g. fresh clone before pnpm install)
+      }
+      if (pyodideDir) {
+        for (const name of PYODIDE_RUNTIME_FILES) {
+          const src = path.join(pyodideDir, name);
+          if (!fs.existsSync(src)) {
+            console.warn(
+              `[openbrowse] pyodide runtime file missing: ${name} (${src})`,
+            );
+            continue;
+          }
+          assets.push({
+            relativeDest: `pyodide/${name}`,
+            absoluteSrc: src,
+          });
+        }
       }
     },
     // WXT auto-injects `side_panel.default_path` whenever a `sidepanel`
@@ -44,7 +85,7 @@ export default defineConfig({
         "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     },
     sandbox: {
-      pages: ["sandbox.html"],
+      pages: ["sandbox.html", "python-sandbox.html"],
     },
     icons: {
       "16": "icon/16.png",

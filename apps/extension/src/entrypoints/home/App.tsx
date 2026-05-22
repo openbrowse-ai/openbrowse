@@ -1,3 +1,4 @@
+import { formatMessageAsMarkdown } from "@/lib/format-markdown";
 import { ChatView } from "@/components/chat/ChatView";
 import {
   AlertDialog,
@@ -259,23 +260,9 @@ export default function App() {
     const lines = messages
       .map((m) => {
         const role = m.role === "user" ? "You" : "Assistant";
-        const partTexts: string[] = [];
-        for (const part of m.parts) {
-          if (part.type === "text" && part.text.trim()) {
-            partTexts.push(part.text);
-          } else if (part.type === "dynamic-tool") {
-            const toolLine = `**Tool: ${part.toolName}**`;
-            if (part.output) {
-              partTexts.push(
-                `${toolLine}\n\n\`\`\`\n${typeof part.output === "string" ? part.output : JSON.stringify(part.output, null, 2)}\n\`\`\``,
-              );
-            } else {
-              partTexts.push(toolLine);
-            }
-          }
-        }
-        if (partTexts.length === 0) return null;
-        return `## ${role}\n\n${partTexts.join("\n\n")}`;
+        const content = formatMessageAsMarkdown(m);
+        if (!content) return null;
+        return `## ${role}\n\n${content}`;
       })
       .filter(Boolean);
     const markdown = `# ${conv?.title ?? "Chat"}\n\n${lines.join("\n\n---\n\n")}`;

@@ -46,10 +46,42 @@ export class OPFS {
     return await file.text();
   }
 
+  /**
+   * Read a file as raw bytes (a `Blob`/`File`). Use this for binary content
+   * that must not be UTF-8 decoded (PDFs, images, archives, etc.). The
+   * returned `File` is itself a `Blob`; convert via `arrayBuffer()` /
+   * `bytes()` when you need a `Uint8Array`, or feed straight to
+   * `URL.createObjectURL` for inline rendering.
+   */
+  static async readFileBytes(path: string): Promise<File> {
+    const handle = await this.getFileHandle(path);
+    return await handle.getFile();
+  }
+
   static async writeFile(path: string, content: string): Promise<void> {
     const handle = await this.getFileHandle(path, true);
     // @ts-ignore
     const writable = await handle.createWritable();
+    await writable.write(content);
+    await writable.close();
+    emitVfsChange(path);
+  }
+
+  /**
+   * Write raw bytes to a file. The underlying `FileSystemWritableFileStream`
+   * accepts `Blob | ArrayBuffer | Uint8Array` directly, so no intermediate
+   * string round-trip is required.
+   */
+  static async writeFileBytes(
+    path: string,
+    content: Blob | ArrayBuffer | Uint8Array,
+  ): Promise<void> {
+    const handle = await this.getFileHandle(path, true);
+    // @ts-ignore
+    const writable = await handle.createWritable();
+    // @ts-ignore -- DOM lib types FileSystemWriteChunkType using a non-generic
+    // ArrayBufferView, but our Uint8Array carries an ArrayBufferLike generic.
+    // The runtime accepts all of these.
     await writable.write(content);
     await writable.close();
     emitVfsChange(path);
