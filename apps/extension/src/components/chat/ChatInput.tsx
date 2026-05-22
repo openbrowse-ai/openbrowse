@@ -591,7 +591,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                <RegistryIcon id={model.providerId} className="size-3.5 mr-1" />
+                                <RegistryIcon id={model.providerId} className="size-3 mr-1.5 shrink-0" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
@@ -629,7 +629,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                <RegistryIcon id={model.providerId} className="size-3.5 mr-1 text-muted-foreground opacity-50" />
+                                <RegistryIcon id={model.providerId} className="size-3 mr-1.5 shrink-0 opacity-60 grayscale" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
@@ -656,10 +656,7 @@ export function ChatInput({
                   {pickerSections.providers.map((group) => (
                     <ComboboxGroup key={group.provider}>
                       <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">
-                        <span className="flex items-center gap-1.5">
-                          <RegistryIcon id={group.provider} className="size-3.5" />
-                          {group.label}
-                        </span>
+                        {group.label}
                       </ComboboxLabel>
                       {group.models.map((model) => {
                         const compoundId = `${group.provider}:${model.id}`;
@@ -673,6 +670,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
+                                <RegistryIcon id={group.provider} className="size-3 mr-1.5 shrink-0 opacity-60 grayscale" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 {!group.enabled && (
                                   <span className="text-[10px] text-muted-foreground mr-2">
