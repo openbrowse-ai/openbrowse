@@ -3,30 +3,61 @@ title: Basic Usage
 description: Keyboard shortcuts, the command palette, and the agent side panel.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 ## Keyboard shortcuts
 
-OpenBrowse ships with three global shortcuts, one for each surface:
+OpenBrowse ships with four global shortcuts, one for each surface:
 
 | Shortcut | Action |
 | --- | --- |
 | `⌥K` / `Alt+K` | Command palette — search tabs, switch spaces, run AI actions |
 | `⌥I` / `Alt+I` | Agent side panel — longer conversations with the agent |
+| `⌥Space` / `Alt+Space` | Global AI chat popup — quick chat in a floating window |
 | `⌥⇧I` / `Alt+Shift+I` | OpenBrowse home tab — switches to it, or creates a pinned one |
 
-You can rebind any of them in `chrome://extensions/shortcuts`.
+You can rebind any of them in `chrome://extensions/shortcuts`. Settings → **Keyboard Shortcuts** has a deep link.
+
+<Callout type="info" title="Upgrading the popup shortcut to global scope">
+  By default Chrome only registers `⌥Space` while a Chrome window is focused.
+  To trigger the popup from any application, open
+  `chrome://extensions/shortcuts` and switch the OpenBrowse popup shortcut
+  scope from **In Chrome** to **Global**. Chrome restricts default global
+  shortcuts to `Ctrl+Shift+digit`, so this needs to be done manually once.
+</Callout>
 
 ## Command palette
 
 Press `⌥K` to open the overlay on any tab. From here you can:
 
-- Search open tabs
+- Search open tabs, favorites, bookmarks, recently closed tabs, and full history in a single ranked list
 - Switch between spaces
 - Run quick actions
 - Chat with the AI agent
 
 ## Side panel
 
-Press `⌥I` to open the agent side panel, or click the OpenBrowse icon in the Chrome toolbar. This is where you interact with the agent for longer conversations.
+Press `⌥I` to open the agent side panel, or click the OpenBrowse icon in the Chrome toolbar. The side panel is **per-tab scoped** (matching Gemini in Chrome and Claude for Chrome) — opening it on different tabs gives you independent panels, and the agent's "host tab" is whatever tab the panel was opened on.
+
+### Detach to a popover
+
+Click the **Detach to popover** button in the side panel header to pop the chat out into its own floating Chrome window. The popover preserves your conversation, the active space, and the host tab it was detached from.
+
+A "Sharing [tab]" pill in the popover stays anchored to the original tab. If that tab closes, the pill hides; if you reopen the same URL in the same window (e.g. via Cmd+Shift+T), the pill rebinds automatically.
+
+Click **Reattach to side panel** to put it back. The panel returns to the exact tab it came from, falling back to the origin window's active tab (or any normal window) if the original tab has since been closed.
+
+### Implicit host-tab binding
+
+The first time the agent calls a tab-interacting tool (`navigate`, `clickElement`, `readPage`, etc.) in a fresh conversation, the panel's current tab is automatically folded into the conversation's owned-tabs group. There's no manual "Work on this tab" button — binding happens on first use.
+
+## Global chat popup
+
+Press `⌥Space` to open a 420×700 floating chat window — Gemini-style, designed for quick questions without leaving your current app or tab.
+
+- Pressing the shortcut again toggles the popup: opens it if missing, focuses it if hidden, closes it if focused.
+- The active conversation and any unsent draft text are persisted across dismiss/reopen via `chrome.storage.session`, so you can dismiss and resume seamlessly.
+- The popup's **Reattach** button puts the conversation back into the side panel of your last-focused Chrome window.
 
 ## Home tab
 
@@ -34,7 +65,7 @@ Press `⌥⇧I` to jump to the OpenBrowse home tab. If it doesn't exist yet, it'
 
 ## Spaces
 
-Spaces are window-based tab groups with color themes. Each Chrome window can be a separate space with its own visual identity.
+Spaces are window-based tab groups with color themes. Each Chrome window can be a separate space with its own visual identity. See [Spaces](/docs/spaces) for details.
 
 ## Picking a model
 

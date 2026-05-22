@@ -1,0 +1,95 @@
+---
+title: Skills
+description: Curated, on-demand instructions and workflows the agent can load mid-conversation.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+**Skills** are bite-sized, self-contained units of agent expertise. Each skill is a folder containing a `SKILL.md` (instructions + frontmatter) plus any supporting files — references, scripts, templates — and lives in your browser's [virtual workspace](/docs/workspace) under `/skills/<name>/`.
+
+When the user's request matches a skill's trigger description, the agent loads that skill's instructions on demand instead of carrying every workflow in its system prompt.
+
+OpenBrowse implements the open [**agentskills.io**](https://agentskills.io) standard, so any skill authored for that ecosystem — whether shared across other agents or installed from the [**skills.sh**](https://skills.sh) community registry — works in OpenBrowse without modification.
+
+<Callout type="info">
+  Skills are stored in OPFS (origin-private filesystem), local to your browser
+  profile. They never leave your machine.
+</Callout>
+
+## Bundled skills
+
+OpenBrowse ships with two skills out of the box:
+
+| Skill | What it does |
+| --- | --- |
+| `python-env` | Pyodide runtime reference for `executePython` — pre-built package list, browser-env substitutions (e.g. `pdftoppm` → `get_pixmap`, no `subprocess`), `pyfetch` idioms, common pitfalls (top-level `return`, latin-1 PDF unicode errors). The agent loads this whenever it's about to write non-trivial Python. |
+| `find-skills` | Search the [skills.sh](https://skills.sh) registry for additional skills and install them via `install_skill`. |
+## Invoking skills in chat
+
+Type `/` in the side panel input to open the slash-command picker. It lists every enabled skill with its trigger description; selecting one prepends a hint that nudges the agent to load that skill via the `skill` tool before continuing.
+
+The agent can also invoke skills autonomously — when it sees a task that matches an enabled skill's description, it'll load it without being asked.
+
+## Managing skills
+
+Open **Settings → Skills** for the full skill manager:
+
+- **File tree (left pane).** Every installed skill appears as a collapsible folder. Click any file to view it in the right pane.
+- **Viewer (right pane).** Markdown files render with preview/code toggle and line numbers. Code files render with Shiki syntax highlighting.
+- **Global enable/disable toggle.** Turn the entire skill system on or off without uninstalling anything.
+- **Per-skill toggle.** Disable individual skills you want to keep around but not surface to the agent.
+
+## Importing skills
+
+Skills can be imported in three ways:
+
+1. **From a `.zip` or `.skill` archive.** Drag-and-drop the file onto the Skills tab. OpenBrowse extracts it (via fflate) and validates that the archive contains a `SKILL.md` with frontmatter.
+2. **From a URL or GitHub repo.** Ask the agent: _"install the react-best-practices skill from `<url>`"_. The agent uses the `install_skill` tool.
+3. **By authoring one in chat.** Ask the agent to write a new skill for you. Once you approve the draft, it persists via the `create_skill` tool.
+
+The `find-skills` bundled skill makes search-then-install a one-step workflow:
+
+> _"Find a skill that can help me write better Tailwind components."_
+
+## Try in chat
+
+The Skills tab's "Try in chat" button on each skill prefills the side panel chat with a starter prompt for that skill and switches focus to the side panel window. Useful for trying out a freshly installed skill without retyping its purpose.
+
+## Tools the agent uses
+
+The skill subsystem is exposed to the agent through four tools:
+
+| Tool | Description |
+| --- | --- |
+| `skill` | Load a specific skill's `SKILL.md` into the conversation. |
+| `install_skill` | Install a skill from a GitHub repository or URL. |
+| `create_skill` | Author and persist a new skill directly into the local registry. |
+| `read_opfs_file` | Read any file under a skill's folder (used to pull supporting docs/scripts on demand). |
+
+See the [Tools Reference](/docs/tools#skills) for full signatures.
+
+## Authoring a skill
+
+A minimal skill is a folder with one file:
+
+```
+my-skill/
+└── SKILL.md
+```
+
+`SKILL.md` must start with YAML frontmatter containing `name` and `description`. The description is the trigger — write it as a plain-English statement of when the skill should activate.
+
+```md
+---
+name: my-skill
+description: Use whenever the user asks to convert a CSV to a markdown table.
+---
+
+# my-skill
+
+1. Parse the CSV with `pandas` (already auto-loaded in `python-env`).
+2. Format the result as a markdown table.
+3. Return the table inline.
+```
+
+Larger skills can include supporting files alongside `SKILL.md` — reference docs, scripts, templates. The agent can read any of them via `read_opfs_file`.

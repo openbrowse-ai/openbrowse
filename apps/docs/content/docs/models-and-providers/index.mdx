@@ -1,36 +1,72 @@
 ---
 title: Models & Providers
-description: Configure AI models — run locally or bring your own API key.
+description: Configure AI models — run locally, bring your own key, or pick from 130+ providers via models.dev.
 ---
 
-OpenBrowse works with any AI provider. Run entirely local with no API key, or connect to cloud providers.
+import { Callout } from "fumadocs-ui/components/callout";
 
-Because OpenBrowse uses the Model Context Protocol (MCP) and relies on tool-calling capabilities, some models will perform better than others.
+OpenBrowse is **model-agnostic**. Run entirely on-device with no API key, plug in your own key for a frontier model, or pick from 130+ providers and 4,000+ models via the bundled [models.dev](https://models.dev) catalog.
 
-## Local Models (No API Key)
+<Callout type="info" title="Browse all providers">
+  Head to the [Providers directory](/providers) for the full live list of every
+  provider OpenBrowse can talk to.
+</Callout>
 
-| Provider                                                   | Setup                                        |
-| ---------------------------------------------------------- | -------------------------------------------- |
-| [Chrome Built-in AI](/docs/models-and-providers/chrome-ai) | No setup needed — works out of the box       |
-| [WebLLM](/docs/models-and-providers/web-llm)               | Download a model directly in your browser    |
-| [Ollama](/docs/models-and-providers/ollama)                | Run an Ollama server locally on your machine |
+## Local — no API key
 
-## Cloud Providers (BYOK)
+Run fully on-device. Page content and conversations never leave your machine.
 
-| Provider                                                               | Setup                       |
-| ---------------------------------------------------------------------- | --------------------------- |
-| [OpenAI](/docs/models-and-providers/openai)                            | Requires API key            |
-| [Anthropic](/docs/models-and-providers/anthropic)                      | Requires API key            |
-| [Google Gemini](/docs/models-and-providers/google)                     | Requires API key            |
-| [OpenAI-Compatible APIs](/docs/models-and-providers/openai-compatible) | Requires API key + base URL |
+| Provider | Setup |
+| --- | --- |
+| [Chrome Built-in AI](/docs/models-and-providers/chrome-ai) (Gemini Nano) | None — works out of the box on Chrome 128+ |
+| [WebLLM](/docs/models-and-providers/web-llm) | Pick a model in the model picker; weights download to your browser cache |
+| [Ollama](/docs/models-and-providers/ollama) | Run an Ollama server on your machine |
+
+## Cloud — bring your own key
+
+Curated setup guides for the most common providers:
+
+| Provider | Setup |
+| --- | --- |
+| [OpenAI](/docs/models-and-providers/openai) | API key |
+| [Anthropic](/docs/models-and-providers/anthropic) | API key |
+| [Google Gemini](/docs/models-and-providers/google) | API key |
+| [OpenAI-Compatible](/docs/models-and-providers/openai-compatible) | API key + base URL (Groq, Together, OpenRouter, DeepSeek, LM Studio, …) |
+
+Beyond these curated guides, OpenBrowse can use **any provider in the [models.dev](https://models.dev) catalog** — currently 130+ vendors covering hundreds of OSS and proprietary models. The model picker auto-discovers them; for providers that don't ship with first-class SDK support, the OpenAI-Compatible adapter handles the long tail.
+
+OpenBrowse ships with first-class adapters for **Anthropic, OpenAI, Google, xAI, Mistral, OpenRouter,** and the **OpenAI-Compatible** umbrella. Other providers in the catalog are routed through one of those adapters using the `npm` field models.dev publishes for each provider.
+
+## How the catalog works
+
+OpenBrowse mirrors the pattern Zed and OpenCode use: a **vendored snapshot** of `https://models.dev/api.json` ships with the extension so the model picker works offline and on first run, and a **background refresh** keeps the cache up to date.
+
+Load order:
+
+1. In-memory cache (per service-worker session)
+2. `chrome.storage.local` cache (refreshed every ~60 minutes)
+3. Bundled snapshot — `apps/extension/src/registry/models-dev/snapshot.json`
+4. Live fetch from `https://models.dev/api.json`
+
+The snapshot is regenerated via `pnpm refresh:models` (Zod-validated, sorted-key JSON for clean diffs). Day-to-day, you don't have to think about any of this — the picker stays current automatically.
 
 ## Configuration
 
-To switch models or add your API key:
+To switch models or add an API key:
 
-1. Go to **Settings → Models** or open the side panel (`⌥I`) and click the model picker at the bottom.
-2. Select a provider.
-3. Enter your API key (if using a cloud provider).
+1. Open the side panel (`⌥I`) and click the model picker at the bottom — or go to **Settings → Models**.
+2. Pick a provider (use the search bar to filter the 130+ available).
+3. For cloud providers, paste your API key (and base URL if applicable).
 4. Choose a default model from the list.
 
-Your API keys are stored locally in extension storage and never sent to OpenBrowse servers.
+API keys are stored in your browser's extension storage and never sent to OpenBrowse servers.
+
+## Picking the right model
+
+Different tasks benefit from different models:
+
+- **Quick tab tidying / summaries** — a fast local model (Gemini Nano via Chrome AI, or a small Llama via WebLLM) is plenty.
+- **Routine browsing automation** — mid-tier cloud models (GPT-4-class, Claude Sonnet, Gemini Flash) hit the sweet spot for tool-calling reliability.
+- **Complex multi-step tasks** — frontier reasoning models when you need the agent to plan across many tools and pages.
+
+Because OpenBrowse uses the [Model Context Protocol (MCP)](/docs/connectors) and relies on tool-calling, models that score well on tool-use benchmarks (Anthropic's Claude family, OpenAI's GPT family, Google's Gemini family) are the most reliable. Smaller models work well for narrow tasks but may struggle with long autonomous tool chains.

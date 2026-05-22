@@ -29,10 +29,18 @@ The agent is equipped with a comprehensive set of [Tools](/docs/tools), allowing
 
 - **Browse** — Read page content, take screenshots, scroll, navigate.
 - **Interact** — Click elements, type text, select tabs.
-- **Execute** — Run JavaScript on pages or in isolated workers.
+- **Execute** — Run JavaScript or Python in sandboxed environments.
+- **Read & write files** — Operate on a per-conversation virtual [Workspace](/docs/workspace) using `Read`, `Write`, `Edit`, `Glob`, `Grep`, and `LS`.
 - **Remember** — Persistent memory across conversations (see [Memory](/docs/memory)).
 - **Plan** — Create and manage structured to-do lists for complex, multi-step tasks.
+- **Use skills** — Invoke installed [Skills](/docs/skills) to apply curated workflows on demand.
 - **Connect** — MCP connectors for GitHub, Linear, Slack, and more (see [Connectors](/docs/connectors)).
+
+## Long conversations & compaction
+
+Once a conversation grows large enough to threaten the model's context window, OpenBrowse automatically compacts the older history. A compaction event is inserted inline as a regular chat message — a synthetic "what did we do so far?" turn followed by a summary — so you keep full visibility into what was condensed.
+
+The full message list stays in the UI; only the LLM sees the compacted view (head dropped, summary substituted, oversized tool outputs pruned). Compaction runs at the next safe step boundary during multi-tool runs, and Stop cancels any in-flight summarization cleanly.
 
 ## Best practices
 
