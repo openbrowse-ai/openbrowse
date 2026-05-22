@@ -570,7 +570,7 @@ export function ChatInput({
               itemToStringLabel={(id) => modelIdToName.get(id) ?? id}
               autoHighlight
             >
-              <ComboboxContent side="top" sideOffset={4} anchor={modelButtonRef} className="w-auto min-w-[220px] border border-border shadow-lg">
+              <ComboboxContent side="top" sideOffset={4} anchor={modelButtonRef} className="w-[320px] border border-border shadow-lg">
                 <ComboboxList className="max-h-[300px] overflow-y-auto">
                   {pickerSections.favorites.length === 0 && pickerSections.recommended.length === 0 && pickerSections.providers.length === 0 && (
                     <div className="flex w-full justify-center py-2 text-center text-sm text-muted-foreground">No models found</div>
