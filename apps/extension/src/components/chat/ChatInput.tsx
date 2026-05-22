@@ -599,7 +599,7 @@ export function ChatInput({
                                     e.stopPropagation();
                                     onFavoriteToggle?.(compoundId);
                                   }}
-                                  className="ml-auto text-primary hover:scale-110 transition-transform"
+                                  className="order-last ml-2 text-primary hover:scale-110 transition-transform"
                                 >
                                   <Star className="size-3.5 fill-current" />
                                 </button>
@@ -637,7 +637,7 @@ export function ChatInput({
                                     e.stopPropagation();
                                     onFavoriteToggle?.(compoundId);
                                   }}
-                                  className="ml-auto text-muted-foreground hover:text-primary transition-colors"
+                                  className="order-last ml-2 text-muted-foreground hover:text-primary transition-colors"
                                 >
                                   <Star className="size-3.5" />
                                 </button>
@@ -685,7 +685,7 @@ export function ChatInput({
                                     e.stopPropagation();
                                     onFavoriteToggle?.(compoundId);
                                   }}
-                                  className={`ml-auto transition-colors ${isFavorite ? "text-primary" : "text-transparent group-hover/command-item:text-muted-foreground hover:!text-primary"}`}
+                                  className={`order-last ml-2 transition-colors ${isFavorite ? "text-primary" : "text-transparent group-hover/command-item:text-muted-foreground hover:!text-primary"}`}
                                 >
                                   <Star className={`size-3.5 ${isFavorite ? "fill-current" : ""}`} />
                                 </button>
