@@ -1,0 +1,108 @@
+name: Release extension
+
+# Builds the Chrome extension and publishes it as a GitHub Release.
+#
+# Triggered by pushing a tag matching v* (e.g. v0.1.0), or manually via
+# the Actions UI. The workflow asserts that the tag's version matches
+# apps/extension/package.json so a tag/manifest mismatch fails fast
+# rather than producing a confusing release.
+#
+# Chrome Web Store upload is intentionally NOT automated — keep that
+# as a deliberate human step. The runbook lives at
+# /docs/contributing/development#cutting-a-release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Strip the leading 'v' for comparison against package.json.
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches manifest version
+        env:
+          TAG_VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          PKG_VERSION=$(node -p "require('./apps/extension/package.json').version")
+          echo "Tag version:      $TAG_VERSION"
+          echo "Manifest version: $PKG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $TAG_VERSION does not match apps/extension/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: pnpm compile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build + zip extension
+        run: pnpm zip
+
+      - name: Verify manifest key field is pinned
+        run: |
+          ZIP=$(ls apps/extension/.output/openbrowse-*-chrome.zip | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::No release zip found in apps/extension/.output/"
+            exit 1
+          fi
+          echo "Inspecting $ZIP"
+          unzip -p "$ZIP" manifest.json | node -e '
+            const m = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const k = m.key || "";
+            if (k.length < 300) {
+              console.error("::error::manifest is missing the pinned `key` field (length " + k.length + ")");
+              process.exit(1);
+            }
+            console.log("ok: manifest key length", k.length);
+          '
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          files: apps/extension/.output/openbrowse-*-chrome.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
