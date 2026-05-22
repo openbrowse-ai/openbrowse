@@ -508,7 +508,7 @@ export function ChatInput({
         e.preventDefault();
         setModelSelectorOpen((prev) => !prev);
       }
-      if (modelSelectorOpen && e.altKey && e.shiftKey && (e.key === "c" || e.code === "KeyC")) {
+      if (modelSelectorOpen && e.altKey && e.shiftKey && (e.key === "c" || e.code === "KeyC" || e.key === "Ç")) {
         e.preventDefault();
         setModelSelectorOpen(false);
         chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") });
@@ -516,7 +516,7 @@ export function ChatInput({
     }
     document.addEventListener("keydown", handleHotkeys, true);
     return () => document.removeEventListener("keydown", handleHotkeys, true);
-  }, []);
+  }, [modelSelectorOpen]);
 
   useEffect(() => {
     if (!editor) return;
