@@ -591,7 +591,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                <RegistryIcon id={model.providerId} className="size-3 mr-1.5 shrink-0" />
+                                <RegistryIcon id={model.providerId} className="size-[10px] mr-1.5 shrink-0" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
@@ -629,7 +629,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                <RegistryIcon id={model.providerId} className="size-3 mr-1.5 shrink-0 opacity-60 grayscale" />
+                                <RegistryIcon id={model.providerId} className="size-[10px] mr-1.5 shrink-0 opacity-60 grayscale" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 <button
                                   type="button"
@@ -670,7 +670,7 @@ export function ChatInput({
                                 onPointerMove={() => setHighlightedModelId(compoundId)}
                                 onFocus={() => setHighlightedModelId(compoundId)}
                               >
-                                <RegistryIcon id={group.provider} className="size-3 mr-1.5 shrink-0 opacity-60 grayscale" />
+                                <RegistryIcon id={group.provider} className="size-[10px] mr-1.5 shrink-0 opacity-60 grayscale" />
                                 <span className="flex-1 truncate">{model.name}</span>
                                 {!group.enabled && (
                                   <span className="text-[10px] text-muted-foreground mr-2">
