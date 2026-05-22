@@ -61,9 +61,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     await storage.setAgentSettings(agentSettings);
     setSavedAgentSettings(agentSettings);
 
-    // Auto-select first enabled model if none is currently selected
-    if (settings.enabledModels.length > 0 && !agentSettings.agentModel) {
-      const firstModelId = settings.enabledModels[0].split(":").slice(1).join(":");
+    // Auto-select first favorite model if none is currently selected
+    if (settings.favoriteModels.length > 0 && !agentSettings.agentModel) {
+      const firstModelId = settings.favoriteModels[0].split(":").slice(1).join(":");
       const updatedAgentSettings = { ...agentSettings, agentModel: firstModelId };
       await storage.setAgentSettings(updatedAgentSettings);
       setAgentSettings(updatedAgentSettings);

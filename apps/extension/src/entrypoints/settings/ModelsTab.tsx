@@ -68,7 +68,7 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
     chrome.runtime.sendMessage({ type: "DELETE_MODEL", modelId });
     onChange({
       downloadedModels: settings.downloadedModels.filter((m) => m !== modelId),
-      enabledModels: settings.enabledModels.filter((m) => m !== key),
+      favoriteModels: settings.favoriteModels.filter((m) => m !== key),
     });
     setModelStates((prev) => {
       const next = { ...prev };

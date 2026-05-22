@@ -52,7 +52,7 @@ export interface Settings {
 
   // Models
   providerConfigs: Record<string, Record<string, string>>; // providerId → config values
-  enabledModels: string[]; // ["openai:gpt-4o", "anthropic:claude-sonnet-4-6"]
+  favoriteModels: string[]; // ["openai:gpt-4o", "anthropic:claude-sonnet-4-6"]
   downloadedModels: string[]; // for web-llm model IDs
 
   // Connectors

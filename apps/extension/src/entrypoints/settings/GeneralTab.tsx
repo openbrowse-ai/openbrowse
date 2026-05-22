@@ -22,7 +22,7 @@ interface GeneralTabProps {
 
 export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsChange }: GeneralTabProps) {
   const { providers } = useProviders();
-  const enabledModelOptions = settings.enabledModels.map((m) => {
+  const enabledModelOptions = settings.favoriteModels.map((m) => {
     const [providerId, ...rest] = m.split(":");
     const modelId = rest.join(":");
     const provider = providers.find((p) => p.id === providerId);

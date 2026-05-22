@@ -5,7 +5,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { Markdown } from "@tiptap/markdown";
 import HardBreak from "@tiptap/extension-hard-break";
-import { ArrowUp, Image as ImageIcon, Square, X, ChevronDown, BrainIcon } from "lucide-react";
+import { ArrowUp, Image as ImageIcon, Square, X, ChevronDown, BrainIcon, Star } from "lucide-react";
 import { useEffect, useCallback, useRef, useState, useMemo } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import type { JSONContent } from "@tiptap/core";
@@ -43,6 +43,7 @@ interface ModelOption {
   maxOutputTokens?: number;
   pricing?: { inputPer1M: number; outputPer1M: number };
   capabilities?: string[];
+  recommended?: boolean;
 }
 
 interface ProviderModels {
@@ -60,6 +61,8 @@ interface ChatInputProps {
   isLoading: boolean;
   disabled: boolean;
   providerModels?: ProviderModels[];
+  favoriteModels?: string[];
+  onFavoriteToggle?: (modelKey: string) => void;
   selectedModel?: string;
   onModelChange?: (modelId: string) => void;
   autoFocus?: boolean;
@@ -224,6 +227,8 @@ export function ChatInput({
   isLoading,
   disabled,
   providerModels,
+  favoriteModels = [],
+  onFavoriteToggle,
   selectedModel,
   onModelChange,
   autoFocus,
@@ -252,7 +257,7 @@ export function ChatInput({
 
   const allModelItems = useMemo(() => {
     if (!providerModels) return [];
-    return providerModels.flatMap((g) => g.models.map((m) => m.id));
+    return providerModels.flatMap((g) => g.models.map((m) => `${g.provider}:${m.id}`));
   }, [providerModels]);
 
 
@@ -261,7 +266,7 @@ export function ChatInput({
     if (!providerModels) return map;
     for (const group of providerModels) {
       for (const m of group.models) {
-        map.set(m.id, m.name);
+        map.set(`${group.provider}:${m.id}`, m.name);
       }
     }
     return map;
@@ -272,22 +277,54 @@ export function ChatInput({
     if (!providerModels) return map;
     for (const group of providerModels) {
       for (const m of group.models) {
-        map.set(m.id, { provider: group.provider, enabled: group.enabled });
+        map.set(`${group.provider}:${m.id}`, { provider: group.provider, enabled: group.enabled });
       }
     }
     return map;
   }, [providerModels]);
 
-  const filteredProviderModels = useMemo(() => {
-    if (!providerModels || !modelSearchQuery.trim()) return providerModels;
+  const pickerSections = useMemo(() => {
+    if (!providerModels) return { favorites: [], recommended: [], providers: [] };
     const q = modelSearchQuery.toLowerCase().trim();
-    return providerModels
+    
+    // Helper to filter models
+    const filterModels = (models: typeof providerModels[0]['models'], groupLabel: string) => {
+      if (!q) return models;
+      return models.filter((m) => m.name.toLowerCase().includes(q) || groupLabel.toLowerCase().includes(q));
+    };
+
+    // 1. Favorites
+    const favoriteItems: Array<typeof providerModels[0]['models'][0] & { providerId: string; providerLabel: string; enabled: boolean }> = [];
+    // 2. Recommended
+    const recommendedItems: typeof favoriteItems = [];
+    
+    // We will collect all models into these arrays
+    for (const group of providerModels) {
+      const models = filterModels(group.models, group.label);
+      for (const m of models) {
+        const item = { ...m, providerId: group.provider, providerLabel: group.label, enabled: group.enabled };
+        if (favoriteModels.includes(`${group.provider}:${m.id}`)) {
+          favoriteItems.push(item);
+        } else if (m.recommended) {
+          recommendedItems.push(item);
+        }
+      }
+    }
+
+    // 3. Provider Groups
+    const providerGroups = providerModels
       .map((group) => ({
         ...group,
-        models: group.models.filter((m) => m.name.toLowerCase().includes(q) || group.label.toLowerCase().includes(q)),
+        models: filterModels(group.models, group.label),
       }))
       .filter((group) => group.models.length > 0);
-  }, [providerModels, modelSearchQuery]);
+
+    return {
+      favorites: favoriteItems,
+      recommended: recommendedItems,
+      providers: providerGroups,
+    };
+  }, [providerModels, modelSearchQuery, favoriteModels]);
 
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"));
@@ -450,11 +487,14 @@ export function ChatInput({
 
   const selectedModelName = useMemo(() => {
     if (!providerModels || !selectedModel) return selectedModel;
+    const [providerId, ...modelIdParts] = selectedModel.split(":");
+    const actualModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : selectedModel;
     for (const group of providerModels) {
-      const found = group.models.find((m) => m.id === selectedModel);
+      if (modelIdParts.length > 0 && group.provider !== providerId) continue;
+      const found = group.models.find((m) => m.id === actualModelId);
       if (found) return found.name;
     }
-    return selectedModel;
+    return actualModelId;
   }, [providerModels, selectedModel]);
 
   return (
@@ -531,11 +571,88 @@ export function ChatInput({
               autoHighlight
             >
               <ComboboxContent side="top" sideOffset={4} anchor={modelButtonRef} className="w-auto min-w-[220px] border border-border shadow-lg">
-                <ComboboxList>
-                  {filteredProviderModels?.length === 0 && (
+                <ComboboxList className="max-h-[300px] overflow-y-auto">
+                  {pickerSections.favorites.length === 0 && pickerSections.recommended.length === 0 && pickerSections.providers.length === 0 && (
                     <div className="flex w-full justify-center py-2 text-center text-sm text-muted-foreground">No models found</div>
                   )}
-                  {filteredProviderModels?.map((group) => (
+
+                  {pickerSections.favorites.length > 0 && (
+                    <ComboboxGroup>
+                      <ComboboxLabel>Favorites</ComboboxLabel>
+                      {pickerSections.favorites.map((model) => {
+                        const compoundId = `${model.providerId}:${model.id}`;
+                        return (
+                          <Tooltip key={compoundId} open={highlightedModelId === compoundId}>
+                            <TooltipTrigger asChild>
+                              <ComboboxItem
+                                value={compoundId}
+                                disabled={!model.enabled}
+                                onPointerMove={() => setHighlightedModelId(compoundId)}
+                                onFocus={() => setHighlightedModelId(compoundId)}
+                              >
+                                <RegistryIcon id={model.providerId} className="size-3.5 mr-1" />
+                                {model.name}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    onFavoriteToggle?.(compoundId);
+                                  }}
+                                  className="ml-auto text-primary hover:scale-110 transition-transform"
+                                >
+                                  <Star className="size-3.5 fill-current" />
+                                </button>
+                              </ComboboxItem>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" sideOffset={12} hideArrow className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg">
+                              <ModelInfoContent model={model} />
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
+                    </ComboboxGroup>
+                  )}
+
+                  {pickerSections.recommended.length > 0 && (
+                    <ComboboxGroup>
+                      <ComboboxLabel>Recommended</ComboboxLabel>
+                      {pickerSections.recommended.map((model) => {
+                        const compoundId = `${model.providerId}:${model.id}`;
+                        return (
+                          <Tooltip key={compoundId} open={highlightedModelId === compoundId}>
+                            <TooltipTrigger asChild>
+                              <ComboboxItem
+                                value={compoundId}
+                                disabled={!model.enabled}
+                                onPointerMove={() => setHighlightedModelId(compoundId)}
+                                onFocus={() => setHighlightedModelId(compoundId)}
+                              >
+                                <RegistryIcon id={model.providerId} className="size-3.5 mr-1 text-muted-foreground opacity-50" />
+                                {model.name}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    onFavoriteToggle?.(compoundId);
+                                  }}
+                                  className="ml-auto text-muted-foreground hover:text-primary transition-colors"
+                                >
+                                  <Star className="size-3.5" />
+                                </button>
+                              </ComboboxItem>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" sideOffset={12} hideArrow className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg">
+                              <ModelInfoContent model={model} />
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
+                    </ComboboxGroup>
+                  )}
+
+                  {pickerSections.providers.map((group) => (
                     <ComboboxGroup key={group.provider}>
                       <ComboboxLabel>
                         <span className="flex items-center gap-1.5">
@@ -543,31 +660,60 @@ export function ChatInput({
                           {group.label}
                         </span>
                       </ComboboxLabel>
-                      {group.models.map((model) => (
-                        <Tooltip key={model.id} open={highlightedModelId === model.id}>
-                          <TooltipTrigger asChild>
-                            <ComboboxItem
-                              value={model.id}
-                              disabled={!group.enabled}
-                              onPointerMove={() => setHighlightedModelId(model.id)}
-                              onFocus={() => setHighlightedModelId(model.id)}
-                            >
-                              {model.name}
-                              {!group.enabled && (
-                                <span className="ml-auto text-[10px] text-muted-foreground">
-                                  Not configured
-                                </span>
-                              )}
-                            </ComboboxItem>
-                          </TooltipTrigger>
-                          <TooltipContent side="right" sideOffset={12} hideArrow className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg">
-                            <ModelInfoContent model={model} />
-                          </TooltipContent>
-                        </Tooltip>
-                      ))}
+                      {group.models.map((model) => {
+                        const compoundId = `${group.provider}:${model.id}`;
+                        const isFavorite = favoriteModels.includes(compoundId);
+                        return (
+                          <Tooltip key={compoundId} open={highlightedModelId === compoundId}>
+                            <TooltipTrigger asChild>
+                              <ComboboxItem
+                                value={compoundId}
+                                disabled={!group.enabled}
+                                onPointerMove={() => setHighlightedModelId(compoundId)}
+                                onFocus={() => setHighlightedModelId(compoundId)}
+                              >
+                                {model.name}
+                                {!group.enabled && (
+                                  <span className="ml-auto text-[10px] text-muted-foreground mr-2">
+                                    Not configured
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    onFavoriteToggle?.(compoundId);
+                                  }}
+                                  className={`ml-auto transition-colors ${isFavorite ? "text-primary" : "text-transparent group-hover/command-item:text-muted-foreground hover:!text-primary"}`}
+                                >
+                                  <Star className={`size-3.5 ${isFavorite ? "fill-current" : ""}`} />
+                                </button>
+                              </ComboboxItem>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" sideOffset={12} hideArrow className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg">
+                              <ModelInfoContent model={model} />
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
                     </ComboboxGroup>
                   ))}
                 </ComboboxList>
+                
+                <div className="p-1 border-t border-border mt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setModelSelectorOpen(false);
+                      chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") });
+                    }}
+                    className="w-full flex items-center justify-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Configure <Kbd className="ml-1 text-[10px] h-4 py-0">⌥⌘C</Kbd>
+                  </button>
+                </div>
+
                 {selectedModelCapabilities?.includes("thinking") && (
                   <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
                     <BrainIcon className="size-3.5 shrink-0 text-muted-foreground" />

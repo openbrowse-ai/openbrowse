@@ -8,7 +8,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tidyModel: "",
   notificationsEnabled: true,
   providerConfigs: {},
-  enabledModels: [],
+  favoriteModels: [],
   downloadedModels: [],
   mcpServers: [],
 };

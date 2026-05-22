@@ -50,6 +50,14 @@ export function LandingPage({
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
 
+  const updateSettings = useCallback((patch: Partial<Settings>) => {
+    setSettings((prev) => {
+      const next = { ...prev, ...patch };
+      storage.setSettings(next);
+      return next;
+    });
+  }, []);
+
   const { providers } = useProviders();
 
   useEffect(() => {
@@ -69,52 +77,43 @@ export function LandingPage({
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
 
-  const isConfigured = useMemo(() => {
-    if (!agentSettings.agentModel) return false;
-    const selectedProvider = providers.find((p) =>
-      p.models.some((m) => m.id === agentSettings.agentModel) &&
-      settings.enabledModels.includes(`${p.id}:${agentSettings.agentModel}`)
-    ) || providers.find((p) =>
-      p.models.some((m) => m.id === agentSettings.agentModel)
-    );
-    if (!selectedProvider) return false;
-    if (selectedProvider.setup === "byok") {
-      const config = settings.providerConfigs[selectedProvider.id] ?? {};
-      const requiredFields = selectedProvider.configSchema?.filter((f) => f.required) ?? [];
-      return requiredFields.every((f) => !!config[f.key]);
-    }
-    if (selectedProvider.setup === "web-llm") {
-      return settings.downloadedModels.includes(agentSettings.agentModel);
-    }
-    return true;
-  }, [providers, agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels, settings.enabledModels]);
-
   const providerModels = useMemo(() => {
     return providers
       .map((provider) => {
-        const enabledModels = provider.models.filter((m) =>
-          settings.enabledModels.includes(`${provider.id}:${m.id}`)
-        );
-        if (enabledModels.length === 0) return null;
-
         let enabled = true;
+        let availableModels = provider.models;
+
         if (provider.setup === "byok") {
           const config = settings.providerConfigs[provider.id] ?? {};
           const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
           enabled = requiredFields.every((f) => !!config[f.key]);
-        } else if (provider.setup === "web-llm") {
-          enabled = enabledModels.some((m) => settings.downloadedModels.includes(m.id));
+          if (!enabled) return null;
+        } else if (provider.setup === "web-llm" || provider.setup === "browser-ai") {
+          availableModels = provider.models.filter((m) => settings.downloadedModels.includes(m.id));
+          enabled = availableModels.length > 0;
+          if (!enabled) return null;
         }
 
         return {
           provider: provider.id,
           label: provider.name,
-          models: enabledModels,
+          models: availableModels,
           enabled,
         };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
-  }, [providers, settings.enabledModels, settings.providerConfigs, settings.downloadedModels]);
+  }, [providers, settings.providerConfigs, settings.downloadedModels]);
+
+  const isConfigured = useMemo(() => {
+    if (!agentSettings.agentModel) return false;
+    const [providerId, ...modelIdParts] = agentSettings.agentModel.split(":");
+    const actualModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : agentSettings.agentModel;
+    
+    return providerModels.some((p) => {
+      if (modelIdParts.length > 0 && p.provider !== providerId) return false;
+      return p.models.some((m) => m.id === actualModelId);
+    });
+  }, [providerModels, agentSettings.agentModel]);
 
   const handleSubmit = useCallback(
     async (mentions: TabMentionAttrs[], images: ImagePreview[]) => {
@@ -237,6 +236,13 @@ export function LandingPage({
             disabled={!isConfigured}
             autoFocus
             providerModels={providerModels}
+            favoriteModels={settings.favoriteModels}
+            onFavoriteToggle={(modelKey) => {
+              const favoriteModels = settings.favoriteModels.includes(modelKey)
+                ? settings.favoriteModels.filter((k) => k !== modelKey)
+                : [...settings.favoriteModels, modelKey];
+              updateSettings({ favoriteModels });
+            }}
             selectedModel={agentSettings.agentModel}
             onModelChange={(modelId) => {
               const updated = { ...agentSettings, agentModel: modelId };
@@ -245,15 +251,23 @@ export function LandingPage({
             }}
             thinkingEnabled={agentSettings.thinkingEnabled}
             thinkingConfig={agentSettings.thinkingConfig}
-            onThinkingChange={(enabled: boolean, config?: ThinkingConfig) => {
-              const updated = { ...agentSettings, thinkingEnabled: enabled, thinkingConfig: config };
+            onThinkingChange={(enabled, config) => {
+              const updated = {
+                ...agentSettings,
+                thinkingEnabled: enabled,
+                thinkingConfig: config ?? agentSettings.thinkingConfig,
+              };
               setAgentSettings(updated);
               storage.setAgentSettings(updated);
             }}
             selectedModelCapabilities={
               providers
                 .flatMap((p) => p.models)
-                .find((m) => m.id === agentSettings.agentModel)
+                .find((m) => {
+                  const parts = agentSettings.agentModel.split(":");
+                  const actualId = parts.length > 1 ? parts.slice(1).join(":") : agentSettings.agentModel;
+                  return m.id === actualId;
+                })
                 ?.capabilities
             }
           />

@@ -37,29 +37,8 @@ export function ProviderSection({
   const providerConfig = settings.providerConfigs[provider.id] ?? {};
   const isConfigured = provider.setup !== "byok" || Object.keys(providerConfig).length > 0;
 
-  function toggleModel(modelId: string) {
-    const key = `${provider.id}:${modelId}`;
-    const enabled = settings.enabledModels.includes(key);
-    const enabledModels = enabled
-      ? settings.enabledModels.filter((m) => m !== key)
-      : [...settings.enabledModels, key];
-    onChange({ enabledModels });
-  }
-
-  function isModelEnabled(modelId: string) {
-    return settings.enabledModels.includes(`${provider.id}:${modelId}`);
-  }
-
   function isModelDownloaded(modelId: string) {
     return settings.downloadedModels.includes(modelId);
-  }
-
-  function isModelAvailable(model: ModelDefinition) {
-    if (provider.setup === "byok") return isConfigured;
-    if (provider.setup === "web-llm" || provider.setup === "browser-ai") {
-      return isModelDownloaded(model.id);
-    }
-    return true;
   }
 
   function handleSaveConfig(config: Record<string, string>) {
@@ -86,7 +65,7 @@ export function ProviderSection({
   return (
     <div className="rounded-lg border p-4">
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 mb-3">
+      <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-muted">
             <RegistryIcon id={provider.id} className="w-5 h-5" />
@@ -108,19 +87,16 @@ export function ProviderSection({
         )}
       </div>
 
-      {/* Models list */}
-      {(isConfigured || provider.setup !== "byok") && (
-        <div className="flex flex-col gap-1 mt-2">
+      {/* Models list (only for non-BYOK providers since BYOK models are all auto-available) */}
+      {provider.setup !== "byok" && (
+        <div className="flex flex-col gap-1 mt-5">
           {visibleModels.map((model) => (
             <ModelRow
               key={model.id}
               model={model}
               provider={provider}
-              enabled={isModelEnabled(model.id)}
-              available={isModelAvailable(model)}
               downloaded={isModelDownloaded(model.id)}
               state={modelStates[`${provider.id}:${model.id}`]}
-              onToggle={() => toggleModel(model.id)}
               onDownload={() => onDownload(provider.id, model.id)}
               onDelete={() => onDelete(provider.id, model.id)}
             />
@@ -165,21 +141,15 @@ export function ProviderSection({
 function ModelRow({
   model,
   provider,
-  enabled,
-  available,
   downloaded,
   state,
-  onToggle,
   onDownload,
   onDelete,
 }: {
   model: ModelDefinition;
   provider: ProviderDefinition;
-  enabled: boolean;
-  available: boolean;
   downloaded: boolean;
   state?: ModelState;
-  onToggle: () => void;
   onDownload: () => void;
   onDelete: () => void;
 }) {
@@ -224,29 +194,16 @@ function ModelRow({
             </Button>
           )}
 
-        {needsDownload && downloaded && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-xs px-2 text-destructive hover:text-destructive"
-            onClick={onDelete}
-          >
-            Delete
-          </Button>
-        )}
-
-        {/* Toggle switch (checkbox-based) */}
-        {available && (
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={onToggle}
-              className="sr-only peer"
-            />
-            <div className="w-8 h-4 bg-muted rounded-full peer peer-checked:bg-primary transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-4" />
-          </label>
-        )}
+          {needsDownload && downloaded && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-xs px-2 text-destructive hover:text-destructive"
+              onClick={onDelete}
+            >
+              Delete
+            </Button>
+          )}
         </div>
       </div>
 
