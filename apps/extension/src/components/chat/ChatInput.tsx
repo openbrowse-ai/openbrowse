@@ -571,6 +571,7 @@ export function ChatInput({
               autoHighlight
             >
               <ComboboxContent side="top" sideOffset={4} anchor={modelButtonRef} className="w-[320px] border border-border shadow-lg">
+                <ComboboxInput placeholder="Search models..." showTrigger={false} />
                 <ComboboxList className="max-h-[300px] overflow-y-auto">
                   {pickerSections.favorites.length === 0 && pickerSections.recommended.length === 0 && pickerSections.providers.length === 0 && (
                     <div className="flex w-full justify-center py-2 text-center text-sm text-muted-foreground">No models found</div>
@@ -740,7 +741,6 @@ export function ChatInput({
                     )}
                   </div>
                 )}
-                <ComboboxInput placeholder="Search models..." showTrigger={false} />
               </ComboboxContent>
             </Combobox>
             </>
