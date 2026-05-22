@@ -2,9 +2,6 @@ import { DEFAULT_SETTINGS } from "@/lib/constants";
 import { storage } from "@/lib/storage";
 import type { AIProvider, ModelStatus, Settings } from "@/lib/types";
 import { getProvider } from "@/registry/providers";
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createOpenAI } from "@ai-sdk/openai";
 import { browserAI, doesBrowserSupportBrowserAI } from "@browser-ai/core";
 import { doesBrowserSupportWebLLM, webLLM } from "@browser-ai/web-llm";
 import { deleteModelAllInfoInCache, hasModelInCache } from "@mlc-ai/web-llm";
@@ -23,7 +20,7 @@ let currentModel:
 let currentProvider: AIProvider | null = null;
 let currentModelId: string | null = null;
 
-function createCloudModel(cloudConfig: CloudConfig, modelIdOverride?: string) {
+async function createCloudModel(cloudConfig: CloudConfig, modelIdOverride?: string) {
   const apiKey = cloudConfig.cloudApiKey;
   if (!apiKey) {
     throw new Error(
@@ -34,16 +31,19 @@ function createCloudModel(cloudConfig: CloudConfig, modelIdOverride?: string) {
   const modelId = modelIdOverride || cloudConfig.cloudModel;
 
   if (cloudConfig.cloudProvider === "anthropic") {
+    const { createAnthropic } = await import("@ai-sdk/anthropic");
     const anthropic = createAnthropic({ apiKey });
     return anthropic(modelId);
   }
 
   if (cloudConfig.cloudProvider === "google") {
+    const { createGoogleGenerativeAI } = await import("@ai-sdk/google");
     const google = createGoogleGenerativeAI({ apiKey });
     return google(modelId);
   }
 
   // openai or openai-compatible
+  const { createOpenAI } = await import("@ai-sdk/openai");
   const openai = createOpenAI({
     apiKey,
     ...(cloudConfig.cloudBaseUrl ? { baseURL: cloudConfig.cloudBaseUrl } : {}),
@@ -69,7 +69,7 @@ export async function getModel(
         "Cloud configuration not provided. Go to Settings to configure your cloud provider.",
       );
     }
-    return createCloudModel(cloudConfig, modelIdOverride);
+    return await createCloudModel(cloudConfig, modelIdOverride);
   }
 
   if (provider === "browser-ai") {
@@ -430,7 +430,7 @@ export async function deleteModel(
 
 // --- Registry-based functions (new path, existing functions preserved above) ---
 
-export function createModelFromRegistry(
+export async function createModelFromRegistry(
   providerId: string,
   config: Record<string, string>,
   modelId: string,
@@ -442,7 +442,7 @@ export function createModelFromRegistry(
       `Provider ${providerId} does not support createLanguageModel directly`,
     );
   }
-  return provider.createLanguageModel(config, modelId);
+  return await provider.createLanguageModel(config, modelId);
 }
 
 export async function getModelFromRegistry(
@@ -454,7 +454,7 @@ export async function getModelFromRegistry(
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
 
   if (provider.setup === "byok") {
-    return provider.createLanguageModel(config, modelId);
+    return await provider.createLanguageModel(config, modelId);
   }
 
   if (provider.setup === "browser-ai") {
@@ -494,7 +494,7 @@ export async function testConnectionFromRegistry(
     let model;
     if (provider.setup === "byok") {
       const resolvedModelId = modelId || provider.models[0]?.id || "";
-      model = provider.createLanguageModel(config, resolvedModelId);
+      model = await provider.createLanguageModel(config, resolvedModelId);
     } else if (provider.setup === "browser-ai") {
       model = browserAI("text");
     } else if (provider.setup === "web-llm") {
@@ -539,7 +539,7 @@ export async function generateChatTitle(
 
   let model;
   if (provider.setup === "byok") {
-    model = provider.createLanguageModel(config, modelId);
+    model = await provider.createLanguageModel(config, modelId);
   } else if (provider.setup === "browser-ai") {
     model = browserAI("text");
   } else if (provider.setup === "web-llm") {
@@ -608,7 +608,7 @@ export async function generateGroupLabel(
 
   let model;
   if (provider.setup === "byok") {
-    model = provider.createLanguageModel(config, modelId);
+    model = await provider.createLanguageModel(config, modelId);
   } else if (provider.setup === "browser-ai") {
     model = browserAI("text");
   } else if (provider.setup === "web-llm") {
@@ -664,7 +664,7 @@ export async function testConnection(
   try {
     let model;
     if (provider === "cloud") {
-      model = createCloudModel(
+      model = await createCloudModel(
         cloudConfig!,
         webllmModel || cloudConfig?.cloudModel,
       );

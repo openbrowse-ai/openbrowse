@@ -132,18 +132,24 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         </nav>
 
         {/* Content area */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto">
           {activeTab === "general" && (
-            <GeneralTab
-              settings={settings}
-              onChange={updateSettings}
-              agentSettings={agentSettings}
-              onAgentSettingsChange={(patch) => {
-                setAgentSettings((prev) => ({ ...prev, ...patch }));
-              }}
-            />
+            <div className="p-4">
+              <GeneralTab
+                settings={settings}
+                onChange={updateSettings}
+                agentSettings={agentSettings}
+                onAgentSettingsChange={(patch) => {
+                  setAgentSettings((prev) => ({ ...prev, ...patch }));
+                }}
+              />
+            </div>
           )}
-          {activeTab === "spaces" && <SpacesTab />}
+          {activeTab === "spaces" && (
+            <div className="p-4">
+              <SpacesTab />
+            </div>
+          )}
           {activeTab === "models" && (
             <ModelsTab settings={settings} onChange={async (patch) => {
               const updated = { ...settings, ...patch };
@@ -155,39 +161,47 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             }} />
           )}
           {activeTab === "connectors" && (
-            <ConnectorsTab
-              settings={settings}
-              onChange={async (patch) => {
-                const updated = { ...settings, ...patch };
-                setSettings(updated);
-                setSavedSettings(updated);
-                // Read fresh from storage to avoid overwriting auth data written by background script
-                const current = await storage.getSettings();
-                if (patch.mcpServers) {
-                  const merged = patch.mcpServers.map((s) => {
-                    const existing = current.mcpServers.find((e) => e.id === s.id);
-                    return existing ? { ...existing, ...s } : s;
-                  });
-                  await storage.setSettings({ ...current, mcpServers: merged });
-                } else {
-                  await storage.setSettings({ ...current, ...patch });
-                }
-              }}
-            />
+            <div className="p-4">
+              <ConnectorsTab
+                settings={settings}
+                onChange={async (patch) => {
+                  const updated = { ...settings, ...patch };
+                  setSettings(updated);
+                  setSavedSettings(updated);
+                  // Read fresh from storage to avoid overwriting auth data written by background script
+                  const current = await storage.getSettings();
+                  if (patch.mcpServers) {
+                    const merged = patch.mcpServers.map((s) => {
+                      const existing = current.mcpServers.find((e) => e.id === s.id);
+                      return existing ? { ...existing, ...s } : s;
+                    });
+                    await storage.setSettings({ ...current, mcpServers: merged });
+                  } else {
+                    await storage.setSettings({ ...current, ...patch });
+                  }
+                }}
+              />
+            </div>
           )}
 
           {activeTab === "skills" && (
-            <SkillsTab
-              settings={settings}
-              onChange={async (patch) => {
-                const updated = { ...settings, ...patch };
-                setSettings(updated);
-                setSavedSettings(updated);
-                await storage.setSettings(updated);
-              }}
-            />
+            <div className="p-4">
+              <SkillsTab
+                settings={settings}
+                onChange={async (patch) => {
+                  const updated = { ...settings, ...patch };
+                  setSettings(updated);
+                  setSavedSettings(updated);
+                  await storage.setSettings(updated);
+                }}
+              />
+            </div>
           )}
-          {activeTab === "memory" && <MemoryTab />}
+          {activeTab === "memory" && (
+            <div className="p-4">
+              <MemoryTab />
+            </div>
+          )}
         </div>
       </div>
 

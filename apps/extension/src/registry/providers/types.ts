@@ -141,11 +141,14 @@ export interface ProviderDefinition {
    * Factory function that creates an AI SDK LanguageModel instance.
    * Called when the user selects this provider + model for a chat.
    *
+   * Returns a Promise so providers can lazy-load their SDK adapter
+   * via dynamic import — keeps the boot bundle small.
+   *
    * @param config - User-provided config values (keyed by ConfigField.key)
    * @param modelId - The selected ModelDefinition.id
    */
   createLanguageModel: (
     config: Record<string, string>,
     modelId: string,
-  ) => LanguageModel;
+  ) => LanguageModel | Promise<LanguageModel>;
 }

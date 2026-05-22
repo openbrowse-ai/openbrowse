@@ -189,9 +189,7 @@ export function ChatView({
     return () => clearTimeout(timer);
   }, [isGlobalChat, input]);
 
-  const { providers } = useProviders({
-    includePreview: Boolean(settings.includePreviewModels),
-  });
+  const { providers } = useProviders();
 
   const providerModels = useMemo(() => {
     return providers

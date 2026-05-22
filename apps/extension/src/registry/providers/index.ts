@@ -22,10 +22,7 @@ import { definition as browserAi } from "./browser-ai";
 import { definition as openaiCompatible } from "./openai-compatible";
 import { definition as webLlm } from "./web-llm";
 import { isSupportedNpm } from "../models-dev/bundled-sdks";
-import {
-  fromModelsDevProvider,
-  type MapOptions,
-} from "../models-dev/from-models-dev";
+import { fromModelsDevProvider } from "../models-dev/from-models-dev";
 import { getCatalog } from "../models-dev/catalog";
 import { QUIRKS } from "../models-dev/quirks";
 import bundledSnapshot from "../models-dev/snapshot.json";
@@ -34,18 +31,14 @@ import type { ProviderDefinition } from "./types";
 
 const SPECIAL_PROVIDERS: ProviderDefinition[] = [browserAi, webLlm, openaiCompatible];
 
-function deriveProviders(
-  catalog: ModelsDevCatalog,
-  options: MapOptions = {},
-): ProviderDefinition[] {
+function deriveProviders(catalog: ModelsDevCatalog): ProviderDefinition[] {
   const fromCatalog: ProviderDefinition[] = [];
   for (const provider of Object.values(catalog)) {
     if (!isSupportedNpm(provider.npm)) continue;
-    const mapped = fromModelsDevProvider(
-      provider,
-      QUIRKS[provider.id],
-      options,
-    );
+    // Hide legacy/duplicate Azure variants
+    if (provider.id === "azure-cognitive-services" || provider.id === "azure-foundry") continue;
+    
+    const mapped = fromModelsDevProvider(provider, QUIRKS[provider.id]);
     // Skip providers that ended up with no surfacable models (e.g. all
     // models filtered as deprecated or unsupported status).
     if (mapped.models.length === 0) continue;
@@ -75,11 +68,9 @@ export const providers: ProviderDefinition[] = deriveProviders(
  * cache or live fetch via getCatalog). Use this in async/effect code;
  * use `useProviders()` in React render-phase code.
  */
-export async function getProviders(
-  options: MapOptions = {},
-): Promise<ProviderDefinition[]> {
+export async function getProviders(): Promise<ProviderDefinition[]> {
   const catalog = await getCatalog();
-  const next = deriveProviders(catalog, options);
+  const next = deriveProviders(catalog);
   // Mutate in place so `providers.find(...)` stays consistent across
   // the codebase even after a live refresh.
   providers.length = 0;

@@ -18,20 +18,19 @@ import type {
   ProviderDefinition,
 } from "@/registry/providers/types";
 
-export interface MapOptions {
-  /** Surface alpha/beta models in the result (deprecated is always hidden). */
-  includePreview?: boolean;
-}
+const DEFAULT_API_KEY_PLACEHOLDER = "sk-...";
 
-const DEFAULT_CONFIG_SCHEMA: ConfigField[] = [
-  {
-    key: "apiKey",
-    label: "API Key",
-    type: "password",
-    required: true,
-    placeholder: "sk-...",
-  },
-];
+function defaultConfigSchema(placeholder: string): ConfigField[] {
+  return [
+    {
+      key: "apiKey",
+      label: "API Key",
+      type: "password",
+      required: true,
+      placeholder,
+    },
+  ];
+}
 
 /**
  * Capabilities derived from a models.dev model:
@@ -76,30 +75,45 @@ function mapModel(
   return def;
 }
 
-function shouldIncludeModel(
-  model: ModelsDevModel,
-  includePreview: boolean,
-): boolean {
-  if (model.status === "deprecated") return false;
-  if (!includePreview && (model.status === "alpha" || model.status === "beta"))
-    return false;
-  return true;
+/**
+ * Filters: deprecated models are always hidden. Alpha/beta surface;
+ * the UI can choose to badge them but doesn't gate them.
+ */
+function shouldIncludeModel(model: ModelsDevModel): boolean {
+  return model.status !== "deprecated";
 }
 
 function configSchemaFor(
-  provider: ModelsDevProvider,
+  _provider: ModelsDevProvider,
   quirks: ProviderQuirks | undefined,
 ): ConfigField[] {
   if (quirks?.configSchemaOverride) return quirks.configSchemaOverride;
   // openai-compatible providers from models.dev have a known baseUrl
   // (provider.api). We bake that into the factory closure rather than
   // exposing it as a user-editable field, so the form stays apiKey-only.
-  return DEFAULT_CONFIG_SCHEMA;
+  return defaultConfigSchema(
+    quirks?.apiKeyPlaceholder ?? DEFAULT_API_KEY_PLACEHOLDER,
+  );
 }
 
 function defaultDescription(provider: ModelsDevProvider): string {
   const count = Object.keys(provider.models).length;
   return `${count} model${count === 1 ? "" : "s"} via ${provider.name}`;
+}
+
+function substituteUrlVars(
+  template: string,
+  config: Record<string, string>,
+  envVarMap?: Record<string, string>,
+): string {
+  return template.replace(/\$\{([^}]+)\}/g, (match, varName) => {
+    const configKey = envVarMap?.[varName] ?? varName;
+    const value = config[configKey];
+    if (value === undefined || value === "") {
+      throw new Error(`Missing required configuration: ${configKey} (for ${varName})`);
+    }
+    return value;
+  });
 }
 
 /**
@@ -113,17 +127,23 @@ function defaultDescription(provider: ModelsDevProvider): string {
 export function fromModelsDevProvider(
   provider: ModelsDevProvider,
   quirks: ProviderQuirks | undefined,
-  options: MapOptions = {},
 ): ProviderDefinition {
-  const includePreview = options.includePreview ?? false;
   const recommendedSet = new Set(quirks?.recommendedModels ?? []);
 
-  const models: ModelDefinition[] = Object.values(provider.models)
-    .filter((m) => shouldIncludeModel(m, includePreview))
-    .map((m) => mapModel(m, recommendedSet));
+  const models: ModelDefinition[] = [];
+  const modelOverrides = new Map<string, { npm?: string; api?: string }>();
 
-  const npm = provider.npm ?? "";
-  const baseUrl = provider.api;
+  for (const m of Object.values(provider.models)) {
+    if (shouldIncludeModel(m)) {
+      models.push(mapModel(m, recommendedSet));
+      if (m.provider?.npm || m.provider?.api) {
+        modelOverrides.set(m.id, { npm: m.provider.npm, api: m.provider.api });
+      }
+    }
+  }
+
+  const defaultNpm = provider.npm ?? "";
+  const defaultBaseUrl = provider.api;
 
   return {
     id: provider.id,
@@ -134,6 +154,14 @@ export function fromModelsDevProvider(
     configSchema: configSchemaFor(provider, quirks),
     models,
     createLanguageModel(config, modelId) {
+      const override = modelOverrides.get(modelId);
+      const npm = override?.npm ?? defaultNpm;
+      let baseUrl = override?.api ?? defaultBaseUrl;
+
+      if (baseUrl) {
+        baseUrl = substituteUrlVars(baseUrl, config, quirks?.envVarMap);
+      }
+
       // Inject the baseUrl from models.dev for openai-compatible
       // providers so the user only fills in the apiKey.
       const merged: Record<string, string> = baseUrl

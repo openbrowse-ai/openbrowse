@@ -41,6 +41,14 @@ describe("providers (snapshot-derived)", () => {
     }
   });
 
+  it("surfaces long-tail openai-compatible providers from models.dev", () => {
+    // We surface every provider whose npm is in BUNDLED_PROVIDERS.
+    // Any of these with an openai-compatible endpoint should appear.
+    expect(providers.length).toBeGreaterThan(50);
+    expect(getProvider("groq")).toBeDefined();
+    expect(getProvider("deepseek")).toBeDefined();
+  });
+
   it("hides deprecated and alpha/beta models by default", () => {
     const anthropic = getProvider("anthropic");
     const statuses = anthropic!.models.map((m) => m.status);

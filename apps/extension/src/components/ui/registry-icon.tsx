@@ -1,17 +1,3 @@
-import anthropicSvg from "@/registry/providers/icons/anthropic.svg?raw";
-import anthropicDarkSvg from "@/registry/providers/icons/anthropic-dark.svg?raw";
-import browserAiSvg from "@/registry/providers/icons/browser-ai.svg?raw";
-import googleSvg from "@/registry/providers/icons/google.svg?raw";
-import mistralSvg from "@/registry/providers/icons/mistral.svg?raw";
-import ollamaSvg from "@/registry/providers/icons/ollama.svg?raw";
-import ollamaDarkSvg from "@/registry/providers/icons/ollama-dark.svg?raw";
-import openaiCompatibleSvg from "@/registry/providers/icons/openai-compatible.svg?raw";
-import openaiSvg from "@/registry/providers/icons/openai.svg?raw";
-import openaiDarkSvg from "@/registry/providers/icons/openai-dark.svg?raw";
-import openrouterSvg from "@/registry/providers/icons/openrouter.svg?raw";
-import webLlmSvg from "@/registry/providers/icons/web-llm.svg?raw";
-import xaiSvg from "@/registry/providers/icons/xai.svg?raw";
-
 import githubSvg from "@openbrowse/connectors/icons/github.svg?raw";
 import githubDarkSvg from "@openbrowse/connectors/icons/github-dark.svg?raw";
 import linearSvg from "@openbrowse/connectors/icons/linear.svg?raw";
@@ -29,17 +15,37 @@ interface IconEntry {
   dark?: string;
 }
 
+/**
+ * Provider icons are auto-registered from `registry/providers/icons/*.svg`
+ * via Vite's import.meta.glob. Drop a new SVG into that directory and it
+ * surfaces here without code edits.
+ *
+ * Convention: `<id>.svg` is the light/default variant; the optional
+ * `<id>-dark.svg` (if present) is used in dark mode. Most provider
+ * SVGs from models.dev use `fill="currentColor"` and don't need a
+ * dark variant.
+ */
+const providerIconModules = import.meta.glob<string>(
+  "@/registry/providers/icons/*.svg",
+  { query: "?raw", import: "default", eager: true },
+);
+
+function buildProviderIcons(): Record<string, IconEntry> {
+  const out: Record<string, IconEntry> = {};
+  for (const [path, svg] of Object.entries(providerIconModules)) {
+    const m = path.match(/\/([^/]+)\.svg$/);
+    if (!m) continue;
+    const filename = m[1];
+    if (filename.endsWith("-dark")) continue;
+    const dark = providerIconModules[path.replace(".svg", "-dark.svg")];
+    out[filename] = { light: svg, ...(dark ? { dark } : {}) };
+  }
+  return out;
+}
+
 const icons: Record<string, IconEntry> = {
-  openai: { light: openaiSvg, dark: openaiDarkSvg },
-  anthropic: { light: anthropicSvg, dark: anthropicDarkSvg },
-  google: { light: googleSvg },
-  mistral: { light: mistralSvg },
-  ollama: { light: ollamaSvg, dark: ollamaDarkSvg },
-  openrouter: { light: openrouterSvg },
-  "openai-compatible": { light: openaiCompatibleSvg },
-  "browser-ai": { light: browserAiSvg },
-  "web-llm": { light: webLlmSvg },
-  xai: { light: xaiSvg },
+  ...buildProviderIcons(),
+  // Connectors live in a separate package; keep them as static imports.
   github: { light: githubSvg, dark: githubDarkSvg },
   linear: { light: linearSvg },
   notion: { light: notionSvg, dark: notionDarkSvg },

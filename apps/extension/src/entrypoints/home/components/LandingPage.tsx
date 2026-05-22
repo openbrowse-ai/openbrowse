@@ -50,9 +50,7 @@ export function LandingPage({
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
 
-  const { providers } = useProviders({
-    includePreview: Boolean(settings.includePreviewModels),
-  });
+  const { providers } = useProviders();
 
   useEffect(() => {
     storage.getSettings().then(setSettings);

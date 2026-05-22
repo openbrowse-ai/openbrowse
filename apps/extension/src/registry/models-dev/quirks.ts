@@ -18,6 +18,12 @@ export interface ProviderQuirks {
   /** Override the default config form (`apiKey` only). */
   configSchemaOverride?: ConfigField[];
 
+  /**
+   * Placeholder hint shown in the API key input — e.g. `sk-ant-...`
+   * for Anthropic. Falls back to a generic `sk-...`.
+   */
+  apiKeyPlaceholder?: string;
+
   /** One-line description shown in the provider list (otherwise derived from models.dev `doc`). */
   description?: string;
 
@@ -26,6 +32,12 @@ export interface ProviderQuirks {
    * Falsy/empty means no badge.
    */
   recommendedModels?: string[];
+
+  /**
+   * Maps models.dev `${ENV_VAR}` names to extension config keys.
+   * For example: { AZURE_RESOURCE_NAME: "resourceName" }
+   */
+  envVarMap?: Record<string, string>;
 }
 
 /**
@@ -34,9 +46,10 @@ export interface ProviderQuirks {
  */
 export const QUIRKS: Record<string, ProviderQuirks> = {
   anthropic: {
-    icon: { light: "anthropic.svg", dark: "anthropic-dark.svg" },
+    icon: { light: "anthropic.svg" },
     description:
       "Claude Opus, Sonnet, and Haiku models with extended thinking",
+    apiKeyPlaceholder: "sk-ant-...",
     recommendedModels: [
       "claude-opus-4-7",
       "claude-sonnet-4-6",
@@ -44,27 +57,104 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
     ],
   },
   openai: {
-    icon: { light: "openai.svg", dark: "openai-dark.svg" },
+    icon: { light: "openai.svg" },
     description: "GPT-5 series, o-series reasoning, and GPT-4.1 models",
+    apiKeyPlaceholder: "sk-proj-...",
     recommendedModels: ["gpt-5.5", "gpt-5-mini"],
   },
   google: {
     icon: { light: "google.svg" },
     description: "Gemini 3.x and 2.5 multimodal models",
+    apiKeyPlaceholder: "AIza...",
     recommendedModels: ["gemini-flash-latest", "gemini-2.5-pro"],
   },
   xai: {
-    icon: { light: "xai.svg", dark: "xai-dark.svg" },
+    icon: { light: "xai.svg" },
     description: "Grok models from xAI",
+    apiKeyPlaceholder: "xai-...",
   },
   mistral: {
     icon: { light: "mistral.svg" },
     description: "Mistral and Codestral models from Mistral AI",
+    apiKeyPlaceholder: "Mistral API key",
   },
   openrouter: {
-    icon: { light: "openrouter.svg", dark: "openrouter-dark.svg" },
+    icon: { light: "openrouter.svg" },
     description:
       "Single-key access to hundreds of models across providers via OpenRouter",
+    apiKeyPlaceholder: "sk-or-v1-...",
+  },
+  groq: {
+    apiKeyPlaceholder: "gsk_...",
+  },
+  cerebras: {
+    apiKeyPlaceholder: "csk-...",
+  },
+  perplexity: {
+    apiKeyPlaceholder: "pplx-...",
+  },
+  togetherai: {
+    apiKeyPlaceholder: "Together API key",
+  },
+  fireworks: {
+    apiKeyPlaceholder: "fw-...",
+  },
+  "fireworks-ai": {
+    apiKeyPlaceholder: "fw-...",
+  },
+  deepseek: {
+    apiKeyPlaceholder: "sk-...",
+    description: "DeepSeek V3 and DeepSeek-R1 reasoning models",
+  },
+  "github-models": {
+    apiKeyPlaceholder: "ghp_...",
+    description: "Free-tier model access via GitHub Models",
+  },
+  huggingface: {
+    apiKeyPlaceholder: "hf_...",
+    description: "Open-weights and Inference Providers via Hugging Face",
+  },
+  azure: {
+    icon: { light: "azure.svg" },
+    description: "Azure AI Foundry — OpenAI, Anthropic, and Llama models on your Azure tenant",
+    configSchemaOverride: [
+      {
+        key: "resourceName",
+        label: "Resource Name",
+        type: "text",
+        required: true,
+        placeholder: "my-resource",
+        description: "Your Azure OpenAI or Foundry resource name",
+      },
+      {
+        key: "apiKey",
+        label: "API Key",
+        type: "password",
+        required: true,
+      },
+      {
+        key: "apiVersion",
+        label: "API Version",
+        type: "text",
+        required: false,
+        placeholder: "2024-10-21",
+        description: "Leave blank for SDK default",
+      },
+    ],
+    recommendedModels: ["gpt-4.1-mini", "claude-sonnet-4-6", "o4-mini"],
+    envVarMap: {
+      AZURE_RESOURCE_NAME: "resourceName",
+    },
+  },
+  vercel: {
+    icon: { light: "vercel.svg" },
+    description: "Single key access to OpenAI, Anthropic, Bedrock, Vertex, Mistral, Llama, and more — billed through Vercel",
+    apiKeyPlaceholder: "Vercel AI Gateway API key",
+    recommendedModels: [
+      "openai/gpt-4.1-mini",
+      "anthropic/claude-sonnet-4.6",
+      "google/gemini-2.5-pro",
+    ],
   },
 };
 

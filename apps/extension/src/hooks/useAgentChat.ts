@@ -553,7 +553,7 @@ export function useAgentChat({
 
         const config =
           settingsForCompaction.providerConfigs[provider.id] ?? {};
-        const compactionModel = provider.createLanguageModel(
+        const compactionModel = await provider.createLanguageModel(
           config,
           compactionModelId,
         );

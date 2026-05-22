@@ -9,13 +9,13 @@ import {
   getLastUpdated as fetchLastUpdated,
 } from "@/registry/models-dev/catalog";
 
-export interface UseProvidersOptions {
-  /** Surface alpha/beta models. Defaults to false (deprecated always hidden). */
-  includePreview?: boolean;
-}
-
 export interface UseProvidersResult {
   providers: ProviderDefinition[];
+  /**
+   * Epoch ms of the last successful catalog refresh. Null until either
+   * the storage cache has been written by a refresh OR the bundled
+   * snapshot is being used (in which case fetchedAt is also null).
+   */
   lastUpdated: number | null;
 }
 
@@ -24,11 +24,7 @@ export interface UseProvidersResult {
  * the last refresh timestamp. Re-renders whenever the catalog cache
  * changes in chrome.storage.
  */
-export function useProviders(
-  options: UseProvidersOptions = {},
-): UseProvidersResult {
-  const { includePreview = false } = options;
-
+export function useProviders(): UseProvidersResult {
   const [list, setList] = useState<ProviderDefinition[]>(initialProviders);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
@@ -36,7 +32,7 @@ export function useProviders(
     let cancelled = false;
 
     void (async () => {
-      const fresh = await getProviders({ includePreview });
+      const fresh = await getProviders();
       if (cancelled) return;
       setList([...fresh]);
       setLastUpdated(await fetchLastUpdated());
@@ -49,7 +45,7 @@ export function useProviders(
       if (area !== "local") return;
       if (!(STORAGE_KEYS.MODELS_DEV_CATALOG in changes)) return;
       void (async () => {
-        const fresh = await getProviders({ includePreview });
+        const fresh = await getProviders();
         if (cancelled) return;
         setList([...fresh]);
         setLastUpdated(await fetchLastUpdated());
@@ -66,7 +62,7 @@ export function useProviders(
         chrome.storage.onChanged.removeListener(onChange);
       }
     };
-  }, [includePreview]);
+  }, []);
 
   return { providers: list, lastUpdated };
 }

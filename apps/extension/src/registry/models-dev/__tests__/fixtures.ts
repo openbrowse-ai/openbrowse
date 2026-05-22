@@ -58,19 +58,52 @@ export const ANTHROPIC_FIXTURE: ModelsDevProvider = {
 };
 
 export const UNSUPPORTED_FIXTURE: ModelsDevProvider = {
-  id: "atomic-chat",
-  name: "Atomic Chat",
-  npm: "@atomic/some-unbundled-sdk",
-  env: ["ATOMIC_API_KEY"],
+  id: "foo",
+  name: "Foo",
+  npm: "@ai-sdk/foo",
+  env: [],
   models: {
-    foo: {
-      id: "foo",
-      name: "Foo",
-      release_date: "2025-01-01",
-      tool_call: true,
+    "foo-1": {
+      id: "foo-1",
+      name: "Foo 1",
+      limit: { context: 1, output: 1 },
       modalities: { input: ["text"], output: ["text"] },
-      limit: { context: 8192, output: 2048 },
     },
+  },
+};
+
+export const MULTIPLEX_FIXTURE: ModelsDevProvider = {
+  id: "azure",
+  name: "Azure",
+  npm: "@ai-sdk/azure",
+  env: [],
+  api: "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/models",
+  models: {
+    "gpt-default": {
+      id: "gpt-default",
+      name: "GPT default",
+      limit: { context: 1, output: 1 },
+      modalities: { input: ["text"], output: ["text"] },
+    },
+    "claude-override": {
+      id: "claude-override",
+      name: "Claude override",
+      limit: { context: 1, output: 1 },
+      modalities: { input: ["text"], output: ["text"] },
+      provider: {
+        npm: "@ai-sdk/anthropic",
+        api: "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1",
+      },
+    },
+    "llama-override": {
+      id: "llama-override",
+      name: "Llama override",
+      limit: { context: 1, output: 1 },
+      modalities: { input: ["text"], output: ["text"] },
+      provider: {
+        npm: "@ai-sdk/openai-compatible",
+      }, // Uses provider-level api fallback
+    }
   },
 };
 

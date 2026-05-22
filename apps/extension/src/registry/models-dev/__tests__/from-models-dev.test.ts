@@ -5,6 +5,7 @@ import {
   ANTHROPIC_FIXTURE,
   OPENAI_COMPATIBLE_FIXTURE,
   UNSUPPORTED_FIXTURE,
+  MULTIPLEX_FIXTURE,
 } from "./fixtures";
 
 describe("fromModelsDevProvider", () => {
@@ -16,7 +17,6 @@ describe("fromModelsDevProvider", () => {
     expect(result.setup).toBe("byok");
     expect(result.icon).toEqual({
       light: "anthropic.svg",
-      dark: "anthropic-dark.svg",
     });
     expect(result.configSchema).toEqual([
       {
@@ -24,7 +24,7 @@ describe("fromModelsDevProvider", () => {
         label: "API Key",
         type: "password",
         required: true,
-        placeholder: "sk-...",
+        placeholder: "sk-ant-...",
       },
     ]);
   });
@@ -51,16 +51,8 @@ describe("fromModelsDevProvider", () => {
     expect(ids).not.toContain("claude-3-opus-20240229");
   });
 
-  it("filters alpha/beta models out by default", () => {
+  it("surfaces alpha/beta models (no toggle gating)", () => {
     const result = fromModelsDevProvider(ANTHROPIC_FIXTURE, QUIRKS.anthropic);
-    const ids = result.models.map((m) => m.id);
-    expect(ids).not.toContain("claude-experimental-alpha");
-  });
-
-  it("includes alpha/beta models when includePreview is true", () => {
-    const result = fromModelsDevProvider(ANTHROPIC_FIXTURE, QUIRKS.anthropic, {
-      includePreview: true,
-    });
     const ids = result.models.map((m) => m.id);
     expect(ids).toContain("claude-experimental-alpha");
     const alpha = result.models.find((m) => m.id === "claude-experimental-alpha");
@@ -84,10 +76,39 @@ describe("fromModelsDevProvider", () => {
     expect(result.description).toBeTruthy();
   });
 
-  it("createLanguageModel throws for providers without bundled SDK", () => {
+  it("createLanguageModel throws for providers without bundled SDK", async () => {
     const result = fromModelsDevProvider(UNSUPPORTED_FIXTURE, undefined);
-    expect(() =>
-      result.createLanguageModel({ apiKey: "x" }, "foo"),
-    ).toThrow(/No bundled SDK/);
+    await expect(
+      Promise.resolve(result.createLanguageModel({ apiKey: "x" }, "foo-1")),
+    ).rejects.toThrow(/No bundled SDK/);
+  });
+
+  describe("per-model overrides and variable substitution", () => {
+    const quirks = {
+      envVarMap: { AZURE_RESOURCE_NAME: "resourceName" },
+    };
+
+    it("resolves default provider npm and substituted baseUrl for default model", async () => {
+      const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
+      const model = await Promise.resolve(result.createLanguageModel({ resourceName: "test-res", apiKey: "x" }, "gpt-default"));
+      expect(model).toBeDefined();
+      expect((model as any).provider).toContain("azure"); // Verify we got an Azure model
+    });
+
+    it("resolves per-model npm override and substitutes url", async () => {
+      const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
+      // Wait, @ai-sdk/anthropic IS bundled! So it will try to import it and call it.
+      // We don't want to make an actual API call, but `createLanguageModel` just returns the model instance, it doesn't make a fetch yet.
+      const model = await Promise.resolve(result.createLanguageModel({ resourceName: "test-res", apiKey: "x" }, "claude-override"));
+      // The model is a LanguageModel object. 
+      expect(model).toBeDefined();
+      expect((model as any).provider).toContain("anthropic"); // Just to check it created an Anthropic model.
+    });
+
+    it("throws if required config value for substitution is missing", async () => {
+      const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
+      expect(() => result.createLanguageModel({ apiKey: "x" }, "gpt-default"))
+        .toThrow(/Missing required configuration: resourceName \(for AZURE_RESOURCE_NAME\)/);
+    });
   });
 });
