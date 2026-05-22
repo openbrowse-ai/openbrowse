@@ -55,6 +55,12 @@ export interface Settings {
   enabledModels: string[]; // ["openai:gpt-4o", "anthropic:claude-sonnet-4-6"]
   downloadedModels: string[]; // for web-llm model IDs
 
+  /**
+   * Whether to surface alpha/beta-status models from the models.dev
+   * catalog in the picker. Deprecated models are always hidden.
+   */
+  includePreviewModels?: boolean;
+
   // Connectors
   mcpServers: McpServerConfig[];
 

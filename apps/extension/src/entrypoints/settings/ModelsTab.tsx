@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { Settings } from "@/lib/types";
-import { providers } from "@/registry/providers";
+import { useProviders } from "@/hooks/useProviders";
+import { refreshCatalog } from "@/registry/models-dev/catalog";
 import { ProviderSection, type ModelState } from "./ProviderSection";
 
 interface ModelsTabProps {
@@ -9,7 +10,20 @@ interface ModelsTabProps {
 }
 
 export function ModelsTab({ settings, onChange }: ModelsTabProps) {
+  const { providers, lastUpdated } = useProviders({
+    includePreview: Boolean(settings.includePreviewModels),
+  });
   const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function handleRefreshCatalog() {
+    setRefreshing(true);
+    try {
+      await refreshCatalog({ force: true });
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   // Listen for download progress messages from background
   useEffect(() => {
@@ -74,12 +88,38 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-sm font-medium">AI Providers & Models</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Configure providers and enable models for use across the extension.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-medium">AI Providers & Models</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Configure providers and enable models for use across the extension.
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            Catalog: {lastUpdated
+              ? `last updated ${new Date(lastUpdated).toLocaleString()}`
+              : "bundled snapshot"}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleRefreshCatalog}
+          disabled={refreshing}
+          className="shrink-0 rounded-md border border-border bg-background px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
+        >
+          {refreshing ? "Refreshing…" : "Refresh catalog"}
+        </button>
       </div>
+
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={Boolean(settings.includePreviewModels)}
+          onChange={(e) =>
+            onChange({ includePreviewModels: e.target.checked })
+          }
+        />
+        Include preview / alpha models
+      </label>
 
       {providers.map((provider) => (
         <ProviderSection

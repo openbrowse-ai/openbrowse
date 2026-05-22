@@ -14,7 +14,7 @@ import { useRecentTabs } from "@/hooks/useRecentTabs";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
-import { providers } from "@/registry/providers";
+import { useProviders } from "@/hooks/useProviders";
 import type { Space, Settings, AgentSettings, SerializedUIPart, ThinkingConfig } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -50,6 +50,10 @@ export function LandingPage({
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
 
+  const { providers } = useProviders({
+    includePreview: Boolean(settings.includePreviewModels),
+  });
+
   useEffect(() => {
     storage.getSettings().then(setSettings);
     storage.getAgentSettings().then(setAgentSettings);
@@ -82,7 +86,7 @@ export function LandingPage({
       return settings.downloadedModels.includes(agentSettings.agentModel);
     }
     return true;
-  }, [agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
+  }, [providers, agentSettings.agentModel, settings.providerConfigs, settings.downloadedModels]);
 
   const providerModels = useMemo(() => {
     return providers
@@ -109,7 +113,7 @@ export function LandingPage({
         };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
-  }, [settings.enabledModels, settings.providerConfigs, settings.downloadedModels]);
+  }, [providers, settings.enabledModels, settings.providerConfigs, settings.downloadedModels]);
 
   const handleSubmit = useCallback(
     async (mentions: TabMentionAttrs[], images: ImagePreview[]) => {

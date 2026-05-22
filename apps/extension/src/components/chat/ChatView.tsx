@@ -12,8 +12,8 @@ import {
 } from "@/components/ai-elements/conversation";
 import { Logo } from "@/components/ui/logo";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { useProviders } from "@/hooks/useProviders";
 import { cn } from "@/lib/utils";
-import { providers } from "@/registry/providers";
 import {
   AlertCircle,
   ArrowLeft,
@@ -189,6 +189,10 @@ export function ChatView({
     return () => clearTimeout(timer);
   }, [isGlobalChat, input]);
 
+  const { providers } = useProviders({
+    includePreview: Boolean(settings.includePreviewModels),
+  });
+
   const providerModels = useMemo(() => {
     return providers
       .map((provider) => {
@@ -218,6 +222,7 @@ export function ChatView({
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
   }, [
+    providers,
     settings.enabledModels,
     settings.providerConfigs,
     settings.downloadedModels,
