@@ -47,8 +47,7 @@ export interface ProviderQuirks {
 export const QUIRKS: Record<string, ProviderQuirks> = {
   anthropic: {
     icon: { light: "anthropic.svg" },
-    description:
-      "Claude Opus, Sonnet, and Haiku models with extended thinking",
+    description: "Claude Opus, Sonnet, and Haiku models with extended thinking",
     apiKeyPlaceholder: "sk-ant-...",
     recommendedModels: [
       "claude-opus-4-7",
@@ -116,7 +115,8 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
   },
   azure: {
     icon: { light: "azure.svg" },
-    description: "Azure AI Foundry — OpenAI, Anthropic, and Llama models on your Azure tenant",
+    description:
+      "Azure AI Foundry — OpenAI, Anthropic, and Llama models on your Azure tenant",
     configSchemaOverride: [
       {
         key: "resourceName",
@@ -148,7 +148,8 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
   },
   vercel: {
     icon: { light: "vercel.svg" },
-    description: "Single key access to OpenAI, Anthropic, Bedrock, Vertex, Mistral, Llama, and more — billed through Vercel",
+    description:
+      "Single key access to OpenAI, Anthropic, Bedrock, Vertex, Mistral, Llama, and more — billed through Vercel",
     apiKeyPlaceholder: "Vercel AI Gateway API key",
     recommendedModels: [
       "openai/gpt-5.5",
