@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -77,8 +77,44 @@ export function RightRail({
   const animatingRef = useRef(false);
   /** Cancel handle for the currently running tween. */
   const cancelTweenRef = useRef<(() => void) | null>(null);
+  const hasInitializedRef = useRef(false);
 
   const inFileMode = selectedFile !== null;
+
+  /**
+   * Initial defaultSize for the rail panel, captured ONCE at mount. We
+   * intentionally do not recompute this on subsequent renders — the
+   * library only honors `defaultSize` for the first layout pass, and we
+   * drive subsequent size changes through the imperative handle below.
+   * Using `useState` with an initializer pins the value to mount time.
+   */
+  const [initialRailSize] = useState<number>(() => {
+    if (!isOpen) return 0;
+    
+    // We compute the initial size as a raw percentage rather than a pixel string
+    // (e.g. "360px"). When `react-resizable-panels` parses a pixel string on mount,
+    // it must divide by its own container width. If the flex container hasn't
+    // expanded to its true width yet (common when mounting into a new route/view),
+    // the division yields a tiny percentage (like 1.6%) and permanently locks
+    // the panel to a sliver. Providing a percentage bypasses the math bug.
+    const getTargetPx = () => {
+      if (selectedFile !== null) {
+        return fileWidthPx < FILE_AUTO_WIDEN_THRESHOLD_PX
+          ? FILE_AUTO_WIDEN_PX
+          : fileWidthPx;
+      }
+      return WORKSPACE_WIDTH_PX;
+    };
+    
+    // Fallback innerWidth if SSR or not available
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+    // Account for the 260px left sidebar to estimate our container width
+    const estimatedContainerWidth = Math.max(800, vw - 260);
+    const targetPx = getTargetPx();
+    
+    // Return percentage (0..100)
+    return (targetPx / estimatedContainerWidth) * 100;
+  });
 
   // Drive the rail width from `isOpen` + `selectedFile`. Three target sizes:
   //   isOpen=false → 0
@@ -87,6 +123,16 @@ export function RightRail({
   useEffect(() => {
     const handle = railPanelRef.current;
     if (!handle) return;
+    
+    if (!hasInitializedRef.current) {
+      // First run after mount: trust the panel's `defaultSize`.
+      // By using a percentage for defaultSize, we bypass the library's
+      // pixel-conversion mount bug. The panel snaps instantly to the right
+      // width without an unwanted tween animation.
+      hasInitializedRef.current = true;
+      return;
+    }
+    
     const target = !isOpen
       ? 0
       : selectedFile !== null
@@ -94,8 +140,10 @@ export function RightRail({
           ? FILE_AUTO_WIDEN_PX
           : fileWidthRef.current
         : WORKSPACE_WIDTH_PX;
+        
     const fromPx = handle.getSize?.()?.inPixels ?? 0;
     if (Math.abs(fromPx - target) < 0.5) return;
+    
     cancelTweenRef.current?.();
     cancelTweenRef.current = animatePanelResize(handle, fromPx, target, {
       durationMs: TWEEN_MS,
@@ -120,9 +168,11 @@ export function RightRail({
   )}px`;
 
   return (
-    <ResizablePanelGroup orientation="horizontal" className="flex-1 min-w-0">
+    <ResizablePanelGroup 
+      orientation="horizontal" 
+      className="flex-1 min-w-0"
+    >
       <ResizablePanel
-        defaultSize={50}
         minSize="400px"
         groupResizeBehavior="preserve-relative-size"
       >
@@ -142,7 +192,7 @@ export function RightRail({
       />
       <ResizablePanel
         panelRef={railPanelRef}
-        defaultSize={`${WORKSPACE_WIDTH_PX}px`}
+        defaultSize={initialRailSize}
         // In file mode the user can drag between FILE_MIN_PX and maxRailPx —
         // the library clamps without snapping. In workspace mode the handle
         // is disabled, but minSize must remain 0 so programmatic close-tweens
