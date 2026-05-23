@@ -27,6 +27,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface CoworkPanelProps {
   conversationId: string;
@@ -257,21 +262,25 @@ function WorkingFolderCard({
                   </span>
                   <span className="truncate">{file}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void downloadOpfsFile(
-                      `${vfsRoot}/${file}`,
-                      file.split("/").pop() ?? file,
-                    );
-                  }}
-                  className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground group-hover:flex focus-visible:flex"
-                  aria-label={`Download ${file}`}
-                  title="Download"
-                >
-                  <Download className="size-3.5" />
-                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void downloadOpfsFile(
+                          `${vfsRoot}/${file}`,
+                          file.split("/").pop() ?? file,
+                        );
+                      }}
+                      className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground group-hover:flex focus-visible:flex"
+                      aria-label={`Download ${file}`}
+                    >
+                      <Download className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">Download file</TooltipContent>
+                </Tooltip>
               </div>
             </li>
           ))}
