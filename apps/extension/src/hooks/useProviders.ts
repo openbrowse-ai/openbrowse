@@ -7,6 +7,7 @@ import {
 } from "@/registry/providers";
 import {
   getLastUpdated as fetchLastUpdated,
+  invalidateCache as invalidateCatalogCache,
 } from "@/registry/models-dev/catalog";
 
 export interface UseProvidersResult {
@@ -44,6 +45,11 @@ export function useProviders(): UseProvidersResult {
     ) => {
       if (area !== "local") return;
       if (!(STORAGE_KEYS.MODELS_DEV_CATALOG in changes)) return;
+      // Drop the in-memory cache so getCatalog() re-reads the freshly
+      // written value from storage. Without this it would short-circuit
+      // on the cached snapshot it loaded at first mount and consumers
+      // would never observe live-catalog updates that arrived after.
+      invalidateCatalogCache();
       void (async () => {
         const fresh = await getProviders();
         if (cancelled) return;
