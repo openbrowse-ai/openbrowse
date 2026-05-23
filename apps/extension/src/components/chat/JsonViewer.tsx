@@ -85,6 +85,46 @@ function prettify(text: string, fileName: string): string {
 }
 
 /**
+ * Theme-aware style overrides for `react-json-view-lite`. We deliberately do
+ * NOT import the bundled `react-json-view-lite/dist/index.css` — its dark
+ * theme bakes in a navy background and Solarized palette that clash with the
+ * app's light/dark tokens. Instead we hand each style slot a Tailwind class
+ * string driven by the project's CSS variables (`text-foreground`, etc.) so
+ * the tree reads correctly in both modes.
+ *
+ * The expand/collapse arrows are drawn via `after:content-['…']` because
+ * those glyphs live on `::after` pseudo-elements in the library's default
+ * styles; replacing the class strings strips the original `::after` rules,
+ * so we re-add equivalents here.
+ */
+const customJsonStyles = {
+  container: "font-mono text-xs leading-relaxed",
+  basicChildStyle: "ml-4",
+  label: "text-sky-700 dark:text-sky-300 mr-1.5",
+  clickableLabel:
+    "text-sky-700 dark:text-sky-300 mr-1.5 cursor-pointer hover:underline",
+  nullValue: "text-muted-foreground italic",
+  undefinedValue: "text-muted-foreground italic",
+  numberValue: "text-violet-600 dark:text-violet-400",
+  stringValue: "text-emerald-700 dark:text-emerald-300",
+  booleanValue: "text-amber-600 dark:text-amber-400",
+  otherValue: "text-foreground",
+  punctuation: "text-muted-foreground/70 mr-1",
+  expandIcon:
+    "select-none mr-1 text-muted-foreground after:content-['▸'] cursor-pointer",
+  collapseIcon:
+    "select-none mr-1 text-muted-foreground after:content-['▾'] cursor-pointer",
+  collapsedContent:
+    "after:content-['…'] after:text-muted-foreground/70 mr-1 cursor-pointer",
+  childFieldsContainer: "",
+  ariaLables: {
+    collapseJson: "Collapse",
+    expandJson: "Expand",
+  },
+  stringifyStringValues: true,
+} as const;
+
+/**
  * Lazy-loaded JsonView from `react-json-view-lite`. The component is only
  * mounted when Tree mode is active.
  */
@@ -96,9 +136,6 @@ function LazyJsonTree({ data }: { data: unknown }) {
     let cancelled = false;
     (async () => {
       const mod = await import("react-json-view-lite");
-      // Inject CSS once; the import order doesn't matter because the styles
-      // are scoped via class-based selectors.
-      await import("react-json-view-lite/dist/index.css");
       if (!cancelled) setMod(mod);
     })();
     return () => {
@@ -110,14 +147,14 @@ function LazyJsonTree({ data }: { data: unknown }) {
       <div className="text-sm text-muted-foreground">Loading tree…</div>
     );
   }
-  const { JsonView, darkStyles } = Mod;
+  const { JsonView } = Mod;
   // Expand top two levels by default. Deeper nodes render collapsed.
   const shouldExpandNode = (level: number) => level < 2;
   return (
     <JsonView
       data={data as object}
       shouldExpandNode={shouldExpandNode}
-      style={darkStyles}
+      style={customJsonStyles}
       clickToExpandNode
     />
   );
