@@ -7,7 +7,7 @@
  * subtitle on the preview card.
  */
 
-import { classifyFile } from "@/lib/vfs/file-classify";
+import { classifyFile, isBinaryClass } from "@/lib/vfs/file-classify";
 
 const KB = 1024;
 const MB = KB * 1024;
@@ -28,13 +28,13 @@ export function getTypeBadge(filename: string): string {
 }
 
 /**
- * True when classifyFile would tag this as text-like content (code or
- * markdown). Used to gate line-counting at attach time — counting
- * lines on a 50 MB binary is wasteful and meaningless.
+ * True when classifyFile would tag this as text-like content (anything
+ * that isn't a binary class — code, markdown, json, html, etc). Used to
+ * gate line-counting at attach time — counting lines on a 50 MB binary
+ * is wasteful and meaningless.
  */
 export function isTextFile(filename: string): boolean {
-  const cls = classifyFile(filename);
-  return cls === "code" || cls === "markdown";
+  return !isBinaryClass(classifyFile(filename));
 }
 
 /**
