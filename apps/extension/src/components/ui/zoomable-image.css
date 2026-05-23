@@ -1,0 +1,21 @@
+/*
+ * Overrides for `react-medium-image-zoom`'s default styles.
+ *
+ * - Hide the top-right close ("unzoom") button. Click-outside and
+ *   the Escape key still close the zoom view.
+ * - Replace the (white-in-light-mode) backdrop with a semi-transparent
+ *   dark scrim that reads correctly on both light and dark themes.
+ */
+
+:root {
+  --rmiz-overlay-bg-color-start: rgba(0, 0, 0, 0);
+  --rmiz-overlay-bg-color-end: rgba(0, 0, 0, 0.7);
+}
+
+[data-rmiz-modal-overlay="visible"] {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+[data-rmiz-btn-unzoom] {
+  display: none !important;
+}

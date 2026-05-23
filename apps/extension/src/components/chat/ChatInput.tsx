@@ -13,6 +13,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { ZoomableImage } from "@/components/ui/zoomable-image";
 import {
   Tooltip,
   TooltipContent,
@@ -658,6 +659,26 @@ export function ChatInput({
     { enableOnFormTags: true },
   );
 
+  useHotkeys(
+    "mod+u",
+    (e) => {
+      // Cmd/Ctrl+U normally opens "View Source" in browsers — suppress
+      // and trigger our file picker instead.
+      e.preventDefault();
+      if (disabled) return;
+      fileInputRef.current?.click();
+    },
+    {
+      enableOnFormTags: true,
+      // Tiptap uses [contenteditable], which `enableOnFormTags`
+      // doesn't cover by itself. This flag makes the hotkey fire
+      // while focus is in the chat editor too.
+      enableOnContentEditable: true,
+      preventDefault: true,
+    },
+    [disabled],
+  );
+
   useEffect(() => {
     function handleHotkeys(e: KeyboardEvent) {
       if (e.altKey && (e.key === "/" || e.code === "Slash")) {
@@ -731,64 +752,79 @@ export function ChatInput({
           : "border-border",
       )}
     >
-      {/* Attachments */}
-      {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-2 pt-2">
-          {attachments.map((att) => {
-            const overImageCap =
-              att.kind === "image" &&
-              selectedModel != null &&
-              att.file.size > getImageSizeLimit(selectedModel);
-            return (
-              <div key={att.id} className="relative group">
-                {att.kind === "image" ? (
-                  att.loading ? (
-                    <div className="h-[108px] w-[140px] rounded-lg border border-border bg-muted/40 animate-pulse" />
-                  ) : (
-                    <img
-                      src={att.dataUrl}
-                      alt={att.file.name}
-                      className="h-[108px] w-[140px] object-cover rounded-lg border border-border"
-                    />
-                  )
-                ) : (
-                  <div className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5">
-                    <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
-                      {att.file.name}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {att.loading ? (
-                        <span className="inline-block h-3 w-12 rounded bg-muted animate-pulse" />
-                      ) : att.lineCount !== undefined ? (
-                        `${att.lineCount} ${att.lineCount === 1 ? "line" : "lines"}`
-                      ) : (
-                        formatBytes(att.file.size)
-                      )}
-                    </div>
-                    <div className="mt-auto">
-                      <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
-                        {getTypeBadge(att.file.name)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                {overImageCap && (
-                  <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-background px-1.5 py-0.5 text-[9px] leading-none text-muted-foreground shadow-sm">
-                    file only
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => removeAttachment(att.id)}
-                  className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+      {/* Attachments — animates from 0 to natural height via the
+          grid-rows trick so the input box grows smoothly when files
+          are added (and shrinks when the last one is removed). */}
+      <div
+        aria-hidden={attachments.length === 0}
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
+          attachments.length > 0
+            ? "grid-rows-[1fr] opacity-100"
+            : "grid-rows-[0fr] opacity-0",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+            {attachments.map((att) => {
+              const overImageCap =
+                att.kind === "image" &&
+                selectedModel != null &&
+                att.file.size > getImageSizeLimit(selectedModel);
+              return (
+                <div
+                  key={att.id}
+                  className="relative group animate-in fade-in-0 zoom-in-95 duration-200"
                 >
-                  <X className="size-2.5" />
-                </button>
-              </div>
-            );
-          })}
+                  {att.kind === "image" ? (
+                    att.loading ? (
+                      <div className="h-[108px] w-[140px] rounded-lg border border-border bg-muted/40 animate-pulse" />
+                    ) : (
+                      <ZoomableImage
+                        src={att.dataUrl}
+                        alt={att.file.name}
+                        className="h-[108px] w-[140px] object-cover rounded-lg border border-border"
+                      />
+                    )
+                  ) : (
+                    <div className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5">
+                      <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
+                        {att.file.name}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {att.loading ? (
+                          <span className="inline-block h-3 w-12 rounded bg-muted animate-pulse" />
+                        ) : att.lineCount !== undefined ? (
+                          `${att.lineCount} ${att.lineCount === 1 ? "line" : "lines"}`
+                        ) : (
+                          formatBytes(att.file.size)
+                        )}
+                      </div>
+                      <div className="mt-auto">
+                        <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                          {getTypeBadge(att.file.name)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {overImageCap && (
+                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-background px-1.5 py-0.5 text-[9px] leading-none text-muted-foreground shadow-sm">
+                      file only
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(att.id)}
+                    className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
-      )}
+      </div>
 
       {/* Editor */}
       <EditorContent editor={editor} className="min-w-0" />
@@ -1097,7 +1133,7 @@ export function ChatInput({
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1.5">
           <input
             ref={fileInputRef}
             type="file"
@@ -1121,10 +1157,8 @@ export function ChatInput({
                 <Paperclip className="size-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">
-              {selectedModel
-                ? `Attach file — images up to ${Math.round(getImageSizeLimit(selectedModel) / (1024 * 1024))} MB`
-                : "Attach file"}
+            <TooltipContent side="top" className="flex items-center gap-1.5">
+              Attach files or images <Kbd>⌘U</Kbd>
             </TooltipContent>
           </Tooltip>
           <Tooltip>
