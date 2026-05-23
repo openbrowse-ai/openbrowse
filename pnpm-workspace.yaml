@@ -4,6 +4,7 @@ packages:
 
 allowBuilds:
   esbuild: false
+  lzo: false
   msw: false
   sharp: true
   spawn-sync: false
