@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useActiveTabs } from "@/hooks/useActiveTabs";
 import { useTheme } from "@/hooks/useTheme";
-import { useCoworkWidth } from "@/hooks/useCoworkWidth";
+import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
@@ -86,7 +86,7 @@ export default function App() {
   );
   const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [coworkWidth, setCoworkWidth] = useCoworkWidth();
+  const [filePanelWidth, setFilePanelWidth] = useFilePanelWidth();
   const railPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
@@ -403,8 +403,8 @@ export default function App() {
           selectedFile={selectedFile}
           onSelectFile={handleSelectFile}
           railPanelRef={railPanelRef}
-          initialWidthPx={coworkWidth}
-          onWidthChange={setCoworkWidth}
+          fileWidthPx={filePanelWidth}
+          onFileWidthChange={setFilePanelWidth}
           onOpenChange={setIsCoworkPanelOpen}
           centerSlot={
             <main className="h-full min-w-0 flex flex-col">

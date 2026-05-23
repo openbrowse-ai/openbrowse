@@ -16,57 +16,80 @@ interface RightRailProps {
   onSelectFile: (file: string | null) => void;
   /** Imperative handle exposed up so the parent can collapse/expand. */
   railPanelRef: React.RefObject<PanelImperativeHandle | null>;
-  /** Width persisted to localStorage and used as defaultSize on mount. */
-  initialWidthPx: number;
-  onWidthChange: (px: number) => void;
+  /** Persisted file-viewer width (pixels). */
+  fileWidthPx: number;
+  onFileWidthChange: (px: number) => void;
   onOpenChange: (open: boolean) => void;
   /** Center pane (chat) — rendered as the left panel of the resizable group. */
   centerSlot: React.ReactNode;
 }
 
+/** Fixed width for workspace mode. The user does not resize this. */
+export const WORKSPACE_WIDTH_PX = 360;
+/** Soft minimum for file mode — auto-widen kicks in below this. */
+export const FILE_AUTO_WIDEN_THRESHOLD_PX = 480;
+/** Width used by auto-widen when the persisted width is below threshold. */
+export const FILE_AUTO_WIDEN_PX = 560;
+/** Floor for the panel itself (covers both modes). */
 export const RAIL_MIN_PX = 320;
-export const RAIL_DEFAULT_PX = 360;
-export const RAIL_AUTO_WIDEN_PX = 560;
-export const RAIL_AUTO_WIDEN_THRESHOLD_PX = 480;
 
 /**
  * Right-side drawer hosting either the workspace ("Cowork") or a file viewer.
  *
- * Built on shadcn's <ResizablePanelGroup> (react-resizable-panels v4) so the
- * boundary between chat and rail is user-draggable. The rail is collapsible
- * to width 0 — the parent toggles via `railPanelRef.current.collapse() /
- * .expand()`. Width changes are reported via `onWidthChange` and persisted
- * to localStorage by the caller.
+ * Two distinct sizing regimes share the panel:
  *
- * Workspace ↔ file viewer transitions animate via AnimatePresence.
+ *   - **Workspace mode** (`selectedFile === null`): width is locked to
+ *     `WORKSPACE_WIDTH_PX`. The resize handle is disabled and visually
+ *     hidden so the boundary looks like the original fixed-width sidebar.
+ *
+ *   - **File mode** (`selectedFile !== null`): width is the persisted
+ *     `fileWidthPx`, resizable by the user via the handle. On entry, if
+ *     the persisted width is below `FILE_AUTO_WIDEN_THRESHOLD_PX`, the rail
+ *     auto-widens to `FILE_AUTO_WIDEN_PX`.
+ *
+ * On exit (X click in the file panel), the rail snaps back to
+ * `WORKSPACE_WIDTH_PX` via the imperative handle. Width persistence is
+ * gated to file mode only — programmatic snaps to the workspace width
+ * never overwrite the user's saved file width.
  */
 export function RightRail({
   conversationId,
   selectedFile,
   onSelectFile,
   railPanelRef,
-  initialWidthPx,
-  onWidthChange,
+  fileWidthPx,
+  onFileWidthChange,
   onOpenChange,
   centerSlot,
 }: RightRailProps) {
   const lastReportedOpenRef = useRef(true);
+  /** Latest selectedFile, read inside onResize without re-binding. */
+  const selectedFileRef = useRef(selectedFile);
+  selectedFileRef.current = selectedFile;
+  /** Latest persisted file width, read inside the mode effect. */
+  const fileWidthRef = useRef(fileWidthPx);
+  fileWidthRef.current = fileWidthPx;
+  const inFileMode = selectedFile !== null;
 
-  // Auto-widen on first transition into file mode if the rail is too narrow
-  // for spreadsheets/sheet tabs to read comfortably.
+  // Snap rail width on mode transitions:
+  //   workspace → file: resize to persisted file width (or auto-widen).
+  //   file → workspace: resize back to the locked workspace width.
   useEffect(() => {
-    if (selectedFile == null) return;
     const handle = railPanelRef.current;
     if (!handle) return;
-    const size = handle.getSize?.();
-    const px = size?.inPixels ?? 0;
-    if (px > 0 && px < RAIL_AUTO_WIDEN_THRESHOLD_PX) {
-      handle.resize(`${RAIL_AUTO_WIDEN_PX}px`);
+    if (selectedFile !== null) {
+      const target =
+        fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
+          ? FILE_AUTO_WIDEN_PX
+          : fileWidthRef.current;
+      handle.resize(`${target}px`);
+    } else {
+      handle.resize(`${WORKSPACE_WIDTH_PX}px`);
     }
   }, [selectedFile, railPanelRef]);
 
   const maxRailPx = `${Math.max(
-    RAIL_AUTO_WIDEN_PX,
+    FILE_AUTO_WIDEN_PX,
     Math.min(
       900,
       Math.round(
@@ -84,10 +107,21 @@ export function RightRail({
       >
         {centerSlot}
       </ResizablePanel>
-      <ResizableHandle />
+      <ResizableHandle
+        disabled={!inFileMode}
+        className={
+          // Hide the divider line while in workspace mode so the rail looks
+          // like the original flush-edge sidebar. The handle div itself stays
+          // in the tree (the panel group needs it) but is non-interactive
+          // and visually transparent.
+          inFileMode
+            ? undefined
+            : "bg-transparent! cursor-default after:hidden"
+        }
+      />
       <ResizablePanel
         panelRef={railPanelRef}
-        defaultSize={`${initialWidthPx}px`}
+        defaultSize={`${WORKSPACE_WIDTH_PX}px`}
         minSize={`${RAIL_MIN_PX}px`}
         maxSize={maxRailPx}
         collapsible
@@ -95,7 +129,11 @@ export function RightRail({
         groupResizeBehavior="preserve-pixel-size"
         onResize={(panelSize: PanelSize) => {
           const px = panelSize.inPixels;
-          if (px > 0) onWidthChange(Math.round(px));
+          // Persist only while in file mode — programmatic snaps back to the
+          // workspace width must never overwrite the user's saved file width.
+          if (px > 0 && selectedFileRef.current !== null) {
+            onFileWidthChange(Math.round(px));
+          }
           const open = px > 0;
           if (open !== lastReportedOpenRef.current) {
             lastReportedOpenRef.current = open;

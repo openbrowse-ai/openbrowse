@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-const STORAGE_KEY = "openbrowse-cowork-width";
+const STORAGE_KEY = "openbrowse-file-panel-width";
 
 function readInitial(fallback: number): number {
   if (typeof window === "undefined") return fallback;
@@ -15,23 +15,25 @@ function readInitial(fallback: number): number {
 }
 
 /**
- * Persisted right-rail width (pixels). Stored in localStorage so the user's
- * chosen pane size sticks across sessions.
+ * Persisted file-viewer panel width (pixels). Stored in localStorage so the
+ * user's chosen size sticks across sessions. Workspace mode uses a fixed
+ * width and does NOT use this hook — only file mode persists.
  *
  * The setter is stable across renders.
  */
-export function useCoworkWidth(fallback = 360): [number, (px: number) => void] {
+export function useFilePanelWidth(
+  fallback = 560,
+): [number, (px: number) => void] {
   const [width, setWidth] = useState<number>(() => readInitial(fallback));
   const set = useCallback((px: number) => {
     setWidth(px);
     try {
       localStorage.setItem(STORAGE_KEY, String(Math.round(px)));
     } catch {
-      // localStorage might be unavailable (e.g. private browsing). Silently
-      // tolerate — width still works in-memory for this session.
+      // localStorage might be unavailable (e.g. private browsing).
     }
   }, []);
-  // Keep cross-tab in sync (cheap, no debouncing needed).
+  // Cross-tab sync.
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== STORAGE_KEY || e.newValue == null) return;
