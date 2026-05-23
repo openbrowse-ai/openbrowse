@@ -27,6 +27,11 @@ import {
   ListTree,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { downloadBlob, downloadText } from "@/lib/download";
 import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
@@ -266,14 +271,14 @@ export function FileViewerPanel({
           <IconButton
             onClick={handleRefresh}
             disabled={loaded === null}
-            title="Refresh file content"
+            tooltip="Refresh file content"
           >
             <RefreshCw className="size-3.5" />
           </IconButton>
           <IconButton
             onClick={handleDownload}
             disabled={loaded === null}
-            title="Download"
+            tooltip="Download file"
           >
             <Download className="size-3.5" />
           </IconButton>
@@ -281,7 +286,7 @@ export function FileViewerPanel({
             <IconButton
               onClick={handleCopy}
               disabled={loaded?.text === undefined}
-              title="Copy contents"
+              tooltip={copied ? "Copied" : "Copy contents"}
             >
               {copied ? (
                 <Check className="size-3.5 text-emerald-500" />
@@ -290,7 +295,7 @@ export function FileViewerPanel({
               )}
             </IconButton>
           )}
-          <IconButton onClick={onClose} title="Close">
+          <IconButton onClick={onClose} tooltip="Close file">
             <X className="size-4" />
           </IconButton>
         </div>
@@ -371,23 +376,27 @@ export function FileViewerPanel({
 interface IconButtonProps {
   onClick: () => void;
   disabled?: boolean;
-  title: string;
+  tooltip: string;
   children: React.ReactNode;
 }
 
-function IconButton({ onClick, disabled, title, children }: IconButtonProps) {
+function IconButton({ onClick, disabled, tooltip, children }: IconButtonProps) {
   return (
-    <Button
-      variant="ghost"
-      size="icon-sm"
-      onClick={onClick}
-      disabled={disabled}
-      className="size-7 text-muted-foreground hover:text-foreground"
-      title={title}
-      aria-label={title}
-    >
-      {children}
-    </Button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={onClick}
+          disabled={disabled}
+          className="size-7 text-muted-foreground hover:text-foreground"
+          aria-label={tooltip}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -417,24 +426,27 @@ function SegmentedToggle<T extends string>({
         const active = opt.value === value;
         const disabled = disabledValues?.includes(opt.value) ?? false;
         return (
-          <button
-            key={opt.value}
-            type="button"
-            disabled={disabled}
-            onClick={() => onChange(opt.value)}
-            className={cn(
-              "h-6 px-2 rounded-sm flex items-center gap-1 text-[11px] font-medium transition-colors",
-              active
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-              disabled && "opacity-50 cursor-not-allowed",
-            )}
-            title={opt.label}
-            aria-label={opt.label}
-            aria-pressed={active}
-          >
-            <Icon className="size-3.5" />
-          </button>
+          <Tooltip key={opt.value}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => onChange(opt.value)}
+                className={cn(
+                  "h-6 px-2 rounded-sm flex items-center gap-1 text-[11px] font-medium transition-colors",
+                  active
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                  disabled && "opacity-50 cursor-not-allowed",
+                )}
+                aria-label={opt.label}
+                aria-pressed={active}
+              >
+                <Icon className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">{opt.label}</TooltipContent>
+          </Tooltip>
         );
       })}
     </div>
