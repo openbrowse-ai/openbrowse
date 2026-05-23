@@ -1,6 +1,7 @@
 import { chatDb } from "@/lib/chat-db";
 import { createAgentTransport } from "@/lib/chat-transport";
 import { formatAttachments } from "@/lib/chat/format-attachments";
+import { queueDb, subscribeQueueChange } from "@/lib/queue-db";
 import {
   resetAgentIndicator,
   setAgentSpaceColor,
@@ -33,6 +34,7 @@ import { providers as registryProviders } from "@/registry/providers";
 import type {
   AgentSettings,
   CloudProvider,
+  QueuedMessage,
   SerializedToolPart,
   SerializedUIPart,
   Settings,
@@ -501,6 +503,37 @@ export function useAgentChat({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
+  /**
+   * Per-conversation FIFO queue of un-sent user messages. Items here
+   * exist in `queue-db` but NOT in `chat-db`; they migrate at flush
+   * time. State is hydrated on convId change and refreshed by the
+   * `QUEUE_CHANGED` runtime broadcast emitted by `queue-db` mutations.
+   *
+   * The flush mutex (claim/release) lives in `queue-db` so multiple
+   * panel contexts (sidepanel + detached popup) rendering the same
+   * conversation can't double-send.
+   */
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+
+  /**
+   * Pauses the auto-flush watcher when a queued message is currently
+   * being edited in the UI. Prevents the watcher from draining the
+   * very item the user is editing — which would silently turn a Save
+   * click into a no-op against `queue-db.update` (the row would be
+   * gone). Set/cleared by the consumer (`ChatView`) via the
+   * `setQueueEditing` callback below.
+   *
+   * Stored as a ref because the watcher already depends on `queue`
+   * and `status`; we don't need re-runs purely from this flag, only
+   * for the existing deps to re-evaluate against the latest value.
+   */
+  const queueEditingIdRef = useRef<string | null>(null);
+  const setQueueEditing = useCallback((id: string | null) => {
+    queueEditingIdRef.current = id;
+  }, []);
+
   useEffect(() => {
     storage.getSettings().then(setSettings);
     storage.getAgentSettings().then(setAgentSettings);
@@ -517,6 +550,49 @@ export function useAgentChat({
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
   }, []);
+
+  /**
+   * Hydrate the per-conversation queue and keep it in sync with both
+   * local mutations (this same panel calling enqueue/remove/etc.) and
+   * cross-context mutations (a sibling panel mutating the same convId).
+   *
+   * We subscribe to BOTH because `chrome.runtime.sendMessage` does not
+   * deliver to its own sender — without the in-process pubsub, the
+   * panel that just called `queueMessage` would never refresh its own
+   * `queue` state, and the auto-flush watcher's `[queue]` dependency
+   * would never re-fire. Cross-context still goes through
+   * `chrome.runtime.onMessage` so a popup mutating the same convId
+   * also lands here.
+   */
+  useEffect(() => {
+    if (!conversationId) {
+      setQueue([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      const items = await queueDb.list(conversationId);
+      if (!cancelled) setQueue(items);
+    };
+    refresh();
+
+    const unsubLocal = subscribeQueueChange((cid) => {
+      if (cid === conversationId) refresh();
+    });
+
+    const onMessage = (msg: { type: string; conversationId?: string }) => {
+      if (msg.type === "QUEUE_CHANGED" && msg.conversationId === conversationId) {
+        refresh();
+      }
+    };
+    chrome.runtime.onMessage.addListener(onMessage);
+
+    return () => {
+      cancelled = true;
+      unsubLocal();
+      chrome.runtime.onMessage.removeListener(onMessage);
+    };
+  }, [conversationId]);
 
   const mcpConnectionKey = settings.mcpServers
     .filter((s) => s.enabled)
@@ -925,6 +1001,145 @@ export function useAgentChat({
     }
   }, [error, conversationId, messages, clearError, runCompaction]);
 
+  /**
+   * Auto-flush queued user messages once the agent's current turn ends.
+   *
+   * Triggers whenever the status, queue, or compaction flag changes
+   * such that a flush is now safe:
+   *
+   *  - status is back to `ready` (not `streaming` or `submitted`)
+   *  - queue is non-empty for the current conversation
+   *  - no compaction is in flight (compaction sends its own synthetic
+   *    "Continue..." message; we don't want to race it)
+   *  - the last assistant message isn't sitting in `approval-requested`
+   *    state — that's the user's turn to respond, not ours
+   *  - there's no unhandled error (existing error banner takes over)
+   *
+   * Cross-panel coordination is handled by `queueDb.claimHead`'s lock
+   * row. If a sibling panel claimed first, `claimHead` returns null
+   * and this one sits out the round.
+   *
+   * The flushed message is persisted to chat-db with the same shape as
+   * `handleSubmit` produces, then dispatched via `sendMessage`. The
+   * usual `healPendingTools` runs first so a denied/aborted tool call
+   * in the prior turn doesn't trip `MissingToolResultsError` on send.
+   */
+  const isFlushingRef = useRef(false);
+  useEffect(() => {
+    if (!conversationId) return;
+    if (status !== "ready") return;
+    if (isCompacting) return;
+    if (error) return;
+    if (queue.length === 0) return;
+    if (isFlushingRef.current) return;
+    // Pause if the user is actively editing a queued item — draining
+    // it would invalidate their pending edit. The watcher will retry
+    // when `setQueueEditing(null)` is called and any of the existing
+    // deps change (typically the queue itself, after the edit lands).
+    if (queueEditingIdRef.current !== null) return;
+
+    // Defer to user when an approval is pending. Detects via the same
+    // shape used elsewhere — last assistant message containing a tool
+    // part in `approval-requested` state.
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (lastAssistant) {
+      const hasPendingApproval = lastAssistant.parts.some(
+        (p) =>
+          (p.type === "dynamic-tool" ||
+            (typeof p.type === "string" && p.type.startsWith("tool-"))) &&
+          (p as { state?: string }).state === "approval-requested",
+      );
+      if (hasPendingApproval) return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      isFlushingRef.current = true;
+      let claimed: QueuedMessage | null = null;
+      try {
+        claimed = await queueDb.claimHead(conversationId);
+        if (!claimed || cancelled) return;
+
+        // Heal any stranded tool calls before adding the queued message.
+        // Same rationale as in handleSubmit.
+        const { healed, healedMessages } = healPendingTools(
+          messages,
+          "Superseded by queued user message",
+        );
+        if (healedMessages.length > 0) {
+          setMessages(healed);
+          await persistHealedMessages(conversationId, healedMessages);
+        }
+
+        const persistedText = claimed.text + claimed.attachmentBlock;
+        const fileParts: SerializedUIPart[] = claimed.visionFiles.map((vf) => ({
+          type: "file" as const,
+          mediaType: vf.mediaType,
+          url: vf.url,
+        }));
+        await chatDb.saveMessage({
+          id: generateId(),
+          conversationId,
+          role: "user",
+          content: persistedText,
+          parts: [
+            ...(persistedText
+              ? [{ type: "text" as const, text: persistedText }]
+              : []),
+            ...fileParts,
+          ],
+          createdAt: Date.now(),
+        });
+
+        // Bind the panel's host tab so the agent has a working target on
+        // its first tab tool call.
+        resolveHostTabId().then((hostTabId) => {
+          setAgentContext(conversationId, hostTabId);
+        });
+
+        const text = claimed.text + claimed.mentionContext + claimed.attachmentBlock;
+        const files = claimed.visionFiles.map((vf) => ({
+          type: "file" as const,
+          mediaType: vf.mediaType,
+          url: vf.url,
+        }));
+        if (text) {
+          sendMessage({ text, files: files.length > 0 ? files : undefined });
+        } else {
+          sendMessage({ files });
+        }
+
+        await queueDb.releaseHead(conversationId, claimed.id, true);
+      } catch (err) {
+        console.error("[queue] flush failed:", err);
+        if (claimed) {
+          // Keep the queued item; release the lock so the next attempt
+          // can retry rather than hanging indefinitely.
+          await queueDb.releaseHead(conversationId, claimed.id, false).catch(
+            () => {},
+          );
+        }
+      } finally {
+        isFlushingRef.current = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    status,
+    conversationId,
+    queue,
+    isCompacting,
+    error,
+    messages,
+    setMessages,
+    sendMessage,
+    resolveHostTabId,
+  ]);
+
   // Track what triggered the load effect to avoid overwriting in-memory approval state.
   //
   // We key the "already loaded" guard off the Chat INSTANCE identity (not a
@@ -1172,6 +1387,108 @@ export function useAgentChat({
     [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages],
   );
 
+  /**
+   * Enqueue a user message instead of sending it. Mirrors handleSubmit's
+   * preflight (conversation creation if needed, mention/attachment
+   * snapshotting) but persists into queue-db rather than calling
+   * sendMessage. The auto-flush watcher below picks it up once the
+   * agent's current turn ends.
+   *
+   * Snapshot semantics: `formatMentionContext` is awaited NOW (so tab
+   * snapshots reflect what the user saw at queue time) and
+   * `formatAttachments` is also awaited NOW (so attachment bytes hit
+   * OPFS immediately, tied to convId).
+   */
+  const queueMessage = useCallback(
+    async (
+      mentions: TabMentionAttrs[] = [],
+      attachments: Attachment[] = [],
+    ) => {
+      if (!input.trim() && attachments.length === 0) return;
+      if (!isConfigured) return;
+
+      let convId = conversationIdRef.current;
+      let isNew = false;
+      if (!convId) {
+        // Mirror handleSubmit's new-conversation branch. We still need a
+        // convId to key the queue and the OPFS workspace.
+        convId = generateId();
+        isNew = true;
+        const truncatedTitle = input.trim().slice(0, 100) || "Image";
+        await chatDb.createConversation({
+          id: convId,
+          title: truncatedTitle,
+          spaceId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+
+      const baseText = input.trim();
+      const mentionContext = await formatMentionContext(mentions);
+
+      let attachmentBlock = "";
+      let visionFiles: { mediaType: string; url: string }[] = [];
+      try {
+        ({ block: attachmentBlock, visionFiles } = await formatAttachments(
+          convId,
+          attachments,
+          agentSettings.agentModel,
+        ));
+      } catch (e) {
+        toast.error(
+          `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
+        );
+        return;
+      }
+
+      await queueDb.enqueue({
+        id: generateId(),
+        conversationId: convId,
+        text: baseText,
+        mentionContext,
+        attachmentBlock,
+        visionFiles,
+        createdAt: Date.now(),
+      });
+
+      setInput("");
+
+      if (isNew) {
+        // Make the brand-new conversation visible so its queue panel
+        // and (eventually) the flush-side user message render in the
+        // correct chat view.
+        onNewConversation(convId);
+      }
+    },
+    [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation],
+  );
+
+  const removeQueued = useCallback(async (id: string) => {
+    await queueDb.remove(id);
+  }, []);
+
+  const updateQueued = useCallback(
+    async (
+      id: string,
+      patch: Partial<
+        Pick<
+          QueuedMessage,
+          "text" | "mentionContext" | "attachmentBlock" | "visionFiles"
+        >
+      >,
+    ) => {
+      await queueDb.update(id, patch);
+    },
+    [],
+  );
+
+  const clearQueue = useCallback(async () => {
+    const cid = conversationIdRef.current;
+    if (!cid) return;
+    await queueDb.clear(cid);
+  }, []);
+
   const handleNew = useCallback(() => {
     onNewConversation("");
     setMessages([]);
@@ -1410,5 +1727,18 @@ export function useAgentChat({
     stop,
     error,
     clearError,
+    // Message queue: see `queueMessage` JSDoc and the auto-flush watcher.
+    queue,
+    queueMessage,
+    removeQueued,
+    updateQueued,
+    clearQueue,
+    /**
+     * Tell the hook a queued message is being edited (or stop telling
+     * it). Pauses the auto-flush watcher while set so the row the
+     * user is editing isn't drained out from under them. Pass `null`
+     * to resume normal flushing.
+     */
+    setQueueEditing,
   };
 }

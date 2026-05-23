@@ -40,6 +40,7 @@ import {
   BrainIcon,
   ChevronDown,
   Paperclip,
+  Plus,
   Square,
   Star,
   X,
@@ -47,6 +48,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
+import { computeButtonMode } from "./chat-input-mode";
 
 // Derived alias kept for back-compat with call sites that destructure
 // images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
@@ -77,7 +79,27 @@ interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: (mentions: TabMentionAttrs[], attachments: Attachment[]) => void;
+  /**
+   * Optional handler for "queue this message instead of sending now".
+   * When provided AND `isLoading` is true AND the input has content, the
+   * Send button morphs into a Queue (＋) button and Enter routes here
+   * instead of triggering Stop. The hook persists the message in
+   * queue-db; the auto-flush watcher dispatches it once the current
+   * turn ends.
+   */
+  onQueue?: (mentions: TabMentionAttrs[], attachments: Attachment[]) => void;
   onStop?: () => void;
+  /**
+   * When true, the input is being used to edit an existing message
+   * (either a sent message or a queued one). The primary button is
+   * forced to "Save" mode regardless of `isLoading`, and Enter commits
+   * via `onSubmit` instead of branching into queue/stop.
+   *
+   * The Cmd+Shift+Backspace stop hotkey is preserved (it reads
+   * `isLoading` directly), so a user mid-edit can still abort the
+   * agent's in-flight turn from the keyboard if they really want to.
+   */
+  editMode?: boolean;
   isLoading: boolean;
   disabled: boolean;
   providerModels?: ProviderModels[];
@@ -257,7 +279,9 @@ export function ChatInput({
   value,
   onChange,
   onSubmit,
+  onQueue,
   onStop,
+  editMode = false,
   isLoading,
   disabled,
   providerModels,
@@ -274,10 +298,14 @@ export function ChatInput({
 }: ChatInputProps) {
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
+  const onQueueRef = useRef(onQueue);
+  onQueueRef.current = onQueue;
   const onStopRef = useRef(onStop);
   onStopRef.current = onStop;
   const isLoadingRef = useRef(isLoading);
   isLoadingRef.current = isLoading;
+  const editModeRef = useRef(editMode);
+  editModeRef.current = editMode;
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -538,6 +566,17 @@ export function ChatInput({
     setAttachments([]);
   }, []);
 
+  const queueWithMentions = useCallback(() => {
+    const handler = onQueueRef.current;
+    if (!handler) return;
+    const ed = editorRef.current;
+    if (!ed) return;
+    const json = ed.getJSON();
+    const mentions = extractTabMentions(json);
+    handler(mentions, attachmentsRef.current);
+    setAttachments([]);
+  }, []);
+
   const editor = useEditor({
     autofocus: autoFocus ? "end" : false,
     extensions: [
@@ -562,19 +601,39 @@ export function ChatInput({
             },
             "Shift-Enter": () => this.editor.commands.setHardBreak(),
             Enter: () => {
-              if (isLoadingRef.current && onStopRef.current) {
-                onStopRef.current();
-              } else {
-                const text = this.editor.getMarkdown().trim();
-                const hasLoadingAttachment = attachmentsRef.current.some(
-                  (a) => a.loading,
-                );
-                if (
-                  (text || attachmentsRef.current.length > 0) &&
-                  !hasLoadingAttachment
-                ) {
+              const text = this.editor.getMarkdown().trim();
+              const hasLoadingAttachment = attachmentsRef.current.some(
+                (a) => a.loading,
+              );
+              const hasContent =
+                (text || attachmentsRef.current.length > 0) &&
+                !hasLoadingAttachment;
+
+              // Edit mode: Enter commits the edit via onSubmit, regardless
+              // of whether the agent is streaming. Save shouldn't morph
+              // into Stop or Queue just because there's an in-flight turn.
+              if (editModeRef.current) {
+                if (hasContent) {
                   submitWithMentions();
                 }
+                return true;
+              }
+
+              // Queue while streaming when there's content AND a queue
+              // handler is wired up. Falls back to Stop when the input
+              // is empty (preserves the prior "Enter on empty = stop"
+              // gesture) or when no queue handler is provided.
+              if (isLoadingRef.current) {
+                if (hasContent && onQueueRef.current) {
+                  queueWithMentions();
+                } else if (onStopRef.current) {
+                  onStopRef.current();
+                }
+                return true;
+              }
+
+              if (hasContent) {
+                submitWithMentions();
               }
               return true;
             },
@@ -628,25 +687,53 @@ export function ChatInput({
     [attachments],
   );
 
+  const hasContent =
+    (value.trim().length > 0 || attachments.length > 0) && !attachmentsLoading;
+
+  /**
+   * Tri-state primary button:
+   *  - Edit mode (any kind)                     → save  (ArrowUp icon, "Save" tooltip)
+   *  - Streaming + has content + onQueue wired  → queue (Plus icon)
+   *  - Streaming                                → stop  (Square icon)
+   *  - Ready + has content + not disabled       → send  (ArrowUp icon)
+   *
+   * Edit mode wins outright over streaming so a Save button can't
+   * silently morph into Stop while the user is typing changes — even
+   * if the agent's stream ended-and-re-started during the edit (e.g.,
+   * because the queue auto-flushed an unrelated item).
+   *
+   * Logic is extracted into `computeButtonMode` for unit testing.
+   */
+  const buttonMode = computeButtonMode({
+    editMode,
+    isLoading,
+    hasContent,
+    hasOnQueue: !!onQueue,
+  });
+
   const handleButtonClick = useCallback(() => {
-    if (isLoading && onStop) {
-      onStop();
-    } else if (
-      (value.trim() || attachments.length > 0) &&
-      !disabled &&
-      !isLoading &&
-      !attachmentsLoading
-    ) {
+    if (editMode) {
+      if (hasContent && !disabled) submitWithMentions();
+      return;
+    }
+    if (isLoading) {
+      if (hasContent && onQueueRef.current) {
+        queueWithMentions();
+        return;
+      }
+      onStopRef.current?.();
+      return;
+    }
+    if (hasContent && !disabled) {
       submitWithMentions();
     }
   }, [
+    editMode,
     isLoading,
-    onStop,
-    value,
+    hasContent,
     disabled,
     submitWithMentions,
-    attachments.length,
-    attachmentsLoading,
+    queueWithMentions,
   ]);
 
   useHotkeys(
@@ -1166,25 +1253,39 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={handleButtonClick}
-                disabled={(disabled || attachmentsLoading) && !isLoading}
+                disabled={
+                  buttonMode === "send" && (disabled || !hasContent)
+                  || (buttonMode === "queue" && !hasContent)
+                }
                 className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
               >
-                {isLoading ? (
-                  <Square className="size-3" />
-                ) : (
-                  <ArrowUp className="size-3.5" />
-                )}
+                {buttonMode === "stop" && <Square className="size-3" />}
+                {buttonMode === "queue" && <Plus className="size-3.5" />}
+                {buttonMode === "send" && <ArrowUp className="size-3.5" />}
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" className="flex items-center gap-1.5">
-              {isLoading ? (
+              {buttonMode === "stop" && (
                 <>
                   Stop
                   <Kbd>⌘⇧⌫</Kbd>
                 </>
-              ) : (
-                "Send"
               )}
+              {buttonMode === "queue" && (
+                <>
+                  Queue
+                  <Kbd>⏎</Kbd>
+                </>
+              )}
+              {buttonMode === "send" &&
+                (editMode ? (
+                  <>
+                    Save
+                    <Kbd>⏎</Kbd>
+                  </>
+                ) : (
+                  "Send"
+                ))}
             </TooltipContent>
           </Tooltip>
         </div>

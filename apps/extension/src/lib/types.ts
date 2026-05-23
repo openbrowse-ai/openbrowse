@@ -224,3 +224,38 @@ export interface HistoryItem {
   lastVisitTime: number;
   visitCount: number;
 }
+
+/**
+ * A user message that the user typed while the agent was already streaming
+ * the previous turn. Persisted in IndexedDB so the queue survives reloads
+ * and is shared across panel contexts (sidepanel, detached popup, home).
+ *
+ * Snapshot semantics:
+ *  - `mentionContext` is `formatMentionContext` output captured at queue
+ *    time so the agent sees the tab snapshots the user saw.
+ *  - `attachmentBlock` + `visionFiles` come from `formatAttachments`,
+ *    which already wrote the bytes to the conversation's OPFS workspace
+ *    when the user enqueued. The flush path doesn't re-touch OPFS.
+ *
+ * Drained messages move from `queue-db` into `chat-db` as ordinary user
+ * messages just before `sendMessage` is dispatched; they never appear
+ * in both stores at once.
+ */
+export interface QueuedMessage {
+  id: string;
+  conversationId: string;
+  /**
+   * The user-typed text BEFORE mention context or attachment block is
+   * appended. Kept raw so an "edit queued message" flow can pre-fill
+   * the input with what the user typed, not the synthesized blocks.
+   */
+  text: string;
+  /** `formatMentionContext` output captured at queue time. */
+  mentionContext: string;
+  /** `<Attached files>` block (or empty string) from `formatAttachments`. */
+  attachmentBlock: string;
+  /** Vision file-parts (data URLs) ready to ship with `sendMessage`. */
+  visionFiles: { mediaType: string; url: string }[];
+  createdAt: number;
+}
+

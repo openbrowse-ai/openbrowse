@@ -10,10 +10,28 @@ import {
   ConversationContent,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
+import {
+  Queue,
+  QueueItem,
+  QueueItemAction,
+  QueueItemActions,
+  QueueItemAttachment,
+  QueueItemContent,
+  QueueItemFile,
+  QueueItemImage,
+  QueueItemIndicator,
+  QueueList,
+  QueueSection,
+  QueueSectionContent,
+  QueueSectionLabel,
+  QueueSectionTrigger,
+} from "@/components/ai-elements/queue";
 import { Logo } from "@/components/ui/logo";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useProviders } from "@/hooks/useProviders";
+import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { cn } from "@/lib/utils";
+import { classifyFile } from "@/lib/vfs/file-classify";
 import {
   AlertCircle,
   ArrowLeft,
@@ -21,6 +39,7 @@ import {
   HelpCircle,
   Link,
   MessageSquarePlus,
+  Pencil,
   RefreshCw,
   Settings2,
   Sparkles,
@@ -138,6 +157,12 @@ export function ChatView({
     stop,
     error,
     clearError,
+    queue,
+    queueMessage,
+    removeQueued,
+    updateQueued,
+    clearQueue,
+    setQueueEditing,
   } = useAgentChat({
     conversationId,
     spaceId,
@@ -282,7 +307,15 @@ export function ChatView({
     setAgentModel,
   ]);
 
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  /**
+   * Editing state. `kind === "sent"` edits a message already in the
+   * transcript (writes through `confirmEdit` → chatDb). `kind === "queued"`
+   * edits a queued-but-not-yet-sent message (writes through
+   * `updateQueued` → queueDb). Mutually exclusive — one editor, one mode.
+   */
+  const [editing, setEditing] = useState<
+    { kind: "sent" | "queued"; id: string } | null
+  >(null);
   const [preEditInput, setPreEditInput] = useState("");
   const [activeTab, setActiveTab] = useState<{
     title: string;
@@ -400,24 +433,52 @@ export function ChatView({
         .join("")
         .split("\n\n-----\n\n<Mentioned tabs>")[0];
       setPreEditInput(input);
-      setEditingMessageId(messageId);
+      setEditing({ kind: "sent", id: messageId });
       setInput(text);
     },
     [messages, input, setInput],
   );
 
+  const startEditQueued = useCallback(
+    (queuedId: string) => {
+      const item = queue.find((q) => q.id === queuedId);
+      if (!item) return;
+      setPreEditInput(input);
+      setEditing({ kind: "queued", id: queuedId });
+      // The QueuedMessage's `text` is the user's raw input pre-mention,
+      // pre-attachment-block — exactly what we want to repopulate.
+      setInput(item.text);
+      // Pause auto-flush so the item we're editing isn't drained out
+      // from under us between status flipping to ready and the user
+      // clicking Save. Cleared on cancel/save.
+      setQueueEditing(queuedId);
+    },
+    [queue, input, setInput, setQueueEditing],
+  );
+
   const cancelEdit = useCallback(() => {
-    setEditingMessageId(null);
+    setEditing(null);
     setInput(preEditInput);
-  }, [preEditInput, setInput]);
+    setQueueEditing(null);
+  }, [preEditInput, setInput, setQueueEditing]);
 
   const handleEditSubmit = useCallback(
     (mentions: TabMentionAttrs[], attachments: Attachment[]) => {
-      if (!editingMessageId) return;
-      confirmEdit(editingMessageId, mentions, attachments);
-      setEditingMessageId(null);
+      if (!editing) return;
+      if (editing.kind === "sent") {
+        confirmEdit(editing.id, mentions, attachments);
+      } else {
+        // Queue edits update the persisted text only. Re-attaching files
+        // or changing mentions on a queued item is a v2 concern — for
+        // now, the queued mention/attachment snapshot is preserved as
+        // captured at queue time. The new text replaces the old text.
+        updateQueued(editing.id, { text: input.trim() });
+      }
+      setEditing(null);
+      setInput(preEditInput);
+      setQueueEditing(null);
     },
-    [editingMessageId, confirmEdit],
+    [editing, confirmEdit, updateQueued, input, preEditInput, setInput, setQueueEditing],
   );
 
   function openSettings() {
@@ -430,9 +491,14 @@ export function ChatView({
     messages.length > 0 &&
     messages[messages.length - 1].role === "user";
 
-  const editingIndex = editingMessageId
-    ? messages.findIndex((m) => m.id === editingMessageId)
-    : -1;
+  // Sent-message edits dim everything below the edited row. Queued
+  // edits don't affect the transcript, so they don't dim anything.
+  const editingIndex =
+    editing?.kind === "sent"
+      ? messages.findIndex((m) => m.id === editing.id)
+      : -1;
+
+  const isEditing = editing !== null;
 
   return (
     <div className={cn("flex flex-col h-full pt-1", className)}>
@@ -581,7 +647,7 @@ export function ChatView({
                 !messages.slice(i + 1).some((m) => m.role === "assistant");
               const isDimmed = editingIndex !== -1 && i >= editingIndex;
               return (
-                <ChatMessage
+                 <ChatMessage
                   key={message.id}
                   message={message}
                   isStreaming={isLastAssistant}
@@ -589,13 +655,13 @@ export function ChatView({
                   onRegenerate={
                     message.role === "assistant" &&
                     !isLoading &&
-                    !editingMessageId
+                    !isEditing
                       ? () => handleRegenerate(message.id)
                       : undefined
                   }
                   onToolApproval={addToolApprovalResponse}
                   onEdit={
-                    message.role === "user" && !isLoading && !editingMessageId
+                    message.role === "user" && !isLoading && !isEditing
                       ? () => startEdit(message.id)
                       : undefined
                   }
@@ -623,7 +689,7 @@ export function ChatView({
             <span>Compacting context...</span>
           </div>
         )}
-        {activeTab && messages.length === 0 && !editingMessageId && (
+        {activeTab && messages.length === 0 && !isEditing && (
           <div className="flex items-center gap-2 px-2 py-1.5 mb-1.5 rounded-md bg-accent/50">
             {activeTab.favicon && (
               <img
@@ -644,9 +710,13 @@ export function ChatView({
             </button>
           </div>
         )}
-        {editingMessageId && (
+        {editing && (
           <div className="flex items-center justify-between px-2 py-1 mb-1.5 rounded-md bg-accent/50 text-xs text-muted-foreground">
-            <span>Editing message</span>
+            <span>
+              {editing.kind === "queued"
+                ? "Editing queued message"
+                : "Editing message"}
+            </span>
             <button
               type="button"
               onClick={cancelEdit}
@@ -657,10 +727,115 @@ export function ChatView({
             </button>
           </div>
         )}
+        {queue.length > 0 && (
+          <Queue className="mb-1.5">
+            <QueueSection defaultOpen>
+              <QueueSectionTrigger>
+                <QueueSectionLabel
+                  count={queue.length}
+                  label={queue.length === 1 ? "Queued" : "Queued"}
+                />
+                {/* Clear-queue affordance: only meaningful when there are
+                    actually multiple items, but render unconditionally so the
+                    surface is discoverable even with a single queued item. */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    clearQueue();
+                  }}
+                  className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title="Clear queue"
+                >
+                  Clear
+                </button>
+              </QueueSectionTrigger>
+              <QueueSectionContent>
+                <QueueList>
+                  {queue.map((item) => {
+                    const isThisEdited =
+                      editing?.kind === "queued" && editing.id === item.id;
+                    // Image vision-files render as thumbnails directly from
+                    // their data URLs. Non-image attachments come out of the
+                    // `<Attached files>` block we synthesized at queue time;
+                    // we filter classified-image paths because those are
+                    // already covered by visionFiles (and an image that
+                    // exceeds the vision cap is intentionally dropped — same
+                    // behavior as UserMessage's chip row).
+                    const { attachedPaths } = parseAttachedFiles(
+                      item.attachmentBlock,
+                    );
+                    const nonImagePaths = attachedPaths.filter((p) => {
+                      const name = p.split("/").pop() ?? p;
+                      return classifyFile(name) !== "image";
+                    });
+                    const hasAttachments =
+                      item.visionFiles.length > 0 || nonImagePaths.length > 0;
+                    return (
+                      <QueueItem
+                        key={item.id}
+                        className={
+                          isThisEdited
+                            ? "bg-accent/40 ring-1 ring-primary/30"
+                            : undefined
+                        }
+                      >
+                        <QueueItemIndicator />
+                        {item.text && (
+                          <QueueItemContent>{item.text}</QueueItemContent>
+                        )}
+                        {hasAttachments && (
+                          <QueueItemAttachment>
+                            {item.visionFiles.map((vf, i) => (
+                              <QueueItemImage
+                                key={`img-${i}`}
+                                src={vf.url}
+                              />
+                            ))}
+                            {nonImagePaths.map((path) => {
+                              const name = path.split("/").pop() ?? path;
+                              return (
+                                <QueueItemFile key={path}>{name}</QueueItemFile>
+                              );
+                            })}
+                          </QueueItemAttachment>
+                        )}
+                        <QueueItemActions>
+                          {isThisEdited ? (
+                            <span className="text-[10px] text-muted-foreground italic px-1">
+                              editing
+                            </span>
+                          ) : (
+                            <>
+                              <QueueItemAction
+                                onClick={() => startEditQueued(item.id)}
+                                title="Edit"
+                              >
+                                <Pencil className="size-3" />
+                              </QueueItemAction>
+                              <QueueItemAction
+                                onClick={() => removeQueued(item.id)}
+                                title="Remove"
+                              >
+                                <X className="size-3" />
+                              </QueueItemAction>
+                            </>
+                          )}
+                        </QueueItemActions>
+                      </QueueItem>
+                    );
+                  })}
+                </QueueList>
+              </QueueSectionContent>
+            </QueueSection>
+          </Queue>
+        )}
         <ChatInput
           value={input}
           onChange={setInput}
-          onSubmit={editingMessageId ? handleEditSubmit : handleSubmit}
+          onSubmit={isEditing ? handleEditSubmit : handleSubmit}
+          onQueue={isEditing ? undefined : queueMessage}
+          editMode={isEditing}
           onStop={stop}
           isLoading={isLoading}
           disabled={!isConfigured}
@@ -687,7 +862,7 @@ export function ChatView({
               })?.capabilities
           }
           autoFocus
-          focusTrigger={`${conversationId ?? "new"}-${editingMessageId ?? ""}`}
+          focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}`}
         />
       </div>
     </div>
