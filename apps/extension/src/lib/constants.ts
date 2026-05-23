@@ -60,7 +60,6 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
 export const STORAGE_KEYS = {
   SPACES: "spaces",
   SETTINGS: "settings",
-  DOWNLOADED_MODELS: "downloaded-models",
   AGENT_SETTINGS: "agent-settings",
   MCP_SERVERS: "mcp-servers",
   AUTO_TIDY_NOTIFICATION: "auto-tidy-notification",

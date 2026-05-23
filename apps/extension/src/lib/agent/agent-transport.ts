@@ -628,8 +628,23 @@ function toSDKTool<TInput, TOutput>(
 
   const toModelOutput = isImageTool
     ? ({ output }: { output: TOutput }) => {
-        const { imageDataUrl } = output as { imageDataUrl: string };
-        const base64 = imageDataUrl.replace(/^data:image\/png;base64,/, "");
+        // Tool results that were elided by the compacting transport's
+        // screenshot stripping arrive here without `imageDataUrl`. Emit
+        // a text marker so the model still sees that a screenshot was
+        // taken and dropped, instead of throwing on `undefined.replace`.
+        const out = output as { imageDataUrl?: string; removed?: string };
+        if (typeof out.imageDataUrl !== "string") {
+          return {
+            type: "content" as const,
+            value: [
+              {
+                type: "text" as const,
+                text: out.removed ?? "[screenshot removed during compaction]",
+              },
+            ],
+          };
+        }
+        const base64 = out.imageDataUrl.replace(/^data:image\/png;base64,/, "");
         return {
           type: "content" as const,
           value: [

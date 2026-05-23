@@ -130,6 +130,7 @@ export function ChatView({
     handleSubmit,
     handleNew,
     handleRegenerate,
+    handleRetry,
     confirmEdit,
     addToolApprovalResponse,
     setAgentModel,
@@ -556,10 +557,7 @@ export function ChatView({
             {error && (
               <ErrorMessage
                 error={error}
-                onRetry={() => {
-                  clearError();
-                  handleSubmit();
-                }}
+                onRetry={handleRetry}
                 onDismiss={clearError}
               />
             )}

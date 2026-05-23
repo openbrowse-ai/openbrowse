@@ -150,6 +150,149 @@ function extractTextContent(parts: SerializedUIPart[]): string {
     .join("");
 }
 
+/**
+ * Whether `parts` represents an assistant turn worth persisting/showing.
+ *
+ * The AI SDK's `onFinish` callback fires for every terminal state —
+ * including errors that hit before the model produced any content. In
+ * that path `parts` ends up empty (or just a `step-start` marker). If
+ * we save such a message to chatDb anyway, the conversation gets
+ * stuck with a bare regenerate-icon bubble after the next page reload
+ * (the in-memory error banner from `useChat`'s `error` state doesn't
+ * survive refreshes).
+ *
+ * Returning false here from `onFinish` skips the save; on conversation
+ * load, a trailing message that fails this predicate is also self-
+ * healed out of chatDb so previously-broken chats recover automatically.
+ */
+function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
+  return parts.some((p) => {
+    if (p.type === "text" || p.type === "reasoning") return p.text.length > 0;
+    if (p.type === "dynamic-tool") return true;
+    if (p.type === "file" || p.type === "source-url") return true;
+    // step-start and data-compaction are markers, not user-visible content.
+    return false;
+  });
+}
+
+/**
+ * Heals "stranded" tool calls in `messages` so a subsequent prompt
+ * does not trip the AI SDK's `MissingToolResultsError`.
+ *
+ * Two states get healed:
+ *
+ * - `approval-requested` → `output-denied` with `approval.approved = false`.
+ *   Mirrors the pre-existing inline cleanup; see the long comment in
+ *   {@link handleSubmit} below for why we mutate state directly here
+ *   rather than calling `addToolApprovalResponse` / `addToolOutput`.
+ *
+ * - `input-available` → `output-error`. Happens when a tool call started
+ *   but its result was never recorded (page refreshed mid-stream, the
+ *   stream errored after emitting `tool-input-available` but before
+ *   `tool-output-available`, etc.). Synthesizing an `output-error` with
+ *   a clear errorText keeps the model in the loop — it sees the failed
+ *   attempt instead of an unexplained text gap, and can decide whether
+ *   to retry or proceed.
+ *
+ * Returns both the new full `messages` list and the subset that
+ * actually changed. Callers persist the changed subset to chatDb so
+ * the heal survives across reloads.
+ */
+const TOOL_HEAL_INTERRUPT_TEXT =
+  "Tool execution was interrupted before it returned a result";
+
+function healPendingTools(
+  messages: AgentMessage[],
+  denyReason: string,
+): { healed: AgentMessage[]; healedMessages: AgentMessage[] } {
+  const isPendingTool = (p: unknown): boolean => {
+    const pp = p as Record<string, unknown>;
+    const isTool =
+      pp.type === "dynamic-tool" ||
+      (typeof pp.type === "string" &&
+        (pp.type as string).startsWith("tool-"));
+    if (!isTool) return false;
+    return (
+      pp.state === "approval-requested" || pp.state === "input-available"
+    );
+  };
+
+  const anyPending = messages.some((m) => m.parts.some(isPendingTool));
+  if (!anyPending) return { healed: messages, healedMessages: [] };
+
+  const healedMessages: AgentMessage[] = [];
+  const healed = messages.map((msg) => {
+    let changed = false;
+    const newParts = msg.parts.map((part) => {
+      const p = part as Record<string, unknown>;
+      const isTool =
+        p.type === "dynamic-tool" ||
+        (typeof p.type === "string" &&
+          (p.type as string).startsWith("tool-"));
+      if (!isTool) return part;
+
+      if (p.state === "approval-requested" && p.approval) {
+        const approval = p.approval as { id: string };
+        changed = true;
+        return {
+          ...part,
+          state: "output-denied",
+          approval: { id: approval.id, approved: false, reason: denyReason },
+        } as typeof part;
+      }
+
+      if (p.state === "input-available") {
+        changed = true;
+        return {
+          ...part,
+          state: "output-error",
+          errorText: TOOL_HEAL_INTERRUPT_TEXT,
+        } as typeof part;
+      }
+
+      return part;
+    });
+    if (!changed) return msg;
+    const newMsg = { ...msg, parts: newParts };
+    healedMessages.push(newMsg);
+    return newMsg;
+  });
+
+  return { healed, healedMessages };
+}
+
+/**
+ * Writes the healed messages produced by {@link healPendingTools} back
+ * to chatDb so a subsequent reload reads the post-heal shape rather
+ * than the original stranded `input-available` / `approval-requested`.
+ *
+ * Reads existing rows first to preserve `createdAt` (chatDb sorts by
+ * it on load) and any other fields like `summary` that aren't part of
+ * `AgentUIMessage`.
+ */
+async function persistHealedMessages(
+  conversationId: string | null,
+  healedMessages: AgentMessage[],
+): Promise<void> {
+  if (!conversationId || healedMessages.length === 0) return;
+  const dbMsgs = await chatDb.getMessages(conversationId);
+  const byId = new Map(dbMsgs.map((m) => [m.id, m]));
+  const updates: Parameters<typeof chatDb.saveMessages>[0] = [];
+  for (const m of healedMessages) {
+    const existing = byId.get(m.id);
+    if (!existing) continue;
+    const parts = serializeParts(m.parts);
+    updates.push({
+      ...existing,
+      parts,
+      content: extractTextContent(parts),
+    });
+  }
+  if (updates.length > 0) {
+    await chatDb.saveMessages(updates);
+  }
+}
+
 function deserializePart(
   p: SerializedUIPart,
 ): AgentMessage["parts"][number] | null {
@@ -237,16 +380,38 @@ function getOrCreateChat(
     generateId,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onFinish: async ({ message }) => {
+      // Clear the cross-context "agent is running" indicator. onFinish
+      // fires for every terminal state (success, abort, disconnect,
+      // error), so this is the single point where the active-agents
+      // flag should be cleared regardless of whether the React hook
+      // for this conversation is currently mounted. Pending tool
+      // approval also flips status out of streaming and shouldn't
+      // surface as a "running" dot — the user needs to act before the
+      // agent continues.
+      setAgentInactive(conversationId);
+
       const parts = serializeParts(message.parts);
-      await chatDb.saveMessage({
-        id: message.id,
-        conversationId,
-        role: "assistant",
-        content: extractTextContent(parts),
-        parts,
-        createdAt: Date.now(),
-      });
-      await chatDb.updateConversation(conversationId, { updatedAt: Date.now() });
+
+      // Skip persisting an "empty turn" — fired when the agent errored
+      // before producing any content. Saving an empty assistant
+      // message would leave a bare regenerate-icon bubble in the
+      // conversation after a refresh (the in-memory error banner
+      // doesn't survive reloads). Partial content (mid-stream errors,
+      // user aborts) still persists because at least one meaningful
+      // part exists by then.
+      if (hasMeaningfulContent(parts)) {
+        await chatDb.saveMessage({
+          id: message.id,
+          conversationId,
+          role: "assistant",
+          content: extractTextContent(parts),
+          parts,
+          createdAt: Date.now(),
+        });
+        await chatDb.updateConversation(conversationId, {
+          updatedAt: Date.now(),
+        });
+      }
       const hasApprovalPending = parts.some(
         (p) => p.type === "dynamic-tool" && p.state === "approval-requested"
       );
@@ -666,48 +831,19 @@ export function useAgentChat({
         // to resume. Manual /compact (follow-up) would skip this. The
         // wording matches OpenCode's continue prompt.
         if (auto) {
-          // Auto-deny any pending approvals that would otherwise leave
-          // the conversation in an invalid tool_use-without-tool_result
-          // state when we send the continue message. Mirrors the same
-          // logic in handleSubmit.
-          const hasPending = msgs.some((m) =>
-            m.parts.some(
-              (p) =>
-                ((p as Record<string, unknown>).type === "dynamic-tool" ||
-                  (typeof (p as Record<string, unknown>).type === "string" &&
-                    ((p as Record<string, unknown>).type as string).startsWith(
-                      "tool-",
-                    ))) &&
-                (p as Record<string, unknown>).state === "approval-requested",
-            ),
+          // Heal pending tool calls in the pre-compaction tail so the
+          // continue message doesn't leave the conversation in an
+          // invalid tool_use-without-tool_result state. Mirrors
+          // `handleSubmit`. We pass `msgs` (the pre-compaction list)
+          // because the newly-added compaction marker + summary have
+          // no tool parts.
+          const { healed, healedMessages } = healPendingTools(
+            msgs,
+            "Superseded by auto-compaction continue",
           );
-          if (hasPending) {
-            const reason = "Superseded by auto-compaction continue";
-            setMessages((prev) =>
-              prev.map((msg) => ({
-                ...msg,
-                parts: msg.parts.map((part) => {
-                  const p = part as Record<string, unknown>;
-                  const isTool =
-                    p.type === "dynamic-tool" ||
-                    (typeof p.type === "string" &&
-                      (p.type as string).startsWith("tool-"));
-                  if (isTool && p.state === "approval-requested" && p.approval) {
-                    const approval = p.approval as { id: string };
-                    return {
-                      ...part,
-                      state: "output-denied",
-                      approval: {
-                        id: approval.id,
-                        approved: false,
-                        reason,
-                      },
-                    } as typeof part;
-                  }
-                  return part;
-                }),
-              })),
-            );
+          if (healedMessages.length > 0) {
+            setMessages([...healed, compactionUiMsg, summaryUiMsg]);
+            await persistHealedMessages(convId, healedMessages);
           }
 
           const continueText = overflow
@@ -754,14 +890,6 @@ export function useAgentChat({
       }
     }
   }, [status, conversationId, messages, runCompaction]);
-
-  useEffect(() => {
-    return () => {
-      if (wasStreamingRef.current && conversationId) {
-        setAgentInactive(conversationId);
-      }
-    };
-  }, [conversationId]);
 
   useEffect(() => {
     const listener = (message: { type: string }) => {
@@ -837,7 +965,25 @@ export function useAgentChat({
     if (prevLoadedChatRef.current === chat) return;
     prevLoadedChatRef.current = chat;
 
-    chatDb.getMessages(conversationId).then((msgs) => {
+    chatDb.getMessages(conversationId).then(async (initialMsgs) => {
+      // Self-heal: drop a trailing empty assistant message left over
+      // from an `onFinish`-on-error save that pre-dates the
+      // `hasMeaningfulContent` gate above. Without this, the user sees
+      // a bare regenerate-icon bubble after refreshing a chat that
+      // errored. After the delete, the conversation reads as if the
+      // user's last message is unanswered, so the auto-resume branch
+      // below (or a manual retry) takes over.
+      let msgs = initialMsgs;
+      const lastDb = msgs[msgs.length - 1];
+      if (
+        lastDb &&
+        lastDb.role === "assistant" &&
+        !hasMeaningfulContent(lastDb.parts)
+      ) {
+        await chatDb.deleteMessagesFrom(conversationId, lastDb.id);
+        msgs = msgs.slice(0, -1);
+      }
+
       if (msgs.length > 0) {
         const uiMsgs = msgs.map(dbMessageToUIMessage);
         setMessages(uiMsgs);
@@ -862,57 +1008,48 @@ export function useAgentChat({
       if (!input.trim() && images.length === 0) return;
       if (!isConfigured) return;
 
-      // Auto-deny any approval requests still pending when the user sends a
-      // new message.
+      // Heal any stranded tool calls in the existing history before
+      // we append a new user message:
       //
-      // Why we mutate state directly instead of using addToolApprovalResponse
-      // or addToolOutput:
+      //   - `approval-requested` parts get `output-denied` so they
+      //     produce a tool-result instead of leaving an unmatched
+      //     tool_use.
+      //   - `input-available` parts get `output-error` for the same
+      //     reason — without this, sending the new user message would
+      //     trip the AI SDK's `MissingToolResultsError` validation.
       //
-      // - `addToolApprovalResponse({ approved: false })` moves the part to
-      //   state `approval-responded` with `approval.approved = false`. But
-      //   the SDK's agent loop only processes denials via `collectToolApprovals`
-      //   which ONLY looks at the last message. Once we push a user message
-      //   on top, the denial is invisible and the call goes out with an
-      //   Anthropic tool_use lacking a matching tool_result → API rejects.
+      // Why we mutate state directly instead of `addToolApprovalResponse`
+      // or `addToolOutput`:
       //
-      // - `addToolOutput({ state: "output-error" })` produces a real tool-result,
-      //   but its Zod schema requires `approval.approved === true` for that
-      //   state. The stale `{ id }` approval fails validation and the message
-      //   falls through to the data-part schema → "Type must start with data-".
+      // - `addToolApprovalResponse({ approved: false })` moves the part
+      //   to `approval-responded` with `approval.approved = false`. The
+      //   SDK's agent loop only processes denials via
+      //   `collectToolApprovals`, which ONLY looks at the last message.
+      //   Once we push a user message on top, the denial is invisible
+      //   and the call goes out with an Anthropic tool_use lacking a
+      //   matching tool_result → API rejects.
       //
-      // - The correct target is `state: "output-denied"` with
-      //   `approval.approved = false`, but no public API writes that state
-      //   client-side. So we mutate via setMessages.
-      const hasPending = messages.some((m) =>
-        m.parts.some(
-          (p) =>
-            ((p as Record<string, unknown>).type === "dynamic-tool" ||
-              (typeof (p as Record<string, unknown>).type === "string" &&
-                ((p as Record<string, unknown>).type as string).startsWith("tool-"))) &&
-            (p as Record<string, unknown>).state === "approval-requested",
-        ),
+      // - `addToolOutput({ state: "output-error" })` produces a real
+      //   tool-result, but its Zod schema requires
+      //   `approval.approved === true` for that state. The stale
+      //   `{ id }` approval fails validation and the message falls
+      //   through to the data-part schema → "Type must start with data-".
+      //
+      // - The correct target for approvals is `output-denied` with
+      //   `approval.approved = false`, and the correct target for an
+      //   un-resolved input-available is plain `output-error`. Neither
+      //   has a public API that writes them client-side, so
+      //   `healPendingTools` mutates via `setMessages` and we persist
+      //   the change to chatDb to survive reloads.
+      const { healed, healedMessages } = healPendingTools(
+        messages,
+        "Superseded by new user message",
       );
-      if (hasPending) {
-        const reason = "Superseded by new user message";
-        setMessages(
-          messages.map((msg) => ({
-            ...msg,
-            parts: msg.parts.map((part) => {
-              const p = part as Record<string, unknown>;
-              const isTool =
-                p.type === "dynamic-tool" ||
-                (typeof p.type === "string" && (p.type as string).startsWith("tool-"));
-              if (isTool && p.state === "approval-requested" && p.approval) {
-                const approval = p.approval as { id: string };
-                return {
-                  ...part,
-                  state: "output-denied",
-                  approval: { id: approval.id, approved: false, reason },
-                } as typeof part;
-              }
-              return part;
-            }),
-          })),
+      if (healedMessages.length > 0) {
+        setMessages(healed);
+        await persistHealedMessages(
+          conversationIdRef.current,
+          healedMessages,
         );
       }
 
@@ -1022,6 +1159,65 @@ export function useAgentChat({
     [regenerate, conversationId],
   );
 
+  /**
+   * Retry the last attempt after an error. Used by the error banner's
+   * Retry button.
+   *
+   * Two cases:
+   *
+   * - Last message is the user's prompt (the agent errored before
+   *   producing any persistable assistant content — `onFinish`'s
+   *   `hasMeaningfulContent` gate skipped saving). We just call
+   *   `regenerate()` and the SDK runs a fresh attempt off that prompt.
+   *
+   * - Last message is a partial assistant message (mid-stream error
+   *   that produced *some* content). Heal any stranded tool calls in
+   *   the messages that will survive the regenerate slice, delete the
+   *   partial assistant from chatDb to keep it in sync with the
+   *   in-memory slice the SDK is about to take, then call
+   *   `regenerate({ messageId })`.
+   *
+   * The bare `clearError(); handleSubmit()` previously wired here
+   * silently no-op'd whenever the input field was empty (the common
+   * case when clicking Retry).
+   */
+  const handleRetry = useCallback(async () => {
+    clearError();
+    const last = messages[messages.length - 1];
+    if (!last) return;
+
+    if (last.role === "assistant") {
+      // Heal stranded tool calls in the surviving prefix so the
+      // regenerated request doesn't trip MissingToolResultsError.
+      const survivors = messages.slice(0, messages.length - 1);
+      const { healed, healedMessages } = healPendingTools(
+        survivors,
+        "Superseded by retry",
+      );
+      if (healedMessages.length > 0) {
+        setMessages([...healed, last]);
+        await persistHealedMessages(conversationId, healedMessages);
+      }
+      if (conversationId) {
+        await chatDb.deleteMessagesFrom(conversationId, last.id);
+      }
+      regenerate({ messageId: last.id });
+      return;
+    }
+
+    // Last message is a user prompt — heal any prior stranded tool
+    // calls and ask the SDK to generate an assistant response.
+    const { healed, healedMessages } = healPendingTools(
+      messages,
+      "Superseded by retry",
+    );
+    if (healedMessages.length > 0) {
+      setMessages(healed);
+      await persistHealedMessages(conversationId, healedMessages);
+    }
+    regenerate();
+  }, [messages, conversationId, regenerate, clearError, setMessages]);
+
   const confirmEdit = useCallback(
     async (messageId: string, mentions: TabMentionAttrs[] = [], images: ImagePreview[] = []) => {
       if (!input.trim() && images.length === 0) return;
@@ -1029,41 +1225,20 @@ export function useAgentChat({
       const idx = messages.findIndex((m) => m.id === messageId);
       if (idx === -1) return;
 
-      // Auto-deny any pending approval requests — see note in handleSubmit.
-      const hasPending = messages.some((m) =>
-        m.parts.some(
-          (p) =>
-            ((p as Record<string, unknown>).type === "dynamic-tool" ||
-              (typeof (p as Record<string, unknown>).type === "string" &&
-                ((p as Record<string, unknown>).type as string).startsWith("tool-"))) &&
-            (p as Record<string, unknown>).state === "approval-requested",
-        ),
+      // Heal any stranded tool calls that will survive the edit slice
+      // (everything at/after `idx` is about to be deleted anyway). See
+      // the long note in `handleSubmit`.
+      const survivors = messages.slice(0, idx);
+      const { healed, healedMessages } = healPendingTools(
+        survivors,
+        "Superseded by edited user message",
       );
-      if (hasPending) {
-        const reason = "Superseded by edited user message";
-        setMessages(
-          messages.map((msg) => ({
-            ...msg,
-            parts: msg.parts.map((part) => {
-              const p = part as Record<string, unknown>;
-              const isTool =
-                p.type === "dynamic-tool" ||
-                (typeof p.type === "string" && (p.type as string).startsWith("tool-"));
-              if (isTool && p.state === "approval-requested" && p.approval) {
-                const approval = p.approval as { id: string };
-                return {
-                  ...part,
-                  state: "output-denied",
-                  approval: { id: approval.id, approved: false, reason },
-                } as typeof part;
-              }
-              return part;
-            }),
-          })),
-        );
+      if (healedMessages.length > 0) {
+        setMessages(healed);
+        await persistHealedMessages(conversationId, healedMessages);
       }
 
-      setMessages(messages.slice(0, idx));
+      setMessages(survivors);
       if (conversationId) {
         await chatDb.deleteMessagesFrom(conversationId, messageId);
       }
@@ -1093,17 +1268,29 @@ export function useAgentChat({
 
       setInput("");
 
-      const files = images.map((img) => ({
-        type: "file" as const,
-        mediaType: img.file.type,
-        url: img.dataUrl,
-      }));
+      // Construct a full message payload (id + role + parts) instead of the
+      // `{ text, files, messageId }` shorthand. Passing `messageId` to the AI
+      // SDK's `sendMessage` instructs it to *replace* an existing message in
+      // state with that id — but we just sliced the original out via
+      // `setMessages(messages.slice(0, idx))`, and `newMessageId` is brand new,
+      // so the SDK throws `message with id <newMessageId> not found`. Pushing
+      // it as a new message keeps state aligned with chatDb (both keyed by
+      // `newMessageId`) and lets the UI re-render the edited bubble immediately
+      // without a chat switch.
+      const sendParts: AgentMessage["parts"] = [
+        ...(text ? [{ type: "text" as const, text }] : []),
+        ...images.map((img) => ({
+          type: "file" as const,
+          mediaType: img.file.type,
+          url: img.dataUrl,
+        })),
+      ];
 
-      if (text) {
-        sendMessage({ text, files: files.length > 0 ? files : undefined, messageId: newMessageId });
-      } else {
-        sendMessage({ files, messageId: newMessageId });
-      }
+      sendMessage({
+        id: newMessageId,
+        role: "user",
+        parts: sendParts,
+      });
     },
     [input, isConfigured, messages, setMessages, conversationId, sendMessage],
   );
@@ -1160,6 +1347,7 @@ export function useAgentChat({
     handleSubmit,
     handleNew,
     handleRegenerate,
+    handleRetry,
     confirmEdit,
     addToolApprovalResponse,
     stop,

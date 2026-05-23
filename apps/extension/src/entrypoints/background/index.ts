@@ -1826,8 +1826,8 @@ export default defineBackground({
           if (message.type === "CHECK_AVAILABILITY") {
             if (message.provider === "web-llm" && message.webllmModel) {
               const { storage } = await import("@/lib/storage");
-              const downloaded = await storage.getDownloadedModels();
-              if (downloaded.includes(message.webllmModel)) {
+              const { downloadedModels } = await storage.getSettings();
+              if (downloadedModels.includes(message.webllmModel)) {
                 reply({
                   provider: message.provider,
                   availability: "available",
