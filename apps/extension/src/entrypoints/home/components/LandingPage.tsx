@@ -115,6 +115,60 @@ export function LandingPage({
     });
   }, [providerModels, agentSettings.agentModel]);
 
+  // Auto-select a default model when none is set and at least one
+  // provider is now configured. Without this, after the user enters
+  // their first API key in Settings, the model-selector trigger renders
+  // empty ("Select a model...") and `isConfigured` stays false, leaving
+  // the chat input disabled until the user manually picks a model.
+  //
+  // Selection priority:
+  //   1. The first user-favorited model that's actually available
+  //   2. The first model marked `recommended` in any enabled provider
+  //   3. The first model of the first enabled provider (last resort)
+  useEffect(() => {
+    if (agentSettings.agentModel) return;
+    if (providerModels.length === 0) return;
+
+    const isAvailable = (key: string) => {
+      const [pid, ...rest] = key.split(":");
+      const mid = rest.join(":");
+      return providerModels.some(
+        (g) => g.provider === pid && g.models.some((m) => m.id === mid),
+      );
+    };
+
+    let pick: string | null = null;
+
+    const favorite = settings.favoriteModels.find(isAvailable);
+    if (favorite) pick = favorite;
+
+    if (!pick) {
+      for (const group of providerModels) {
+        const rec = group.models.find((m) => m.recommended);
+        if (rec) {
+          pick = `${group.provider}:${rec.id}`;
+          break;
+        }
+      }
+    }
+
+    if (!pick) {
+      const group = providerModels[0];
+      const model = group?.models[0];
+      if (group && model) pick = `${group.provider}:${model.id}`;
+    }
+
+    if (pick) {
+      const updated = { ...agentSettings, agentModel: pick };
+      setAgentSettings(updated);
+      void storage.setAgentSettings(updated);
+    }
+  }, [
+    providerModels,
+    agentSettings,
+    settings.favoriteModels,
+  ]);
+
   const handleSubmit = useCallback(
     async (mentions: TabMentionAttrs[], images: ImagePreview[]) => {
       if (!input.trim() && images.length === 0) return;
