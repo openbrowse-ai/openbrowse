@@ -1,5 +1,6 @@
 import Zoom from "react-medium-image-zoom";
 import "react-medium-image-zoom/dist/styles.css";
+import "./zoomable-image.css";
 import { cn } from "@/lib/utils";
 
 interface ZoomableImageProps {

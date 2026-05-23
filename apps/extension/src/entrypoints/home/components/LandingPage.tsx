@@ -1,9 +1,10 @@
 import {
   ChatInput,
   type TabMentionAttrs,
-  type ImagePreview,
+  type Attachment,
   formatMentionContext,
 } from "@/components/chat/ChatInput";
+import { formatAttachments } from "@/lib/chat/format-attachments";
 import {
   Suggestions,
   Suggestion,
@@ -17,6 +18,7 @@ import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
 import { useProviders } from "@/hooks/useProviders";
 import type { Space, Settings, AgentSettings, SerializedUIPart, ThinkingConfig } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 interface LandingPageProps {
   space: Space | null;
@@ -170,8 +172,8 @@ export function LandingPage({
   ]);
 
   const handleSubmit = useCallback(
-    async (mentions: TabMentionAttrs[], images: ImagePreview[]) => {
-      if (!input.trim() && images.length === 0) return;
+    async (mentions: TabMentionAttrs[], attachments: Attachment[]) => {
+      if (!input.trim() && attachments.length === 0) return;
 
       const convId = crypto.randomUUID();
       await chatDb.createConversation({
@@ -184,21 +186,42 @@ export function LandingPage({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      const fullText = baseText + mentionContext;
 
-      const fileParts: SerializedUIPart[] = images.map((img) => ({
+      let attachmentBlock: string;
+      let visionFiles: { mediaType: string; url: string }[];
+      try {
+        ({ block: attachmentBlock, visionFiles } = await formatAttachments(
+          convId,
+          attachments,
+          agentSettings.agentModel,
+        ));
+      } catch (e) {
+        toast.error(
+          `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
+        );
+        return;
+      }
+
+      // Unlike useAgentChat.handleSubmit, LandingPage doesn't sendMessage
+      // directly — the side panel mounts on onNewConversation, reloads from
+      // chatDb, and replays via bare sendMessage(). The persisted record IS
+      // the model's first view, so mentionContext must survive into chatDb.
+      // The attachment block is appended after so chip rendering also survives.
+      const persistedFull = baseText + mentionContext + attachmentBlock;
+
+      const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
-        mediaType: img.file.type,
-        url: img.dataUrl,
+        mediaType: vf.mediaType,
+        url: vf.url,
       }));
 
       await chatDb.saveMessage({
         id: crypto.randomUUID(),
         conversationId: convId,
         role: "user",
-        content: fullText,
+        content: persistedFull,
         parts: [
-          ...(fullText ? [{ type: "text" as const, text: fullText }] : []),
+          ...(persistedFull ? [{ type: "text" as const, text: persistedFull }] : []),
           ...fileParts,
         ],
         createdAt: Date.now(),

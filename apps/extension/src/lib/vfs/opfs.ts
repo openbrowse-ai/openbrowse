@@ -172,4 +172,69 @@ export class OPFS {
       }
     }
   }
+
+  /**
+   * Resolve a non-colliding filename inside `dirPath`. Creates the
+   * directory if it doesn't exist (so callers can race with first
+   * write to a fresh workspace). Returns the absolute path the caller
+   * can pass to `writeFileBytes`.
+   *
+   * NOTE: Name resolution and the subsequent `writeFileBytes` are not
+   * atomic. Concurrent callers may both resolve the same suffix and the
+   * second write will overwrite the first. Callers must serialize
+   * uploads into the same directory.
+   */
+  static async uniquePath(dirPath: string, filename: string): Promise<string> {
+    const dir = await this.getDirHandle(dirPath, true);
+    const unique = await uniqueNameInDir(dir, filename);
+    const cleanDir = dirPath.replace(/^\/+|\/+$/g, "");
+    return cleanDir ? `${cleanDir}/${unique}` : unique;
+  }
+}
+
+/**
+ * Given a directory handle and a desired filename, return a name that
+ * doesn't collide with any existing file or subdirectory in the dir,
+ * by Finder-style suffixing the basename: `report.pdf` →
+ * `report (2).pdf` → `report (3).pdf`, etc. Filenames without an
+ * extension (e.g. `README`, `.gitignore`) are suffixed at the end.
+ *
+ * Exported separately so it can be unit-tested against a fake
+ * `FileSystemDirectoryHandle` in environments without real OPFS.
+ */
+export async function uniqueNameInDir(
+  dirHandle: FileSystemDirectoryHandle,
+  filename: string,
+): Promise<string> {
+  const exists = async (name: string): Promise<boolean> => {
+    try {
+      await dirHandle.getFileHandle(name);
+      return true;
+    } catch (e: any) {
+      if (e?.name !== "NotFoundError") throw e;
+    }
+    try {
+      await dirHandle.getDirectoryHandle(name);
+      return true;
+    } catch (e: any) {
+      if (e?.name !== "NotFoundError") throw e;
+    }
+    return false;
+  };
+
+  if (!(await exists(filename))) return filename;
+
+  // Split on the LAST dot, but only if there's a non-empty stem before it.
+  // ".gitignore" has no stem, so it's treated as extensionless.
+  const lastDot = filename.lastIndexOf(".");
+  const hasExt = lastDot > 0;
+  const stem = hasExt ? filename.slice(0, lastDot) : filename;
+  const ext = hasExt ? filename.slice(lastDot) : "";
+
+  for (let i = 2; i < 10_000; i++) {
+    const candidate = `${stem} (${i})${ext}`;
+    if (!(await exists(candidate))) return candidate;
+  }
+  // Pathological — fall back to a timestamp suffix.
+  return `${stem} (${Date.now()})${ext}`;
 }

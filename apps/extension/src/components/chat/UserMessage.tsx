@@ -8,6 +8,9 @@ import {
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { Check, Copy, Pencil } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
+import { classifyFile } from "@/lib/vfs/file-classify";
+import { getTypeBadge } from "@/lib/chat/attachment-meta";
 
 interface UserMessageProps {
   message: AgentUIMessage;
@@ -24,10 +27,23 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
     .map((p) => (p as { text: string }).text)
     .join("");
 
-  const text = useMemo(
-    () => rawText.split("\n\n-----\n\n<Mentioned tabs>")[0],
-    [rawText],
-  );
+  const { displayText, attachedPaths } = useMemo(() => {
+    // Parse the trailing <Attached files> block FIRST (it uses
+    // lastIndexOf and finds the block whether or not a <Mentioned tabs>
+    // block precedes it). LandingPage persists mentions BEFORE
+    // attachments, so a "split mentions then parse attachments" order
+    // would discard the attachment block on those messages. After
+    // parsing, strip any preceding <Mentioned tabs> block from the
+    // remaining displayText.
+    const { displayText: afterAttachments, attachedPaths } =
+      parseAttachedFiles(rawText);
+    const displayText = afterAttachments.split(
+      "\n\n-----\n\n<Mentioned tabs>",
+    )[0];
+    return { displayText, attachedPaths };
+  }, [rawText]);
+
+  const text = displayText;
 
   const imageUrls = useMemo(
     () =>
@@ -71,6 +87,35 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
             content={text}
             className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
           />
+        </div>
+      )}
+      {attachedPaths.length > 0 && (
+        <div className="max-w-[85%] flex flex-wrap justify-end gap-1.5">
+          {attachedPaths
+            // Image attachments already render as thumbnails above —
+            // skip them in the chip row to avoid duplication.
+            .filter((path) => {
+              const name = path.split("/").pop() ?? path;
+              return classifyFile(name) !== "image";
+            })
+            .map((path) => {
+              const name = path.split("/").pop() ?? path;
+              return (
+                <div
+                  key={path}
+                  className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5"
+                >
+                  <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
+                    {name}
+                  </div>
+                  <div className="mt-auto">
+                    <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                      {getTypeBadge(name)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
         </div>
       )}
       {!dimmed && (

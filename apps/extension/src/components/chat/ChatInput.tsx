@@ -13,11 +13,21 @@ import { Kbd } from "@/components/ui/kbd";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { ZoomableImage } from "@/components/ui/zoomable-image";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getImageSizeLimit } from "@/lib/agent/vision-limits";
+import {
+  countLines,
+  formatBytes,
+  getTypeBadge,
+  isTextFile,
+} from "@/lib/chat/attachment-meta";
+import { cn } from "@/lib/utils";
+import type { Attachment } from "@/lib/chat/types";
 import type { ThinkingConfig } from "@/lib/types";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
@@ -29,19 +39,19 @@ import {
   ArrowUp,
   BrainIcon,
   ChevronDown,
-  Image as ImageIcon,
+  Paperclip,
   Square,
   Star,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { toast } from "sonner";
 
-interface ImagePreview {
-  id: string;
-  file: File;
-  dataUrl: string;
-}
+// Derived alias kept for back-compat with call sites that destructure
+// images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
+// once they're gone we can delete the alias and the re-export.
+type ImagePreview = Extract<Attachment, { kind: "image" }>;
 
 interface ModelOption {
   id: string;
@@ -66,7 +76,7 @@ interface ProviderModels {
 interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: (mentions: TabMentionAttrs[], images: ImagePreview[]) => void;
+  onSubmit: (mentions: TabMentionAttrs[], attachments: Attachment[]) => void;
   onStop?: () => void;
   isLoading: boolean;
   disabled: boolean;
@@ -89,7 +99,7 @@ export interface TabMentionAttrs {
   favicon: string;
 }
 
-export type { ImagePreview };
+export type { ImagePreview, Attachment };
 
 export function extractTabMentions(json: JSONContent): TabMentionAttrs[] {
   const mentions: TabMentionAttrs[] = [];
@@ -270,9 +280,18 @@ export function ChatInput({
   isLoadingRef.current = isLoading;
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [images, setImages] = useState<ImagePreview[]>([]);
-  const imagesRef = useRef(images);
-  imagesRef.current = images;
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  // Drag-over visual state. `dragCounter` de-flickers nested
+  // dragenter/leave events fired from child elements.
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounter = useRef(0);
+  // Back-compat for spots in this file that count or filter to images.
+  const images = useMemo(
+    () => attachments.filter((a): a is Extract<Attachment, { kind: "image" }> => a.kind === "image"),
+    [attachments],
+  );
   const lastExternalValue = useRef(value);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [highlightedModelId, setHighlightedModelId] = useState<string | null>(
@@ -375,39 +394,158 @@ export function ChatInput({
     };
   }, [providerModels, modelSearchQuery, favoriteModels]);
 
-  const addFiles = useCallback(async (files: FileList | File[]) => {
-    const imageFiles = Array.from(files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
-    if (imageFiles.length === 0) return;
+  const addFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const MB = 1024 * 1024;
+      const FILE_CAP = 50 * MB;
+      const COUNT_CAP = 10;
+      const imageCap = selectedModel ? getImageSizeLimit(selectedModel) : 10 * MB;
 
-    const newPreviews = await Promise.all(
-      imageFiles.map(async (file) => ({
-        id: crypto.randomUUID(),
-        file,
-        dataUrl: await fileToDataUrl(file),
-      })),
-    );
-    setImages((prev) => [...prev, ...newPreviews]);
+      const incoming = Array.from(files);
+      const rejections: string[] = [];
+
+      const remainingSlots = COUNT_CAP - attachmentsRef.current.length;
+      if (incoming.length > remainingSlots) {
+        rejections.push(
+          `Only ${remainingSlots} more attachment${remainingSlots === 1 ? "" : "s"} allowed (max ${COUNT_CAP} per message).`,
+        );
+      }
+
+      // Validate synchronously so we can insert placeholder cards
+      // immediately. The async metadata work (FileReader for images,
+      // file.text() for text-file line counts) runs in parallel and
+      // patches each card in place when it lands. Without this, the
+      // user sees a delay between picking a file and seeing it appear.
+      const slice = incoming.slice(0, Math.max(0, remainingSlots));
+      const accepted = slice.flatMap((file) => {
+        const isImage = file.type.startsWith("image/");
+        const cap = isImage ? imageCap : FILE_CAP;
+        if (file.size > cap) {
+          const capMB = Math.round(cap / MB);
+          rejections.push(
+            `${file.name} exceeds the ${capMB} MB ${isImage ? "image" : "file"} limit.`,
+          );
+          return [];
+        }
+        return [{ file, isImage, id: crypto.randomUUID() }];
+      });
+
+      if (accepted.length > 0) {
+        const placeholders: Attachment[] = accepted.map(({ file, isImage, id }) =>
+          isImage
+            ? {
+                kind: "image" as const,
+                id,
+                file,
+                dataUrl: "",
+                loading: true,
+              }
+            : { kind: "file" as const, id, file, loading: true },
+        );
+        setAttachments((prev) => [...prev, ...placeholders]);
+      }
+
+      for (const msg of rejections) {
+        toast.error(msg);
+      }
+
+      // Resolve async metadata in parallel; patch each placeholder in
+      // place by id. If the user removed an attachment before its
+      // metadata resolved, the .map below no-ops on the missing id.
+      await Promise.all(
+        accepted.map(async ({ file, isImage, id }) => {
+          if (isImage) {
+            const dataUrl = await fileToDataUrl(file);
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === id && a.kind === "image"
+                  ? { ...a, dataUrl, loading: false }
+                  : a,
+              ),
+            );
+            return;
+          }
+          let lineCount: number | undefined;
+          if (isTextFile(file.name)) {
+            try {
+              const text = await file.text();
+              lineCount = countLines(text);
+            } catch {
+              // Unreadable as text — leave undefined; card falls back to size.
+            }
+          }
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id && a.kind === "file"
+                ? { ...a, lineCount, loading: false }
+                : a,
+            ),
+          );
+        }),
+      );
+    },
+    [selectedModel],
+  );
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  const removeImage = useCallback((id: string) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+  // Container-level drag-and-drop handlers. Activated only for actual
+  // file drags (filtered via dataTransfer.types) so text/tab-mention
+  // drags pass through unaffected. The counter pattern avoids flicker
+  // on dragenter/leave fired from child elements.
+  const handleContainerDragEnter = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragCounter.current += 1;
+    setIsDragOver(true);
   }, []);
+
+  const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleContainerDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleContainerDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+      dragCounter.current = 0;
+      setIsDragOver(false);
+      const files = e.dataTransfer.files;
+      if (files.length > 0) addFiles(files);
+    },
+    [addFiles],
+  );
 
   const submitWithMentions = useCallback(() => {
     const ed = editorRef.current;
     if (!ed) return;
     const json = ed.getJSON();
     const mentions = extractTabMentions(json);
-    onSubmitRef.current(mentions, imagesRef.current);
-    setImages([]);
+    onSubmitRef.current(mentions, attachmentsRef.current);
+    setAttachments([]);
   }, []);
 
   const editor = useEditor({
     autofocus: autoFocus ? "end" : false,
     extensions: [
-      StarterKit.configure({ hardBreak: false }),
+      // `dropcursor: false` disables ProseMirror's blue vertical
+      // insertion-point line on drag-over. We handle file drops at
+      // the container level (turning them into attachments) so the
+      // editor's own drop cue is misleading.
+      StarterKit.configure({ hardBreak: false, dropcursor: false }),
       Placeholder.configure({
         placeholder: "Ask anything... Type @ to mention a tab, / for skills",
         showOnlyWhenEditable: false,
@@ -428,7 +566,13 @@ export function ChatInput({
                 onStopRef.current();
               } else {
                 const text = this.editor.getMarkdown().trim();
-                if (text || imagesRef.current.length > 0) {
+                const hasLoadingAttachment = attachmentsRef.current.some(
+                  (a) => a.loading,
+                );
+                if (
+                  (text || attachmentsRef.current.length > 0) &&
+                  !hasLoadingAttachment
+                ) {
                   submitWithMentions();
                 }
               }
@@ -449,28 +593,20 @@ export function ChatInput({
       handlePaste: (_view, event) => {
         const files = event.clipboardData?.files;
         if (files && files.length > 0) {
-          const hasImages = Array.from(files).some((f) =>
-            f.type.startsWith("image/"),
-          );
-          if (hasImages) {
-            event.preventDefault();
-            addFiles(files);
-            return true;
-          }
+          event.preventDefault();
+          addFiles(files);
+          return true;
         }
         return false;
       },
       handleDrop: (_view, event) => {
-        const files = event.dataTransfer?.files;
-        if (files && files.length > 0) {
-          const hasImages = Array.from(files).some((f) =>
-            f.type.startsWith("image/"),
-          );
-          if (hasImages) {
-            event.preventDefault();
-            addFiles(files);
-            return true;
-          }
+        // File drops are handled by the container-level onDrop on the
+        // outer ChatInput div (so dropping anywhere — attachment row,
+        // bottom bar, padding — works). We just suppress tiptap's
+        // default file-insertion behavior here.
+        if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
+          event.preventDefault();
+          return true;
         }
         return false;
       },
@@ -484,13 +620,34 @@ export function ChatInput({
 
   editorRef.current = editor;
 
+  // True while any attachment's async metadata is still resolving.
+  // Send is gated on this — submitting with a `loading` image would
+  // produce a vision part with an empty data URL and fail at the API.
+  const attachmentsLoading = useMemo(
+    () => attachments.some((a) => a.loading),
+    [attachments],
+  );
+
   const handleButtonClick = useCallback(() => {
     if (isLoading && onStop) {
       onStop();
-    } else if ((value.trim() || images.length > 0) && !disabled && !isLoading) {
+    } else if (
+      (value.trim() || attachments.length > 0) &&
+      !disabled &&
+      !isLoading &&
+      !attachmentsLoading
+    ) {
       submitWithMentions();
     }
-  }, [isLoading, onStop, value, disabled, submitWithMentions, images.length]);
+  }, [
+    isLoading,
+    onStop,
+    value,
+    disabled,
+    submitWithMentions,
+    attachments.length,
+    attachmentsLoading,
+  ]);
 
   useHotkeys(
     "mod+shift+backspace",
@@ -500,6 +657,26 @@ export function ChatInput({
       }
     },
     { enableOnFormTags: true },
+  );
+
+  useHotkeys(
+    "mod+u",
+    (e) => {
+      // Cmd/Ctrl+U normally opens "View Source" in browsers — suppress
+      // and trigger our file picker instead.
+      e.preventDefault();
+      if (disabled) return;
+      fileInputRef.current?.click();
+    },
+    {
+      enableOnFormTags: true,
+      // Tiptap uses [contenteditable], which `enableOnFormTags`
+      // doesn't cover by itself. This flag makes the hotkey fire
+      // while focus is in the chat editor too.
+      enableOnContentEditable: true,
+      preventDefault: true,
+    },
+    [disabled],
   );
 
   useEffect(() => {
@@ -563,28 +740,91 @@ export function ChatInput({
   }, [providerModels, selectedModel]);
 
   return (
-    <div className="flex flex-col rounded-lg border border-border bg-card">
-      {/* Image previews */}
-      {images.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-2 pt-2">
-          {images.map((img) => (
-            <div key={img.id} className="relative group">
-              <img
-                src={img.dataUrl}
-                alt="Upload preview"
-                className="size-16 object-cover rounded-md border border-border"
-              />
-              <button
-                type="button"
-                onClick={() => removeImage(img.id)}
-                className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="size-2.5" />
-              </button>
-            </div>
-          ))}
-        </div>
+    <div
+      onDragEnter={handleContainerDragEnter}
+      onDragLeave={handleContainerDragLeave}
+      onDragOver={handleContainerDragOver}
+      onDrop={handleContainerDrop}
+      className={cn(
+        "relative flex flex-col rounded-lg border bg-card transition-all duration-150",
+        isDragOver
+          ? "border-blue-500/60 ring-2 ring-blue-500/60 bg-blue-500/5"
+          : "border-border",
       )}
+    >
+      {/* Attachments — animates from 0 to natural height via the
+          grid-rows trick so the input box grows smoothly when files
+          are added (and shrinks when the last one is removed). */}
+      <div
+        aria-hidden={attachments.length === 0}
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
+          attachments.length > 0
+            ? "grid-rows-[1fr] opacity-100"
+            : "grid-rows-[0fr] opacity-0",
+        )}
+      >
+        <div className="overflow-hidden">
+          <div className="flex flex-wrap gap-1.5 px-2 pt-2">
+            {attachments.map((att) => {
+              const overImageCap =
+                att.kind === "image" &&
+                selectedModel != null &&
+                att.file.size > getImageSizeLimit(selectedModel);
+              return (
+                <div
+                  key={att.id}
+                  className="relative group animate-in fade-in-0 zoom-in-95 duration-200"
+                >
+                  {att.kind === "image" ? (
+                    att.loading ? (
+                      <div className="h-[108px] w-[140px] rounded-lg border border-border bg-muted/40 animate-pulse" />
+                    ) : (
+                      <ZoomableImage
+                        src={att.dataUrl}
+                        alt={att.file.name}
+                        className="h-[108px] w-[140px] object-cover rounded-lg border border-border"
+                      />
+                    )
+                  ) : (
+                    <div className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5">
+                      <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
+                        {att.file.name}
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {att.loading ? (
+                          <span className="inline-block h-3 w-12 rounded bg-muted animate-pulse" />
+                        ) : att.lineCount !== undefined ? (
+                          `${att.lineCount} ${att.lineCount === 1 ? "line" : "lines"}`
+                        ) : (
+                          formatBytes(att.file.size)
+                        )}
+                      </div>
+                      <div className="mt-auto">
+                        <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                          {getTypeBadge(att.file.name)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  {overImageCap && (
+                    <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-background px-1.5 py-0.5 text-[9px] leading-none text-muted-foreground shadow-sm">
+                      file only
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(att.id)}
+                    className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
 
       {/* Editor */}
       <EditorContent editor={editor} className="min-w-0" />
@@ -893,11 +1133,10 @@ export function ChatInput({
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-1.5">
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
             multiple
             className="hidden"
             onChange={(e) => {
@@ -915,17 +1154,19 @@ export function ChatInput({
                 disabled={disabled}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
-                <ImageIcon className="size-3.5" />
+                <Paperclip className="size-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">Attach image</TooltipContent>
+            <TooltipContent side="top" className="flex items-center gap-1.5">
+              Attach files or images <Kbd>⌘U</Kbd>
+            </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
                 onClick={handleButtonClick}
-                disabled={disabled && !isLoading}
+                disabled={(disabled || attachmentsLoading) && !isLoading}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
               >
                 {isLoading ? (
@@ -948,6 +1189,15 @@ export function ChatInput({
           </Tooltip>
         </div>
       </div>
+
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-card/85 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-1.5 text-blue-500">
+            <Paperclip className="size-5" />
+            <span className="text-xs font-medium">Drop file to attach</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
