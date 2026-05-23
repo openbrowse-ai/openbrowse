@@ -38,6 +38,7 @@ import {
   typeInElementTool,
   updateMemoryTool,
   snapshotTool,
+  webFetchTool,
 } from "./tools";
 import { createFsTools } from "./tools/fs";
 import { createPythonTool } from "./tools/execute-python";
@@ -77,6 +78,7 @@ Your current plan will be appended to your instructions at every turn. Keep it i
 5. Use \`extract\` to pull structured data (product lists, search results, table rows) from a page. Provide an instruction and optionally a JSON Schema. Mark URL fields as \`{"type": "string", "format": "uri"}\` for reliable link extraction — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them before returning. Use element selectors like \`"main"\` or \`".s-main-slot"\` (NOT \`[role="main"]\`).
 6. Use \`readPage\` when you need full text content (articles, long-form text).
 7. Use \`screenshot\` when visual context would help; add \`annotate: true\` to overlay color-coded @ref labels on interactive elements (buttons blue, links green, inputs orange, other gray).
+8. Use \`webFetch({ url, format? })\` to read a URL's contents (markdown / text / html) WITHOUT navigating the user's tab. Prefer this over \`navigate\` when you only need to read documentation or a referenced page and don't need to interact with it. Redirects are followed automatically; the response's \`url\` field reflects the final destination, and \`redirected: true\` flags when the host changed.
 
 ### Example: extracting a product list
 \`\`\`
@@ -740,6 +742,7 @@ export async function createAgentTransport(
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
     executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
+    webFetch: toSDKTool(webFetchTool, "webFetch"),
     todoWrite: toSDKTool(createTodoWriteTool(conversationId), "todoWrite"),
     skill: toSDKTool(skillTool, "skill"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
