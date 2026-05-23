@@ -9,7 +9,13 @@ import {
   type UIMessageChunk,
 } from "ai";
 import type { AgentDataParts, AgentUIMessage, CompactionPart } from "../types";
-import { COMPACTION_USER_PROMPT, prunePartsAtSendTime } from "./compaction";
+import {
+  COMPACTION_USER_PROMPT,
+  SCREENSHOT_PROTECTED_TURNS,
+  findProtectedTailStart,
+  prunePartsAtSendTime,
+  stripScreenshotsFromParts,
+} from "./compaction";
 
 interface Options<TOOLS extends ToolSet> {
   agent: Agent<never, TOOLS, never>;
@@ -159,9 +165,23 @@ export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
     ];
   }
 
-  const rewritten = working.map((m) => {
+  const protectedStart = findProtectedTailStart(
+    working,
+    SCREENSHOT_PROTECTED_TURNS,
+  );
+
+  const rewritten = working.map((m, i) => {
     let parts = m.parts;
     parts = substituteCompactionPart(parts);
+    // Only strip screenshots from messages older than the last
+    // SCREENSHOT_PROTECTED_TURNS user turns. Recent screenshots ride
+    // along intact so the model retains visual recall across one user-
+    // input boundary; older ones become a typed placeholder that the
+    // screenshot tool's `toModelOutput` adapter renders as a text
+    // marker.
+    if (i < protectedStart) {
+      parts = stripScreenshotsFromParts(parts);
+    }
     parts = prunePartsAtSendTime(parts);
     if (parts === m.parts) return m;
     return { ...m, parts };

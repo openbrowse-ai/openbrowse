@@ -10,6 +10,28 @@ async function set<T>(key: string, value: T): Promise<void> {
   await chrome.storage.local.set({ [key]: value });
 }
 
+/**
+ * Serializes writes (and read-modify-write blocks) against the
+ * `settings` storage key. Without this, two callers that each do a
+ * `getSettings → mutate → setSettings` round-trip can lose each
+ * other's updates — for example, two near-simultaneous WebLLM
+ * downloads finishing and both calling `addDownloadedModel`. The
+ * Promise chain enforces sequential execution; reads outside the
+ * chain still observe the latest committed value because
+ * `chrome.storage.local` reads are atomic.
+ */
+let settingsWriteChain: Promise<void> = Promise.resolve();
+
+function lockSettings<T>(fn: () => Promise<T>): Promise<T> {
+  const run = settingsWriteChain.then(fn, fn);
+  // Keep the chain alive even if a caller's promise rejects.
+  settingsWriteChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export const storage = {
   async getSpaces(): Promise<Space[]> {
     const raw = (await get<any[]>(STORAGE_KEYS.SPACES)) ?? [];
@@ -52,80 +74,53 @@ export const storage = {
   },
 
   async getSettings(): Promise<Settings> {
-    const stored = await get<Record<string, unknown>>(STORAGE_KEYS.SETTINGS);
-    if (!stored) return { ...DEFAULT_SETTINGS };
-
-    // Already migrated (has new fields)
-    if ("providerConfigs" in stored && "enabledModels" in stored) {
-      return { ...DEFAULT_SETTINGS, ...stored } as Settings;
-    }
-
-    // Migrate old format
-    const migrated: Settings = { ...DEFAULT_SETTINGS };
-
-    // General settings
-    if (stored.themeMode) migrated.themeMode = stored.themeMode as Settings["themeMode"];
-    if (stored.autoTidyAfterMinutes) migrated.autoTidyAfterMinutes = stored.autoTidyAfterMinutes as number;
-    if (stored.agentGroupIdleHours) migrated.agentGroupIdleHours = stored.agentGroupIdleHours as number;
-    if (stored.archiveAggressiveness) migrated.archiveAggressiveness = stored.archiveAggressiveness as Settings["archiveAggressiveness"];
-    if (stored.mcpServers) migrated.mcpServers = stored.mcpServers as Settings["mcpServers"];
-
-    // Migrate cloud API keys to providerConfigs
-    const cloudApiKeys = (stored.cloudApiKeys || {}) as Record<string, string>;
-    const singleKey = stored.cloudApiKey as string | undefined;
-    const cloudProvider = stored.cloudProvider as string | undefined;
-
-    // Store single key under its provider if cloudApiKeys doesn't have it
-    if (singleKey && cloudProvider && !cloudApiKeys[cloudProvider]) {
-      cloudApiKeys[cloudProvider] = singleKey;
-    }
-
-    if (cloudApiKeys.openai) migrated.providerConfigs.openai = { apiKey: cloudApiKeys.openai };
-    if (cloudApiKeys.anthropic) migrated.providerConfigs.anthropic = { apiKey: cloudApiKeys.anthropic };
-    if (cloudApiKeys.google) migrated.providerConfigs.google = { apiKey: cloudApiKeys.google };
-    if (cloudApiKeys["openai-compatible"]) {
-      migrated.providerConfigs["openai-compatible"] = {
-        apiKey: cloudApiKeys["openai-compatible"],
-        baseUrl: (stored.cloudBaseUrl as string) || "",
-        modelId: (stored.cloudModel as string) || "",
-      };
-    }
-
-    // Migrate favorite model from old single-model selection
-    if (cloudProvider && stored.cloudModel && cloudProvider !== "openai-compatible") {
-      migrated.favoriteModels = [`${cloudProvider}:${stored.cloudModel}`];
-    }
-
-    // Migrate downloaded models from legacy separate storage key
-    const legacyDownloaded = await get<string[]>(STORAGE_KEYS.DOWNLOADED_MODELS);
-    if (legacyDownloaded && legacyDownloaded.length > 0) {
-      migrated.downloadedModels = legacyDownloaded;
-    }
-
-    return migrated;
+    const stored = await get<Partial<Settings>>(STORAGE_KEYS.SETTINGS);
+    return { ...DEFAULT_SETTINGS, ...stored };
   },
 
   async setSettings(settings: Settings): Promise<void> {
-    await set(STORAGE_KEYS.SETTINGS, settings);
+    await lockSettings(() => set(STORAGE_KEYS.SETTINGS, settings));
   },
 
-  async getDownloadedModels(): Promise<string[]> {
-    return (await get<string[]>(STORAGE_KEYS.DOWNLOADED_MODELS)) ?? [];
+  /**
+   * Read-modify-write helper for `Settings`. Serialized against
+   * `setSettings` and other `updateSettings` calls via a shared lock,
+   * which prevents lost-update races between callers like
+   * `addDownloadedModel` and the settings UI's auto-save paths.
+   *
+   * The updater receives the current persisted settings (with
+   * `DEFAULT_SETTINGS` filling any missing fields) and returns the
+   * next value. Returning the same reference is a valid no-op.
+   */
+  async updateSettings(
+    updater: (current: Settings) => Settings | Promise<Settings>,
+  ): Promise<Settings> {
+    return lockSettings(async () => {
+      const stored = await get<Partial<Settings>>(STORAGE_KEYS.SETTINGS);
+      const current = { ...DEFAULT_SETTINGS, ...stored };
+      const next = await updater(current);
+      if (next !== current) {
+        await set(STORAGE_KEYS.SETTINGS, next);
+      }
+      return next;
+    });
   },
 
   async addDownloadedModel(modelId: string): Promise<void> {
-    const models = await this.getDownloadedModels();
-    if (!models.includes(modelId)) {
-      await set(STORAGE_KEYS.DOWNLOADED_MODELS, [...models, modelId]);
-    }
+    await this.updateSettings((s) => {
+      if (s.downloadedModels.includes(modelId)) return s;
+      return { ...s, downloadedModels: [...s.downloadedModels, modelId] };
+    });
   },
 
   async removeDownloadedModel(modelId: string): Promise<void> {
-    const models = await this.getDownloadedModels();
-    await set(
-      STORAGE_KEYS.DOWNLOADED_MODELS,
-      models.filter((m) => m !== modelId),
-    );
+    await this.updateSettings((s) => {
+      if (!s.downloadedModels.includes(modelId)) return s;
+      return {
+        ...s,
+        downloadedModels: s.downloadedModels.filter((m) => m !== modelId),
+      };
+    });
   },
 
   async getAgentSettings(): Promise<AgentSettings> {

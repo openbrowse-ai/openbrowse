@@ -20,7 +20,21 @@ const parameters = z.object({
 type Input = z.infer<typeof parameters>;
 
 type Output = {
-  imageDataUrl: string;
+  /**
+   * Data URL of the captured PNG. Always set when the screenshot tool
+   * actually executes successfully. Marked optional because the
+   * compacting transport may strip the image when the tool result
+   * falls outside the protected tail of recent user turns; in that
+   * case `removed` carries the placeholder marker instead.
+   */
+  imageDataUrl?: string;
+  /**
+   * Set when this tool result was elided by send-time pruning. Used by
+   * the screenshot tool's `toModelOutput` to emit a text marker so the
+   * model still sees that a screenshot existed here and was removed,
+   * instead of crashing on a missing field.
+   */
+  removed?: string;
   /** Number of @refs that were rendered as labels on the image. */
   annotatedCount?: number;
   /** Set if annotation was requested but failed; helps the agent diagnose. */

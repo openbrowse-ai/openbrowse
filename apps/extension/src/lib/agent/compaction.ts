@@ -13,6 +13,16 @@ export const PRUNE_MINIMUM = 20_000;
 export const PRUNE_PROTECT = 40_000;
 export const TOOL_OUTPUT_MAX_CHARS = 2_000;
 export const PROTECTED_TURNS = 2;
+/**
+ * How many recent user turns keep their `screenshot` tool outputs intact
+ * when the compacting transport ships the conversation to the model.
+ *
+ * Held separately from `PROTECTED_TURNS` (which governs the head-pruner's
+ * cumulative-output budget) because the two policies are conceptually
+ * independent — one tunes summarization input, the other tunes per-turn
+ * visual recall — and shouldn't drift together accidentally.
+ */
+export const SCREENSHOT_PROTECTED_TURNS = 2;
 export const TAIL_TURNS = 2;
 export const MIN_PRESERVE_RECENT_TOKENS = 2_000;
 export const MAX_PRESERVE_RECENT_TOKENS = 8_000;
@@ -142,6 +152,11 @@ export interface PrunableMessage {
  * `AgentUIMessage["parts"]` so callers (the transport) don't have to
  * convert to/from our `SerializedUIPart` shape. Only `dynamic-tool` parts
  * are inspected; everything else passes through unchanged.
+ *
+ * Screenshot-specific elision is *not* handled here — that policy needs
+ * cross-message context (which user turns to protect) and lives in the
+ * compacting transport via {@link stripScreenshotsFromParts} +
+ * {@link findProtectedTailStart}.
  */
 export function prunePartsAtSendTime(
   parts: AgentUIMessage["parts"],
@@ -160,15 +175,6 @@ export function prunePartsAtSendTime(
         ? part.output
         : JSON.stringify(part.output);
 
-    if (
-      part.toolName === "screenshot" ||
-      part.toolName === "screenshotPage"
-    ) {
-      out.push({ ...part, output: "[screenshot removed during compaction]" });
-      changed = true;
-      continue;
-    }
-
     if (outputStr.length > TOOL_OUTPUT_MAX_CHARS) {
       out.push({
         ...part,
@@ -182,6 +188,66 @@ export function prunePartsAtSendTime(
   }
 
   return changed ? out : parts;
+}
+
+/**
+ * Replaces the output of every completed `screenshot` tool call in
+ * `parts` with the typed placeholder shape (`{ removed: "..." }`) that
+ * the screenshot tool's `toModelOutput` adapter recognizes.
+ *
+ * Cross-message recency policy (which messages get their screenshots
+ * stripped vs. preserved) lives in the compacting transport — this
+ * helper is shape-only and idempotent.
+ */
+export function stripScreenshotsFromParts(
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
+  let changed = false;
+  const out: AgentUIMessage["parts"] = [];
+  for (const part of parts) {
+    if (
+      part.type === "dynamic-tool" &&
+      part.state === "output-available" &&
+      part.toolName === "screenshot"
+    ) {
+      out.push({
+        ...part,
+        output: { removed: "[screenshot removed during compaction]" },
+      });
+      changed = true;
+      continue;
+    }
+    out.push(part);
+  }
+  return changed ? out : parts;
+}
+
+/**
+ * Walks `messages` from the end, counting user-role messages, and
+ * returns the index of the first message that belongs to the
+ * "protected tail" of the most recent `keepUserTurns` user turns. Any
+ * message at index `< return value` is in the head and may have its
+ * screenshots elided; index `>= return value` is in the tail and
+ * should keep its screenshots intact.
+ *
+ * Mirrors the loop already used inside `pruneMessages` so both pruners
+ * share the same notion of "recent user turns."
+ */
+export function findProtectedTailStart<T extends { role: string }>(
+  messages: T[],
+  keepUserTurns: number,
+): number {
+  let userTurnsSeen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== "user") continue;
+    userTurnsSeen++;
+    if (userTurnsSeen > keepUserTurns) {
+      return i + 1;
+    }
+  }
+  // Conversation has fewer than `keepUserTurns` user turns total — every
+  // message is in the protected tail.
+  return 0;
 }
 
 export function pruneMessages(
@@ -244,10 +310,7 @@ export function pruneMessages(
 
         // Beyond threshold, start pruning
         // Check if this is a screenshot tool
-        if (
-          part.toolName === "screenshot" ||
-          part.toolName === "screenshotPage"
-        ) {
+        if (part.toolName === "screenshot") {
           // Replace output with placeholder
           newParts.push({
             ...part,
