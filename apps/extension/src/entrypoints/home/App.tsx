@@ -44,7 +44,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PanelImperativeHandle } from "react-resizable-panels";
 import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
 import { RightRail } from "./components/RightRail";
@@ -87,7 +86,6 @@ export default function App() {
   const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [filePanelWidth, setFilePanelWidth] = useFilePanelWidth();
-  const railPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
   );
@@ -393,7 +391,6 @@ export default function App() {
           conversationId={activeConversationId}
           selectedFile={selectedFile}
           onSelectFile={handleSelectFile}
-          railPanelRef={railPanelRef}
           isOpen={isCoworkPanelOpen}
           fileWidthPx={filePanelWidth}
           onFileWidthChange={setFilePanelWidth}

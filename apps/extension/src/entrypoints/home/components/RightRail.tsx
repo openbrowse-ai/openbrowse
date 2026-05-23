@@ -20,8 +20,6 @@ interface RightRailProps {
    * side-panel toggle button. Toggling animates the rail width to/from 0.
    */
   isOpen: boolean;
-  /** Imperative handle exposed up so the parent can introspect size if needed. */
-  railPanelRef: React.RefObject<PanelImperativeHandle | null>;
   /** Persisted file-viewer width (pixels). */
   fileWidthPx: number;
   onFileWidthChange: (px: number) => void;
@@ -31,6 +29,8 @@ interface RightRailProps {
 
 /** Fixed width for workspace mode. The user does not resize this. */
 export const WORKSPACE_WIDTH_PX = 360;
+/** Lower drag bound for file mode — user can't drag below this. */
+export const FILE_MIN_PX = 320;
 /** Soft minimum for file mode — auto-widen kicks in below this. */
 export const FILE_AUTO_WIDEN_THRESHOLD_PX = 480;
 /** Width used by auto-widen when the persisted width is below threshold. */
@@ -61,11 +61,12 @@ export function RightRail({
   selectedFile,
   onSelectFile,
   isOpen,
-  railPanelRef,
   fileWidthPx,
   onFileWidthChange,
   centerSlot,
 }: RightRailProps) {
+  /** Imperative handle on the rail panel — internal only. */
+  const railPanelRef = useRef<PanelImperativeHandle | null>(null);
   /** Latest selectedFile, read inside onResize without re-binding. */
   const selectedFileRef = useRef(selectedFile);
   selectedFileRef.current = selectedFile;
@@ -100,7 +101,7 @@ export function RightRail({
       durationMs: TWEEN_MS,
       flagRef: animatingRef,
     });
-  }, [isOpen, selectedFile, railPanelRef]);
+  }, [isOpen, selectedFile]);
 
   useEffect(() => {
     return () => {
@@ -142,7 +143,11 @@ export function RightRail({
       <ResizablePanel
         panelRef={railPanelRef}
         defaultSize={`${WORKSPACE_WIDTH_PX}px`}
-        minSize="0px"
+        // In file mode the user can drag between FILE_MIN_PX and maxRailPx —
+        // the library clamps without snapping. In workspace mode the handle
+        // is disabled, but minSize must remain 0 so programmatic close-tweens
+        // (resize → 0) aren't clamped.
+        minSize={inFileMode ? `${FILE_MIN_PX}px` : "0px"}
         maxSize={maxRailPx}
         groupResizeBehavior="preserve-pixel-size"
         onResize={(panelSize: PanelSize) => {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { formatBytes } from "@/lib/format-bytes";
 
 interface SheetViewerProps {
   blob: Blob;
@@ -17,10 +18,6 @@ interface SheetData {
 
 interface ParsedWorkbook {
   sheets: SheetData[];
-  /** True when at least one row was truncated to MAX_PARSED_ROWS. */
-  truncated: boolean;
-  /** Total row count before truncation, summed across all sheets. */
-  totalRows: number;
 }
 
 /** Soft caps to keep parsing + DOM rendering snappy. */
@@ -39,13 +36,6 @@ function isTsv(fileName: string): boolean {
   return /\.tsv$/i.test(fileName);
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
 async function parseCsv(blob: Blob, fileName: string): Promise<ParsedWorkbook> {
   const Papa = (await import("papaparse")).default;
   const text = await blob.text();
@@ -58,11 +48,7 @@ async function parseCsv(blob: Blob, fileName: string): Promise<ParsedWorkbook> {
   const rows = result.data.map((row) =>
     Array.isArray(row) ? row.map((cell) => (cell == null ? "" : String(cell))) : [],
   );
-  return {
-    sheets: [{ name: "Sheet", rows }],
-    truncated: false,
-    totalRows: rows.length,
-  };
+  return { sheets: [{ name: "Sheet", rows }] };
 }
 
 async function parseXlsx(blob: Blob): Promise<ParsedWorkbook> {
@@ -85,8 +71,7 @@ async function parseXlsx(blob: Blob): Promise<ParsedWorkbook> {
     );
     return { name, rows };
   });
-  const totalRows = sheets.reduce((acc, s) => acc + s.rows.length, 0);
-  return { sheets, truncated: false, totalRows };
+  return { sheets };
 }
 
 export function SheetViewer({ blob, fileName, className }: SheetViewerProps) {

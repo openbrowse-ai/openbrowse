@@ -1,5 +1,6 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { OPFS } from "@/lib/vfs/opfs";
+import { vfsEvents } from "@/lib/vfs/events";
 import { classifyFile, isBinaryClass } from "@/lib/vfs/file-classify";
 import { Markdown } from "@/components/chat/Markdown";
 import { CodeViewer } from "@/components/chat/CodeViewer";
@@ -27,6 +28,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { downloadBlob, downloadText } from "@/lib/download";
+import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 
 interface FileViewerPanelProps {
@@ -84,13 +86,6 @@ function detectLanguage(fileName: string): string {
 function uppercaseExt(fileName: string): string {
   const ext = fileName.split(".").pop();
   return ext ? ext.toUpperCase() : "FILE";
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 interface LoadedContent {
@@ -160,6 +155,30 @@ export function FileViewerPanel({
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
   }, [filePath, isBinary, refreshKey]);
+
+  // Auto-refresh when the agent rewrites the file we're viewing. Debounced
+  // so a script that writes the same file repeatedly only triggers one
+  // re-load per quiet period.
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const onVfsChange = (e: Event) => {
+      const { path } = (e as CustomEvent).detail ?? {};
+      if (path !== filePath) return;
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = setTimeout(() => {
+        debounceTimerRef.current = null;
+        setRefreshKey((k) => k + 1);
+      }, 200);
+    };
+    vfsEvents.addEventListener("vfs:change", onVfsChange);
+    return () => {
+      vfsEvents.removeEventListener("vfs:change", onVfsChange);
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, [filePath]);
 
   const handleCopy = async () => {
     if (loaded?.text === undefined) return;
@@ -247,7 +266,7 @@ export function FileViewerPanel({
           <IconButton
             onClick={handleRefresh}
             disabled={loaded === null}
-            title="Refresh from disk"
+            title="Refresh file content"
           >
             <RefreshCw className="size-3.5" />
           </IconButton>
@@ -286,7 +305,7 @@ export function FileViewerPanel({
         ) : loaded === null ? (
           <div className="p-6 text-muted-foreground text-sm">Loading…</div>
         ) : fileClass === "image" && loaded.blobUrl ? (
-          <div className="flex items-center justify-center p-6 bg-muted/20 flex-1 min-h-0 overflow-auto">
+          <div className="flex items-center justify-center p-6 bg-muted/20 flex-1 min-h-0">
             <img
               src={loaded.blobUrl}
               alt={fileName}
