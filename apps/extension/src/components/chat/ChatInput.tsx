@@ -19,6 +19,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getImageSizeLimit } from "@/lib/agent/vision-limits";
+import {
+  countLines,
+  formatBytes,
+  getTypeBadge,
+  isTextFile,
+} from "@/lib/chat/attachment-meta";
+import { cn } from "@/lib/utils";
 import type { Attachment } from "@/lib/chat/types";
 import type { ThinkingConfig } from "@/lib/types";
 import type { JSONContent } from "@tiptap/core";
@@ -31,8 +38,7 @@ import {
   ArrowUp,
   BrainIcon,
   ChevronDown,
-  File as FileIcon,
-  Image as ImageIcon,
+  Paperclip,
   Square,
   Star,
   X,
@@ -276,6 +282,10 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  // Drag-over visual state. `dragCounter` de-flickers nested
+  // dragenter/leave events fired from child elements.
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounter = useRef(0);
   // Back-compat for spots in this file that count or filter to images.
   const images = useMemo(
     () => attachments.filter((a): a is Extract<Attachment, { kind: "image" }> => a.kind === "image"),
@@ -400,11 +410,13 @@ export function ChatInput({
         );
       }
 
-      // Validate synchronously, then convert any accepted images to
-      // data URLs in parallel. The previous image-only code parallelized
-      // FileReader work; preserve that.
+      // Validate synchronously so we can insert placeholder cards
+      // immediately. The async metadata work (FileReader for images,
+      // file.text() for text-file line counts) runs in parallel and
+      // patches each card in place when it lands. Without this, the
+      // user sees a delay between picking a file and seeing it appear.
       const slice = incoming.slice(0, Math.max(0, remainingSlots));
-      const validated = slice.map((file) => {
+      const accepted = slice.flatMap((file) => {
         const isImage = file.type.startsWith("image/");
         const cap = isImage ? imageCap : FILE_CAP;
         if (file.size > cap) {
@@ -412,33 +424,64 @@ export function ChatInput({
           rejections.push(
             `${file.name} exceeds the ${capMB} MB ${isImage ? "image" : "file"} limit.`,
           );
-          return null;
+          return [];
         }
-        return { file, isImage };
+        return [{ file, isImage, id: crypto.randomUUID() }];
       });
 
-      const accepted: Attachment[] = await Promise.all(
-        validated
-          .filter((v): v is { file: File; isImage: boolean } => v !== null)
-          .map(async ({ file, isImage }) => {
-            if (isImage) {
-              return {
-                kind: "image" as const,
-                id: crypto.randomUUID(),
-                file,
-                dataUrl: await fileToDataUrl(file),
-              };
-            }
-            return { kind: "file" as const, id: crypto.randomUUID(), file };
-          }),
-      );
-
       if (accepted.length > 0) {
-        setAttachments((prev) => [...prev, ...accepted]);
+        const placeholders: Attachment[] = accepted.map(({ file, isImage, id }) =>
+          isImage
+            ? {
+                kind: "image" as const,
+                id,
+                file,
+                dataUrl: "",
+                loading: true,
+              }
+            : { kind: "file" as const, id, file, loading: true },
+        );
+        setAttachments((prev) => [...prev, ...placeholders]);
       }
+
       for (const msg of rejections) {
         toast.error(msg);
       }
+
+      // Resolve async metadata in parallel; patch each placeholder in
+      // place by id. If the user removed an attachment before its
+      // metadata resolved, the .map below no-ops on the missing id.
+      await Promise.all(
+        accepted.map(async ({ file, isImage, id }) => {
+          if (isImage) {
+            const dataUrl = await fileToDataUrl(file);
+            setAttachments((prev) =>
+              prev.map((a) =>
+                a.id === id && a.kind === "image"
+                  ? { ...a, dataUrl, loading: false }
+                  : a,
+              ),
+            );
+            return;
+          }
+          let lineCount: number | undefined;
+          if (isTextFile(file.name)) {
+            try {
+              const text = await file.text();
+              lineCount = countLines(text);
+            } catch {
+              // Unreadable as text — leave undefined; card falls back to size.
+            }
+          }
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.id === id && a.kind === "file"
+                ? { ...a, lineCount, loading: false }
+                : a,
+            ),
+          );
+        }),
+      );
     },
     [selectedModel],
   );
@@ -446,6 +489,44 @@ export function ChatInput({
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
+
+  // Container-level drag-and-drop handlers. Activated only for actual
+  // file drags (filtered via dataTransfer.types) so text/tab-mention
+  // drags pass through unaffected. The counter pattern avoids flicker
+  // on dragenter/leave fired from child elements.
+  const handleContainerDragEnter = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    dragCounter.current += 1;
+    setIsDragOver(true);
+  }, []);
+
+  const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleContainerDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleContainerDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+      dragCounter.current = 0;
+      setIsDragOver(false);
+      const files = e.dataTransfer.files;
+      if (files.length > 0) addFiles(files);
+    },
+    [addFiles],
+  );
 
   const submitWithMentions = useCallback(() => {
     const ed = editorRef.current;
@@ -459,7 +540,11 @@ export function ChatInput({
   const editor = useEditor({
     autofocus: autoFocus ? "end" : false,
     extensions: [
-      StarterKit.configure({ hardBreak: false }),
+      // `dropcursor: false` disables ProseMirror's blue vertical
+      // insertion-point line on drag-over. We handle file drops at
+      // the container level (turning them into attachments) so the
+      // editor's own drop cue is misleading.
+      StarterKit.configure({ hardBreak: false, dropcursor: false }),
       Placeholder.configure({
         placeholder: "Ask anything... Type @ to mention a tab, / for skills",
         showOnlyWhenEditable: false,
@@ -480,7 +565,13 @@ export function ChatInput({
                 onStopRef.current();
               } else {
                 const text = this.editor.getMarkdown().trim();
-                if (text || attachmentsRef.current.length > 0) {
+                const hasLoadingAttachment = attachmentsRef.current.some(
+                  (a) => a.loading,
+                );
+                if (
+                  (text || attachmentsRef.current.length > 0) &&
+                  !hasLoadingAttachment
+                ) {
                   submitWithMentions();
                 }
               }
@@ -508,10 +599,12 @@ export function ChatInput({
         return false;
       },
       handleDrop: (_view, event) => {
-        const files = event.dataTransfer?.files;
-        if (files && files.length > 0) {
+        // File drops are handled by the container-level onDrop on the
+        // outer ChatInput div (so dropping anywhere — attachment row,
+        // bottom bar, padding — works). We just suppress tiptap's
+        // default file-insertion behavior here.
+        if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
           event.preventDefault();
-          addFiles(files);
           return true;
         }
         return false;
@@ -526,13 +619,34 @@ export function ChatInput({
 
   editorRef.current = editor;
 
+  // True while any attachment's async metadata is still resolving.
+  // Send is gated on this — submitting with a `loading` image would
+  // produce a vision part with an empty data URL and fail at the API.
+  const attachmentsLoading = useMemo(
+    () => attachments.some((a) => a.loading),
+    [attachments],
+  );
+
   const handleButtonClick = useCallback(() => {
     if (isLoading && onStop) {
       onStop();
-    } else if ((value.trim() || attachments.length > 0) && !disabled && !isLoading) {
+    } else if (
+      (value.trim() || attachments.length > 0) &&
+      !disabled &&
+      !isLoading &&
+      !attachmentsLoading
+    ) {
       submitWithMentions();
     }
-  }, [isLoading, onStop, value, disabled, submitWithMentions, attachments.length]);
+  }, [
+    isLoading,
+    onStop,
+    value,
+    disabled,
+    submitWithMentions,
+    attachments.length,
+    attachmentsLoading,
+  ]);
 
   useHotkeys(
     "mod+shift+backspace",
@@ -605,8 +719,19 @@ export function ChatInput({
   }, [providerModels, selectedModel]);
 
   return (
-    <div className="flex flex-col rounded-lg border border-border bg-card">
-      {/* Image previews */}
+    <div
+      onDragEnter={handleContainerDragEnter}
+      onDragLeave={handleContainerDragLeave}
+      onDragOver={handleContainerDragOver}
+      onDrop={handleContainerDrop}
+      className={cn(
+        "relative flex flex-col rounded-lg border bg-card transition-all duration-150",
+        isDragOver
+          ? "border-blue-500/60 ring-2 ring-blue-500/60 bg-blue-500/5"
+          : "border-border",
+      )}
+    >
+      {/* Attachments */}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-2 pt-2">
           {attachments.map((att) => {
@@ -617,15 +742,34 @@ export function ChatInput({
             return (
               <div key={att.id} className="relative group">
                 {att.kind === "image" ? (
-                  <img
-                    src={att.dataUrl}
-                    alt={att.file.name}
-                    className="size-16 object-cover rounded-md border border-border"
-                  />
+                  att.loading ? (
+                    <div className="h-[108px] w-[140px] rounded-lg border border-border bg-muted/40 animate-pulse" />
+                  ) : (
+                    <img
+                      src={att.dataUrl}
+                      alt={att.file.name}
+                      className="h-[108px] w-[140px] object-cover rounded-lg border border-border"
+                    />
+                  )
                 ) : (
-                  <div className="flex h-16 max-w-[160px] items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 text-xs">
-                    <FileIcon className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{att.file.name}</span>
+                  <div className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5">
+                    <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
+                      {att.file.name}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {att.loading ? (
+                        <span className="inline-block h-3 w-12 rounded bg-muted animate-pulse" />
+                      ) : att.lineCount !== undefined ? (
+                        `${att.lineCount} ${att.lineCount === 1 ? "line" : "lines"}`
+                      ) : (
+                        formatBytes(att.file.size)
+                      )}
+                    </div>
+                    <div className="mt-auto">
+                      <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                        {getTypeBadge(att.file.name)}
+                      </span>
+                    </div>
                   </div>
                 )}
                 {overImageCap && (
@@ -974,7 +1118,7 @@ export function ChatInput({
                 disabled={disabled}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
               >
-                <ImageIcon className="size-3.5" />
+                <Paperclip className="size-3.5" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="top">
@@ -988,7 +1132,7 @@ export function ChatInput({
               <button
                 type="button"
                 onClick={handleButtonClick}
-                disabled={disabled && !isLoading}
+                disabled={(disabled || attachmentsLoading) && !isLoading}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-40"
               >
                 {isLoading ? (
@@ -1011,6 +1155,15 @@ export function ChatInput({
           </Tooltip>
         </div>
       </div>
+
+      {isDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-card/85 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-1.5 text-blue-500">
+            <Paperclip className="size-5" />
+            <span className="text-xs font-medium">Drop file to attach</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

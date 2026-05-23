@@ -6,10 +6,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
-import { Check, Copy, Pencil, File as FileIcon } from "lucide-react";
+import { Check, Copy, Pencil } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { classifyFile } from "@/lib/vfs/file-classify";
+import { getTypeBadge } from "@/lib/chat/attachment-meta";
 
 interface UserMessageProps {
   message: AgentUIMessage;
@@ -89,7 +90,7 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
         </div>
       )}
       {attachedPaths.length > 0 && (
-        <div className="max-w-[85%] flex flex-wrap justify-end gap-1">
+        <div className="max-w-[85%] flex flex-wrap justify-end gap-1.5">
           {attachedPaths
             // Image attachments already render as thumbnails above —
             // skip them in the chip row to avoid duplication.
@@ -102,10 +103,16 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
               return (
                 <div
                   key={path}
-                  className="flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground"
+                  className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5"
                 >
-                  <FileIcon className="size-3.5" />
-                  <span className="truncate max-w-[160px]">{name}</span>
+                  <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
+                    {name}
+                  </div>
+                  <div className="mt-auto">
+                    <span className="inline-block rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
+                      {getTypeBadge(name)}
+                    </span>
+                  </div>
                 </div>
               );
             })}
