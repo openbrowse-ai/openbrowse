@@ -358,22 +358,13 @@ export default function App() {
     setSelectedFile(file);
     if (file !== null) {
       // Selecting a file always implies the rail should be visible.
-      railPanelRef.current?.expand();
       setIsCoworkPanelOpen(true);
     }
   }, []);
 
   const handleToggleCowork = useCallback(() => {
-    const handle = railPanelRef.current;
-    if (!handle) return;
-    if (isCoworkPanelOpen) {
-      handle.collapse();
-      setIsCoworkPanelOpen(false);
-    } else {
-      handle.expand();
-      setIsCoworkPanelOpen(true);
-    }
-  }, [isCoworkPanelOpen]);
+    setIsCoworkPanelOpen((prev) => !prev);
+  }, []);
 
   return (
     <div className="flex h-screen bg-[var(--background)]">
@@ -403,9 +394,9 @@ export default function App() {
           selectedFile={selectedFile}
           onSelectFile={handleSelectFile}
           railPanelRef={railPanelRef}
+          isOpen={isCoworkPanelOpen}
           fileWidthPx={filePanelWidth}
           onFileWidthChange={setFilePanelWidth}
-          onOpenChange={setIsCoworkPanelOpen}
           centerSlot={
             <main className="h-full min-w-0 flex flex-col">
               <div className="sticky top-0 z-10 flex items-center justify-between px-4 pt-2 pb-px bg-background/80 backdrop-blur-md after:absolute after:inset-x-0 after:-bottom-6 after:h-6 after:bg-linear-to-b after:from-background after:to-transparent after:pointer-events-none">

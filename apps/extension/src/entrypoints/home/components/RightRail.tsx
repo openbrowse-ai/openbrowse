@@ -6,6 +6,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { animatePanelResize } from "@/lib/animate-panel-resize";
 import { CoworkPanel } from "./CoworkPanel";
 import { FileViewerPanel } from "./FileViewerPanel";
 
@@ -14,12 +15,16 @@ interface RightRailProps {
   /** Selected file path RELATIVE to the workspace root (e.g. `notes.csv`). */
   selectedFile: string | null;
   onSelectFile: (file: string | null) => void;
-  /** Imperative handle exposed up so the parent can collapse/expand. */
+  /**
+   * Whether the rail is open (visible) at all. Driven by the parent's
+   * side-panel toggle button. Toggling animates the rail width to/from 0.
+   */
+  isOpen: boolean;
+  /** Imperative handle exposed up so the parent can introspect size if needed. */
   railPanelRef: React.RefObject<PanelImperativeHandle | null>;
   /** Persisted file-viewer width (pixels). */
   fileWidthPx: number;
   onFileWidthChange: (px: number) => void;
-  onOpenChange: (open: boolean) => void;
   /** Center pane (chat) — rendered as the left panel of the resizable group. */
   centerSlot: React.ReactNode;
 }
@@ -30,8 +35,8 @@ export const WORKSPACE_WIDTH_PX = 360;
 export const FILE_AUTO_WIDEN_THRESHOLD_PX = 480;
 /** Width used by auto-widen when the persisted width is below threshold. */
 export const FILE_AUTO_WIDEN_PX = 560;
-/** Floor for the panel itself (covers both modes). */
-export const RAIL_MIN_PX = 320;
+/** Animation duration for programmatic open/close and mode switches. */
+const TWEEN_MS = 240;
 
 /**
  * Right-side drawer hosting either the workspace ("Cowork") or a file viewer.
@@ -47,46 +52,61 @@ export const RAIL_MIN_PX = 320;
  *     the persisted width is below `FILE_AUTO_WIDEN_THRESHOLD_PX`, the rail
  *     auto-widens to `FILE_AUTO_WIDEN_PX`.
  *
- * On exit (X click in the file panel), the rail snaps back to
- * `WORKSPACE_WIDTH_PX` via the imperative handle. Width persistence is
- * gated to file mode only — programmatic snaps to the workspace width
- * never overwrite the user's saved file width.
+ * Open/close (`isOpen`) and mode transitions both ANIMATE — react-resizable-
+ * panels' `resize()` is instant by default, so we tween it ourselves via
+ * `animatePanelResize`. Width persistence is suppressed during animation.
  */
 export function RightRail({
   conversationId,
   selectedFile,
   onSelectFile,
+  isOpen,
   railPanelRef,
   fileWidthPx,
   onFileWidthChange,
-  onOpenChange,
   centerSlot,
 }: RightRailProps) {
-  const lastReportedOpenRef = useRef(true);
   /** Latest selectedFile, read inside onResize without re-binding. */
   const selectedFileRef = useRef(selectedFile);
   selectedFileRef.current = selectedFile;
-  /** Latest persisted file width, read inside the mode effect. */
+  /** Latest persisted file width, read inside the mode/open effect. */
   const fileWidthRef = useRef(fileWidthPx);
   fileWidthRef.current = fileWidthPx;
+  /** Set to true while a programmatic tween is in flight; suppresses persist. */
+  const animatingRef = useRef(false);
+  /** Cancel handle for the currently running tween. */
+  const cancelTweenRef = useRef<(() => void) | null>(null);
+
   const inFileMode = selectedFile !== null;
 
-  // Snap rail width on mode transitions:
-  //   workspace → file: resize to persisted file width (or auto-widen).
-  //   file → workspace: resize back to the locked workspace width.
+  // Drive the rail width from `isOpen` + `selectedFile`. Three target sizes:
+  //   isOpen=false → 0
+  //   isOpen=true && file mode → fileWidth (auto-widened if narrow)
+  //   isOpen=true && workspace mode → WORKSPACE_WIDTH_PX
   useEffect(() => {
     const handle = railPanelRef.current;
     if (!handle) return;
-    if (selectedFile !== null) {
-      const target =
-        fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
+    const target = !isOpen
+      ? 0
+      : selectedFile !== null
+        ? fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
           ? FILE_AUTO_WIDEN_PX
-          : fileWidthRef.current;
-      handle.resize(`${target}px`);
-    } else {
-      handle.resize(`${WORKSPACE_WIDTH_PX}px`);
-    }
-  }, [selectedFile, railPanelRef]);
+          : fileWidthRef.current
+        : WORKSPACE_WIDTH_PX;
+    const fromPx = handle.getSize?.()?.inPixels ?? 0;
+    if (Math.abs(fromPx - target) < 0.5) return;
+    cancelTweenRef.current?.();
+    cancelTweenRef.current = animatePanelResize(handle, fromPx, target, {
+      durationMs: TWEEN_MS,
+      flagRef: animatingRef,
+    });
+  }, [isOpen, selectedFile, railPanelRef]);
+
+  useEffect(() => {
+    return () => {
+      cancelTweenRef.current?.();
+    };
+  }, []);
 
   const maxRailPx = `${Math.max(
     FILE_AUTO_WIDEN_PX,
@@ -110,10 +130,10 @@ export function RightRail({
       <ResizableHandle
         disabled={!inFileMode}
         className={
-          // Hide the divider line while in workspace mode so the rail looks
-          // like the original flush-edge sidebar. The handle div itself stays
-          // in the tree (the panel group needs it) but is non-interactive
-          // and visually transparent.
+          // Hide the divider while in workspace mode so the rail looks like
+          // the original flush-edge sidebar. The handle div stays in the
+          // tree (the panel group needs it) but is non-interactive and
+          // visually transparent.
           inFileMode
             ? undefined
             : "bg-transparent! cursor-default after:hidden"
@@ -122,22 +142,20 @@ export function RightRail({
       <ResizablePanel
         panelRef={railPanelRef}
         defaultSize={`${WORKSPACE_WIDTH_PX}px`}
-        minSize={`${RAIL_MIN_PX}px`}
+        minSize="0px"
         maxSize={maxRailPx}
-        collapsible
-        collapsedSize={0}
         groupResizeBehavior="preserve-pixel-size"
         onResize={(panelSize: PanelSize) => {
-          const px = panelSize.inPixels;
-          // Persist only while in file mode — programmatic snaps back to the
-          // workspace width must never overwrite the user's saved file width.
-          if (px > 0 && selectedFileRef.current !== null) {
-            onFileWidthChange(Math.round(px));
-          }
-          const open = px > 0;
-          if (open !== lastReportedOpenRef.current) {
-            lastReportedOpenRef.current = open;
-            onOpenChange(open);
+          // Skip persistence while a programmatic tween is in flight —
+          // intermediate frames would otherwise thrash localStorage and
+          // potentially lock in a transient width.
+          if (animatingRef.current) return;
+          // Only persist while in file mode. Workspace mode width is fixed.
+          if (
+            panelSize.inPixels > 0 &&
+            selectedFileRef.current !== null
+          ) {
+            onFileWidthChange(Math.round(panelSize.inPixels));
           }
         }}
         className="bg-[var(--background)]"
