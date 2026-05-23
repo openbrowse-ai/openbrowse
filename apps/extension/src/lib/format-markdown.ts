@@ -65,6 +65,71 @@ export function formatPartAsMarkdown(part: any): string | null {
       return `**Tool: install_skill**\n${inputStr}[Skill '${source}' installed]`;
     }
 
+    if (toolName === "webFetch") {
+      const reqUrl = typeof input?.url === "string" ? input.url : "";
+      const reqFormat =
+        typeof input?.format === "string" ? input.format : "markdown";
+      const inputStr = input
+        ? "```json\n" + JSON.stringify(input, null, 2) + "\n```\n"
+        : "";
+      const header = reqUrl
+        ? `**Tool: webFetch** — ${reqUrl}`
+        : `**Tool: webFetch**`;
+      if (!hasOutput) return `${header}\n${inputStr}`.trim();
+
+      const out = output as Record<string, unknown> | null;
+      const status =
+        typeof out?.status === "number" ? `HTTP ${out.status}` : "";
+      const contentType =
+        typeof out?.contentType === "string" && out.contentType
+          ? String(out.contentType)
+          : "";
+      const fmt =
+        typeof out?.format === "string" ? String(out.format) : reqFormat;
+      const content =
+        typeof out?.content === "string" ? (out.content as string) : "";
+      const summarized = out?.summarized === true;
+      const originalLength =
+        typeof out?.originalLength === "number" ? out.originalLength : null;
+      const redirected = out?.redirected === true;
+      const redirectedFrom =
+        typeof out?.redirectedFrom === "string"
+          ? (out.redirectedFrom as string)
+          : null;
+      const finalUrl =
+        typeof out?.url === "string" ? (out.url as string) : "";
+
+      const meta = [
+        status,
+        contentType,
+        `${content.length.toLocaleString()} chars`,
+        summarized && originalLength != null
+          ? `summarized from ${originalLength.toLocaleString()}`
+          : null,
+        redirected && redirectedFrom && finalUrl
+          ? `redirected ${redirectedFrom} → ${finalUrl}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      // For markdown format we render the content directly so it stays
+      // readable. For html / text / passthrough modes we wrap in a fenced
+      // code block to avoid clobbering surrounding markdown.
+      const body =
+        fmt === "markdown"
+          ? content
+          : "```" +
+            (fmt === "html" ? "html" : "") +
+            "\n" +
+            content +
+            "\n```";
+
+      return [header, inputStr.trim(), meta, "", body]
+        .filter((s) => s !== null && s !== undefined)
+        .join("\n");
+    }
+
     if (toolName === "todoWrite") {
       const todos = (input?.todos as Array<Record<string, unknown>>) || [];
       if (todos.length === 0) {

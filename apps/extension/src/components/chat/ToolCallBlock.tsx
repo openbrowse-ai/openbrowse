@@ -22,6 +22,7 @@ import {
 import { ScreenshotResult } from "./tool-results/screenshot";
 import { SkillResult } from "./tool-results/skill";
 import { SnapshotResult } from "./tool-results/snapshot";
+import { WebFetchResult } from "./tool-results/web-fetch";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -43,6 +44,7 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
   LS: ({ args, result }) => <LSResult args={args} result={result} />,
   skill: ({ args, result }) => <SkillResult args={args} result={result} />,
+  webFetch: ({ args, result }) => <WebFetchResult args={args} result={result} />,
 };
 
 interface ToolCallBlockProps {
@@ -73,6 +75,7 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   LS: { pending: "Listing folder...", done: "Listed folder" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
+  webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },
@@ -133,6 +136,33 @@ function parseMcpToolName(toolKey: string): string | null {
   return match[1].replace(/_/g, " ").replace(/-/g, " ");
 }
 
+/**
+ * Build a webFetch-specific label that includes the request URL's host
+ * (and path if short enough). Falls back to the static label when the
+ * URL isn't usable.
+ */
+function webFetchLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const raw = typeof args.url === "string" ? args.url : "";
+  if (!raw) return fallback;
+  let target = raw;
+  try {
+    const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+    target = u.host + (u.pathname && u.pathname !== "/" ? u.pathname : "");
+    if (target.length > 48) target = target.slice(0, 47) + "…";
+  } catch {
+    // Keep the raw string if the URL was unparseable; the agent's
+    // wrapper validates URLs but render shouldn't crash on bad input.
+    if (target.length > 48) target = target.slice(0, 47) + "…";
+  }
+  return {
+    pending: `Fetching ${target}...`,
+    done: `Fetched ${target}`,
+  };
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -162,6 +192,12 @@ export function ToolCallBlock({
       done: mcpName ? mcpName : toolName,
     };
 
+  // For webFetch, splice in the requested URL's host so the collapsed
+  // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
+  // rather than a generic "Fetching URL...".
+  const dynamicLabels =
+    toolName === "webFetch" ? webFetchLabels(args, labels) : labels;
+
   const showTabBadge = TAB_TOOLS.has(toolName);
 
   // Denied: compact non-expandable row with a muted "Denied" suffix
@@ -170,7 +206,7 @@ export function ToolCallBlock({
       <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
         <X className="size-3 shrink-0 text-muted-foreground/60" />
         <span className="text-muted-foreground/70 line-through">
-          {labels.done}
+          {dynamicLabels.done}
         </span>
         {showTabBadge && <TabBadge toolCallId={toolCallId} />}
         <span className="text-[11px] text-muted-foreground/60 ml-1">
@@ -214,7 +250,7 @@ export function ToolCallBlock({
                 <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
               <span className="text-sm text-muted-foreground">
-                {labels.done}
+                {dynamicLabels.done}
               </span>
               {showTabBadge && <TabBadge toolCallId={toolCallId} />}
               <ChevronRight
@@ -272,10 +308,10 @@ export function ToolCallBlock({
                 !mcpInfo && "animate-pulse",
               )}
             >
-              {labels.pending}
+              {dynamicLabels.pending}
             </span>
           ) : (
-            <span className="text-sm text-muted-foreground">{labels.done}</span>
+            <span className="text-sm text-muted-foreground">{dynamicLabels.done}</span>
           )}
           {showTabBadge && <TabBadge toolCallId={toolCallId} />}
           {!pending && (
