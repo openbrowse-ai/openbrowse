@@ -32,6 +32,10 @@ interface CliArgs {
   noVisualize: boolean;
   /** Keep the raw .webm originals after MP4 conversion (default: delete). */
   keepWebm: boolean;
+  /** Continue a previous run by providing the run directory. */
+  resumeDir?: string;
+  /** When resuming, skip trials that previously errored (default: false, meaning retry errors). */
+  keepErrors: boolean;
   /** Override the auto-generated run dir (default: .bench/runs/<auto-id>). */
   outDir?: string;
   driverKind: "local" | "kernel";
@@ -47,6 +51,7 @@ function parseArgs(argv: string[]): CliArgs {
     noVideo: false,
     noVisualize: false,
     keepWebm: false,
+    keepErrors: false,
     driverKind: "local",
     concurrency: 0, // 0 means default later
   };
@@ -86,6 +91,12 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--keep-webm":
         out.keepWebm = true;
+        break;
+      case "--resume":
+        out.resumeDir = argv[++i];
+        break;
+      case "--keep-errors":
+        out.keepErrors = true;
         break;
       case "--out-dir":
         out.outDir = argv[++i];
@@ -134,6 +145,10 @@ Options:
                       (default: overlays are on when video is on)
   --keep-webm         Keep raw .webm originals after MP4 conversion
                       (default: delete after successful conversion)
+  --resume <dir>      Continue a previous run. Skips tasks already completed.
+                      Errored trials are re-attempted by default.
+  --keep-errors       With --resume, also skip trials that previously errored
+                      (default: errored trials are re-attempted)
   --out-dir <dir>     Override run output dir
                       (default: .bench/runs/<auto-id>/ at repo root)
   --driver <kind>     Browser driver to use: "local" (default) or "kernel"
@@ -162,9 +177,12 @@ async function main(): Promise<void> {
     { openai },
     { runTrial },
     { ALL_TASKS, findTask, tasksBySource },
-    { createRunPaths, resolveRunDir, makeRunId },
-    { writeTrial, writeSummary },
+    { createRunPaths, resolveRunDir, makeRunId, ensureRunDirExists },
+    { writeTrial, writeSummary, readAllTrials },
     { ffmpegAvailable, convertAllInDir },
+    { buildBenchSystemPrompt, DEFAULT_TOOL_SET, BENCH_TOOL_CATALOG },
+    { WEBBENCH_REVISION },
+    { LLM_JUDGE_VERSION, JUDGE_MODEL_ID },
   ] = await Promise.all([
     import("@ai-sdk/anthropic"),
     import("@ai-sdk/google"),
@@ -174,6 +192,9 @@ async function main(): Promise<void> {
     import("./paths"),
     import("./store"),
     import("./video"),
+    import("./agent/build-agent"),
+    import("./tasks/webbench/revision"),
+    import("./judges/llm-judge"),
   ]);
 
   type LanguageModel = Awaited<ReturnType<typeof anthropic>>;
@@ -201,6 +222,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  if (args.resumeDir && args.outDir) {
+    console.error("--resume and --out-dir are mutually exclusive.");
+    process.exit(2);
+  }
+
   // Resolve the task list. Single-task mode picks one; suite mode picks
   // every task whose source matches.
   let tasks: any[];
@@ -219,20 +245,64 @@ async function main(): Promise<void> {
 
   const model = resolveModel(args.modelId);
 
-  // Set up the run directory. `--out-dir` overrides; otherwise auto-generate
-  // a timestamped subdir under `.bench/runs/`.
-  const runId = makeRunId({
-    modelLabel: args.modelLabel,
-    suite: args.suite,
-    taskId: args.taskId,
-  });
-  const runDir = resolveRunDir({
-    runId,
-    outDirOverride: args.outDir,
-  });
-  const paths = createRunPaths(runDir);
+  let runId = "";
+  let runDir = "";
+  let paths: any;
+  let existingTrials: import("./runner").TrialResult[] = [];
+
+  if (args.resumeDir) {
+    paths = ensureRunDirExists(args.resumeDir);
+    runDir = paths.runDir;
+    
+    // We must use dynamic imports here because require is not defined in ESM
+    const path = await import("node:path");
+    runId = path.basename(runDir);
+    existingTrials = readAllTrials(paths);
+  } else {
+    runId = makeRunId({
+      modelLabel: args.modelLabel,
+      suite: args.suite,
+      taskId: args.taskId,
+    });
+    runDir = resolveRunDir({
+      runId,
+      outDirOverride: args.outDir,
+    });
+    paths = createRunPaths(runDir);
+  }
 
   const startedAt = new Date().toISOString();
+  // Determine which tasks to run based on resume state
+  const completedTaskIds = new Set<string>();
+  let erroredTaskIds = new Set<string>();
+  
+  if (args.resumeDir) {
+    for (const t of existingTrials) {
+      if (!args.keepErrors && t.error) {
+        // We will retry this error. Delete the old JSON so we don't leak it if the retry crashes.
+        erroredTaskIds.add(t.taskId);
+        try {
+          const fs = await import("node:fs");
+          const path = await import("node:path");
+          fs.unlinkSync(path.join(paths.trialsDir, `${t.taskId}.json`));
+        } catch {}
+      } else {
+        completedTaskIds.add(t.taskId);
+      }
+    }
+    
+    const initialCount = tasks.length;
+    tasks = tasks.filter(t => !completedTaskIds.has(t.id));
+    
+    // Append to a resume log
+    try {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const logMsg = `[${startedAt}] Resumed sweep. Original tasks: ${initialCount}, Already completed: ${completedTaskIds.size}, Retrying errors: ${erroredTaskIds.size}, Running now: ${tasks.length}\n`;
+      fs.appendFileSync(path.join(paths.runDir, "resume.log"), logMsg);
+    } catch {}
+  }
+
   const startMs = Date.now();
   const recordVideo = !args.noVideo;
   const visualize = !args.noVisualize;
@@ -251,7 +321,13 @@ async function main(): Promise<void> {
   console.log(
     `Running ${tasks.length} task(s) × ${args.replicas} replicas, model=${args.modelLabel}, concurrency=${concurrency}`,
   );
-  console.log(`Run dir:   ${paths.runDir}`);
+  if (args.resumeDir) {
+    console.log(
+      `Resuming from ${paths.runDir}: ${completedTaskIds.size} already done, ${tasks.length} remaining (${erroredTaskIds.size} errored, will retry)`
+    );
+  } else {
+    console.log(`Run dir:   ${paths.runDir}`);
+  }
   console.log(`Video:     ${recordVideo ? "enabled" : "disabled"}`);
   console.log(`Visualize: ${recordVideo && visualize ? "enabled" : "disabled"}`);
   console.log("");
@@ -278,7 +354,8 @@ async function main(): Promise<void> {
   const totalTasks = tasks.length;
   let runningTasks = 0;
 
-  await runInPool(tasks, concurrency, async (task, index) => {
+  if (tasks.length > 0) {
+    await runInPool(tasks, concurrency, async (task, index) => {
     runningTasks++;
     
     let passes = 0;
@@ -305,6 +382,7 @@ async function main(): Promise<void> {
       const tag = args.replicas > 1 ? ` [${i}/${args.replicas}]` : "";
       const result = await runTrial(task, {
         model,
+        modelId: args.modelId,
         modelLabel: args.modelLabel,
         headless: args.headless,
         videosDir: recordVideo ? paths.videosDir : undefined,
@@ -373,7 +451,69 @@ async function main(): Promise<void> {
     console.log(`[${completedTasks}/${totalTasks} done | ${runningTasks} in flight]`);
     console.log("");
   });
+  }
 
+  // Reload all trials from disk to assemble the final summary (this ensures
+  // previously-completed trials from a resumed run are included).
+  const finalTrials = readAllTrials(paths);
+  
+  // Group by taskId so we can compute replica aggregations
+  const finalRows: Row[] = [];
+  const trialsByTask = new Map<string, import("./runner").TrialResult[]>();
+  for (const t of finalTrials) {
+    if (!trialsByTask.has(t.taskId)) trialsByTask.set(t.taskId, []);
+    trialsByTask.get(t.taskId)!.push(t);
+  }
+  
+  for (const [taskId, trials] of trialsByTask.entries()) {
+    let passes = 0, infraFails = 0, agentFails = 0, judgeRejects = 0;
+    let stepsSum = 0, inSum = 0, outSum = 0, timeSum = 0;
+    const vPaths: string[] = [];
+    const tPaths: string[] = [];
+    let domain = "";
+    
+    for (const res of trials) {
+      if (res.passed) passes++;
+      else if (res.error) {
+        if (res.error.kind === "infrastructure-error") infraFails++;
+        else agentFails++;
+      } else {
+        judgeRejects++;
+      }
+      
+      stepsSum += res.steps;
+      inSum += res.tokens.in;
+      outSum += res.tokens.out;
+      timeSum += res.durationMs;
+      
+      if (res.videoPath) vPaths.push(res.videoPath);
+      
+      const path = await import("node:path");
+      tPaths.push(path.join(paths.trialsDir, `${res.taskId}.json`));
+      
+      if (!domain && res.finalUrl) {
+        try { domain = new URL(res.finalUrl).hostname.replace(/^www\./, ""); } catch {}
+      }
+    }
+    
+    const count = trials.length;
+    finalRows.push({
+      taskId,
+      passed: passes,
+      total: count,
+      infrastructureFailures: infraFails,
+      agentFailures: agentFails,
+      judgeRejects: judgeRejects,
+      avgSteps: stepsSum / count,
+      avgTokensIn: inSum / count,
+      avgTokensOut: outSum / count,
+      avgDurationMs: timeSum / count,
+      domain,
+      videoPaths: vPaths,
+      trialPaths: tPaths,
+    });
+  }
+  
   // Summary table
   console.log("Summary");
   console.log("-------");
@@ -388,7 +528,7 @@ async function main(): Promise<void> {
   
   const failuresByDomain: Record<string, number> = {};
 
-  for (const r of rows) {
+  for (const r of finalRows) {
     overallPassed += r.passed;
     overallTotal += r.total;
     overallInfraFails += r.infrastructureFailures;
@@ -458,32 +598,105 @@ async function main(): Promise<void> {
     }
   }
 
-  // Write the aggregate summary alongside the per-trial JSONs.
-  const summaryPath = writeSummary(paths, {
-    runId,
-    model: args.modelLabel,
-    suite: args.suite,
-    taskId: args.taskId,
-    startedAt,
-    endedAt: new Date().toISOString(),
-    durationMs: Date.now() - startMs,
-    tasks: tasks.length,
-    replicas: args.replicas,
-    passed: overallPassed,
-    passRate: overallPassed / overallTotal,
-    breakdown: {
-      agentAccuracy: overallPassed / overallTotal,
-      infrastructureFailureRate: overallInfraFails / overallTotal,
-      judgeRejectRate: overallJudgeRejects / overallTotal,
-    },
-    failuresByDomain,
-    tokens: {
-      in: overallTokensIn,
-      out: overallTokensOut,
-      total: overallTokensIn + overallTokensOut,
-    },
-    trialPaths: allTrialPaths,
-  });
+    const path = await import("node:path");
+    const trialPaths = finalTrials.map(t => path.join(paths.trialsDir, `${t.taskId}.json`));
+    
+    
+    const crypto = await import("node:crypto");
+    const child_process = await import("node:child_process");
+    const { z } = await import("zod");
+    const zodToJsonSchema = z.toJSONSchema;
+
+    const systemPromptText = buildBenchSystemPrompt();
+    const systemPromptHash = crypto.createHash("sha256").update(systemPromptText).digest("hex").slice(0, 16);
+
+    let gitSha;
+    try {
+      gitSha = child_process.execSync("git rev-parse HEAD", { stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
+    } catch {}
+
+    let benchVersion = "0.0.0";
+    try {
+      const pkg = JSON.parse(await (await import("node:fs/promises")).readFile(path.join(process.cwd(), "package.json"), "utf8"));
+      benchVersion = pkg.version || "0.0.0";
+    } catch {}
+
+    const harness = {
+      agent: {
+        modelId: args.modelId,
+        systemPromptId: "default",
+        systemPromptHash,
+        systemPromptText,
+        toolSet: DEFAULT_TOOL_SET.map(name => {
+          const t = BENCH_TOOL_CATALOG[name];
+          return {
+            name: t.name,
+            description: t.description,
+            inputSchema: z.toJSONSchema(t.parameters),
+            outputSchema: t.outputSchema ? z.toJSONSchema(t.outputSchema) : undefined,
+          };
+        }),
+        limits: {
+          contextWindow: 128000,
+          maxOutputTokens: 8000
+        }
+      },
+      driver: {
+        kind: args.driverKind,
+        headless: args.headless,
+        stealth: true,
+        visualize: !args.noVisualize,
+        viewport: { width: 1280, height: 800 }
+      },
+      run: {
+        concurrency: concurrency,
+        replicas: args.replicas,
+        timeoutMs: 15 * 60000,
+        hardTimeoutBufferMs: 30000
+      },
+      judge: {
+        modelId: JUDGE_MODEL_ID,
+        version: LLM_JUDGE_VERSION
+      },
+      suite: {
+        source: args.suite,
+        revision: WEBBENCH_REVISION
+      },
+      provenance: {
+        benchVersion,
+        gitSha,
+        nodeVersion: process.version,
+        platform: process.platform
+      }
+    };
+    
+    // Write the aggregate summary alongside the per-trial JSONs.
+    const summaryPath = writeSummary(paths, {
+      runId,
+      model: args.modelLabel,
+      suite: args.suite,
+      taskId: args.taskId,
+      startedAt,
+      endedAt: new Date().toISOString(),
+      durationMs: Date.now() - startMs,
+      tasks: finalRows.length,
+      replicas: args.replicas,
+      passed: overallPassed,
+      passRate: overallPassed / overallTotal,
+      breakdown: {
+        agentAccuracy: overallPassed / overallTotal,
+        infrastructureFailureRate: overallInfraFails / overallTotal,
+        judgeRejectRate: overallJudgeRejects / overallTotal,
+      },
+      failuresByDomain,
+      tokens: {
+        in: overallTokensIn,
+        out: overallTokensOut,
+        total: overallTokensIn + overallTokensOut,
+      },
+      harness,
+      trialPaths,
+    });
   console.log("");
   console.log(`Summary: ${summaryPath}`);
   console.log(`Trials:  ${paths.trialsDir}`);

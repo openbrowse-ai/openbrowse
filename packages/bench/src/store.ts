@@ -8,8 +8,8 @@
  * matter.
  */
 
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { resolve, join } from "node:path";
 import type { TrialResult } from "./runner";
 import { safeSegment, type RunPaths } from "./paths";
 
@@ -34,6 +34,51 @@ export interface RunSummary {
   /** Failure rate per domain to inform infrastructure tuning and exclusions. */
   failuresByDomain?: Record<string, number>;
   tokens: { in: number; out: number; total: number };
+  /** Complete snapshot of the harness configuration used for this run. */
+  harness?: {
+    agent: {
+      modelId: string;
+      systemPromptId: string;
+      systemPromptHash: string;
+      systemPromptText: string;
+      toolSet: {
+        name: string;
+        description: string;
+        inputSchema: object;
+        outputSchema?: object;
+      }[];
+      limits: {
+        contextWindow: number;
+        maxOutputTokens: number;
+      };
+    };
+    driver: {
+      kind: "local" | "kernel";
+      headless: boolean;
+      stealth?: boolean;
+      visualize: boolean;
+      viewport?: { width: number; height: number };
+    };
+    run: {
+      concurrency: number;
+      replicas: number;
+      timeoutMs?: number;
+    };
+    judge: {
+      modelId: string;
+      version: string;
+    };
+    suite: {
+      source?: string;
+      revision?: string;
+    };
+    provenance: {
+      benchVersion: string;
+      gitSha?: string;
+      nodeVersion: string;
+      platform: string;
+    };
+  };
   /** Per-trial files relative to `runDir`. */
   trialPaths: string[];
 }
@@ -56,4 +101,18 @@ export function writeSummary(paths: RunPaths, summary: RunSummary): string {
     "utf-8",
   );
   return paths.summaryPath;
+}
+
+export function readAllTrials(paths: RunPaths): TrialResult[] {
+  const files = readdirSync(paths.trialsDir).filter((f) => f.endsWith(".json"));
+  const trials: TrialResult[] = [];
+  for (const f of files) {
+    try {
+      const data = readFileSync(join(paths.trialsDir, f), "utf-8");
+      trials.push(JSON.parse(data));
+    } catch (err) {
+      console.warn(`Failed to read trial ${f}:`, err);
+    }
+  }
+  return trials;
 }

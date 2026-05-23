@@ -35,6 +35,8 @@ import type { BenchmarkTask } from "./tasks/types";
 export interface TrialConfig {
   driverKind?: "local" | "kernel";
   model: LanguageModel;
+  /** Full provider ID of the model used, e.g. "google:gemini-3-pro-preview" or "gemini-3-pro-preview" */
+  modelId?: string;
   /** Display label for the model, included in the trial result for grouping. */
   modelLabel: string;
   systemPromptId?: string;
@@ -69,6 +71,7 @@ export interface TrialConfig {
 export interface TrialResult {
   taskId: string;
   modelLabel: string;
+  agentModelId?: string;
   systemPromptId: string;
   toolSetId: string;
   passed: boolean;
@@ -102,6 +105,60 @@ export interface TraceEntry {
 export async function runTrial(
   task: BenchmarkTask,
   config: TrialConfig,
+): Promise<TrialResult> {
+  const HARD_TIMEOUT = config.timeoutMs ?? task.timeoutMs ?? 15 * 60_000;
+  const HARD_BUFFER = 30_000;
+
+  // We need to keep a reference to the kernel driver if one is created
+  // so the hard timeout can clean it up.
+  let kernelDriverRef: KernelDriver | undefined;
+
+  const trialPromise = runTrialInner(task, config, (driver) => {
+    if (driver instanceof KernelDriver) {
+      kernelDriverRef = driver;
+    }
+  });
+
+  const timeoutPromise = new Promise<TrialResult>((resolve) => {
+    setTimeout(() => {
+      // If we hard timeout, fire-and-forget delete the kernel session so it doesn't leak
+      if (kernelDriverRef && (kernelDriverRef as any).kernelSessionId) {
+        try {
+          // Access the private kernel property and session ID to force a deletion
+          const kernel = (kernelDriverRef as any).kernel;
+          const sessionId = (kernelDriverRef as any).kernelSessionId;
+          if (kernel && sessionId) {
+            kernel.browsers.deleteByID(sessionId).catch(() => {});
+          }
+        } catch {}
+      }
+
+      resolve({
+        taskId: task.id,
+        modelLabel: config.modelLabel,
+        agentModelId: config.modelId,
+        systemPromptId: config.systemPromptId ?? "default",
+        toolSetId: config.toolSetId ?? `set:${(config.toolNames ?? DEFAULT_TOOL_SET).join("+")}`,
+        passed: false,
+        agentAnswer: "",
+        finalUrl: "",
+        durationMs: HARD_TIMEOUT + HARD_BUFFER,
+        steps: 0,
+        tokens: { in: 0, out: 0, total: 0 },
+        judge: { passed: false, reasoning: `Runner error: Trial exceeded hard timeout of ${HARD_TIMEOUT + HARD_BUFFER}ms` },
+        error: { kind: "infrastructure-error", message: `Trial exceeded hard timeout of ${HARD_TIMEOUT + HARD_BUFFER}ms` },
+        trace: [],
+      });
+    }, HARD_TIMEOUT + HARD_BUFFER);
+  });
+
+  return Promise.race([trialPromise, timeoutPromise]);
+}
+
+async function runTrialInner(
+  task: BenchmarkTask,
+  config: TrialConfig,
+  onDriverLaunched: (driver: PlaywrightDriver) => void,
 ): Promise<TrialResult> {
   const start = Date.now();
   const trace: TraceEntry[] = [];
@@ -143,6 +200,7 @@ export async function runTrial(
           stealth: true,
           recordVideoDir: config.videosDir,
         });
+        onDriverLaunched(driver);
       } catch (err) {
         throw { kind: "infrastructure-error", message: `Failed to launch Kernel browser: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -152,6 +210,7 @@ export async function runTrial(
           headless: config.headless ?? false,
           recordVideoDir: config.videosDir,
         });
+        onDriverLaunched(driver);
       } catch (err) {
         throw { kind: "infrastructure-error", message: `Failed to launch Playwright browser: ${err instanceof Error ? err.message : String(err)}` };
       }
@@ -283,10 +342,16 @@ export async function runTrial(
   } finally {
     if (driver) {
       if (plannedVideoPath) {
-        const saved = await driver.closeAndSaveVideo(plannedVideoPath);
+        const saved = await Promise.race([
+          driver.closeAndSaveVideo(plannedVideoPath),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000))
+        ]);
         if (saved) videoPath = saved;
       } else {
-        await driver.close().catch(() => {});
+        await Promise.race([
+          driver.close(),
+          new Promise<void>((resolve) => setTimeout(() => resolve(), 10_000))
+        ]).catch(() => {});
       }
     }
   }
@@ -301,6 +366,7 @@ export async function runTrial(
   return {
     taskId: task.id,
     modelLabel: config.modelLabel,
+    agentModelId: config.modelId,
     systemPromptId: config.systemPromptId ?? "default",
     toolSetId:
       config.toolSetId ?? `set:${(config.toolNames ?? DEFAULT_TOOL_SET).join("+")}`,

@@ -15,18 +15,20 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  clicked: true;
-  target: string;
-  diff?: string | null;
-  note?: string;
-};
+const outputSchema = z.object({
+  clicked: z.literal(true),
+  target: z.string(),
+  diff: z.string().nullable().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const clickElementTool: BrowserTool<Input, Output> = {
   name: "clickElement",
   description:
     "Click an element on the page. Use @ref from snapshot (preferred) or a CSS selector. The response automatically includes a diff of what changed on the page — use it to verify the action worked before acting again. If diff is null the click produced no visible change.",
   parameters,
+  outputSchema,
   execute: async ({ target }, ctx) => {
     const tab = await ctx.driver.getActiveTab();
     const tabId = tab.id;

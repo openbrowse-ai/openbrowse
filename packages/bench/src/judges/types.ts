@@ -8,4 +8,5 @@ export interface JudgeVerdict {
   reasoning: string;
   /** Set by `llmJudge` so historical scores remain comparable across prompt versions. */
   judgeVersion?: string;
+  judgeModelId?: string;
 }

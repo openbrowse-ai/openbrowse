@@ -17,13 +17,18 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = { result?: unknown; error?: string };
+const outputSchema = z.object({
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const executeOnPageTool: BrowserTool<Input, Output> = {
   name: "executeOnPage",
   description:
     "Execute JavaScript in the active tab's page context with full DOM access. Requires user approval before each execution. Use when you need complex DOM manipulation or access to page JavaScript variables/state beyond what readPage/clickElement/typeInElement provide.",
   parameters,
+  outputSchema,
   approval: { required: true },
   execute: async ({ code, args }, ctx) => {
     const tab = await ctx.driver.getActiveTab();

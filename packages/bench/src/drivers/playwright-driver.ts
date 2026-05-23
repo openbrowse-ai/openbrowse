@@ -91,6 +91,8 @@ export class PlaywrightDriver implements BrowserDriver {
     return new PlaywrightDriver(browser, context, opts.recordVideoDir);
   }
 
+  protected crashed = false;
+
   protected constructor(
     browser: Browser,
     context: BrowserContext,
@@ -105,6 +107,12 @@ export class PlaywrightDriver implements BrowserDriver {
     context.on("page", (page) => {
       void this.attachPage(page);
     });
+  }
+
+  protected checkCrashed() {
+    if (this.crashed) {
+      throw new Error("Browser tab crashed or was closed unexpectedly");
+    }
   }
 
   /**
@@ -190,6 +198,7 @@ export class PlaywrightDriver implements BrowserDriver {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<T> {
+    this.checkCrashed();
     const tracked = await this.requirePage(tabId);
     // Playwright's CDPSession.send returns the raw protocol result, which is
     // the same shape the extension's `chrome.debugger.sendCommand` returns.
@@ -200,6 +209,7 @@ export class PlaywrightDriver implements BrowserDriver {
   }
 
   async getActiveTab(): Promise<BrowserTabInfo> {
+    this.checkCrashed();
     if (this.activeTabId == null) {
       // Bench tasks always begin with `navigate(startUrl)`, which creates
       // and pins a tab. If we got here without one, the runner skipped
@@ -218,6 +228,7 @@ export class PlaywrightDriver implements BrowserDriver {
   }
 
   async setActiveTab(tabId: TabId | null): Promise<void> {
+    this.checkCrashed();
     if (tabId != null && !this.pages.has(tabId)) {
       throw new Error(`PlaywrightDriver: unknown tab id ${String(tabId)}`);
     }
@@ -229,6 +240,7 @@ export class PlaywrightDriver implements BrowserDriver {
   }
 
   async listTabs(): Promise<BrowserTabInfo[]> {
+    this.checkCrashed();
     const out: BrowserTabInfo[] = [];
     for (const tracked of this.pages.values()) {
       out.push(await this.toTabInfo(tracked));
@@ -237,6 +249,7 @@ export class PlaywrightDriver implements BrowserDriver {
   }
 
   async updateTabUrl(tabId: TabId, url: string): Promise<void> {
+    this.checkCrashed();
     const tracked = await this.requirePage(tabId);
     await tracked.page.goto(url);
   }
@@ -245,6 +258,7 @@ export class PlaywrightDriver implements BrowserDriver {
     url: string,
     _opts: { active?: boolean } = {},
   ): Promise<TabId> {
+    this.checkCrashed();
     const page = await this.context.newPage();
     const tracked = await this.attachPage(page);
     await page.goto(url);
@@ -252,6 +266,7 @@ export class PlaywrightDriver implements BrowserDriver {
   }
 
   async waitForLoad(tabId: TabId, timeoutMs = 15_000): Promise<void> {
+    this.checkCrashed();
     const tracked = await this.requirePage(tabId);
     // Mirror the extension's "complete" semantics — wait until the page is
     // fully loaded, not just DOM-ready. Some bench tasks involve client-side
@@ -278,6 +293,7 @@ export class PlaywrightDriver implements BrowserDriver {
     tabId: TabId,
     message: Record<string, unknown>,
   ): Promise<T> {
+    this.checkCrashed();
     const tracked = await this.requirePage(tabId);
     const type = message["type"] as string;
     switch (type) {

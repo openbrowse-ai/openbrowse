@@ -18,35 +18,20 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  /**
-   * Data URL of the captured PNG. Always set when the screenshot tool
-   * actually executes successfully. Marked optional because the
-   * compacting transport may strip the image when the tool result
-   * falls outside the protected tail of recent user turns; in that
-   * case `removed` carries the placeholder marker instead.
-   */
-  imageDataUrl?: string;
-  /**
-   * Set when this tool result was elided by send-time pruning. Used by
-   * the screenshot tool's `toModelOutput` to emit a text marker so the
-   * model still sees that a screenshot existed here and was removed,
-   * instead of crashing on a missing field.
-   */
-  removed?: string;
-  /** Number of @refs that were rendered as labels on the image. */
-  annotatedCount?: number;
-  /** Set if annotation was requested but failed; helps the agent diagnose. */
-  annotationError?: string;
-  /** Set if Page.captureScreenshot needed a retry due to a transient CDP error. */
-  note?: string;
-};
+const outputSchema = z.object({
+  imageDataUrl: z.string().optional(),
+  annotatedCount: z.number().optional(),
+  annotationError: z.string().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const screenshotTool: BrowserTool<Input, Output> = {
   name: "screenshot",
   description:
     "Capture a screenshot of the target tab (set via selectTab, or the active browsing tab). Works even if the tab is not focused. Use annotate: true to overlay @ref labels from the most recent snapshot — useful when the page has visual complexity the accessibility tree doesn't capture well. The response includes annotatedCount when annotation succeeded; if annotation was requested but failed, an annotationError field explains why.",
   parameters,
+  outputSchema,
   execute: async ({ annotate, fullPage }, ctx) => {
     const tab = await ctx.driver.getActiveTab();
     const tabId = tab.id;

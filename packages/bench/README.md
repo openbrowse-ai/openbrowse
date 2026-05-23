@@ -25,10 +25,28 @@ pnpm install
 pnpm --filter @openbrowse/bench bench --task example-com-heading
 
 # 3. Run a concurrent sweep using Kernel
-pnpm --filter @openbrowse/bench bench --suite webbench --driver kernel
+pnpm --filter @openbrowse/bench bench --suite webbench-mini --driver kernel
 ```
 
 The first run will download Playwright's Chromium binary if it isn't cached.
+
+## Resuming an interrupted run
+
+If a suite crashes, times out, or you kill it manually, you can resume it. The runner will automatically skip tasks that already have a trial JSON in the directory. 
+
+By default, any task that encountered an error (e.g., an infrastructure timeout or an agent crash) will be deleted and re-attempted. Pass `--keep-errors` if you want to skip errored tasks instead.
+
+```bash
+# Example: Resume a specific partial run
+npx tsx src/cli.ts \
+  --resume .bench/runs/2026-05-23T00-56-17-gemini-3-pro-preview-webbench-mini \
+  --suite webbench-mini \
+  --model gemini-3-pro-preview \
+  --driver kernel \
+  --concurrency 10
+```
+
+*Note: The CLI aggregates all trials (both old and newly-run) into the final `summary.json` table.*
 
 ### Where to put your API keys
 

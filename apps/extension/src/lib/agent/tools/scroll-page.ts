@@ -14,13 +14,19 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = { scrolled: true; direction: string; amount: number };
+const outputSchema = z.object({
+  scrolled: z.literal(true),
+  direction: z.string(),
+  amount: z.number(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const scrollPageTool: BrowserTool<Input, Output> = {
   name: "scrollPage",
   description:
     "Scroll the user's active page up or down. Useful for revealing content below the fold or navigating back to the top.",
   parameters,
+  outputSchema,
   execute: async ({ direction, amount }, ctx) => {
     const tab = await ctx.driver.getActiveTab();
     const pixels = amount ?? 600;

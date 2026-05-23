@@ -26,20 +26,22 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  typed: true;
-  target: string;
-  text: string;
-  submitted?: boolean;
-  diff?: string | null;
-  note?: string;
-};
+const outputSchema = z.object({
+  typed: z.literal(true),
+  target: z.string(),
+  text: z.string(),
+  submitted: z.boolean().optional(),
+  diff: z.string().nullable().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const typeInElementTool: BrowserTool<Input, Output> = {
   name: "typeInElement",
   description:
     "Type text into an input or textarea. Use @ref from snapshot (preferred) or a CSS selector. Pass submit: true to press Enter and wait for the page to settle. The response automatically includes a diff of what changed on the page.",
   parameters,
+  outputSchema,
   execute: async ({ target, text, clearFirst, submit }, ctx) => {
     const tab = await ctx.driver.getActiveTab();
     const tabId = tab.id;

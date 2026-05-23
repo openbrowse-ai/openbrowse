@@ -112,6 +112,8 @@ function toBenchSDKTool(t: BrowserTool<unknown, unknown>): ToolSet[string] {
   return {
     description: t.description,
     inputSchema: t.parameters,
+    outputSchema: t.outputSchema,
+    strict: true,
     execute: async (
       input: unknown,
       options: { experimental_context?: unknown },

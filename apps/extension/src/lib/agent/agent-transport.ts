@@ -648,10 +648,10 @@ function toSDKTool<TInput, TOutput>(
   return {
     description: t.description,
     inputSchema: t.parameters,
-    needsApproval,
+    outputSchema: t.outputSchema,
+    strict: true,
     execute,
-    onInputAvailable,
-    toModelOutput,
+    needsApproval,
   } as ToolSet[string];
 }
 

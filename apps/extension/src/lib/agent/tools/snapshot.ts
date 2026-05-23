@@ -22,19 +22,21 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = {
-  snapshot: string;
-  refCount: number;
-  url: string;
-  belowFoldCount?: number;
-  hint?: string;
-};
+const outputSchema = z.object({
+  snapshot: z.string(),
+  refCount: z.number(),
+  url: z.string(),
+  belowFoldCount: z.number().optional(),
+  hint: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const snapshotTool: BrowserTool<Input, Output> = {
   name: "snapshot",
   description:
     "Get the page's accessibility tree with @refs for interactive elements. Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (click/type/navigate) already auto-attach diffs — call this explicitly only when you need the full tree, a scoped view, or after executeOnPage.",
   parameters,
+  outputSchema,
   execute: async ({ mode, selector, diff }, ctx) => {
     const tab = await ctx.driver.getActiveTab();
     const tabId = tab.id;

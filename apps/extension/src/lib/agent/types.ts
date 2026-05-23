@@ -9,6 +9,7 @@ export interface BrowserTool<TInput = unknown, TOutput = unknown> {
   name: string;
   description: string;
   parameters: z.ZodType<TInput>;
+  outputSchema?: z.ZodType<TOutput>;
   /**
    * Execute the tool. The `ctx` argument carries the active `BrowserDriver`
    * and optional session metadata (conversation id, tab handle helpers).

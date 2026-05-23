@@ -105,3 +105,32 @@ export function createRunPaths(runDir: string): RunPaths {
     summaryPath: resolve(runDir, "summary.json"),
   };
 }
+
+/**
+ * Validate and resolve paths for an existing run directory (for resume).
+ * Creates the videos directory if it somehow doesn't exist, but requires
+ * the trials directory to already be there.
+ */
+export function ensureRunDirExists(runDir: string): RunPaths {
+  const absoluteDir = resolve(runDir);
+  if (!existsSync(absoluteDir)) {
+    throw new Error(`ensureRunDirExists: directory does not exist: ${absoluteDir}`);
+  }
+  
+  const trialsDir = resolve(absoluteDir, "trials");
+  if (!existsSync(trialsDir)) {
+    throw new Error(`ensureRunDirExists: not a valid run directory (missing 'trials' folder): ${absoluteDir}`);
+  }
+  
+  const videosDir = resolve(absoluteDir, "videos");
+  if (!existsSync(videosDir)) {
+    mkdirSync(videosDir, { recursive: true });
+  }
+  
+  return {
+    runDir: absoluteDir,
+    trialsDir,
+    videosDir,
+    summaryPath: resolve(absoluteDir, "summary.json"),
+  };
+}

@@ -16,20 +16,22 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  navigated: true;
-  url: string;
-  tab: string;
-  snapshot?: string;
-  refCount?: number;
-  note?: string;
-};
+const outputSchema = z.object({
+  navigated: z.literal(true),
+  url: z.string(),
+  tab: z.string(),
+  snapshot: z.string().optional(),
+  refCount: z.number().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const navigateTool: BrowserTool<Input, Output> = {
   name: "navigate",
   description:
     "Navigate to a URL. Reuses the current agent-owned tab if one exists, otherwise opens a new background tab. Pass newTab: true to force a new tab. The response automatically includes a snapshot of the landed page so you can interact immediately.",
   parameters,
+  outputSchema,
   execute: async ({ url, newTab }, ctx) => {
     let tabId = null as null | ReturnType<typeof ctx.driver.getActiveTabId>;
     let createdNew = false;

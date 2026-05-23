@@ -18,9 +18,9 @@ import type { JudgeVerdict } from "./types";
  * Bump this whenever the judge prompt or model changes. Stored alongside
  * each trial in the result store so historical trends remain comparable.
  */
-export const LLM_JUDGE_VERSION = "v1.2026-05-21";
+export const LLM_JUDGE_VERSION = "v1.2026-05-22";
 
-const JUDGE_MODEL_ID = "gemini-2.5-flash";
+export const JUDGE_MODEL_ID = "gemini-3.5-flash";
 
 const judgeSchema = z.object({
   passed: z
@@ -82,6 +82,7 @@ export async function llmJudge(input: LlmJudgeInput): Promise<JudgeVerdict> {
       passed: object.passed,
       reasoning: object.reasoning,
       judgeVersion: LLM_JUDGE_VERSION,
+      judgeModelId: JUDGE_MODEL_ID,
     };
   } catch (err) {
     return {
