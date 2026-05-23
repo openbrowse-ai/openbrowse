@@ -1,0 +1,59 @@
+/**
+ * Disk persistence for trial results and run summaries.
+ *
+ * The bench writes one JSON per trial (under `<runDir>/trials/<task-id>.json`)
+ * plus an aggregate `<runDir>/summary.json` once the sweep finishes. JSON
+ * (not SQLite) for v1 because it's trivially diffable and readable; we can
+ * graduate to SQLite later when matrix-scale runs make per-file overhead
+ * matter.
+ */
+
+import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import type { TrialResult } from "./runner";
+import { safeSegment, type RunPaths } from "./paths";
+
+export interface RunSummary {
+  runId: string;
+  model: string;
+  suite?: string;
+  taskId?: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  tasks: number;
+  replicas: number;
+  passed: number;
+  passRate: number;
+  /** Pass rate breakdown for deeper analysis. */
+  breakdown?: {
+    agentAccuracy: number;
+    infrastructureFailureRate: number;
+    judgeRejectRate: number;
+  };
+  /** Failure rate per domain to inform infrastructure tuning and exclusions. */
+  failuresByDomain?: Record<string, number>;
+  tokens: { in: number; out: number; total: number };
+  /** Per-trial files relative to `runDir`. */
+  trialPaths: string[];
+}
+
+/**
+ * Write a single trial result. Returns the absolute path so the caller can
+ * surface it in CLI output.
+ */
+export function writeTrial(paths: RunPaths, trial: TrialResult): string {
+  const filename = `${safeSegment(trial.taskId)}.json`;
+  const path = resolve(paths.trialsDir, filename);
+  writeFileSync(path, JSON.stringify(trial, null, 2) + "\n", "utf-8");
+  return path;
+}
+
+export function writeSummary(paths: RunPaths, summary: RunSummary): string {
+  writeFileSync(
+    paths.summaryPath,
+    JSON.stringify(summary, null, 2) + "\n",
+    "utf-8",
+  );
+  return paths.summaryPath;
+}

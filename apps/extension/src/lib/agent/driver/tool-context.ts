@@ -16,6 +16,7 @@
  */
 
 import type { BrowserDriver, TabId } from "./browser-driver";
+import type { TodoItem } from "../../types";
 
 export interface ToolSession {
   /** The active conversation id, or null when running outside a conversation. */
@@ -38,6 +39,21 @@ export interface ToolSession {
   getOrCreateHandle?: (tabId: TabId) => string;
   /** Reverse-lookup a handle → real tab id. */
   resolveHandle?: (handle: string) => TabId | undefined;
+  /**
+   * True when the conversation owns the given tab (so the agent should
+   * reuse it for subsequent navigations rather than spawning new ones).
+   * Bench: always false — every navigate creates a fresh tab.
+   */
+  isAgentOwnedTab?: (tabId: TabId) => Promise<boolean>;
+  /**
+   * True when the conversation already has a tab group, so newly-selected
+   * tabs should fold into it. Used by `selectTab`. Bench: always false.
+   */
+  hasOwnedTabGroup?: () => Promise<boolean>;
+  /** Retrieve the current to-do list for this session. */
+  getTodos?: () => Promise<TodoItem[]>;
+  /** Replace the current to-do list for this session. */
+  setTodos?: (todos: TodoItem[]) => Promise<void>;
 }
 
 export interface ToolContext {

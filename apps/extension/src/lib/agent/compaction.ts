@@ -5,7 +5,10 @@ import type {
   CompactionPart,
   SerializedUIPart,
 } from "../types";
-import type { ModelDefinition } from "@/registry/providers/types";
+export interface TokenLimits {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
 
 // Constants
 export const COMPACTION_BUFFER = 20_000;
@@ -112,7 +115,7 @@ export function estimateMessageTokens(parts: SerializedUIPart[]): number {
   return total;
 }
 
-export function getUsableTokens(model: ModelDefinition | undefined): number {
+export function getUsableTokens(model: TokenLimits | undefined): number {
   const context = model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxOutput = model?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT;
   return context - maxOutput - COMPACTION_BUFFER;
@@ -120,7 +123,7 @@ export function getUsableTokens(model: ModelDefinition | undefined): number {
 
 export function shouldCompact(
   totalTokens: number,
-  model: ModelDefinition | undefined
+  model: TokenLimits | undefined
 ): boolean {
   return totalTokens >= getUsableTokens(model);
 }
@@ -350,7 +353,7 @@ export function pruneMessages(
 
 export function selectTail(
   messages: PrunableMessage[],
-  model: ModelDefinition | undefined
+  model: TokenLimits | undefined
 ): { headMessages: PrunableMessage[]; tailStartId: string | undefined } {
   const usable = getUsableTokens(model);
   const budget = Math.min(

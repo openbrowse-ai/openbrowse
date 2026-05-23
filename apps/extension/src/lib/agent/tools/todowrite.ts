@@ -1,7 +1,6 @@
 import { z } from "zod";
-import { chatDb } from "@/lib/chat-db";
 import type { BrowserTool } from "../types";
-import type { TodoItem } from "@/lib/types";
+import type { TodoItem } from "../../types";
 
 const todoSchema = z.object({
   content: z.string().describe("Imperative task description (e.g., 'Search for top 3 mechanical keyboards')"),
@@ -14,36 +13,59 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = { saved: true } | { saved: false; reason: string };
+const outputSchema = z.union([
+  z.object({ saved: z.literal(true) }),
+  z.object({ saved: z.literal(false), reason: z.string() }),
+]);
+type Output = z.infer<typeof outputSchema>;
 
-export function createTodoWriteTool(
-  conversationId: string | null,
-): BrowserTool<Input, Output> {
-  return {
-    name: "todoWrite",
-    description:
-      "Proactively manage a structured task list to track progress during complex, multi-step tasks. Overwrites the current plan with the provided list. The list is preserved across conversation turns. RULES: At most one task can be 'in_progress' at a time. Mark tasks 'completed' immediately when done, do not batch completions.",
-    parameters,
-    execute: async (input) => {
-      if (!conversationId) {
+export const todoWriteTool: BrowserTool<Input, Output> = {
+  name: "todoWrite",
+  description:
+    "Proactively manage a structured task list to track progress during complex, multi-step tasks. Overwrites the current plan with the provided list. The list is preserved across conversation turns. RULES: At most one task can be 'in_progress' at a time. Mark tasks 'completed' immediately when done, do not batch completions.",
+  parameters,
+  outputSchema,
+  execute: async (input, ctx) => {
+    if (!ctx.session?.getTodos || !ctx.session?.setTodos) {
+      return { saved: false, reason: "No active session context to save todos against." };
+    }
+
+    const { todos: newTodosInput } = parameters.parse(input);
+
+    const inProgressCount = newTodosInput.filter(t => t.status === "in_progress").length;
+    if (inProgressCount > 1) {
+      return { saved: false, reason: "Constraint violated: At most one task can be 'in_progress' at a time. Please update the statuses and try again." };
+    }
+
+    const existingTodos = await ctx.session.getTodos();
+
+    // Re-use IDs for existing tasks, generate new IDs for new tasks
+    // (since we overwrite the whole list and don't want to re-create IDs every turn)
+    const existingTodosMap = new Map<string, TodoItem>(
+      existingTodos.map(t => [t.content, t])
+    );
+
+    const finalTodos: TodoItem[] = newTodosInput.map(item => {
+      const existing = existingTodosMap.get(item.content);
+      if (existing) {
         return {
-          saved: false,
-          reason: "No active conversation context to save todos against.",
+          ...existing,
+          ...item,
+          updatedAt: Date.now()
         };
-      }
-
-      const now = Date.now();
-      const todosToSave: TodoItem[] = input.todos.map((item) => {
+      } else {
+        const now = Date.now();
         return {
           ...item,
           id: crypto.randomUUID(),
           createdAt: now,
           updatedAt: now,
         };
-      });
+      }
+    });
 
-      await chatDb.updateConversation(conversationId, { todos: todosToSave, updatedAt: now });
-      return { saved: true };
-    },
-  };
-}
+    await ctx.session.setTodos(finalTodos);
+
+    return { saved: true };
+  },
+};

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isDetachError } from "../cdp-session";
+import { isDetachError } from "../cdp-errors";
 import type { BrowserDriver, TabId } from "../driver";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";

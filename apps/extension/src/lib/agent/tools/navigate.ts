@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { chatDb } from "@/lib/chat-db";
 import { handleForTab } from "../driver";
 import { invalidateRefs } from "../ref-store";
 import { captureSnapshot } from "../snapshot-capture";
@@ -32,17 +31,15 @@ export const navigateTool: BrowserTool<Input, Output> = {
     "Navigate to a URL. Reuses the current agent-owned tab if one exists, otherwise opens a new background tab. Pass newTab: true to force a new tab. The response automatically includes a snapshot of the landed page so you can interact immediately.",
   parameters,
   execute: async ({ url, newTab }, ctx) => {
-    const conversationId = ctx.session?.conversationId ?? null;
-
     let tabId = null as null | ReturnType<typeof ctx.driver.getActiveTabId>;
     let createdNew = false;
 
     if (!newTab) {
       const currentTarget = ctx.driver.getActiveTabId();
-      if (currentTarget != null && conversationId) {
-        const conv = await chatDb.getConversation(conversationId);
-        const agentOwned = !!conv?.ownedTabIds.includes(Number(currentTarget));
-        if (agentOwned) {
+      if (currentTarget != null) {
+        const owned =
+          (await ctx.session?.isAgentOwnedTab?.(currentTarget)) ?? false;
+        if (owned) {
           try {
             await ctx.driver.updateTabUrl(currentTarget, url);
             tabId = currentTarget;

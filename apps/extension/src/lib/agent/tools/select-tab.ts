@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { chatDb } from "@/lib/chat-db";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
@@ -18,8 +17,6 @@ export const selectTabTool: BrowserTool<Input, Output> = {
     "Set which tab tools like readPage/clickElement/typeInElement/snapshot should target. Does NOT switch the user's visible tab. Use handles from listTabs.",
   parameters,
   execute: async ({ tab }, ctx) => {
-    const conversationId = ctx.session?.conversationId ?? null;
-
     let tabId = ctx.session?.resolveHandle?.(tab);
 
     // Fallback: try parsing as numeric tab ID for backward compat
@@ -32,19 +29,17 @@ export const selectTabTool: BrowserTool<Input, Output> = {
       throw new Error(`Tab handle "${tab}" not found. Use listTabs to see available tabs.`);
     }
 
-    // Verify the tab exists and isn't an internal page by listing tabs.
+    // Verify the tab exists by listing tabs.
     const tabs = await ctx.driver.listTabs();
     const target = tabs.find((t) => t.id === tabId);
     if (!target) throw new Error(`Tab ${tabId} not found`);
 
-    if (conversationId) {
-      const conv = await chatDb.getConversation(conversationId);
-      // Only fold into the group if the conversation already owns one.
-      // Creating a group from selectTab alone feels too aggressive — the
-      // agent may just be peeking at an existing tab.
-      if (conv?.ownedGroupId != null) {
-        await ctx.session?.bindActiveTabToConversation?.(tabId);
-      }
+    // Only fold into the agent's tab group if one already exists. Creating
+    // a group from selectTab alone would be too aggressive — the agent may
+    // just be peeking at an existing tab.
+    const hasGroup = (await ctx.session?.hasOwnedTabGroup?.()) ?? false;
+    if (hasGroup) {
+      await ctx.session?.bindActiveTabToConversation?.(tabId);
     }
 
     await ctx.driver.setActiveTab(tabId);
