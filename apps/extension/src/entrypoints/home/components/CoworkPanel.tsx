@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { OPFS } from "@/lib/vfs/opfs";
 import { vfsEvents } from "@/lib/vfs/events";
 import { chatDb } from "@/lib/chat-db";
+import { UPLOADS_DIR } from "@/lib/uploads-dir";
 import type { TodoItem } from "@/lib/types";
 import {
   Folder,
@@ -9,29 +10,48 @@ import {
   FileCode,
   FileImage,
   File,
+  FileSpreadsheet,
+  FileJson,
+  FileAudio,
+  FileVideo,
+  Download,
   ChevronDown,
   CheckCircle2,
   Circle,
   XCircle,
   Loader2,
 } from "lucide-react";
-import { FileViewerModal } from "./FileViewerModal";
 import { cn } from "@/lib/utils";
+import { downloadOpfsFile } from "@/lib/download";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface CoworkPanelProps {
   conversationId: string;
+  /**
+   * Click handler for a working-folder file row. Called with the file path
+   * RELATIVE to the workspace root (e.g. `subdir/data.csv`). Pass `null` to
+   * deselect (currently only used by the parent on Esc / file panel close).
+   */
+  onSelectFile: (file: string | null) => void;
 }
 
-export function CoworkPanel({ conversationId }: CoworkPanelProps) {
+export function CoworkPanel({ conversationId, onSelectFile }: CoworkPanelProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
       <ProgressCard conversationId={conversationId} />
-      <WorkingFolderCard conversationId={conversationId} />
+      <WorkingFolderCard
+        conversationId={conversationId}
+        onSelectFile={onSelectFile}
+      />
     </div>
   );
 }
@@ -167,14 +187,19 @@ function TodoRow({ todo }: { todo: TodoItem }) {
 
 // ─── Working Folder Card (OPFS) ─────────────────────────────────────────
 
-function WorkingFolderCard({ conversationId }: { conversationId: string }) {
+function WorkingFolderCard({
+  conversationId,
+  onSelectFile,
+}: {
+  conversationId: string;
+  onSelectFile: (file: string | null) => void;
+}) {
   const vfsRoot = useMemo(
     () => `conversations/${conversationId}/workspace`,
     [conversationId]
   );
 
   const [files, setFiles] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -183,11 +208,17 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
       const paths: string[] = [];
       try {
         for await (const path of OPFS.walk(vfsRoot)) {
-          if (path.startsWith(vfsRoot + "/")) {
-            paths.push(path.slice(vfsRoot.length + 1));
-          } else {
-            paths.push(path);
+          // Skip user-uploaded files (kept under `.uploads/`) — the
+          // Working Folder rail surfaces agent output only.
+          // `OPFS.walk` may yield paths either prefixed with `vfsRoot/`
+          // or already-relative; handle both.
+          const rel = path.startsWith(vfsRoot + "/")
+            ? path.slice(vfsRoot.length + 1)
+            : path;
+          if (rel.startsWith(`${UPLOADS_DIR}/`) || rel === UPLOADS_DIR) {
+            continue;
           }
+          paths.push(rel);
         }
       } catch {
         // Workspace doesn't exist yet
@@ -227,27 +258,40 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
         <ul className="space-y-0.5 px-1.5 pb-1">
           {files.map((file) => (
             <li key={file}>
-              <button
-                type="button"
-                onClick={() => setSelectedFile(file)}
-                className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-muted/60"
-              >
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                  <FileTypeIcon filename={file} />
-                </span>
-                <span className="truncate">{file}</span>
-              </button>
+              <div className="group flex items-center gap-1 rounded-md hover:bg-muted/60">
+                <button
+                  type="button"
+                  onClick={() => onSelectFile(file)}
+                  className="flex flex-1 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm min-w-0"
+                >
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                    <FileTypeIcon filename={file} />
+                  </span>
+                  <span className="truncate">{file}</span>
+                </button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void downloadOpfsFile(
+                          `${vfsRoot}/${file}`,
+                          file.split("/").pop() ?? file,
+                        );
+                      }}
+                      className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground group-hover:flex focus-visible:flex"
+                      aria-label={`Download ${file}`}
+                    >
+                      <Download className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">Download file</TooltipContent>
+                </Tooltip>
+              </div>
             </li>
           ))}
         </ul>
-      )}
-
-      {selectedFile && (
-        <FileViewerModal
-          filePath={`${vfsRoot}/${selectedFile}`}
-          fileName={selectedFile}
-          onClose={() => setSelectedFile(null)}
-        />
       )}
     </CoworkCard>
   );
@@ -255,10 +299,22 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
 
 function FileTypeIcon({ filename }: { filename: string }) {
   const className = "size-3.5";
-  if (/\.(md|txt)$/i.test(filename)) return <FileText className={className} />;
-  if (/\.(ts|tsx|js|jsx|json|html|css|py|rs|go|java|c|cpp|sh)$/i.test(filename))
+  if (/\.(csv|tsv|xlsx|xlsm|xls)$/i.test(filename))
+    return <FileSpreadsheet className={className} />;
+  if (/\.(json|jsonl|ndjson)$/i.test(filename))
+    return <FileJson className={className} />;
+  if (/\.(mp3|wav|ogg|flac|m4a)$/i.test(filename))
+    return <FileAudio className={className} />;
+  if (/\.(mp4|mov|webm|mkv)$/i.test(filename))
+    return <FileVideo className={className} />;
+  if (/\.(md|txt|log)$/i.test(filename)) return <FileText className={className} />;
+  if (
+    /\.(ts|tsx|js|jsx|html?|css|py|rs|go|java|c|cpp|sh|yml|yaml|toml|xml|sql)$/i.test(
+      filename,
+    )
+  )
     return <FileCode className={className} />;
-  if (/\.(png|jpe?g|svg|gif|webp|avif)$/i.test(filename))
+  if (/\.(png|jpe?g|svg|gif|webp|avif|bmp|ico)$/i.test(filename))
     return <FileImage className={className} />;
   return <File className={className} />;
 }

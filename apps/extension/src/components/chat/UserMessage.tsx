@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import { getTypeBadge } from "@/lib/chat/attachment-meta";
+import { useFileSelection } from "@/lib/file-selection-context";
 
 interface UserMessageProps {
   message: AgentUIMessage;
@@ -21,6 +22,7 @@ interface UserMessageProps {
 export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const onSelectFile = useFileSelection();
 
   const rawText = message.parts
     .filter((p) => p.type === "text")
@@ -81,14 +83,6 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
           ))}
         </div>
       )}
-      {text && (
-        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
-          <ReadOnlyEditor
-            content={text}
-            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
-          />
-        </div>
-      )}
       {attachedPaths.length > 0 && (
         <div className="max-w-[85%] flex flex-wrap justify-end gap-1.5">
           {attachedPaths
@@ -100,10 +94,24 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
             })
             .map((path) => {
               const name = path.split("/").pop() ?? path;
+              // `attachedPaths` carry a leading slash; the file viewer
+              // expects a workspace-relative path with no leading slash.
+              const rel = path.replace(/^\//, "");
+              const clickable = onSelectFile != null;
               return (
-                <div
+                <button
                   key={path}
-                  className="flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5"
+                  type="button"
+                  disabled={!clickable}
+                  onClick={
+                    clickable ? () => onSelectFile(rel) : undefined
+                  }
+                  aria-label={clickable ? `Open ${name}` : name}
+                  className={`flex h-[108px] w-[140px] flex-col gap-1 rounded-lg border border-border bg-background p-2.5 text-left transition-colors ${
+                    clickable
+                      ? "cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      : "cursor-default"
+                  }`}
                 >
                   <div className="line-clamp-3 break-words text-xs font-medium leading-tight text-foreground">
                     {name}
@@ -113,9 +121,17 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
                       {getTypeBadge(name)}
                     </span>
                   </div>
-                </div>
+                </button>
               );
             })}
+        </div>
+      )}
+      {text && (
+        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
+          <ReadOnlyEditor
+            content={text}
+            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
+          />
         </div>
       )}
       {!dimmed && (

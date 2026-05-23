@@ -1,4 +1,5 @@
 import { OPFS } from "@/lib/vfs/opfs";
+import { isUploadsPath } from "@/lib/uploads-dir";
 
 /**
  * Manages Pyodide execution using a hidden sandbox iframe instead of a Worker.
@@ -138,9 +139,15 @@ export class PyodideSandboxManager {
     return result;
   }
 
-  // Write flat map of bytes back to OPFS tree.
+  // Write flat map of bytes back to OPFS tree. Files under the
+  // user-uploads subdir are SKIPPED — they're treated as read-only
+  // inputs the agent cannot modify (mirrors the same guard in the
+  // `Write`/`Edit` agent tools). If the Python sandbox modified them
+  // in MEMFS, the change stays inside the sandbox and is discarded on
+  // the next run.
   private async writeOpfsTree(rootPath: string, files: Record<string, Uint8Array>): Promise<void> {
     for (const [relPath, content] of Object.entries(files)) {
+      if (isUploadsPath(relPath)) continue;
       const fullPath = `${rootPath}/${relPath}`;
       await OPFS.writeFileBytes(fullPath, content);
     }
