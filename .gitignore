@@ -46,3 +46,10 @@ skills-lock.json
 
 # Bench artifacts
 .bench/
+
+# Background job pids
+*.pid
+
+# Playwright default output directories
+playwright-report/
+test-results/

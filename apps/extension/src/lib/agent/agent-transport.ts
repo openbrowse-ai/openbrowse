@@ -686,7 +686,7 @@ export async function createAgentTransport(
   const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
   if (!requiredFields.every((f) => !!config[f.key])) return null;
 
-  const model = provider.createLanguageModel(config, agentModel);
+  const model = await provider.createLanguageModel(config, agentModel);
   setCurrentAgentModel(model);
 
   const fsTools = createFsTools(conversationId);

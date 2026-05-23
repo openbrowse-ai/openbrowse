@@ -3,8 +3,9 @@ import path from "node:path";
 import { parse as parseCsv } from "csv-parse/sync";
 import { WEBBENCH_REVISION } from "./revision";
 import type { BenchmarkTask } from "../types";
+import { benchRoot } from "../../paths";
 
-const CACHE_DIR = path.resolve(process.cwd(), ".bench/cache");
+const CACHE_DIR = path.resolve(benchRoot(), "cache");
 const CACHE_FILE = path.resolve(CACHE_DIR, `webbench-${WEBBENCH_REVISION}.json`);
 const WEBBENCH_URL = `https://raw.githubusercontent.com/Halluminate/WebBench/main/webbenchfinal.csv`;
 
