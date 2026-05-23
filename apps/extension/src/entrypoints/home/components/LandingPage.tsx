@@ -18,6 +18,7 @@ import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
 import { useProviders } from "@/hooks/useProviders";
 import type { Space, Settings, AgentSettings, SerializedUIPart, ThinkingConfig } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 interface LandingPageProps {
   space: Space | null;
@@ -185,11 +186,21 @@ export function LandingPage({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      const { block: attachmentBlock, visionFiles } = await formatAttachments(
-        convId,
-        attachments,
-        agentSettings.agentModel,
-      );
+
+      let attachmentBlock: string;
+      let visionFiles: { mediaType: string; url: string }[];
+      try {
+        ({ block: attachmentBlock, visionFiles } = await formatAttachments(
+          convId,
+          attachments,
+          agentSettings.agentModel,
+        ));
+      } catch (e) {
+        toast.error(
+          `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
+        );
+        return;
+      }
 
       // Unlike useAgentChat.handleSubmit, LandingPage doesn't sendMessage
       // directly — the side panel mounts on onNewConversation, reloads from

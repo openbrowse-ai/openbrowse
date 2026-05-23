@@ -54,6 +54,7 @@ import type {
   TextUIPart,
 } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 type AgentMessage = AgentUIMessage;
 
@@ -1098,11 +1099,23 @@ export function useAgentChat({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      const { block: attachmentBlock, visionFiles } = await formatAttachments(
-        convId,
-        attachments,
-        agentSettings.agentModel,
-      );
+
+      let attachmentBlock: string;
+      let visionFiles: { mediaType: string; url: string }[];
+      try {
+        ({ block: attachmentBlock, visionFiles } = await formatAttachments(
+          convId,
+          attachments,
+          agentSettings.agentModel,
+        ));
+      } catch (e) {
+        // Spec §7: stop on first failure, surface error, leave input intact
+        // so the user can retry after removing the offending attachment.
+        toast.error(
+          `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
+        );
+        return;
+      }
 
       // `text` is what the model sees; `persistedText` is what we store in
       // chat-db. Mention context is intentionally model-only (keeps the
@@ -1265,17 +1278,27 @@ export function useAgentChat({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      // TODO(workspace-cleanup): edits write attachments to OPFS but
-      // never remove files that were attached to the prior version of
-      // this message. Repeated edits can leak duplicates into the
-      // conversation workspace (with `(2)`, `(3)`, ... suffixes from
-      // OPFS.uniquePath). Acceptable for v1; address with a real diff
-      // against the prior persisted parts when we add workspace cleanup.
-      const { block: attachmentBlock, visionFiles } = await formatAttachments(
-        conversationId!,
-        attachments,
-        agentSettings.agentModel,
-      );
+
+      let attachmentBlock: string;
+      let visionFiles: { mediaType: string; url: string }[];
+      try {
+        // TODO(workspace-cleanup): edits write attachments to OPFS but
+        // never remove files that were attached to the prior version of
+        // this message. Repeated edits can leak duplicates into the
+        // conversation workspace (with `(2)`, `(3)`, ... suffixes from
+        // OPFS.uniquePath). Acceptable for v1; address with a real diff
+        // against the prior persisted parts when we add workspace cleanup.
+        ({ block: attachmentBlock, visionFiles } = await formatAttachments(
+          conversationId!,
+          attachments,
+          agentSettings.agentModel,
+        ));
+      } catch (e) {
+        toast.error(
+          `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
+        );
+        return;
+      }
 
       // See `handleSubmit` for rationale on the text/persistedText split.
       const text = baseText + mentionContext + attachmentBlock;
