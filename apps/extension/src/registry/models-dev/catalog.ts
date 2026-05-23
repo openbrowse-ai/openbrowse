@@ -193,3 +193,19 @@ export function _resetCacheForTests(): void {
   memory.cached = null;
   memory.inflight = null;
 }
+
+/**
+ * Drops the in-memory cache so the next `getCatalog()` call re-reads
+ * from `chrome.storage.local`. Call this when the storage key is known
+ * to have changed in another context (e.g. a background refresh wrote
+ * a new live catalog while the page-context cache was holding the
+ * bundled snapshot).
+ *
+ * Without this, `getCatalog()` short-circuits on `memory.cached` for
+ * the lifetime of the page and consumers like `useProviders` never
+ * see catalog updates that landed after the first `getCatalog()` call.
+ */
+export function invalidateCache(): void {
+  memory.cached = null;
+  memory.inflight = null;
+}
