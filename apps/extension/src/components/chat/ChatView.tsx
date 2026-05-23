@@ -1,7 +1,7 @@
 import {
   ChatInput,
-  type ImagePreview,
   type TabMentionAttrs,
+  type Attachment,
 } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
@@ -412,9 +412,9 @@ export function ChatView({
   }, [preEditInput, setInput]);
 
   const handleEditSubmit = useCallback(
-    (mentions: TabMentionAttrs[], images: ImagePreview[]) => {
+    (mentions: TabMentionAttrs[], attachments: Attachment[]) => {
       if (!editingMessageId) return;
-      confirmEdit(editingMessageId, mentions, images);
+      confirmEdit(editingMessageId, mentions, attachments);
       setEditingMessageId(null);
     },
     [editingMessageId, confirmEdit],

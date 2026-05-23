@@ -1,5 +1,6 @@
 import { chatDb } from "@/lib/chat-db";
 import { createAgentTransport } from "@/lib/chat-transport";
+import { formatAttachments } from "@/lib/chat/format-attachments";
 import {
   resetAgentIndicator,
   setAgentSpaceColor,
@@ -22,7 +23,7 @@ import {
 } from "@/lib/agent/compaction";
 import {
   type TabMentionAttrs,
-  type ImagePreview,
+  type Attachment,
   formatMentionContext,
 } from "@/components/chat/ChatInput";
 import { DEFAULT_AGENT_SETTINGS, DEFAULT_SETTINGS } from "@/lib/constants";
@@ -1004,8 +1005,11 @@ export function useAgentChat({
   }, [conversationId, chat, transport, setMessages, sendMessage, status]);
 
   const handleSubmit = useCallback(
-    async (mentions: TabMentionAttrs[] = [], images: ImagePreview[] = []) => {
-      if (!input.trim() && images.length === 0) return;
+    async (
+      mentions: TabMentionAttrs[] = [],
+      attachments: Attachment[] = [],
+    ) => {
+      if (!input.trim() && attachments.length === 0) return;
       if (!isConfigured) return;
 
       // Heal any stranded tool calls in the existing history before
@@ -1094,21 +1098,33 @@ export function useAgentChat({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      const text = baseText + mentionContext;
+      const { block: attachmentBlock, visionFiles } = await formatAttachments(
+        convId,
+        attachments,
+        agentSettings.agentModel,
+      );
 
-      const fileParts: SerializedUIPart[] = images.map((img) => ({
+      // `text` is what the model sees; `persistedText` is what we store in
+      // chat-db. Mention context is intentionally model-only (keeps the
+      // user's question clean in history); the attachment block, in
+      // contrast, must persist so `UserMessage` can re-render filename
+      // chips after a reload.
+      const text = baseText + mentionContext + attachmentBlock;
+      const persistedText = baseText + attachmentBlock;
+
+      const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
-        mediaType: img.file.type,
-        url: img.dataUrl,
+        mediaType: vf.mediaType,
+        url: vf.url,
       }));
 
       await chatDb.saveMessage({
         id: generateId(),
         conversationId: convId,
         role: "user",
-        content: baseText,
+        content: persistedText,
         parts: [
-          ...(baseText ? [{ type: "text" as const, text: baseText }] : []),
+          ...(persistedText ? [{ type: "text" as const, text: persistedText }] : []),
           ...fileParts,
         ],
         createdAt: Date.now(),
@@ -1116,10 +1132,10 @@ export function useAgentChat({
 
       setInput("");
 
-      const files = images.map((img) => ({
+      const files = visionFiles.map((vf) => ({
         type: "file" as const,
-        mediaType: img.file.type,
-        url: img.dataUrl,
+        mediaType: vf.mediaType,
+        url: vf.url,
       }));
 
       // Compaction-aware message assembly now lives in the transport. Here
@@ -1219,8 +1235,12 @@ export function useAgentChat({
   }, [messages, conversationId, regenerate, clearError, setMessages]);
 
   const confirmEdit = useCallback(
-    async (messageId: string, mentions: TabMentionAttrs[] = [], images: ImagePreview[] = []) => {
-      if (!input.trim() && images.length === 0) return;
+    async (
+      messageId: string,
+      mentions: TabMentionAttrs[] = [],
+      attachments: Attachment[] = [],
+    ) => {
+      if (!input.trim() && attachments.length === 0) return;
       if (!isConfigured) return;
       const idx = messages.findIndex((m) => m.id === messageId);
       if (idx === -1) return;
@@ -1245,12 +1265,26 @@ export function useAgentChat({
 
       const baseText = input.trim();
       const mentionContext = await formatMentionContext(mentions);
-      const text = baseText + mentionContext;
+      // TODO(workspace-cleanup): edits write attachments to OPFS but
+      // never remove files that were attached to the prior version of
+      // this message. Repeated edits can leak duplicates into the
+      // conversation workspace (with `(2)`, `(3)`, ... suffixes from
+      // OPFS.uniquePath). Acceptable for v1; address with a real diff
+      // against the prior persisted parts when we add workspace cleanup.
+      const { block: attachmentBlock, visionFiles } = await formatAttachments(
+        conversationId!,
+        attachments,
+        agentSettings.agentModel,
+      );
 
-      const fileParts: SerializedUIPart[] = images.map((img) => ({
+      // See `handleSubmit` for rationale on the text/persistedText split.
+      const text = baseText + mentionContext + attachmentBlock;
+      const persistedText = baseText + attachmentBlock;
+
+      const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
-        mediaType: img.file.type,
-        url: img.dataUrl,
+        mediaType: vf.mediaType,
+        url: vf.url,
       }));
 
       const newMessageId = generateId();
@@ -1258,9 +1292,9 @@ export function useAgentChat({
         id: newMessageId,
         conversationId: conversationId!,
         role: "user",
-        content: baseText,
+        content: persistedText,
         parts: [
-          ...(baseText ? [{ type: "text" as const, text: baseText }] : []),
+          ...(persistedText ? [{ type: "text" as const, text: persistedText }] : []),
           ...fileParts,
         ],
         createdAt: Date.now(),
@@ -1279,10 +1313,10 @@ export function useAgentChat({
       // without a chat switch.
       const sendParts: AgentMessage["parts"] = [
         ...(text ? [{ type: "text" as const, text }] : []),
-        ...images.map((img) => ({
+        ...visionFiles.map((vf) => ({
           type: "file" as const,
-          mediaType: img.file.type,
-          url: img.dataUrl,
+          mediaType: vf.mediaType,
+          url: vf.url,
         })),
       ];
 
@@ -1292,7 +1326,7 @@ export function useAgentChat({
         parts: sendParts,
       });
     },
-    [input, isConfigured, messages, setMessages, conversationId, sendMessage],
+    [input, isConfigured, messages, setMessages, conversationId, sendMessage, agentSettings.agentModel],
   );
 
   const setAgentModel = useCallback(

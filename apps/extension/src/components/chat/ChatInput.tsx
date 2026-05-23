@@ -18,6 +18,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { getImageSizeLimit } from "@/lib/agent/vision-limits";
+import type { Attachment } from "@/lib/chat/types";
 import type { ThinkingConfig } from "@/lib/types";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
@@ -29,6 +31,7 @@ import {
   ArrowUp,
   BrainIcon,
   ChevronDown,
+  File as FileIcon,
   Image as ImageIcon,
   Square,
   Star,
@@ -36,12 +39,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { toast } from "sonner";
 
-interface ImagePreview {
-  id: string;
-  file: File;
-  dataUrl: string;
-}
+// Derived alias kept for back-compat with call sites that destructure
+// images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
+// once they're gone we can delete the alias and the re-export.
+type ImagePreview = Extract<Attachment, { kind: "image" }>;
 
 interface ModelOption {
   id: string;
@@ -66,7 +69,7 @@ interface ProviderModels {
 interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
-  onSubmit: (mentions: TabMentionAttrs[], images: ImagePreview[]) => void;
+  onSubmit: (mentions: TabMentionAttrs[], attachments: Attachment[]) => void;
   onStop?: () => void;
   isLoading: boolean;
   disabled: boolean;
@@ -89,7 +92,7 @@ export interface TabMentionAttrs {
   favicon: string;
 }
 
-export type { ImagePreview };
+export type { ImagePreview, Attachment };
 
 export function extractTabMentions(json: JSONContent): TabMentionAttrs[] {
   const mentions: TabMentionAttrs[] = [];
@@ -270,9 +273,14 @@ export function ChatInput({
   isLoadingRef.current = isLoading;
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [images, setImages] = useState<ImagePreview[]>([]);
-  const imagesRef = useRef(images);
-  imagesRef.current = images;
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  // Back-compat for spots in this file that count or filter to images.
+  const images = useMemo(
+    () => attachments.filter((a): a is Extract<Attachment, { kind: "image" }> => a.kind === "image"),
+    [attachments],
+  );
   const lastExternalValue = useRef(value);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [highlightedModelId, setHighlightedModelId] = useState<string | null>(
@@ -375,24 +383,68 @@ export function ChatInput({
     };
   }, [providerModels, modelSearchQuery, favoriteModels]);
 
-  const addFiles = useCallback(async (files: FileList | File[]) => {
-    const imageFiles = Array.from(files).filter((f) =>
-      f.type.startsWith("image/"),
-    );
-    if (imageFiles.length === 0) return;
+  const addFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const MB = 1024 * 1024;
+      const FILE_CAP = 50 * MB;
+      const COUNT_CAP = 10;
+      const imageCap = selectedModel ? getImageSizeLimit(selectedModel) : 10 * MB;
 
-    const newPreviews = await Promise.all(
-      imageFiles.map(async (file) => ({
-        id: crypto.randomUUID(),
-        file,
-        dataUrl: await fileToDataUrl(file),
-      })),
-    );
-    setImages((prev) => [...prev, ...newPreviews]);
-  }, []);
+      const incoming = Array.from(files);
+      const rejections: string[] = [];
 
-  const removeImage = useCallback((id: string) => {
-    setImages((prev) => prev.filter((img) => img.id !== id));
+      const remainingSlots = COUNT_CAP - attachmentsRef.current.length;
+      if (incoming.length > remainingSlots) {
+        rejections.push(
+          `Only ${remainingSlots} more attachment${remainingSlots === 1 ? "" : "s"} allowed (max ${COUNT_CAP} per message).`,
+        );
+      }
+
+      // Validate synchronously, then convert any accepted images to
+      // data URLs in parallel. The previous image-only code parallelized
+      // FileReader work; preserve that.
+      const slice = incoming.slice(0, Math.max(0, remainingSlots));
+      const validated = slice.map((file) => {
+        const isImage = file.type.startsWith("image/");
+        const cap = isImage ? imageCap : FILE_CAP;
+        if (file.size > cap) {
+          const capMB = Math.round(cap / MB);
+          rejections.push(
+            `${file.name} exceeds the ${capMB} MB ${isImage ? "image" : "file"} limit.`,
+          );
+          return null;
+        }
+        return { file, isImage };
+      });
+
+      const accepted: Attachment[] = await Promise.all(
+        validated
+          .filter((v): v is { file: File; isImage: boolean } => v !== null)
+          .map(async ({ file, isImage }) => {
+            if (isImage) {
+              return {
+                kind: "image" as const,
+                id: crypto.randomUUID(),
+                file,
+                dataUrl: await fileToDataUrl(file),
+              };
+            }
+            return { kind: "file" as const, id: crypto.randomUUID(), file };
+          }),
+      );
+
+      if (accepted.length > 0) {
+        setAttachments((prev) => [...prev, ...accepted]);
+      }
+      for (const msg of rejections) {
+        toast.error(msg);
+      }
+    },
+    [selectedModel],
+  );
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
   const submitWithMentions = useCallback(() => {
@@ -400,8 +452,8 @@ export function ChatInput({
     if (!ed) return;
     const json = ed.getJSON();
     const mentions = extractTabMentions(json);
-    onSubmitRef.current(mentions, imagesRef.current);
-    setImages([]);
+    onSubmitRef.current(mentions, attachmentsRef.current);
+    setAttachments([]);
   }, []);
 
   const editor = useEditor({
@@ -428,7 +480,7 @@ export function ChatInput({
                 onStopRef.current();
               } else {
                 const text = this.editor.getMarkdown().trim();
-                if (text || imagesRef.current.length > 0) {
+                if (text || attachmentsRef.current.length > 0) {
                   submitWithMentions();
                 }
               }
@@ -449,28 +501,18 @@ export function ChatInput({
       handlePaste: (_view, event) => {
         const files = event.clipboardData?.files;
         if (files && files.length > 0) {
-          const hasImages = Array.from(files).some((f) =>
-            f.type.startsWith("image/"),
-          );
-          if (hasImages) {
-            event.preventDefault();
-            addFiles(files);
-            return true;
-          }
+          event.preventDefault();
+          addFiles(files);
+          return true;
         }
         return false;
       },
       handleDrop: (_view, event) => {
         const files = event.dataTransfer?.files;
         if (files && files.length > 0) {
-          const hasImages = Array.from(files).some((f) =>
-            f.type.startsWith("image/"),
-          );
-          if (hasImages) {
-            event.preventDefault();
-            addFiles(files);
-            return true;
-          }
+          event.preventDefault();
+          addFiles(files);
+          return true;
         }
         return false;
       },
@@ -487,10 +529,10 @@ export function ChatInput({
   const handleButtonClick = useCallback(() => {
     if (isLoading && onStop) {
       onStop();
-    } else if ((value.trim() || images.length > 0) && !disabled && !isLoading) {
+    } else if ((value.trim() || attachments.length > 0) && !disabled && !isLoading) {
       submitWithMentions();
     }
-  }, [isLoading, onStop, value, disabled, submitWithMentions, images.length]);
+  }, [isLoading, onStop, value, disabled, submitWithMentions, attachments.length]);
 
   useHotkeys(
     "mod+shift+backspace",
@@ -565,24 +607,42 @@ export function ChatInput({
   return (
     <div className="flex flex-col rounded-lg border border-border bg-card">
       {/* Image previews */}
-      {images.length > 0 && (
+      {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5 px-2 pt-2">
-          {images.map((img) => (
-            <div key={img.id} className="relative group">
-              <img
-                src={img.dataUrl}
-                alt="Upload preview"
-                className="size-16 object-cover rounded-md border border-border"
-              />
-              <button
-                type="button"
-                onClick={() => removeImage(img.id)}
-                className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="size-2.5" />
-              </button>
-            </div>
-          ))}
+          {attachments.map((att) => {
+            const overImageCap =
+              att.kind === "image" &&
+              selectedModel != null &&
+              att.file.size > getImageSizeLimit(selectedModel);
+            return (
+              <div key={att.id} className="relative group">
+                {att.kind === "image" ? (
+                  <img
+                    src={att.dataUrl}
+                    alt={att.file.name}
+                    className="size-16 object-cover rounded-md border border-border"
+                  />
+                ) : (
+                  <div className="flex h-16 max-w-[160px] items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 text-xs">
+                    <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{att.file.name}</span>
+                  </div>
+                )}
+                {overImageCap && (
+                  <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-border bg-background px-1.5 py-0.5 text-[9px] leading-none text-muted-foreground shadow-sm">
+                    file only
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(att.id)}
+                  className="absolute -right-1 -top-1 size-4 flex items-center justify-center rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X className="size-2.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -897,7 +957,6 @@ export function ChatInput({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
             multiple
             className="hidden"
             onChange={(e) => {
@@ -918,7 +977,11 @@ export function ChatInput({
                 <ImageIcon className="size-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="top">Attach image</TooltipContent>
+            <TooltipContent side="top">
+              {selectedModel
+                ? `Attach file — images up to ${Math.round(getImageSizeLimit(selectedModel) / (1024 * 1024))} MB`
+                : "Attach file"}
+            </TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
