@@ -125,6 +125,16 @@ const customJsonStyles = {
 } as const;
 
 /**
+ * Initial expansion strategy: top two levels open. MUST be a stable
+ * (module-scoped) reference — react-json-view-lite re-runs this and resets
+ * every node's expanded state whenever the function reference changes
+ * (see ExpandableObject's `useEffect([shouldExpandNode])` in the lib).
+ * Defining it inline in the component would collapse every expanded node on
+ * the next parent re-render.
+ */
+const shouldExpandNode = (level: number) => level < 2;
+
+/**
  * Lazy-loaded JsonView from `react-json-view-lite`. The component is only
  * mounted when Tree mode is active.
  */
@@ -148,8 +158,6 @@ function LazyJsonTree({ data }: { data: unknown }) {
     );
   }
   const { JsonView } = Mod;
-  // Expand top two levels by default. Deeper nodes render collapsed.
-  const shouldExpandNode = (level: number) => level < 2;
   return (
     <JsonView
       data={data as object}
