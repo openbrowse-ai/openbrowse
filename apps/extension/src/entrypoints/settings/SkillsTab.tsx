@@ -27,6 +27,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { downloadBlob, downloadText } from "@/lib/download";
 import { useSkillsState } from "@/hooks/useSkillsState";
 import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { InstalledSkill } from "@/lib/skills/types";
@@ -210,6 +211,15 @@ export function SkillsTab({
     }
   };
 
+  const handleDownload = () => {
+    if (!fileFile.content) return;
+    if (fileFile.content.kind === "blob") {
+      downloadBlob(fileFile.content.blob, fileName);
+    } else {
+      downloadText(fileFile.content.text, fileName);
+    }
+  };
+
   return (
     <TooltipProvider>
       <div className="flex h-full -m-4">
@@ -331,6 +341,15 @@ export function SkillsTab({
                     {fileName.toLowerCase().endsWith(".md") && (
                       <ModeToggle mode={fileMode} onChange={setFileMode} />
                     )}
+                    <button
+                      onClick={handleDownload}
+                      disabled={!fileFile.content}
+                      className="p-1.5 rounded-md hover:bg-accent transition-colors disabled:opacity-50"
+                      aria-label="Download file"
+                      title="Download"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
                     <button
                       onClick={handleCopy}
                       className="p-1.5 rounded-md hover:bg-accent transition-colors"

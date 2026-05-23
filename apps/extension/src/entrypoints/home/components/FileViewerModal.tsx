@@ -10,8 +10,13 @@ import { OPFS } from "@/lib/vfs/opfs";
 import { classifyFile, isBinaryClass } from "@/lib/vfs/file-classify";
 import { Markdown } from "@/components/chat/Markdown";
 import { CodeViewer } from "@/components/chat/CodeViewer";
-import { Copy, Check, X } from "lucide-react";
+import { SheetViewer } from "@/components/chat/SheetViewer";
+import { JsonViewer } from "@/components/chat/JsonViewer";
+import { HtmlPreview } from "@/components/chat/HtmlPreview";
+import { MediaPlayer } from "@/components/chat/MediaPlayer";
+import { Copy, Check, X, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { downloadBlob, downloadText } from "@/lib/download";
 
 interface FileViewerModalProps {
   filePath: string;
@@ -121,6 +126,17 @@ export function FileViewerModal({ filePath, fileName, onClose }: FileViewerModal
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleDownload = () => {
+    if (!loaded) return;
+    if (loaded.blob) {
+      downloadBlob(loaded.blob, fileName);
+      return;
+    }
+    if (loaded.text !== undefined) {
+      downloadText(loaded.text, fileName);
+    }
+  };
+
   return (
     <Dialog open={true} onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -135,6 +151,17 @@ export function FileViewerModal({ filePath, fileName, onClose }: FileViewerModal
             {fileName}
           </DialogTitle>
           <div className="flex items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDownload}
+              disabled={loaded === null}
+              className="h-7 px-2 text-xs gap-1.5"
+              title="Download file"
+            >
+              <Download className="size-3.5" />
+              Download
+            </Button>
             {!isBinary && (
               <Button
                 variant="ghost"
@@ -160,7 +187,7 @@ export function FileViewerModal({ filePath, fileName, onClose }: FileViewerModal
           </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-auto bg-background">
+        <div className="flex-1 overflow-auto bg-background min-h-0 flex flex-col">
           {error ? (
             <div className="p-6 text-destructive text-sm">
               Failed to load file: {error}
@@ -181,6 +208,12 @@ export function FileViewerModal({ filePath, fileName, onClose }: FileViewerModal
               title={fileName}
               className="w-full h-[75vh] border-0"
             />
+          ) : fileClass === "sheet" && loaded.blob ? (
+            <SheetViewer blob={loaded.blob} fileName={fileName} />
+          ) : fileClass === "audio" && loaded.blobUrl ? (
+            <MediaPlayer blobUrl={loaded.blobUrl} fileName={fileName} kind="audio" />
+          ) : fileClass === "video" && loaded.blobUrl ? (
+            <MediaPlayer blobUrl={loaded.blobUrl} fileName={fileName} kind="video" />
           ) : fileClass === "binary" && loaded.blob ? (
             <div className="flex flex-col items-center justify-center p-10 gap-2 text-center">
               <span className="text-sm text-muted-foreground">
@@ -190,6 +223,10 @@ export function FileViewerModal({ filePath, fileName, onClose }: FileViewerModal
                 {formatBytes(loaded.blob.size)}
               </span>
             </div>
+          ) : fileClass === "json" && loaded.text !== undefined ? (
+            <JsonViewer text={loaded.text} fileName={fileName} />
+          ) : fileClass === "html" && loaded.text !== undefined ? (
+            <HtmlPreview text={loaded.text} fileName={fileName} />
           ) : fileClass === "markdown" && loaded.text !== undefined ? (
             <div className="p-6">
               <Markdown source={loaded.text} />

@@ -9,6 +9,11 @@ import {
   FileCode,
   FileImage,
   File,
+  FileSpreadsheet,
+  FileJson,
+  FileAudio,
+  FileVideo,
+  Download,
   ChevronDown,
   CheckCircle2,
   Circle,
@@ -17,6 +22,7 @@ import {
 } from "lucide-react";
 import { FileViewerModal } from "./FileViewerModal";
 import { cn } from "@/lib/utils";
+import { downloadOpfsFile } from "@/lib/download";
 import {
   Collapsible,
   CollapsibleContent,
@@ -227,16 +233,33 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
         <ul className="space-y-0.5 px-1.5 pb-1">
           {files.map((file) => (
             <li key={file}>
-              <button
-                type="button"
-                onClick={() => setSelectedFile(file)}
-                className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-muted/60"
-              >
-                <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                  <FileTypeIcon filename={file} />
-                </span>
-                <span className="truncate">{file}</span>
-              </button>
+              <div className="group flex items-center gap-1 rounded-md hover:bg-muted/60">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFile(file)}
+                  className="flex flex-1 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm min-w-0"
+                >
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                    <FileTypeIcon filename={file} />
+                  </span>
+                  <span className="truncate">{file}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void downloadOpfsFile(
+                      `${vfsRoot}/${file}`,
+                      file.split("/").pop() ?? file,
+                    );
+                  }}
+                  className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground group-hover:flex focus-visible:flex"
+                  aria-label={`Download ${file}`}
+                  title="Download"
+                >
+                  <Download className="size-3.5" />
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -255,10 +278,22 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
 
 function FileTypeIcon({ filename }: { filename: string }) {
   const className = "size-3.5";
-  if (/\.(md|txt)$/i.test(filename)) return <FileText className={className} />;
-  if (/\.(ts|tsx|js|jsx|json|html|css|py|rs|go|java|c|cpp|sh)$/i.test(filename))
+  if (/\.(csv|tsv|xlsx|xlsm|xls)$/i.test(filename))
+    return <FileSpreadsheet className={className} />;
+  if (/\.(json|jsonl|ndjson)$/i.test(filename))
+    return <FileJson className={className} />;
+  if (/\.(mp3|wav|ogg|flac|m4a)$/i.test(filename))
+    return <FileAudio className={className} />;
+  if (/\.(mp4|mov|webm|mkv)$/i.test(filename))
+    return <FileVideo className={className} />;
+  if (/\.(md|txt|log)$/i.test(filename)) return <FileText className={className} />;
+  if (
+    /\.(ts|tsx|js|jsx|html?|css|py|rs|go|java|c|cpp|sh|yml|yaml|toml|xml|sql)$/i.test(
+      filename,
+    )
+  )
     return <FileCode className={className} />;
-  if (/\.(png|jpe?g|svg|gif|webp|avif)$/i.test(filename))
+  if (/\.(png|jpe?g|svg|gif|webp|avif|bmp|ico)$/i.test(filename))
     return <FileImage className={className} />;
   return <File className={className} />;
 }
