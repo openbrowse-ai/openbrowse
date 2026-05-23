@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+import { queueDb } from "./queue-db";
 import type { SerializedUIPart, TodoItem } from "./types";
 import { OPFS } from "./vfs/opfs";
 
@@ -252,6 +253,15 @@ export const chatDb = {
     }
     
     await tx.done;
+
+    // Cascade-clear any queued (un-sent) messages for this conversation.
+    // Without this, a deleted conversation would resurrect dangling
+    // queue rows the next time anything iterates the queue.
+    try {
+      await queueDb.clear(id);
+    } catch (e) {
+      console.warn("Failed to clear message queue for deleted conversation", e);
+    }
 
     // Clean up ephemeral VFS container
     try {

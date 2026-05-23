@@ -99,6 +99,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/turndown": "^5.0.6",
     "@wxt-dev/module-react": "^1.1.5",
+    "fake-indexeddb": "^6.2.5",
     "tsx": "^4.20.4",
     "typescript": "^5.9.3",
     "vitest": "^2.1.8",
