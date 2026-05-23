@@ -4,24 +4,22 @@ import { AgentScene } from "./scenes/agent/AgentScene";
 export function Hero() {
   return (
     <section className="mx-auto max-w-6xl px-6 pt-24 pb-16 md:pt-32">
-      <div className="flex flex-col items-center text-center max-w-3xl mx-auto mb-16">
-        <h1 className="text-4xl font-bold tracking-tight md:text-6xl">
+      <div className="flex flex-col items-center text-center mb-16">
+        <h1 className="font-mono font-bold tracking-tight text-3xl md:text-5xl max-w-5xl">
           The open source browser agent.
         </h1>
-        <p className="mt-6 text-lg text-muted-foreground leading-relaxed">
+        <p className="mt-6 text-base md:text-lg text-muted-foreground leading-relaxed max-w-3xl">
           OpenBrowse reads pages, takes actions, and organizes your tabs.
           Use any model — cloud, self-hosted, or fully on-device.
         </p>
         <div className="mt-8 flex items-center justify-center gap-4">
-          <a
-            href="https://chromewebstore.google.com"
-            target="_blank"
-            rel="noopener noreferrer"
+          <Link
+            href="/docs/overview#install"
             className="inline-flex h-11 items-center gap-2 rounded-md bg-foreground px-8 text-sm font-medium text-background transition-opacity hover:opacity-90"
           >
             <ChromeIcon className="h-4 w-4" />
-            Add to Chrome
-          </a>
+            Install
+          </Link>
           <a
             href="https://github.com/openbrowse-ai/openbrowse"
             target="_blank"
@@ -31,8 +29,11 @@ export function Hero() {
             GitHub
           </a>
         </div>
+        <p className="mt-4 text-xs text-muted-foreground">
+          Chrome Web Store listing coming soon — install manually for now.
+        </p>
       </div>
-      
+
       <AgentScene />
     </section>
   );
