@@ -33,6 +33,7 @@ import {
 import { useActiveTabs } from "@/hooks/useActiveTabs";
 import { useTheme } from "@/hooks/useTheme";
 import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
+import { FileSelectionContext } from "@/lib/file-selection-context";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
@@ -387,6 +388,7 @@ export default function App() {
       />
 
       {activeConversationId ? (
+        <FileSelectionContext.Provider value={handleSelectFile}>
         <RightRail
           conversationId={activeConversationId}
           selectedFile={selectedFile}
@@ -460,6 +462,7 @@ export default function App() {
             </main>
           }
         />
+        </FileSelectionContext.Provider>
       ) : (
         <main className="flex-1 min-w-0 h-screen flex flex-col">
           <LandingPage
