@@ -71,6 +71,9 @@ export interface RunSummary {
     suite: {
       source?: string;
       revision?: string;
+      totalTasks?: number;
+      sampleSize?: number;
+      seed?: number;
     };
     provenance: {
       benchVersion: string;

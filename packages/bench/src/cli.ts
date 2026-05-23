@@ -34,6 +34,10 @@ interface CliArgs {
   keepWebm: boolean;
   /** Continue a previous run by providing the run directory. */
   resumeDir?: string;
+  /** Limit a suite to N randomly-sampled tasks */
+  sampleSize?: number;
+  /** Deterministic random seed for sampling (default: 42) */
+  seed: number;
   /** When resuming, skip trials that previously errored (default: false, meaning retry errors). */
   keepErrors: boolean;
   /** Override the auto-generated run dir (default: .bench/runs/<auto-id>). */
@@ -54,6 +58,7 @@ function parseArgs(argv: string[]): CliArgs {
     keepErrors: false,
     driverKind: "local",
     concurrency: 0, // 0 means default later
+    seed: 42,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -97,6 +102,20 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "--keep-errors":
         out.keepErrors = true;
+        break;
+      case "--sample-size":
+        out.sampleSize = parseInt(argv[++i], 10);
+        if (isNaN(out.sampleSize) || out.sampleSize <= 0) {
+          console.error("--sample-size must be a positive integer");
+          process.exit(2);
+        }
+        break;
+      case "--seed":
+        out.seed = parseInt(argv[++i], 10);
+        if (isNaN(out.seed)) {
+          console.error("--seed must be an integer");
+          process.exit(2);
+        }
         break;
       case "--out-dir":
         out.outDir = argv[++i];
@@ -183,6 +202,7 @@ async function main(): Promise<void> {
     { buildBenchSystemPrompt, DEFAULT_TOOL_SET, BENCH_TOOL_CATALOG },
     { WEBBENCH_REVISION },
     { LLM_JUDGE_VERSION, JUDGE_MODEL_ID },
+    { sampleTasks },
   ] = await Promise.all([
     import("@ai-sdk/anthropic"),
     import("@ai-sdk/google"),
@@ -195,6 +215,7 @@ async function main(): Promise<void> {
     import("./agent/build-agent"),
     import("./tasks/webbench/revision"),
     import("./judges/llm-judge"),
+    import("./tasks/sample"),
   ]);
 
   type LanguageModel = Awaited<ReturnType<typeof anthropic>>;
@@ -227,6 +248,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  if (args.taskId && args.sampleSize) {
+    console.error("--sample-size cannot be used with --task.");
+    process.exit(2);
+  }
+
   // Resolve the task list. Single-task mode picks one; suite mode picks
   // every task whose source matches.
   let tasks: any[];
@@ -241,6 +267,12 @@ async function main(): Promise<void> {
     tasks = await tasksBySource("custom"); // Don't run 1580 tasks on all
   } else {
     tasks = await tasksBySource(args.suite!);
+  }
+
+  // Apply sampling if requested
+  const preSampleCount = tasks.length;
+  if (args.sampleSize) {
+    tasks = sampleTasks(tasks, args.sampleSize, args.seed);
   }
 
   const model = resolveModel(args.modelId);
@@ -660,7 +692,10 @@ async function main(): Promise<void> {
       },
       suite: {
         source: args.suite,
-        revision: WEBBENCH_REVISION
+        revision: WEBBENCH_REVISION,
+        totalTasks: preSampleCount,
+        sampleSize: args.sampleSize,
+        seed: args.seed,
       },
       provenance: {
         benchVersion,
