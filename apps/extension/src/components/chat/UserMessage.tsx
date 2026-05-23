@@ -83,14 +83,6 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
           ))}
         </div>
       )}
-      {text && (
-        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
-          <ReadOnlyEditor
-            content={text}
-            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
-          />
-        </div>
-      )}
       {attachedPaths.length > 0 && (
         <div className="max-w-[85%] flex flex-wrap justify-end gap-1.5">
           {attachedPaths
@@ -132,6 +124,14 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
                 </button>
               );
             })}
+        </div>
+      )}
+      {text && (
+        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
+          <ReadOnlyEditor
+            content={text}
+            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
+          />
         </div>
       )}
       {!dimmed && (
