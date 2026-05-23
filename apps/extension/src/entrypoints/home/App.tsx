@@ -32,10 +32,10 @@ import {
 } from "@/components/ui/tooltip";
 import { useActiveTabs } from "@/hooks/useActiveTabs";
 import { useTheme } from "@/hooks/useTheme";
+import { useCoworkWidth } from "@/hooks/useCoworkWidth";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import {
   Download,
   MoreVertical,
@@ -44,9 +44,10 @@ import {
   Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CoworkPanel } from "./components/CoworkPanel";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
+import { RightRail } from "./components/RightRail";
 
 export default function App() {
   useTheme();
@@ -84,6 +85,9 @@ export default function App() {
     null,
   );
   const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [coworkWidth, setCoworkWidth] = useCoworkWidth();
+  const railPanelRef = useRef<PanelImperativeHandle | null>(null);
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
   );
@@ -217,9 +221,11 @@ export default function App() {
   useEffect(() => {
     if (!activeConversationId) {
       setConversationTitle(null);
+      setSelectedFile(null);
       return;
     }
     setIsCoworkPanelOpen(true);
+    setSelectedFile(null);
     chatDb.getConversation(activeConversationId).then((conv) => {
       setConversationTitle(conv?.title ?? null);
     });
@@ -348,6 +354,27 @@ export default function App() {
     setActiveConversationId(id);
   }, []);
 
+  const handleSelectFile = useCallback((file: string | null) => {
+    setSelectedFile(file);
+    if (file !== null) {
+      // Selecting a file always implies the rail should be visible.
+      railPanelRef.current?.expand();
+      setIsCoworkPanelOpen(true);
+    }
+  }, []);
+
+  const handleToggleCowork = useCallback(() => {
+    const handle = railPanelRef.current;
+    if (!handle) return;
+    if (isCoworkPanelOpen) {
+      handle.collapse();
+      setIsCoworkPanelOpen(false);
+    } else {
+      handle.expand();
+      setIsCoworkPanelOpen(true);
+    }
+  }, [isCoworkPanelOpen]);
+
   return (
     <div className="flex h-screen bg-[var(--background)]">
       <HomeSidebar
@@ -370,68 +397,83 @@ export default function App() {
         onDeleteConversation={handleDeleteConversation}
       />
 
-      <main className="flex-1 min-w-0 h-screen flex flex-col">
-        {activeConversationId && (
-          <div className="sticky top-0 z-10 flex items-center justify-between px-4 pt-2 pb-px bg-background/80 backdrop-blur-md after:absolute after:inset-x-0 after:-bottom-6 after:h-6 after:bg-linear-to-b after:from-background after:to-transparent after:pointer-events-none">
-            <span
-              className={`text-sm font-medium truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}
-            >
-              {conversationTitle ?? "New conversation"}
-            </span>
-            <div className="flex items-center gap-1">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    <MoreVertical className="size-4" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={handleRenameChat}>
-                    <Pencil className="size-3.5" />
-                    Rename
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleExportChat}>
-                    <Download className="size-3.5" />
-                    Export chat
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={handleDeleteChat}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    <Trash2 className="size-3.5" />
-                    Delete
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => setIsCoworkPanelOpen(!isCoworkPanelOpen)}
-                    className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    <PanelRight className="size-4" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Open side panel</TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        )}
-        {activeConversationId ? (
-          <ChatView
-            key={activeConversationId}
-            conversationId={activeConversationId}
-            spaceId={activeSpaceId}
-            onNewConversation={handleNewConversation}
-            showHeader={false}
-            className="flex-1 min-h-0"
-            initialInput={initialInput}
-          />
-        ) : (
+      {activeConversationId ? (
+        <RightRail
+          conversationId={activeConversationId}
+          selectedFile={selectedFile}
+          onSelectFile={handleSelectFile}
+          railPanelRef={railPanelRef}
+          initialWidthPx={coworkWidth}
+          onWidthChange={setCoworkWidth}
+          onOpenChange={setIsCoworkPanelOpen}
+          centerSlot={
+            <main className="h-full min-w-0 flex flex-col">
+              <div className="sticky top-0 z-10 flex items-center justify-between px-4 pt-2 pb-px bg-background/80 backdrop-blur-md after:absolute after:inset-x-0 after:-bottom-6 after:h-6 after:bg-linear-to-b after:from-background after:to-transparent after:pointer-events-none">
+                <span
+                  className={`text-sm font-medium truncate min-w-0 ${generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}
+                >
+                  {conversationTitle ?? "New conversation"}
+                </span>
+                <div className="flex items-center gap-1">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      >
+                        <MoreVertical className="size-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={handleRenameChat}>
+                        <Pencil className="size-3.5" />
+                        Rename
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleExportChat}>
+                        <Download className="size-3.5" />
+                        Export chat
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={handleDeleteChat}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="size-3.5" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  {selectedFile === null && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          onClick={handleToggleCowork}
+                          className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <PanelRight className="size-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {isCoworkPanelOpen ? "Hide side panel" : "Open side panel"}
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </div>
+              </div>
+              <ChatView
+                key={activeConversationId}
+                conversationId={activeConversationId}
+                spaceId={activeSpaceId}
+                onNewConversation={handleNewConversation}
+                showHeader={false}
+                className="flex-1 min-h-0"
+                initialInput={initialInput}
+              />
+            </main>
+          }
+        />
+      ) : (
+        <main className="flex-1 min-w-0 h-screen flex flex-col">
           <LandingPage
             space={activeSpace}
             spaceId={activeSpaceId}
@@ -440,20 +482,7 @@ export default function App() {
             onNewConversation={handleNewConversation}
             initialInput={initialInput}
           />
-        )}
-      </main>
-
-      {activeConversationId && (
-        <aside
-          className={cn(
-            "h-screen shrink-0 overflow-hidden bg-[var(--background)] transition-[width] duration-300 ease-in-out",
-            isCoworkPanelOpen ? "w-[340px]" : "w-0",
-          )}
-        >
-          <div className="h-full w-[340px]">
-            <CoworkPanel conversationId={activeConversationId} />
-          </div>
-        </aside>
+        </main>
       )}
 
       {showOverlay && (

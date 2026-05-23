@@ -1,15 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 import { CodeViewer } from "@/components/chat/CodeViewer";
+
+export type JsonViewerMode = "tree" | "raw";
 
 interface JsonViewerProps {
   text: string;
   fileName: string;
+  /** Controlled mode — toolbar lives in the parent panel. */
+  mode: JsonViewerMode;
+  /**
+   * Reports parse-derived metadata back to the parent so the panel header
+   * can show record counts / error banners alongside the mode toggle.
+   * Optional; safe to omit.
+   */
+  onParseMeta?: (meta: ParseMeta) => void;
   className?: string;
 }
 
-type ViewMode = "tree" | "raw";
+export interface ParseMeta {
+  /** Number of JSONL records, or null for non-JSONL files. */
+  lineCount: number | null;
+  /** True if the document failed to parse at all (single JSON only). */
+  hasError: boolean;
+  /** Human-readable banner text — error message or per-line count. */
+  errorBanner: string | null;
+}
 
 interface ParsedSingle {
   kind: "single";
@@ -168,65 +184,38 @@ function LazyJsonTree({ data }: { data: unknown }) {
   );
 }
 
-export function JsonViewer({ text, fileName, className }: JsonViewerProps) {
-  const [mode, setMode] = useState<ViewMode>("tree");
+export function JsonViewer({
+  text,
+  fileName,
+  mode,
+  onParseMeta,
+  className,
+}: JsonViewerProps) {
   const parsed = useMemo(() => parseJsonText(text, fileName), [text, fileName]);
   const pretty = useMemo(
     () => (mode === "raw" ? prettify(text, fileName) : ""),
     [text, fileName, mode],
   );
 
-  // Auto-flip to raw mode when nothing parsed.
+  // Surface parse meta to the parent toolbar (record count / error banner).
   useEffect(() => {
-    if (parsed.kind === "error") setMode("raw");
-  }, [parsed.kind]);
-
-  const errorBanner =
-    parsed.kind === "error"
-      ? `Invalid JSON: ${parsed.error}`
-      : parsed.kind === "lines" && parsed.errorCount > 0
-        ? `${parsed.errorCount} line${parsed.errorCount === 1 ? "" : "s"} failed to parse.`
-        : null;
-
-  const lineCount =
-    parsed.kind === "lines" ? parsed.entries.length : null;
+    if (!onParseMeta) return;
+    const errorBanner =
+      parsed.kind === "error"
+        ? `Invalid JSON: ${parsed.error}`
+        : parsed.kind === "lines" && parsed.errorCount > 0
+          ? `${parsed.errorCount} line${parsed.errorCount === 1 ? "" : "s"} failed to parse.`
+          : null;
+    const lineCount = parsed.kind === "lines" ? parsed.entries.length : null;
+    onParseMeta({
+      lineCount,
+      hasError: parsed.kind === "error",
+      errorBanner,
+    });
+  }, [parsed, onParseMeta]);
 
   return (
     <div className={cn("flex flex-col h-full min-h-0", className)}>
-      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-border bg-muted/20 shrink-0">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
-          {lineCount !== null && (
-            <span className="font-mono whitespace-nowrap">
-              {lineCount.toLocaleString()} record{lineCount === 1 ? "" : "s"}
-            </span>
-          )}
-          {errorBanner && (
-            <span className="text-destructive truncate" title={errorBanner}>
-              {errorBanner}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            size="sm"
-            variant={mode === "tree" ? "secondary" : "ghost"}
-            onClick={() => setMode("tree")}
-            className="h-6 px-2 text-xs"
-            disabled={parsed.kind === "error"}
-          >
-            Tree
-          </Button>
-          <Button
-            size="sm"
-            variant={mode === "raw" ? "secondary" : "ghost"}
-            onClick={() => setMode("raw")}
-            className="h-6 px-2 text-xs"
-          >
-            Raw
-          </Button>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-auto">
         {mode === "raw" ? (
           <CodeViewer
@@ -242,10 +231,7 @@ export function JsonViewer({ text, fileName, className }: JsonViewerProps) {
           <div className="p-4 text-sm font-mono space-y-3">
             {parsed.entries.map((entry, i) =>
               entry.ok ? (
-                <div
-                  key={i}
-                  className="border-l-2 border-border pl-3 py-1"
-                >
+                <div key={i} className="border-l-2 border-border pl-3 py-1">
                   <div className="text-[10px] text-muted-foreground/70 mb-1">
                     #{i + 1}
                   </div>
@@ -265,6 +251,10 @@ export function JsonViewer({ text, fileName, className }: JsonViewerProps) {
                 </div>
               ),
             )}
+          </div>
+        ) : parsed.kind === "error" ? (
+          <div className="p-6 text-destructive text-sm">
+            Invalid JSON: {parsed.error}
           </div>
         ) : null}
       </div>

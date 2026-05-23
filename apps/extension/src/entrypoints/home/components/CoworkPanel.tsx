@@ -20,7 +20,6 @@ import {
   XCircle,
   Loader2,
 } from "lucide-react";
-import { FileViewerModal } from "./FileViewerModal";
 import { cn } from "@/lib/utils";
 import { downloadOpfsFile } from "@/lib/download";
 import {
@@ -31,13 +30,22 @@ import {
 
 interface CoworkPanelProps {
   conversationId: string;
+  /**
+   * Click handler for a working-folder file row. Called with the file path
+   * RELATIVE to the workspace root (e.g. `subdir/data.csv`). Pass `null` to
+   * deselect (currently only used by the parent on Esc / file panel close).
+   */
+  onSelectFile: (file: string | null) => void;
 }
 
-export function CoworkPanel({ conversationId }: CoworkPanelProps) {
+export function CoworkPanel({ conversationId, onSelectFile }: CoworkPanelProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
       <ProgressCard conversationId={conversationId} />
-      <WorkingFolderCard conversationId={conversationId} />
+      <WorkingFolderCard
+        conversationId={conversationId}
+        onSelectFile={onSelectFile}
+      />
     </div>
   );
 }
@@ -173,14 +181,19 @@ function TodoRow({ todo }: { todo: TodoItem }) {
 
 // ─── Working Folder Card (OPFS) ─────────────────────────────────────────
 
-function WorkingFolderCard({ conversationId }: { conversationId: string }) {
+function WorkingFolderCard({
+  conversationId,
+  onSelectFile,
+}: {
+  conversationId: string;
+  onSelectFile: (file: string | null) => void;
+}) {
   const vfsRoot = useMemo(
     () => `conversations/${conversationId}/workspace`,
     [conversationId]
   );
 
   const [files, setFiles] = useState<string[]>([]);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -236,7 +249,7 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
               <div className="group flex items-center gap-1 rounded-md hover:bg-muted/60">
                 <button
                   type="button"
-                  onClick={() => setSelectedFile(file)}
+                  onClick={() => onSelectFile(file)}
                   className="flex flex-1 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm min-w-0"
                 >
                   <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
@@ -263,14 +276,6 @@ function WorkingFolderCard({ conversationId }: { conversationId: string }) {
             </li>
           ))}
         </ul>
-      )}
-
-      {selectedFile && (
-        <FileViewerModal
-          filePath={`${vfsRoot}/${selectedFile}`}
-          fileName={selectedFile}
-          onClose={() => setSelectedFile(null)}
-        />
       )}
     </CoworkCard>
   );
