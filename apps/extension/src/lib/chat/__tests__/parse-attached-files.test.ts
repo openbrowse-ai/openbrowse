@@ -76,9 +76,9 @@ describe("parseAttachedFiles", () => {
     const parsed = parseAttachedFiles(combined);
     expect(parsed.displayText).toBe(userText);
     expect(parsed.attachedPaths).toEqual([
-      "/report.pdf",
-      "/shot.png",
-      "/data.csv",
+      "/.uploads/report.pdf",
+      "/.uploads/shot.png",
+      "/.uploads/data.csv",
     ]);
   });
 

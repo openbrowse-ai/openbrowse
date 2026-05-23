@@ -12,12 +12,6 @@ interface ChatDB extends DBSchema {
       ownedGroupId: number | null;
       ownedTabIds: number[];
       todos?: TodoItem[];
-      /**
-       * Workspace-relative paths (no leading slash) for files attached by
-       * the user via chat input. The Working Folder rail filters these
-       * out so it shows only agent-created files.
-       */
-      uploadedFiles?: string[];
       createdAt: number;
       updatedAt: number;
     };

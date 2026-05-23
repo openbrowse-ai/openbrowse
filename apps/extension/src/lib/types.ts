@@ -86,14 +86,6 @@ export interface Conversation {
   ownedGroupId: number | null;
   ownedTabIds: number[];
   todos?: TodoItem[];
-  /**
-   * Workspace-relative paths (no leading slash) that were attached by the
-   * user via the chat input. Used to filter user uploads out of the
-   * Working Folder rail, which only surfaces files the agent created.
-   * Append-only across the conversation's lifetime; entries persist even
-   * if the agent later overwrites the file (still "their" file).
-   */
-  uploadedFiles?: string[];
   createdAt: number;
   updatedAt: number;
 }

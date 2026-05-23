@@ -49,10 +49,11 @@ describe("formatAttachments", () => {
       "anthropic:claude-sonnet-4",
     );
     expect(r.block).toBe(
-      "\n\n<Attached files>\n- /report.pdf\n</Attached files>",
+      "\n\n<Attached files>\n- /.uploads/report.pdf\n</Attached files>",
     );
     expect(r.visionFiles).toEqual([]);
     expect(__writes.length).toBe(1);
+    expect(__writes[0].path).toContain("/.uploads/report.pdf");
   });
 
   it("includes a vision file part for a small image on a vision-capable model", async () => {
@@ -69,7 +70,7 @@ describe("formatAttachments", () => {
       attachments,
       "anthropic:claude-sonnet-4",
     );
-    expect(r.block).toContain("- /shot.png");
+    expect(r.block).toContain("- /.uploads/shot.png");
     expect(r.visionFiles).toEqual([
       { mediaType: "image/png", url: "data:image/png;base64,AAAA" },
     ]);
@@ -91,7 +92,7 @@ describe("formatAttachments", () => {
       "anthropic:claude-sonnet-4",
     );
     expect(r.visionFiles).toEqual([]);
-    expect(r.block).toContain("- /big.png");
+    expect(r.block).toContain("- /.uploads/big.png");
     expect(__writes.length).toBe(1);
   });
 
@@ -108,7 +109,7 @@ describe("formatAttachments", () => {
     ];
     const r = await formatAttachments("conv-1", attachments, "openai:gpt-4o");
     expect(r.block).toBe(
-      "\n\n<Attached files>\n- /a.csv\n- /b.png\n- /c.txt\n</Attached files>",
+      "\n\n<Attached files>\n- /.uploads/a.csv\n- /.uploads/b.png\n- /.uploads/c.txt\n</Attached files>",
     );
     expect(r.visionFiles).toHaveLength(1);
   });

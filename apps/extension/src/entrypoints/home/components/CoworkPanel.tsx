@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { OPFS } from "@/lib/vfs/opfs";
 import { vfsEvents } from "@/lib/vfs/events";
 import { chatDb } from "@/lib/chat-db";
+import { UPLOADS_DIR } from "@/lib/uploads-dir";
 import type { TodoItem } from "@/lib/types";
 import {
   Folder,
@@ -199,15 +200,6 @@ function WorkingFolderCard({
   );
 
   const [files, setFiles] = useState<string[]>([]);
-  /**
-   * Workspace-relative paths of files the user attached via the chat input.
-   * The Working Folder shows only agent-created files, so these are
-   * filtered out. Sourced from the conversation record (kept up to date
-   * by `formatAttachments`) rather than scanning message text — the
-   * conversation row is the canonical store and avoids a parse pass per
-   * refresh.
-   */
-  const [uploadedSet, setUploadedSet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -216,11 +208,17 @@ function WorkingFolderCard({
       const paths: string[] = [];
       try {
         for await (const path of OPFS.walk(vfsRoot)) {
-          if (path.startsWith(vfsRoot + "/")) {
-            paths.push(path.slice(vfsRoot.length + 1));
-          } else {
-            paths.push(path);
+          // Skip user-uploaded files (kept under `.uploads/`) — the
+          // Working Folder rail surfaces agent output only.
+          // `OPFS.walk` may yield paths either prefixed with `vfsRoot/`
+          // or already-relative; handle both.
+          const rel = path.startsWith(vfsRoot + "/")
+            ? path.slice(vfsRoot.length + 1)
+            : path;
+          if (rel.startsWith(`${UPLOADS_DIR}/`) || rel === UPLOADS_DIR) {
+            continue;
           }
+          paths.push(rel);
         }
       } catch {
         // Workspace doesn't exist yet
@@ -228,28 +226,12 @@ function WorkingFolderCard({
       if (mounted) setFiles(paths.sort());
     }
 
-    async function fetchUploaded() {
-      try {
-        const conv = await chatDb.getConversation(conversationId);
-        if (mounted) setUploadedSet(new Set(conv?.uploadedFiles ?? []));
-      } catch {
-        // Non-fatal; the listing just won't filter.
-      }
-    }
-
     fetchFiles();
-    fetchUploaded();
 
     const onVfsChange = (e: Event) => {
       const { path } = (e as CustomEvent).detail ?? {};
       if (typeof path === "string" && path.startsWith(vfsRoot)) {
         fetchFiles();
-        // The conversation's upload list typically updates milliseconds
-        // before the OPFS write fires its event (formatAttachments writes
-        // OPFS first, but persists the conversation patch synchronously
-        // afterwards). Re-fetching the conversation here keeps the filter
-        // set in lock-step with the file list.
-        fetchUploaded();
       }
     };
 
@@ -258,19 +240,14 @@ function WorkingFolderCard({
       mounted = false;
       vfsEvents.removeEventListener("vfs:change", onVfsChange);
     };
-  }, [vfsRoot, conversationId]);
-
-  const visibleFiles = useMemo(
-    () => files.filter((f) => !uploadedSet.has(f)),
-    [files, uploadedSet],
-  );
+  }, [vfsRoot]);
 
   return (
     <CoworkCard
       title="Working folder"
       rightAdornment={<Folder className="size-3.5" />}
     >
-      {visibleFiles.length === 0 ? (
+      {files.length === 0 ? (
         <div className="flex flex-col items-start gap-3 px-3.5 py-3 text-left">
           <WorkingFolderEmptyArt />
           <p className="text-[13px] leading-snug text-muted-foreground">
@@ -279,7 +256,7 @@ function WorkingFolderCard({
         </div>
       ) : (
         <ul className="space-y-0.5 px-1.5 pb-1">
-          {visibleFiles.map((file) => (
+          {files.map((file) => (
             <li key={file}>
               <div className="group flex items-center gap-1 rounded-md hover:bg-muted/60">
                 <button

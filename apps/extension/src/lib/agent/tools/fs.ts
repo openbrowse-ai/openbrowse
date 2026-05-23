@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { BrowserTool } from "../types";
 import { OPFS } from "../../vfs/opfs";
+import { isUploadsPath } from "../../uploads-dir";
 
 // Simple glob to regex converter since npm is failing in this env
 function globToRegex(glob: string): RegExp {
@@ -90,6 +91,9 @@ export function createFsTools(conversationId: string | null) {
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot write to global skills directory.`;
       }
+      if (isUploadsPath(file_path)) {
+        return `Error: Permission denied. Files under /.uploads/ are user-attached and read-only. Write your output to a different path in the workspace.`;
+      }
       try {
         const fullPath = resolveVfsPath(conversationId, file_path);
         await OPFS.writeFile(fullPath, content);
@@ -112,6 +116,9 @@ export function createFsTools(conversationId: string | null) {
     execute: async ({ file_path, oldString, newString, replaceAll }) => {
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot edit files in global skills directory.`;
+      }
+      if (isUploadsPath(file_path)) {
+        return `Error: Permission denied. Files under /.uploads/ are user-attached and read-only.`;
       }
       try {
         const fullPath = resolveVfsPath(conversationId, file_path);
