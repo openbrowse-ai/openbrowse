@@ -1,0 +1,75 @@
+name: Bug report
+description: Something in the extension does not work as expected (UI, spaces, tabs, settings, overlay, etc.)
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: input
+    id: extension-version
+    attributes:
+      label: OpenBrowse version
+      placeholder: "e.g. 0.2.1"
+    validations:
+      required: true
+
+  - type: input
+    id: chrome-version
+    attributes:
+      label: Chrome version
+      placeholder: "e.g. 131.0.6778.86"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Side panel (chat UI)
+        - Overlay / command palette
+        - Spaces
+        - Tab management / AI Tidy
+        - Home / new tab
+        - Settings
+        - Background / service worker
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or recording
+    validations:
+      required: false

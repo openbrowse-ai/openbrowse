@@ -1,0 +1,99 @@
+name: Agent bug
+description: The agent gave a wrong answer, failed a tool call, looped, or otherwise misbehaved.
+title: "agent: "
+labels: ["bug", "area:agent"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an agent failure. The more reproducible the better — agent behavior is highly sensitive to model, provider, and page state, so include all of the fields below.
+
+  - type: input
+    id: extension-version
+    attributes:
+      label: OpenBrowse version
+      description: From `chrome://extensions` or the side panel footer.
+      placeholder: "e.g. 0.2.1"
+    validations:
+      required: true
+
+  - type: input
+    id: chrome-version
+    attributes:
+      label: Chrome version
+      description: From `chrome://version`.
+      placeholder: "e.g. 131.0.6778.86"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: "e.g. claude-sonnet-4-5, gpt-5-mini, llama-3.3-70b"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      options:
+        - Anthropic
+        - OpenAI
+        - Google Gemini
+        - OpenAI-compatible (Groq, Together, etc.)
+        - Ollama (local)
+        - WebLLM (local)
+        - Chrome built-in AI (Gemini Nano)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt
+    attributes:
+      label: Prompt that failed
+      description: The exact prompt you sent. Redact any sensitive content.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: page-url
+    attributes:
+      label: Page URL (or "any page" / "private")
+      description: The URL the agent was operating on, or a description if it was on a private page.
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the agent's response, the tool calls it made, and where it went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console / service worker logs
+      description: 'From `chrome://extensions` → OpenBrowse → "Inspect views: service worker" and the side panel devtools.'
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or recording
+    validations:
+      required: false

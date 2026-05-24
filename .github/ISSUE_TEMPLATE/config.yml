@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discord community
+    url: https://discord.gg/v47UJ27TTa
+    about: Questions, real-time help, and general discussion. Issues are for actionable bugs and feature requests.
+  - name: Documentation
+    url: https://openbrowse.ai/docs
+    about: Setup guides, model and provider docs, and troubleshooting.
