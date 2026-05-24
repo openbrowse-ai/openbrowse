@@ -1,0 +1,28 @@
+# Code owners for openbrowse.
+#
+# These rules auto-request reviews from the listed owner whenever a PR
+# touches the matching paths. The last matching rule wins, so put more
+# specific rules below more general ones.
+#
+# https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: everything else
+* @aschung01
+
+# Extension code
+/apps/extension/                          @aschung01
+/apps/extension/src/lib/agent/            @aschung01
+/apps/extension/src/lib/python/           @aschung01
+/apps/extension/src/lib/vfs/              @aschung01
+/apps/extension/src/registry/             @aschung01
+/apps/extension/src/entrypoints/          @aschung01
+
+# Connectors package
+/packages/connectors/                     @aschung01
+
+# Docs site
+/apps/docs/                               @aschung01
+
+# CI / repo configuration
+/.github/                                 @aschung01
+/.changeset/                              @aschung01
