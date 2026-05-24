@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { BrowserTool } from "../types";
-import { getActiveUserTab } from "../active-tab";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 
 const parameters = z.object({
@@ -23,29 +22,31 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = {
-  snapshot: string;
-  refCount: number;
-  url: string;
-  belowFoldCount?: number;
-  hint?: string;
-};
+const outputSchema = z.object({
+  snapshot: z.string(),
+  refCount: z.number(),
+  url: z.string(),
+  belowFoldCount: z.number().optional(),
+  hint: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const snapshotTool: BrowserTool<Input, Output> = {
   name: "snapshot",
   description:
     "Get the page's accessibility tree with @refs for interactive elements. Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (click/type/navigate) already auto-attach diffs — call this explicitly only when you need the full tree, a scoped view, or after executeOnPage.",
   parameters,
-  execute: async ({ mode, selector, diff }) => {
-    const tab = await getActiveUserTab();
-    const tabId = tab.id!;
+  outputSchema,
+  execute: async ({ mode, selector, diff }, ctx) => {
+    const tab = await ctx.driver.getActiveTab();
+    const tabId = tab.id;
     const url = tab.url ?? "";
 
     const viewportOnly = mode === "viewport";
     const captureMode = mode === "viewport" ? "interactive" : mode;
 
     const { snapshotText, refs, previous, belowFoldCount } =
-      await captureSnapshot(tabId, {
+      await captureSnapshot(ctx.driver, tabId, {
         mode: captureMode,
         selector,
         viewportOnly,

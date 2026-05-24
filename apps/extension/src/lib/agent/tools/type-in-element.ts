@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { getActiveUserTab, sendToContentScript, waitForTabLoad } from "../active-tab";
-import { sendCommand, isDetachError } from "../cdp-session";
+import { isDetachError } from "../cdp-errors";
+import type { BrowserDriver, TabId } from "../driver";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -26,23 +26,25 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  typed: true;
-  target: string;
-  text: string;
-  submitted?: boolean;
-  diff?: string | null;
-  note?: string;
-};
+const outputSchema = z.object({
+  typed: z.literal(true),
+  target: z.string(),
+  text: z.string(),
+  submitted: z.boolean().optional(),
+  diff: z.string().nullable().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const typeInElementTool: BrowserTool<Input, Output> = {
   name: "typeInElement",
   description:
     "Type text into an input or textarea. Use @ref from snapshot (preferred) or a CSS selector. Pass submit: true to press Enter and wait for the page to settle. The response automatically includes a diff of what changed on the page.",
   parameters,
-  execute: async ({ target, text, clearFirst, submit }) => {
-    const tab = await getActiveUserTab();
-    const tabId = tab.id!;
+  outputSchema,
+  execute: async ({ target, text, clearFirst, submit }, ctx) => {
+    const tab = await ctx.driver.getActiveTab();
+    const tabId = tab.id;
 
     const previousSnapshot = getPreviousSnapshot(tabId);
 
@@ -53,20 +55,20 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
 
     try {
       if (target.startsWith("@e")) {
-        await typeByRef(tabId, target, textToType, clearFirst ?? true);
+        await typeByRef(ctx.driver, tabId, target, textToType, clearFirst ?? true);
       } else {
-        await typeBySelector(tabId, target, textToType, clearFirst ?? true);
+        await typeBySelector(ctx.driver, tabId, target, textToType, clearFirst ?? true);
       }
 
       if (shouldPressEnter) {
-        await sendCommand(tabId, "Input.dispatchKeyEvent", {
+        await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
           type: "keyDown",
           key: "Enter",
           code: "Enter",
           windowsVirtualKeyCode: 13,
           nativeVirtualKeyCode: 13,
         });
-        await sendCommand(tabId, "Input.dispatchKeyEvent", {
+        await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
           type: "keyUp",
           key: "Enter",
           code: "Enter",
@@ -81,14 +83,14 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     }
 
     if (shouldPressEnter) {
-      await sendCommand(tabId, "Input.dispatchKeyEvent", {
+      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
         type: "keyDown",
         key: "Enter",
         code: "Enter",
         windowsVirtualKeyCode: 13,
         nativeVirtualKeyCode: 13,
       });
-      await sendCommand(tabId, "Input.dispatchKeyEvent", {
+      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
         type: "keyUp",
         key: "Enter",
         code: "Enter",
@@ -97,7 +99,7 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
       });
 
       await new Promise((r) => setTimeout(r, 200));
-      await waitForTabLoad(tabId, 8000).catch(() => {});
+      await ctx.driver.waitForLoad(tabId, 8000).catch(() => {});
     }
 
     invalidateRefs(tabId);
@@ -111,13 +113,13 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
 
     if (!previousSnapshot) {
       try {
-        await captureSnapshot(tabId);
+        await captureSnapshot(ctx.driver, tabId);
       } catch {}
       return baseResult;
     }
 
     try {
-      const { snapshotText } = await captureSnapshot(tabId);
+      const { snapshotText } = await captureSnapshot(ctx.driver, tabId);
       const diff = diffSnapshots(previousSnapshot, snapshotText);
       if (diff === null) {
         return {
@@ -139,7 +141,8 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
 };
 
 async function typeByRef(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   ref: string,
   text: string,
   clearFirst: boolean,
@@ -151,43 +154,44 @@ async function typeByRef(
     );
   }
 
-  await sendCommand(tabId, "DOM.focus", { backendNodeId: entry.backendNodeId });
+  await driver.sendCommand(tabId, "DOM.focus", { backendNodeId: entry.backendNodeId });
 
   if (clearFirst) {
-    await sendCommand(tabId, "Input.dispatchKeyEvent", {
+    await driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyDown",
       key: "a",
       code: "KeyA",
       modifiers: 2, // Ctrl
     });
-    await sendCommand(tabId, "Input.dispatchKeyEvent", {
+    await driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyUp",
       key: "a",
       code: "KeyA",
       modifiers: 2,
     });
-    await sendCommand(tabId, "Input.dispatchKeyEvent", {
+    await driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyDown",
       key: "Backspace",
       code: "Backspace",
     });
-    await sendCommand(tabId, "Input.dispatchKeyEvent", {
+    await driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
       type: "keyUp",
       key: "Backspace",
       code: "Backspace",
     });
   }
 
-  await sendCommand(tabId, "Input.insertText", { text });
+  await driver.sendCommand(tabId, "Input.insertText", { text });
 }
 
 async function typeBySelector(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   selector: string,
   text: string,
   clearFirst: boolean,
 ): Promise<void> {
-  const result = await sendToContentScript<{
+  const result = await driver.sendToContentScript<{
     success: boolean;
     error?: string;
   }>(tabId, {

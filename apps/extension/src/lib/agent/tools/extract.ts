@@ -1,6 +1,5 @@
 import { generateObject, jsonSchema } from "ai";
 import { z } from "zod";
-import { getActiveUserTab } from "../active-tab";
 import { getCurrentAgentModel } from "../agent-transport";
 import { captureSnapshot, captureSnapshotWithUrlIds } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -76,7 +75,7 @@ export const extractTool: BrowserTool<Input, Output> = {
   description:
     "Extract structured data from the current page using its accessibility tree. Provide an instruction (what to extract) and optionally a JSON Schema (output shape) and a CSS selector (subtree scope). Preferred over raw DOM-scraping via executeOnPage for text-based data like search results, product lists, table rows, or article content. For URL fields in the schema, use {type: 'string', format: 'uri'} — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them automatically.",
   parameters,
-  execute: async ({ instruction, selector, schema }) => {
+  execute: async ({ instruction, selector, schema }, ctx) => {
     const model = getCurrentAgentModel();
     if (!model) {
       // Invariant: if the tool is running, the agent is running, so the model
@@ -86,8 +85,8 @@ export const extractTool: BrowserTool<Input, Output> = {
       );
     }
 
-    const tab = await getActiveUserTab();
-    const tabId = tab.id!;
+    const tab = await ctx.driver.getActiveTab();
+    const tabId = tab.id;
 
     // Normalize the user-supplied schema. Some LLMs (notably Claude) hedge on
     // `z.any()` parameters and emit complex nested values as JSON-encoded
@@ -142,11 +141,11 @@ export const extractTool: BrowserTool<Input, Output> = {
     let snapshotText: string;
     let urlMap: Map<number, string>;
     if (urlPaths.length > 0) {
-      const result = await captureSnapshotWithUrlIds(tabId, { selector });
+      const result = await captureSnapshotWithUrlIds(ctx.driver, tabId, { selector });
       snapshotText = result.snapshotText;
       urlMap = result.urlMap;
     } else {
-      const result = await captureSnapshot(tabId, { selector, mode: "full" });
+      const result = await captureSnapshot(ctx.driver, tabId, { selector, mode: "full" });
       snapshotText = result.snapshotText;
       urlMap = new Map();
     }

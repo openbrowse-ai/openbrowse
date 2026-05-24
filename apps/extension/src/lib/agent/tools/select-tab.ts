@@ -1,24 +1,5 @@
 import { z } from "zod";
-import { chatDb } from "@/lib/chat-db";
 import type { BrowserTool } from "../types";
-import { setTargetTabId } from "../active-tab";
-import { getAgentContext } from "../agent-transport";
-import { resolveHandle } from "../tab-handles";
-
-async function bindActiveTabToConversation(
-  conversationId: string,
-  tabId: number,
-): Promise<void> {
-  try {
-    await chrome.runtime.sendMessage({
-      type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
-      conversationId,
-      tabId,
-    });
-  } catch {
-    // Background may be asleep; ownership rebuilds on next startup.
-  }
-}
 
 const parameters = z.object({
   tab: z
@@ -35,41 +16,33 @@ export const selectTabTool: BrowserTool<Input, Output> = {
   description:
     "Set which tab tools like readPage/clickElement/typeInElement/snapshot should target. Does NOT switch the user's visible tab. Use handles from listTabs.",
   parameters,
-  execute: async ({ tab }) => {
-    const { conversationId } = getAgentContext();
-
-    let tabId: number | undefined;
-    if (conversationId) {
-      tabId = resolveHandle(conversationId, tab);
-    }
+  execute: async ({ tab }, ctx) => {
+    let tabId = ctx.session?.resolveHandle?.(tab);
 
     // Fallback: try parsing as numeric tab ID for backward compat
     if (tabId == null) {
       const parsed = parseInt(tab, 10);
-      if (!isNaN(parsed)) tabId = parsed;
+      if (!Number.isNaN(parsed)) tabId = parsed;
     }
 
     if (tabId == null) {
       throw new Error(`Tab handle "${tab}" not found. Use listTabs to see available tabs.`);
     }
 
-    const chromeTab = await chrome.tabs.get(tabId);
-    if (!chromeTab) throw new Error(`Tab ${tabId} not found`);
-    if (chromeTab.url?.startsWith("chrome-extension://") || chromeTab.url?.startsWith("chrome://")) {
-      throw new Error("Cannot select extension or chrome:// tabs");
+    // Verify the tab exists by listing tabs.
+    const tabs = await ctx.driver.listTabs();
+    const target = tabs.find((t) => t.id === tabId);
+    if (!target) throw new Error(`Tab ${tabId} not found`);
+
+    // Only fold into the agent's tab group if one already exists. Creating
+    // a group from selectTab alone would be too aggressive — the agent may
+    // just be peeking at an existing tab.
+    const hasGroup = (await ctx.session?.hasOwnedTabGroup?.()) ?? false;
+    if (hasGroup) {
+      await ctx.session?.bindActiveTabToConversation?.(tabId);
     }
 
-    if (conversationId) {
-      const conv = await chatDb.getConversation(conversationId);
-      // Only fold into the group if the conversation already owns one.
-      // Creating a group from selectTab alone feels too aggressive — the
-      // agent may just be peeking at an existing tab.
-      if (conv?.ownedGroupId != null) {
-        await bindActiveTabToConversation(conversationId, tabId);
-      }
-    }
-
-    setTargetTabId(tabId);
+    await ctx.driver.setActiveTab(tabId);
     return { selected: true, tab };
   },
 };

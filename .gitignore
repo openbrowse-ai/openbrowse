@@ -28,6 +28,7 @@ web-ext.config.ts
 
 # Environment and secrets
 .env*
+!.env.example
 *.pem
 *.key
 
@@ -42,3 +43,13 @@ apps/docs/superpowers/
 # Local agent/skills tooling
 .agents/
 skills-lock.json
+
+# Bench artifacts
+.bench/
+
+# Background job pids
+*.pid
+
+# Playwright default output directories
+playwright-report/
+test-results/

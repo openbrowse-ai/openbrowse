@@ -11,24 +11,8 @@ const sessions = new Map<number, Session>();
 const pendingAttach = new Map<number, Promise<Session>>();
 const NO_ENABLE_DOMAINS = new Set(["Input", "Page", "DOMSnapshot", "Runtime"]);
 
-/**
- * Patterns matching Chrome debugger errors that indicate the underlying
- * session was lost (typically because the page navigated, the renderer
- * crashed, or another devtools client claimed the target). When we see one of
- * these, we should clear our cached session and re-attach.
- */
-const DETACH_ERROR_PATTERNS = [
-  /Detached while handling command/i,
-  /Debugger is not attached/i,
-  /Cannot find context with specified id/i,
-  /Target closed/i,
-  /No tab with given id/i,
-];
-
-export function isDetachError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return DETACH_ERROR_PATTERNS.some((re) => re.test(msg));
-}
+export { isDetachError } from "./cdp-errors";
+import { isDetachError } from "./cdp-errors";
 
 /**
  * Track Chrome's own detach events. Chrome auto-detaches the debugger on

@@ -1,8 +1,7 @@
 import { z } from "zod";
-import type { BrowserTool } from "../types";
-import { getActiveUserTab } from "../active-tab";
-import { sendCommand } from "../cdp-session";
+import type { BrowserDriver, TabId } from "../driver";
 import { getRefsForTab, type RefEntry } from "../ref-store";
+import type { BrowserTool } from "../types";
 
 const parameters = z.object({
   annotate: z
@@ -19,43 +18,28 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 
-type Output = {
-  /**
-   * Data URL of the captured PNG. Always set when the screenshot tool
-   * actually executes successfully. Marked optional because the
-   * compacting transport may strip the image when the tool result
-   * falls outside the protected tail of recent user turns; in that
-   * case `removed` carries the placeholder marker instead.
-   */
-  imageDataUrl?: string;
-  /**
-   * Set when this tool result was elided by send-time pruning. Used by
-   * the screenshot tool's `toModelOutput` to emit a text marker so the
-   * model still sees that a screenshot existed here and was removed,
-   * instead of crashing on a missing field.
-   */
-  removed?: string;
-  /** Number of @refs that were rendered as labels on the image. */
-  annotatedCount?: number;
-  /** Set if annotation was requested but failed; helps the agent diagnose. */
-  annotationError?: string;
-  /** Set if Page.captureScreenshot needed a retry due to a transient CDP error. */
-  note?: string;
-};
+const outputSchema = z.object({
+  imageDataUrl: z.string().optional(),
+  annotatedCount: z.number().optional(),
+  annotationError: z.string().optional(),
+  note: z.string().optional(),
+});
+type Output = z.infer<typeof outputSchema>;
 
 export const screenshotTool: BrowserTool<Input, Output> = {
   name: "screenshot",
   description:
     "Capture a screenshot of the target tab (set via selectTab, or the active browsing tab). Works even if the tab is not focused. Use annotate: true to overlay @ref labels from the most recent snapshot — useful when the page has visual complexity the accessibility tree doesn't capture well. The response includes annotatedCount when annotation succeeded; if annotation was requested but failed, an annotationError field explains why.",
   parameters,
-  execute: async ({ annotate, fullPage }) => {
-    const tab = await getActiveUserTab();
-    const tabId = tab.id!;
+  outputSchema,
+  execute: async ({ annotate, fullPage }, ctx) => {
+    const tab = await ctx.driver.getActiveTab();
+    const tabId = tab.id;
 
     const captureParams: Record<string, unknown> = { format: "png" };
     if (fullPage) {
       captureParams.captureBeyondViewport = true;
-      const metrics = await sendCommand<{
+      const metrics = await ctx.driver.sendCommand<{
         contentSize: { width: number; height: number };
       }>(tabId, "Page.getLayoutMetrics");
       captureParams.clip = {
@@ -74,7 +58,7 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     let result: { data: string };
     let retryNote: string | undefined;
     try {
-      result = await sendCommand<{ data: string }>(
+      result = await ctx.driver.sendCommand<{ data: string }>(
         tabId,
         "Page.captureScreenshot",
         captureParams,
@@ -82,7 +66,7 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     } catch (firstErr) {
       await new Promise((r) => setTimeout(r, 600));
       try {
-        result = await sendCommand<{ data: string }>(
+        result = await ctx.driver.sendCommand<{ data: string }>(
           tabId,
           "Page.captureScreenshot",
           captureParams,
@@ -104,6 +88,7 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     if (annotate) {
       try {
         const annotated = await annotateScreenshot(
+          ctx.driver,
           tabId,
           imageData,
           fullPage ?? false,
@@ -176,7 +161,8 @@ interface AnnotateResult {
 }
 
 async function annotateScreenshot(
-  tabId: number,
+  driver: BrowserDriver,
+  tabId: TabId,
   base64Png: string,
   fullPage: boolean,
 ): Promise<AnnotateResult> {
@@ -196,7 +182,7 @@ async function annotateScreenshot(
   let scrollY = 0;
   let dpr = 1;
   try {
-    const ctx = await sendCommand<{
+    const ctx = await driver.sendCommand<{
       result?: { value?: { sx: number; sy: number; dpr: number } };
     }>(tabId, "Runtime.evaluate", {
       expression: `({ sx: window.scrollX, sy: window.scrollY, dpr: window.devicePixelRatio || 1 })`,
@@ -224,7 +210,7 @@ async function annotateScreenshot(
     const results = await Promise.all(
       slice.map(async ([ref, entry]) => {
         try {
-          const box = await sendCommand<{ model?: { content: number[] } }>(
+          const box = await driver.sendCommand<{ model?: { content: number[] } }>(
             tabId,
             "DOM.getBoxModel",
             { backendNodeId: entry.backendNodeId },
