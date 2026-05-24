@@ -88,8 +88,8 @@ export function RightRail({
    * drive subsequent size changes through the imperative handle below.
    * Using `useState` with an initializer pins the value to mount time.
    */
-  const [initialRailSize] = useState<number>(() => {
-    if (!isOpen) return 0;
+  const [initialRailSize] = useState<string>(() => {
+    if (!isOpen) return "0%";
     
     // We compute the initial size as a raw percentage rather than a pixel string
     // (e.g. "360px"). When `react-resizable-panels` parses a pixel string on mount,
@@ -112,8 +112,9 @@ export function RightRail({
     const estimatedContainerWidth = Math.max(800, vw - 260);
     const targetPx = getTargetPx();
     
-    // Return percentage (0..100)
-    return (targetPx / estimatedContainerWidth) * 100;
+    // Return percentage (0..100) string
+    const pct = (targetPx / estimatedContainerWidth) * 100;
+    return `${pct}%`;
   });
 
   // Drive the rail width from `isOpen` + `selectedFile`. Three target sizes:
@@ -124,15 +125,6 @@ export function RightRail({
     const handle = railPanelRef.current;
     if (!handle) return;
     
-    if (!hasInitializedRef.current) {
-      // First run after mount: trust the panel's `defaultSize`.
-      // By using a percentage for defaultSize, we bypass the library's
-      // pixel-conversion mount bug. The panel snaps instantly to the right
-      // width without an unwanted tween animation.
-      hasInitializedRef.current = true;
-      return;
-    }
-    
     const target = !isOpen
       ? 0
       : selectedFile !== null
@@ -141,6 +133,19 @@ export function RightRail({
           : fileWidthRef.current
         : WORKSPACE_WIDTH_PX;
         
+    if (!hasInitializedRef.current) {
+      // First run after mount: trust the panel's `defaultSize`.
+      // By using a percentage string for defaultSize, we bypass the library's
+      // pixel-conversion mount bug. We then wait one frame for ResizeObserver
+      // to establish the real container width, and snap to exact pixels.
+      hasInitializedRef.current = true;
+      const rafId = requestAnimationFrame(() => {
+        const h = railPanelRef.current;
+        if (h) h.resize(`${target}px`);
+      });
+      return () => cancelAnimationFrame(rafId);
+    }
+    
     const fromPx = handle.getSize?.()?.inPixels ?? 0;
     if (Math.abs(fromPx - target) < 0.5) return;
     
