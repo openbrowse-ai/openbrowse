@@ -676,17 +676,27 @@ export async function createAgentTransport(
 ): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
 
+  // Parse compound "<providerId>:<modelId>" emitted by the chat UI; fall
+  // back to a flat lookup for legacy stored values that pre-date the
+  // compound format.
+  const [maybeProvider, ...modelIdParts] = agentModel.split(":");
+  const actualModelId =
+    modelIdParts.length > 0 ? modelIdParts.join(":") : agentModel;
+
   const { providers } = await import("@/registry/providers");
-  const provider = providers.find((p) =>
-    p.models.some((m) => m.id === agentModel),
-  );
+  const provider =
+    (modelIdParts.length > 0
+      ? providers.find((p) => p.id === maybeProvider)
+      : undefined) ??
+    providers.find((p) => p.models.some((m) => m.id === actualModelId));
+
   if (!provider) return null;
 
   const config = settings.providerConfigs[provider.id] ?? {};
   const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
   if (!requiredFields.every((f) => !!config[f.key])) return null;
 
-  const model = await provider.createLanguageModel(config, agentModel);
+  const model = await provider.createLanguageModel(config, actualModelId);
   setCurrentAgentModel(model);
 
   const fsTools = createFsTools(conversationId);
