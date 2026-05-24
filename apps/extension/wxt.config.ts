@@ -79,7 +79,7 @@ export default defineConfig({
   manifest: ({ mode }) => ({
     name: "OpenBrowse",
     description: "The open source browser agent.",
-    version: "0.2.0",
+    version: "0.2.1",
     // Pins the extension ID to the Chrome Web Store listing. Required so
     // that storage from manual / unpacked installs (loaded from a release
     // zip) carries over to the Web Store install: same `key` -> same
