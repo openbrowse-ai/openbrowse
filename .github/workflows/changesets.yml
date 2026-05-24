@@ -1,0 +1,63 @@
+name: Changesets
+
+# On every push to main:
+#   - If there are pending changesets in .changeset/, open or update a
+#     "Version Packages" PR that bumps versions and updates CHANGELOG.
+#   - When that PR is merged, this workflow creates the matching git
+#     tag (e.g. v0.3.0). The existing release.yml workflow picks up the
+#     tag and publishes the GitHub Release zip.
+#
+# Contributors who change user-facing behavior should run
+# `pnpm changeset` and commit the generated `.changeset/*.md` file.
+# See CONTRIBUTING.md.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changesets-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Version Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit version bumps + create tags
+      pull-requests: write # open the Version Packages PR
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Required so changesets can detect history when computing
+          # version bumps and changelog entries.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 11
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Open / update Version Packages PR (or tag release)
+        uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
+        with:
+          # Runs `pnpm version` (which calls `changeset version`).
+          version: pnpm version
+          # No npm publish — we do not publish to npm. The git tag
+          # created here is the trigger for release.yml to build and
+          # publish the GitHub Release zip.
+          publish: pnpm exec changeset tag
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
