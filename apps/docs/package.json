@@ -30,6 +30,6 @@
     "@types/react-dom": "^19",
     "postcss": "latest",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^6"
   }
 }
