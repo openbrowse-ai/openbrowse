@@ -43,7 +43,7 @@
     "@mlc-ai/web-llm": "^0.2.82",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@openbrowse/connectors": "workspace:*",
-    "@openrouter/ai-sdk-provider": "^1.2.4",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-label": "^2.1.8",
