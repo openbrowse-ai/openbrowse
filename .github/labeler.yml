@@ -1,0 +1,71 @@
+# Path-based PR labeling for actions/labeler@v5.
+# Each top-level key is a label name; the list under it is the set of
+# globs that, when matched by a changed file, applies that label.
+#
+# Add new area labels here as the project grows. Labels must already
+# exist in the repo (see scripts/github/sync-labels.sh, or create them
+# manually in the GitHub UI).
+
+"area:agent":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/lib/agent/**
+
+"area:registry":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/registry/**
+
+"area:connectors":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/connectors/**
+
+"area:sidepanel":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/entrypoints/sidepanel/**
+
+"area:overlay":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/entrypoints/overlay/**
+          - apps/extension/src/entrypoints/content/**
+
+"area:home":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/entrypoints/home/**
+
+"area:settings":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/entrypoints/settings/**
+
+"area:background":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/entrypoints/background/**
+          - apps/extension/src/entrypoints/offscreen/**
+
+"area:docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/docs/**
+          - "**/*.md"
+
+"area:ci":
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - .changeset/**
+
+"area:python":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/lib/python/**
+
+"area:vfs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - apps/extension/src/lib/vfs/**

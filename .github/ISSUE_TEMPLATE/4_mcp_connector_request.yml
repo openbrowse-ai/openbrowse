@@ -1,0 +1,52 @@
+name: MCP connector request
+description: Request a new MCP connector for a service (GitHub, Linear, etc. are already supported — see packages/connectors).
+title: "connector: "
+labels: ["enhancement", "area:connectors"]
+body:
+  - type: input
+    id: service
+    attributes:
+      label: Service name
+      placeholder: "e.g. PostHog, Cal.com, Resend"
+    validations:
+      required: true
+
+  - type: input
+    id: server-url
+    attributes:
+      label: Official MCP server URL (if known)
+      description: Link to the service's MCP server docs or repo, if one exists.
+      placeholder: "https://..."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Auth model
+      options:
+        - OAuth
+        - API key / token
+        - Other
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What would you do with this connector? Concrete prompt examples help.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Are you willing to contribute?
+      options:
+        - "Yes, I can submit a PR"
+        - "Yes, but I need guidance"
+        - "No, I cannot contribute at this time"
+    validations:
+      required: true

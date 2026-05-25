@@ -57,6 +57,7 @@ Common scripts (run from repo root):
 - `pnpm test` — run the extension's vitest suite
 - `pnpm zip` — package the extension as a release zip
 - `pnpm refresh:models` — refresh the bundled `models.dev` snapshot
+- `pnpm changeset` — record a release note for the next version
 
 ## Tech Stack
 
@@ -73,13 +74,19 @@ Common scripts (run from repo root):
 2. Make your changes
 3. Test the extension locally with `pnpm dev`
 4. Run `pnpm compile` to check for type errors
-5. Open a pull request
+5. Run `pnpm test` to make sure tests pass
+6. If your PR changes user-facing behavior, run `pnpm changeset` and commit the generated `.changeset/*.md` file (see [`.changeset/README.md`](.changeset/README.md))
+7. Open a pull request — every PR gets an installable extension build attached as an artifact, posted as a comment
 
 ## Code Style
 
 - TypeScript strict mode
 - No comments unless the "why" is non-obvious
 - Prefer editing existing files over creating new ones
+
+## Reporting Bugs and Requesting Features
+
+Use the [issue templates](https://github.com/openbrowse-ai/openbrowse/issues/new/choose). Questions and general discussion belong in our [Discord](https://discord.gg/v47UJ27TTa). Security vulnerabilities should be reported privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 
