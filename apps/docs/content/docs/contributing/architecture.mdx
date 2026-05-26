@@ -55,10 +55,10 @@ Connector metadata lives in the `@openbrowse/connectors` workspace package and i
 ## Data Flow
 
 1. User interacts via the side panel (or popover, or overlay).
-2. The agent transport composes the system prompt (memory, todos, MCP tools) and the toolset.
+2. The agent transport composes the system prompt (memory, todos, MCP tools, the per-turn **tab legend**) and the toolset.
 3. Tool calls execute where they belong:
-   - Browser tools (`clickElement`, `readPage`, etc.) → content scripts via the background worker.
-   - `executeCode` / `executeOnPage` → workers / page context.
+   - Browser tools (`clickElement`, `readPage`, etc.) take a stable `tab` handle (e.g. `t1`) in their input. The transport resolves the handle via the conversation's persisted handle map (chatDb → `tab-handles.ts`) before dispatching to the content script.
+   - `executeCode` runs in an isolated worker; `executeOnPage` runs in the resolved tab's page context.
    - `executePython` → bundled Pyodide running in a sandboxed iframe (via the offscreen document).
    - Filesystem tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `LS`) → per-conversation OPFS workspace.
    - MCP tools → the connector's MCP server.

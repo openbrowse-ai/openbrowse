@@ -16,8 +16,7 @@ This skill allows you to discover and install other agent skills from the [skill
 
 ## 1. Search the Registry
 
-Use the `executeOnPage` tool (or `navigate` then `readPage` if appropriate) to fetch data from the skills.sh API, or use a tool that can make HTTP requests if one is available.
-Wait, since you operate in a browser environment, you can use the `executeCode` tool to run a simple script to fetch the search results:
+The fastest path is the `executeCode` tool — it runs a script in an isolated worker (no DOM, no tab needed) and can hit the skills.sh API directly:
 
 ```javascript
 // Run this using executeCode
@@ -27,6 +26,8 @@ fetch('https://skills.sh/api/search?q=YOUR_SEARCH_QUERY')
 ```
 
 Replace `YOUR_SEARCH_QUERY` with the relevant terms.
+
+If `executeCode` is unavailable for some reason, fall back to `navigate({ url: 'https://skills.sh/...' })` followed by `readPage({ tab })` against the returned handle, or `executeOnPage({ tab, code })` for a more programmatic fetch from within the page context.
 
 ## 2. Present Results
 

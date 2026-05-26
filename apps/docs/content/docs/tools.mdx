@@ -13,32 +13,40 @@ The agent comes equipped with a comprehensive suite of tools. When you ask it to
   streamline repeat workflows.
 </Callout>
 
+## Tab handles
+
+Every tab-interacting tool takes an explicit `tab` argument — a stable handle (`t1`, `t2`, ...) that identifies which tab the call should act on. Handles are minted by `navigate` (when it opens a new tab) and `selectTab` (when binding an external tab into the conversation). Once minted, a handle keeps referring to the same tab on subsequent turns and across service-worker restarts.
+
+The agent sees the live set of available handles in a `## Tabs in this conversation` block injected into its system prompt every turn. Calling `listTabs` returns the same shape and is the way to discover tabs the user has open elsewhere.
+
+To bootstrap a fresh conversation, the agent calls `navigate({ url })` with no `tab` arg — that opens a new background tab and returns the new handle in the response.
+
 ## Browsing & Interaction
 
-The agent navigates the web and interacts with elements just like a human user.
+The agent navigates the web and interacts with elements just like a human user. Each tool below requires `tab` (except `navigate`, where omitting `tab` opens a new tab).
 
 | Tool | Description |
 | --- | --- |
-| `navigate` | Navigate the active tab to a URL. |
-| `snapshot` | Capture a structural accessibility-tree snapshot of the active page. |
-| `readPage` | Extract text, links, and metadata from the page. |
-| `screenshot` | Capture a visual screenshot of the viewport. |
-| `scrollPage` | Scroll up, down, or to a specific position. |
-| `clickElement` | Click a specific element by its snapshot ref. |
-| `typeInElement` | Type text into an input field or textarea. |
+| `navigate` | `{ url, tab? }`. With `tab`: navigate that tab. Without `tab`: open a new background tab and return its handle. |
+| `snapshot` | `{ tab, mode?, selector?, diff? }`. Capture a structural accessibility-tree snapshot of a tab. |
+| `readPage` | `{ tab }`. Extract text, links, and metadata from a tab. |
+| `screenshot` | `{ tab, annotate?, fullPage? }`. Capture a visual screenshot of a tab. |
+| `scrollPage` | `{ tab, direction, amount? }`. Scroll up or down. |
+| `clickElement` | `{ tab, target }`. Click a specific element by its `@ref` (from a snapshot of THAT tab) or CSS selector. |
+| `typeInElement` | `{ tab, target, text, clearFirst?, submit? }`. Type into an input. `submit: true` presses Enter and waits for navigation. |
 
 ## Tab Management
 
 | Tool | Description |
 | --- | --- |
-| `listTabs` | List all open tabs across windows and spaces. |
-| `selectTab` | Switch focus to a specific tab. |
+| `listTabs` | List all open tabs across windows and spaces; emits handles. |
+| `selectTab` | `{ tab }`. Bind an external tab into this conversation so it appears in the legend and can be passed as `tab` to other tools. |
 
 ## Extraction
 
 | Tool | Description |
 | --- | --- |
-| `extract` | Extract structured data from the active page using its accessibility tree. Takes an instruction and an optional JSON Schema; preferred over raw DOM-scraping via `executeOnPage` for text-based data like search results, product lists, table rows, or articles. URL fields are substituted with numeric IDs and rehydrated to prevent hallucination. |
+| `extract` | `{ tab, instruction, selector?, schema? }`. Extract structured data from a tab using its accessibility tree. Preferred over raw DOM-scraping via `executeOnPage` for text-based data like search results, product lists, table rows, or articles. URL fields (`{ type: "string", format: "uri" }`) are substituted with numeric IDs and rehydrated to prevent hallucination. |
 
 ## Code Execution
 
@@ -47,7 +55,7 @@ The agent can execute code in three sandboxed environments depending on what it'
 | Tool | Description | Security |
 | --- | --- | --- |
 | `executeCode` | Run JavaScript in an isolated worker (no DOM access). Best for data processing. | Safe (Isolated) |
-| `executeOnPage` | Run JavaScript directly in the active page's context. Use when you need DOM access. | **Requires Approval** |
+| `executeOnPage` | `{ tab, code, args? }`. Run JavaScript directly in a tab's page context. Use when you need DOM access. | **Requires Approval** |
 | `executePython` | Run CPython 3 in [Pyodide](https://pyodide.org), bundled in a sandboxed iframe. The conversation's [workspace](/docs/workspace) is mounted at `/workspace`; `/skills` is mounted read-only. Optional network access via `pyfetch`. | Safe (Sandboxed) |
 
 For Python specifically, the agent loads the bundled [`python-env` skill](/docs/skills) on demand to pick up Pyodide-specific gotchas (no `subprocess`, mismatched import names like `import fitz` for `pymupdf`, top-level `await`, latin-1 PDF unicode pitfalls, etc.).
