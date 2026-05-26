@@ -3,6 +3,19 @@ import { queueDb } from "./queue-db";
 import type { SerializedUIPart, TodoItem } from "./types";
 import { OPFS } from "./vfs/opfs";
 
+/**
+ * Persisted handle map for a conversation. Handles (`t1`, `t2`, ...) are
+ * stable identifiers the agent uses to address tabs in tool args. Backed
+ * by a sync in-memory cache in `tab-handles.ts`; this field lets the cache
+ * survive service-worker restarts and conversation switches.
+ */
+export interface PersistedHandleState {
+  /** handle → chrome tab id */
+  handles: Record<string, number>;
+  /** Next handle counter (1-based, monotonic per conversation). */
+  counter: number;
+}
+
 interface ChatDB extends DBSchema {
   conversations: {
     key: string;
@@ -13,6 +26,7 @@ interface ChatDB extends DBSchema {
       ownedGroupId: number | null;
       ownedTabIds: number[];
       todos?: TodoItem[];
+      handleState?: PersistedHandleState;
       createdAt: number;
       updatedAt: number;
     };
@@ -50,7 +64,10 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     // v7: migrates legacy `{ type: "compaction", auto, ... }` parts
     // to the AI SDK's DataUIPart contract:
     // `{ type: "data-compaction", data: { auto, ... } }`.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 7, {
+    // v8: introduces `handleState` (tab-handle persistence) on conversations.
+    // No data migration: the field is optional and tab-handles.ts treats
+    // missing/empty state as a fresh map starting at counter 1.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 8, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -156,6 +173,11 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           };
           migrateCompactionParts();
         }
+        if (oldVersion < 8) {
+          // `handleState` is optional on the conversation record; tab-handles.ts
+          // treats `undefined` as "fresh map, counter starts at 1". No data
+          // backfill required — the schema bump only signals the field exists.
+        }
       },
     });
   }
@@ -184,8 +206,16 @@ export const chatDb = {
   },
 
   async createConversation(
-    conv: Omit<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds" | "todos"> &
-      Partial<Pick<ChatDB["conversations"]["value"], "ownedGroupId" | "ownedTabIds" | "todos">>,
+    conv: Omit<
+      ChatDB["conversations"]["value"],
+      "ownedGroupId" | "ownedTabIds" | "todos" | "handleState"
+    > &
+      Partial<
+        Pick<
+          ChatDB["conversations"]["value"],
+          "ownedGroupId" | "ownedTabIds" | "todos" | "handleState"
+        >
+      >,
   ): Promise<void> {
     const db = await getDb();
     await db.put("conversations", {
@@ -214,10 +244,17 @@ export const chatDb = {
     updates: Partial<ChatDB["conversations"]["value"]>,
   ): Promise<void> {
     const db = await getDb();
-    const existing = await db.get("conversations", id);
+    // Read-modify-write inside a single transaction. idb serializes
+    // readwrite transactions on the same store within a connection, so
+    // concurrent updateConversation calls can't drop each other's writes
+    // (which would happen with a separate db.get / db.put pair if a
+    // second writer's `get` raced with the first writer's `put`).
+    const tx = db.transaction("conversations", "readwrite");
+    const existing = await tx.store.get(id);
     if (existing) {
-      await db.put("conversations", { ...existing, ...updates });
+      await tx.store.put({ ...existing, ...updates });
     }
+    await tx.done;
     // Only broadcast for fields that materially affect conversation-list UIs.
     // Excludes high-frequency churn like `updatedAt` (per message turn),
     // `ownedTabIds`/`ownedGroupId` (tab-scoping reconciliation), and `todos`
@@ -328,5 +365,13 @@ export const chatDb = {
       await tx.store.delete(msg.id);
     }
     await tx.done;
+  },
+
+  /**
+   * Test/debug helper. Reset the in-memory db handle so a fresh
+   * `indexedDB` (e.g. fake-indexeddb in tests) is opened on next call.
+   */
+  _resetForTests(): void {
+    dbPromise = null;
   },
 };

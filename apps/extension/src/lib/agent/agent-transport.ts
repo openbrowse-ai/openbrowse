@@ -20,6 +20,7 @@ import type { ToolContext } from "./driver";
 import {
   clearHandles,
   getOrCreateHandle as getOrCreateTabHandle,
+  loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
 import {
@@ -337,6 +338,13 @@ export function setAgentContext(
   }
   agentConversationId = conversationId;
   agentHostTabId = hostTabId;
+  // Hydrate the persisted handle map for the new conversation. Fire-and-
+  // forget: tools that hit a not-yet-hydrated map will see "Unknown tab
+  // handle" and recover via listTabs. In practice the user-message →
+  // first-tool-call window is large enough for this to settle.
+  if (conversationId) {
+    loadHandlesForConversation(conversationId).catch(() => {});
+  }
 }
 
 export function getAgentContext(): {
