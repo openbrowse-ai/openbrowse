@@ -66,16 +66,11 @@ function getMap(conversationId: string): HandleMap {
   return map;
 }
 
-function snapshot(map: HandleMap): PersistedHandleState {
-  const handles: Record<string, number> = {};
-  for (const [h, id] of map.handleToTab) handles[h] = id;
-  return { handles, counter: map.counter };
-}
-
 /**
- * Project a snapshot to only the handles whose tabId is in `ownedSet`.
- * Used by `persist()` so non-owned handles (e.g. minted while enumerating
- * `listTabs`) don't bloat chatDb across SW lifetimes.
+ * Project the in-memory map to a chatDb-shaped record, including only
+ * handles whose tabId is in `ownedSet`. Non-owned handles (e.g. minted
+ * while enumerating `listTabs` for the user's other tabs) stay in memory
+ * but don't bloat chatDb across SW lifetimes.
  */
 function snapshotOwned(
   map: HandleMap,
