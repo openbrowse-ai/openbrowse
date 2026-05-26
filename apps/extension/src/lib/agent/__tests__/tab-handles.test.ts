@@ -128,7 +128,10 @@ describe("tab-handles", () => {
       clearHandles(CONV_A);
       expect(resolveHandle(CONV_A, "t1")).toBeUndefined();
 
-      // Persisted state survives → hydration restores it.
+      // Hydration restores it. Stub chrome so the tab is reported live.
+      vi.stubGlobal("chrome", {
+        tabs: { get: vi.fn(async () => ({} as chrome.tabs.Tab)) },
+      });
       await loadHandlesForConversation(CONV_A);
       expect(resolveHandle(CONV_A, "t1")).toBe(100);
     });

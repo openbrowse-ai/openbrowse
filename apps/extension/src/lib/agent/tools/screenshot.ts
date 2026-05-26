@@ -1,9 +1,15 @@
 import { z } from "zod";
 import type { BrowserDriver, TabId } from "../driver";
+import { resolveTabOrThrow } from "../driver";
 import { getRefsForTab, type RefEntry } from "../ref-store";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to capture (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   annotate: z
     .boolean()
     .optional()
@@ -19,6 +25,7 @@ const parameters = z.object({
 type Input = z.infer<typeof parameters>;
 
 const outputSchema = z.object({
+  tab: z.string(),
   imageDataUrl: z.string().optional(),
   annotatedCount: z.number().optional(),
   annotationError: z.string().optional(),
@@ -29,11 +36,11 @@ type Output = z.infer<typeof outputSchema>;
 export const screenshotTool: BrowserTool<Input, Output> = {
   name: "screenshot",
   description:
-    "Capture a screenshot of the target tab (set via selectTab, or the active browsing tab). Works even if the tab is not focused. Use annotate: true to overlay @ref labels from the most recent snapshot — useful when the page has visual complexity the accessibility tree doesn't capture well. The response includes annotatedCount when annotation succeeded; if annotation was requested but failed, an annotationError field explains why.",
+    "Capture a screenshot of a tab. Pass `tab` (handle from the tab legend or listTabs). Works even if the tab is not focused. Use annotate: true to overlay @ref labels from the most recent snapshot — useful when the page has visual complexity the accessibility tree doesn't capture well. The response includes annotatedCount when annotation succeeded; if annotation was requested but failed, an annotationError field explains why.",
   parameters,
   outputSchema,
-  execute: async ({ annotate, fullPage }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, annotate, fullPage }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
 
     const captureParams: Record<string, unknown> = { format: "png" };
@@ -105,6 +112,7 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     }
 
     const out: Output = {
+      tab: handle,
       imageDataUrl: `data:image/png;base64,${imageData}`,
     };
     if (annotatedCount != null) out.annotatedCount = annotatedCount;

@@ -4,7 +4,9 @@ import type { BrowserTool } from "../types";
 const parameters = z.object({
   tab: z
     .string()
-    .describe("Tab handle from listTabs (e.g. 't1', 't2')"),
+    .describe(
+      "Tab handle from listTabs (e.g. 't1'). Use this to bind a tab the agent didn't open (e.g. one the user already had) into the conversation so subsequent tool calls can address it.",
+    ),
 });
 
 type Input = z.infer<typeof parameters>;
@@ -14,7 +16,7 @@ type Output = { selected: true; tab: string };
 export const selectTabTool: BrowserTool<Input, Output> = {
   name: "selectTab",
   description:
-    "Set which tab tools like readPage/clickElement/typeInElement/snapshot should target. Does NOT switch the user's visible tab. Use handles from listTabs.",
+    "Bind an external (user-opened) tab into this conversation so it appears in the tab legend and can be passed as the `tab` arg to other tools. Does NOT switch the user's visible tab. Use handles from listTabs.",
   parameters,
   execute: async ({ tab }, ctx) => {
     let tabId = ctx.session?.resolveHandle?.(tab);
@@ -34,13 +36,10 @@ export const selectTabTool: BrowserTool<Input, Output> = {
     const target = tabs.find((t) => t.id === tabId);
     if (!target) throw new Error(`Tab ${tabId} not found`);
 
-    // Only fold into the agent's tab group if one already exists. Creating
-    // a group from selectTab alone would be too aggressive — the agent may
-    // just be peeking at an existing tab.
-    const hasGroup = (await ctx.session?.hasOwnedTabGroup?.()) ?? false;
-    if (hasGroup) {
-      await ctx.session?.bindActiveTabToConversation?.(tabId);
-    }
+    // Always fold into the conversation's owned tabs so the tab appears in
+    // the agent's tab legend on subsequent turns. Binding into the group (if
+    // one exists) is a side effect of the same call.
+    await ctx.session?.bindActiveTabToConversation?.(tabId);
 
     await ctx.driver.setActiveTab(tabId);
     return { selected: true, tab };

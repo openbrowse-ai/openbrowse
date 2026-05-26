@@ -227,6 +227,12 @@ export class PlaywrightDriver implements BrowserDriver {
     return await this.toTabInfo(tracked);
   }
 
+  async getTab(tabId: TabId): Promise<BrowserTabInfo> {
+    this.checkCrashed();
+    const tracked = await this.requirePage(tabId);
+    return await this.toTabInfo(tracked);
+  }
+
   async setActiveTab(tabId: TabId | null): Promise<void> {
     this.checkCrashed();
     if (tabId != null && !this.pages.has(tabId)) {

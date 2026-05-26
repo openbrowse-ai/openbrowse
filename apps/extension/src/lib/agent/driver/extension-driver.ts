@@ -62,6 +62,11 @@ export class ExtensionDriver implements BrowserDriver {
     return toBrowserTabInfo(tab);
   }
 
+  async getTab(tabId: TabId): Promise<BrowserTabInfo> {
+    const tab = await chrome.tabs.get(tabId as number);
+    return toBrowserTabInfo(tab);
+  }
+
   async setActiveTab(tabId: TabId | null): Promise<void> {
     setTargetTabId(tabId == null ? null : (tabId as number));
   }

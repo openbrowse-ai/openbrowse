@@ -1,8 +1,14 @@
 import { z } from "zod";
 import type { BrowserTool } from "../types";
+import { resolveTabOrThrow } from "../driver";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to snapshot (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   mode: z
     .enum(["interactive", "full", "viewport"])
     .optional()
@@ -23,6 +29,7 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 const outputSchema = z.object({
+  tab: z.string(),
   snapshot: z.string(),
   refCount: z.number(),
   url: z.string(),
@@ -34,11 +41,11 @@ type Output = z.infer<typeof outputSchema>;
 export const snapshotTool: BrowserTool<Input, Output> = {
   name: "snapshot",
   description:
-    "Get the page's accessibility tree with @refs for interactive elements. Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (click/type/navigate) already auto-attach diffs — call this explicitly only when you need the full tree, a scoped view, or after executeOnPage.",
+    "Get a tab's accessibility tree with @refs for interactive elements. Pass `tab` (handle from the tab legend or listTabs). Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (click/type/navigate) already auto-attach diffs — call this explicitly only when you need the full tree, a scoped view, or after executeOnPage.",
   parameters,
   outputSchema,
-  execute: async ({ mode, selector, diff }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, mode, selector, diff }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
     const url = tab.url ?? "";
 
@@ -53,6 +60,7 @@ export const snapshotTool: BrowserTool<Input, Output> = {
       });
 
     const baseResult: Output = {
+      tab: handle,
       snapshot:
         diff && previous
           ? (diffSnapshots(previous, snapshotText) ?? "(no changes)")

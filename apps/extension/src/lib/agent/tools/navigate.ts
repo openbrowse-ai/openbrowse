@@ -1,18 +1,20 @@
 import { z } from "zod";
-import { handleForTab } from "../driver";
+import { handleForTab, resolveTabOrThrow } from "../driver";
 import { invalidateRefs } from "../ref-store";
 import { captureSnapshot } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
 
-const parameters = z.object({
-  url: z.string().describe("The URL to navigate to"),
-  newTab: z
-    .boolean()
-    .optional()
-    .describe(
-      "Force opening a new tab instead of reusing the current one. Useful when you want to keep the current page open for comparison.",
-    ),
-});
+const parameters = z
+  .object({
+    url: z.string().describe("The URL to navigate to"),
+    tab: z
+      .string()
+      .optional()
+      .describe(
+        "Tab handle (e.g. 't1') to navigate. Omit to open a new background tab — that's the only way to acquire a fresh handle, e.g. on the first action of a conversation. See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+      ),
+  })
+  .strict();
 
 type Input = z.infer<typeof parameters>;
 
@@ -29,30 +31,34 @@ type Output = z.infer<typeof outputSchema>;
 export const navigateTool: BrowserTool<Input, Output> = {
   name: "navigate",
   description:
-    "Navigate to a URL. Reuses the current agent-owned tab if one exists, otherwise opens a new background tab. Pass newTab: true to force a new tab. The response automatically includes a snapshot of the landed page so you can interact immediately.",
+    "Navigate to a URL. Pass `tab` to navigate an existing tab (the response includes that handle); omit `tab` to open a new background tab and receive a fresh handle in the response. The response automatically includes a snapshot of the landed page so you can interact immediately. Use this as the first action of a conversation when you have no handles yet.",
   parameters,
   outputSchema,
-  execute: async ({ url, newTab }, ctx) => {
-    let tabId = null as null | ReturnType<typeof ctx.driver.getActiveTabId>;
+  execute: async ({ url, tab: handle }, ctx) => {
+    let tabId: ReturnType<typeof ctx.driver.getActiveTabId> = null;
     let createdNew = false;
 
-    if (!newTab) {
-      const currentTarget = ctx.driver.getActiveTabId();
-      if (currentTarget != null) {
-        const owned =
-          (await ctx.session?.isAgentOwnedTab?.(currentTarget)) ?? false;
-        if (owned) {
-          try {
-            await ctx.driver.updateTabUrl(currentTarget, url);
-            tabId = currentTarget;
-          } catch {
-            // Tab may have been closed; fall through to create new
-          }
-        }
+    if (handle) {
+      // Navigate the named tab. We deliberately allow the agent to navigate
+      // a tab it didn't open ("user-shared tab"); the only restriction is
+      // that the handle must resolve.
+      const target = await resolveTabOrThrow(ctx, handle);
+      try {
+        await ctx.driver.updateTabUrl(target.id, url);
+        tabId = target.id;
+      } catch (err) {
+        return {
+          navigated: true,
+          url,
+          tab: handle,
+          note: `Failed to navigate ${handle}: ${
+            err instanceof Error ? err.message : String(err)
+          }. The tab may have been closed.`,
+        } as Output;
       }
-    }
-
-    if (tabId == null) {
+    } else {
+      // No handle → create a new background tab. This is the bootstrap
+      // path used on the first action of a conversation.
       tabId = await ctx.driver.createTab(url, { active: false });
       createdNew = true;
     }
@@ -65,7 +71,7 @@ export const navigateTool: BrowserTool<Input, Output> = {
     invalidateRefs(tabId);
     await ctx.driver.waitForLoad(tabId);
 
-    const handle = handleForTab(ctx, tabId);
+    const resolvedHandle = handleForTab(ctx, tabId);
 
     // Auto-attach initial snapshot so the agent can act on the new page
     // without a follow-up snapshot call.
@@ -74,7 +80,7 @@ export const navigateTool: BrowserTool<Input, Output> = {
       return {
         navigated: true,
         url,
-        tab: handle,
+        tab: resolvedHandle,
         snapshot: snapshotText,
         refCount: refs.size,
       };
@@ -82,7 +88,7 @@ export const navigateTool: BrowserTool<Input, Output> = {
       return {
         navigated: true,
         url,
-        tab: handle,
+        tab: resolvedHandle,
         note: `Navigation succeeded but initial snapshot failed: ${
           err instanceof Error ? err.message : String(err)
         }. Call snapshot to retry.`,

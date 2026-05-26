@@ -1,11 +1,17 @@
 import { z } from "zod";
 import { isDetachError } from "../cdp-errors";
 import type { BrowserDriver, TabId } from "../driver";
+import { resolveTabOrThrow } from "../driver";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to click in (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   target: z
     .string()
     .describe(
@@ -16,6 +22,7 @@ const parameters = z.object({
 type Input = z.infer<typeof parameters>;
 
 const outputSchema = z.object({
+  tab: z.string(),
   clicked: z.literal(true),
   target: z.string(),
   diff: z.string().nullable().optional(),
@@ -26,11 +33,11 @@ type Output = z.infer<typeof outputSchema>;
 export const clickElementTool: BrowserTool<Input, Output> = {
   name: "clickElement",
   description:
-    "Click an element on the page. Use @ref from snapshot (preferred) or a CSS selector. The response automatically includes a diff of what changed on the page — use it to verify the action worked before acting again. If diff is null the click produced no visible change.",
+    "Click an element on a page. Pass `tab` (handle from the tab legend or listTabs) and `target` — either an @ref from a recent snapshot of THAT tab (preferred) or a CSS selector as fallback. The response automatically includes a diff of what changed on the page — use it to verify the action worked before acting again. If diff is null the click produced no visible change.",
   parameters,
   outputSchema,
-  execute: async ({ target }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, target }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
 
     const previousSnapshot = getPreviousSnapshot(tabId);
@@ -64,7 +71,7 @@ export const clickElementTool: BrowserTool<Input, Output> = {
       } catch {
         // page may have navigated away / tab closed; ignore
       }
-      return { clicked: true, target };
+      return { tab: handle, clicked: true, target };
     }
 
     try {
@@ -72,15 +79,17 @@ export const clickElementTool: BrowserTool<Input, Output> = {
       const diff = diffSnapshots(previousSnapshot, snapshotText);
       if (diff === null) {
         return {
+          tab: handle,
           clicked: true,
           target,
           diff: null,
           note: "No visible page change detected. The click may not have had the expected effect.",
         };
       }
-      return { clicked: true, target, diff };
+      return { tab: handle, clicked: true, target, diff };
     } catch (err) {
       return {
+        tab: handle,
         clicked: true,
         target,
         note: `Click succeeded but post-action snapshot failed: ${
