@@ -1,11 +1,17 @@
 import { z } from "zod";
 import { isDetachError } from "../cdp-errors";
 import type { BrowserDriver, TabId } from "../driver";
+import { resolveTabOrThrow } from "../driver";
 import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
 import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to type in (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   target: z
     .string()
     .describe(
@@ -27,6 +33,7 @@ const parameters = z.object({
 type Input = z.infer<typeof parameters>;
 
 const outputSchema = z.object({
+  tab: z.string(),
   typed: z.literal(true),
   target: z.string(),
   text: z.string(),
@@ -39,11 +46,11 @@ type Output = z.infer<typeof outputSchema>;
 export const typeInElementTool: BrowserTool<Input, Output> = {
   name: "typeInElement",
   description:
-    "Type text into an input or textarea. Use @ref from snapshot (preferred) or a CSS selector. Pass submit: true to press Enter and wait for the page to settle. The response automatically includes a diff of what changed on the page.",
+    "Type text into an input or textarea. Pass `tab` (handle from the tab legend or listTabs) and `target` — either an @ref from a recent snapshot of THAT tab (preferred) or a CSS selector as fallback. Pass submit: true to press Enter and wait for the page to settle. The response automatically includes a diff of what changed on the page.",
   parameters,
   outputSchema,
-  execute: async ({ target, text, clearFirst, submit }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, target, text, clearFirst, submit }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
 
     const previousSnapshot = getPreviousSnapshot(tabId);
@@ -83,21 +90,9 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     }
 
     if (shouldPressEnter) {
-      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-      });
-      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-      });
-
+      // Wait for any navigation the Enter key may have triggered to settle.
+      // The Enter dispatch itself happened inside the try block above; this
+      // post-action block is purely settle/wait, no second dispatch.
       await new Promise((r) => setTimeout(r, 200));
       await ctx.driver.waitForLoad(tabId, 8000).catch(() => {});
     }
@@ -105,6 +100,7 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     invalidateRefs(tabId);
 
     const baseResult = {
+      tab: handle,
       typed: true as const,
       target,
       text,

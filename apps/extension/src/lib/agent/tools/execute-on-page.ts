@@ -1,10 +1,16 @@
 import { z } from "zod";
 import type { BrowserTool } from "../types";
+import { resolveTabOrThrow } from "../driver";
 import { invalidateRefs } from "../ref-store";
 
 const TIMEOUT_MS = 30_000;
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to execute against (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   code: z
     .string()
     .describe(
@@ -18,6 +24,7 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 const outputSchema = z.object({
+  tab: z.string(),
   result: z.unknown().optional(),
   error: z.string().optional(),
 });
@@ -26,14 +33,14 @@ type Output = z.infer<typeof outputSchema>;
 export const executeOnPageTool: BrowserTool<Input, Output> = {
   name: "executeOnPage",
   description:
-    "Execute JavaScript in the active tab's page context with full DOM access. Requires user approval before each execution. Use when you need complex DOM manipulation or access to page JavaScript variables/state beyond what readPage/clickElement/typeInElement provide.",
+    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs). Requires user approval before each execution. Use when you need complex DOM manipulation or access to page JavaScript variables/state beyond what readPage/clickElement/typeInElement provide.",
   parameters,
   outputSchema,
   approval: { required: true },
-  execute: async ({ code, args }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, code, args }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     if (tab.id == null) {
-      return { error: "No active tab available" };
+      return { tab: handle, error: "Tab id missing" };
     }
 
     let parsedArgs: unknown = null;
@@ -58,17 +65,17 @@ export const executeOnPageTool: BrowserTool<Input, Output> = {
     ]);
 
     if (evalResult === "timeout") {
-      return { error: "Execution timed out after 30s" };
+      return { tab: handle, error: "Execution timed out after 30s" };
     }
 
     if (evalResult.exceptionDetails) {
       const ex = evalResult.exceptionDetails;
       const msg = ex.exception?.description ?? ex.text ?? "Unknown error";
-      return { error: msg };
+      return { tab: handle, error: msg };
     }
 
     // Assume successful execution may have modified the DOM
     invalidateRefs(tab.id);
-    return { result: evalResult.result?.value ?? null };
+    return { tab: handle, result: evalResult.result?.value ?? null };
   },
 };

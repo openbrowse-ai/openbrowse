@@ -15,4 +15,9 @@ export type {
   TabId,
 } from "./browser-driver";
 export type { ToolContext, ToolSession } from "./tool-context";
-export { handleForTab } from "./tool-context";
+export {
+  handleForTab,
+  resolveTabIdOrThrow,
+  resolveTabOrThrow,
+  ToolTabResolutionError,
+} from "./tool-context";

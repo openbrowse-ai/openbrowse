@@ -167,11 +167,6 @@ export function ChatView({
     conversationId,
     spaceId,
     onNewConversation,
-    // In popup mode, host tab is the live origin tab (may be null if it
-    // was closed and not yet restored). In side-panel mode, defer to
-    // useAgentChat's auto-resolution from the active tab in the current
-    // window (which, in per-tab mode, IS the host tab).
-    hostTabIdOverride: isPopupMode ? liveOriginTabId : undefined,
     initialInput,
   });
 

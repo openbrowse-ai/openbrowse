@@ -56,6 +56,13 @@ export interface BrowserDriver {
    */
   getActiveTab(): Promise<BrowserTabInfo>;
 
+  /**
+   * Get info about a specific tab by id. Throws if the tab no longer
+   * exists. Used by tools that resolve a `tab` arg (a stable handle) to a
+   * concrete tab — they do not want the driver's "active" notion.
+   */
+  getTab(tabId: TabId): Promise<BrowserTabInfo>;
+
   /** Pin a specific tab as the agent's working target. */
   setActiveTab(tabId: TabId | null): Promise<void>;
 

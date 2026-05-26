@@ -1,8 +1,14 @@
 import { z } from "zod";
+import { resolveTabOrThrow } from "../driver";
 import { invalidateRefs } from "../ref-store";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to scroll (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   direction: z
     .enum(["up", "down"])
     .describe("Direction to scroll"),
@@ -15,6 +21,7 @@ const parameters = z.object({
 type Input = z.infer<typeof parameters>;
 
 const outputSchema = z.object({
+  tab: z.string(),
   scrolled: z.literal(true),
   direction: z.string(),
   amount: z.number(),
@@ -24,11 +31,11 @@ type Output = z.infer<typeof outputSchema>;
 export const scrollPageTool: BrowserTool<Input, Output> = {
   name: "scrollPage",
   description:
-    "Scroll the user's active page up or down. Useful for revealing content below the fold or navigating back to the top.",
+    "Scroll a page up or down. Pass `tab` (handle from the tab legend or listTabs). Useful for revealing content below the fold or navigating back to the top.",
   parameters,
   outputSchema,
-  execute: async ({ direction, amount }, ctx) => {
-    const tab = await ctx.driver.getActiveTab();
+  execute: async ({ tab: handle, direction, amount }, ctx) => {
+    const tab = await resolveTabOrThrow(ctx, handle);
     const pixels = amount ?? 600;
 
     const result = await ctx.driver.sendToContentScript<{
@@ -43,6 +50,6 @@ export const scrollPageTool: BrowserTool<Input, Output> = {
     if (!result.success)
       throw new Error(result.error ?? "Failed to scroll");
     invalidateRefs(tab.id);
-    return { scrolled: true, direction, amount: pixels };
+    return { tab: handle, scrolled: true, direction, amount: pixels };
   },
 };

@@ -20,8 +20,10 @@ import type { ToolContext } from "./driver";
 import {
   clearHandles,
   getOrCreateHandle as getOrCreateTabHandle,
+  loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
+import { buildTabLegendEntries, renderTabLegend } from "./tab-legend";
 import {
   clickElementTool,
   createSkillTool,
@@ -102,7 +104,7 @@ Rule of thumb: if it only matters when working in this particular space, scope i
 - A memory is clearly outdated based on conversation context
 `;
 
-import { getActiveUserTab, getTargetTabId, setTargetTabId } from "./active-tab";
+import { getTargetTabId } from "./active-tab";
 
 const INDICATOR_CSS = `
   #openbrowse-agent-border {
@@ -245,8 +247,24 @@ async function removeIndicator(tabId: number) {
 export function notifyAgentStatus(working: boolean, color?: string | null) {
   indicatorQueue = indicatorQueue.then(async () => {
     try {
-      const tab = await getActiveUserTab();
-      if (!tab.id) return;
+      // Use chrome.tabs.query directly rather than getActiveUserTab(): the
+      // indicator only needs the user's currently-focused tab, and
+      // getActiveUserTab has a side effect of pinning targetTabId on
+      // bootstrap that would leak into the tab legend's [active] marker.
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      if (!tab?.id) return;
+      // Skip injection on internal pages (extension/chrome/devtools UI).
+      const url = tab.url ?? "";
+      if (
+        url.startsWith("chrome://") ||
+        url.startsWith("chrome-extension://") ||
+        url.startsWith("devtools://")
+      ) {
+        return;
+      }
       if (working) {
         await injectIndicator(tab.id, color);
       } else {
@@ -283,11 +301,6 @@ let currentSpaceColor: string | null = null;
 let indicatorQueue: Promise<void> = Promise.resolve();
 
 let agentConversationId: string | null = null;
-// Tab id of the panel/popover that initiated this agent run. Used as the
-// implicit host tab to bind to a fresh conversation on the first tab tool
-// call (so the agent has a target without the user manually clicking
-// "Work on this tab").
-let agentHostTabId: number | null = null;
 
 let lastTotalTokens = 0;
 let currentModelDef: ModelDefinition | undefined;
@@ -328,24 +341,25 @@ export function resetTokenTracking() {
   lastTotalTokens = 0;
 }
 
-export function setAgentContext(
-  conversationId: string | null,
-  hostTabId: number | null = null,
-) {
+export function setAgentContext(conversationId: string | null) {
   if (agentConversationId && agentConversationId !== conversationId) {
     clearHandles(agentConversationId);
   }
   agentConversationId = conversationId;
-  agentHostTabId = hostTabId;
+  // Hydrate the persisted handle map for the new conversation. Fire-and-
+  // forget: tools that hit a not-yet-hydrated map will see "Unknown tab
+  // handle" and recover via listTabs. In practice the user-message →
+  // first-tool-call window is large enough for this to settle.
+  if (conversationId) {
+    loadHandlesForConversation(conversationId).catch(() => {});
+  }
 }
 
 export function getAgentContext(): {
   conversationId: string | null;
-  hostTabId: number | null;
 } {
   return {
     conversationId: agentConversationId,
-    hostTabId: agentHostTabId,
   };
 }
 
@@ -492,18 +506,53 @@ function toSDKTool<TInput, TOutput>(
 
   const approvalRequired = t.approval?.required ?? false;
 
+  /**
+   * Resolve the `tab` arg from a tool's input to a real chrome tab id +
+   * origin, used by both the approval allowlist check and the per-tool-call
+   * origin capture for the "Always allow on <site>" UI.
+   *
+   * Takes an explicit `cid` rather than reading the module-level
+   * `agentConversationId` so that a single tool call (which may invoke
+   * this from `needsApproval`, `onInputAvailable`, and `execute` separately)
+   * always resolves against the same conversation map even if the user
+   * switches conversations mid-call.
+   *
+   * Returns `null` if no cid is provided, no handle is present, the handle
+   * doesn't resolve (stale handle, conversation switch mid-flight), or
+   * `chrome.tabs.get` rejects (closed tab). Callers fall back to safe
+   * defaults in that case.
+   */
+  const resolveTabFromInput = async (
+    cid: string | null,
+    input: unknown,
+  ): Promise<{ tabId: number; tab: chrome.tabs.Tab } | null> => {
+    if (!cid) return null;
+    const handle = (input as { tab?: unknown })?.tab;
+    if (typeof handle !== "string" || handle.length === 0) return null;
+    const tabId = resolveTabHandle(cid, handle);
+    if (tabId == null) return null;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return { tabId, tab };
+    } catch {
+      return null;
+    }
+  };
+
   const needsApproval =
     approvalRequired && isTabTool
-      ? async () => {
-          try {
-            const tab = await getActiveUserTab();
-            if (tab.url) {
-              const origin = new URL(tab.url).origin;
+      ? async ({ input }: { input: unknown }) => {
+          // Capture cid once at entry — see resolveTabFromInput's contract.
+          const cid = agentConversationId;
+          const resolved = await resolveTabFromInput(cid, input);
+          if (resolved?.tab.url) {
+            try {
+              const origin = new URL(resolved.tab.url).origin;
               const allowlist = await getToolSiteAllowlist();
               const allowed = allowlist[toolKey] ?? [];
               if (allowed.includes(origin)) return false;
-            }
-          } catch {}
+            } catch {}
+          }
           return true;
         }
       : approvalRequired;
@@ -512,64 +561,28 @@ function toSDKTool<TInput, TOutput>(
     input: TInput,
     options: { toolCallId: string; experimental_context?: unknown },
   ) => {
+    // Capture cid once at entry so all resolveTabFromInput calls below
+    // (pre- and post-execute) hit the same conversation map even if the
+    // user switches conversations mid-tool.
+    const cid = agentConversationId;
     if (isTabTool) {
       agentActive = true;
       notifyAgentStatus(true, currentSpaceColor);
     }
-    const pinnedTabId = capturedTabIds.get(options.toolCallId);
-    const previousTargetTabId = getTargetTabId();
     capturedToolOrigins.delete(options.toolCallId);
-    if (pinnedTabId != null) {
-      capturedTabIds.delete(options.toolCallId);
-      setTargetTabId(pinnedTabId);
-    }
+
     if (isTabTool) {
-      // Implicit host-tab binding: on the first tab-interacting tool call
-      // for a conversation that hasn't owned any tabs yet, bind the panel's
-      // host tab so the agent has a working target. Skipped when the host
-      // tab is unknown, an extension/chrome page, or already in the group.
-      if (
-        agentConversationId &&
-        agentHostTabId != null &&
-        getTargetTabId() == null
-      ) {
-        try {
-          const conv = await chatDb.getConversation(agentConversationId);
-          if (conv && conv.ownedTabIds.length === 0) {
-            const hostTab = await chrome.tabs
-              .get(agentHostTabId)
-              .catch(() => null);
-            const hostUrl = hostTab?.url ?? "";
-            const isInternal =
-              hostUrl.startsWith("chrome://") ||
-              hostUrl.startsWith("chrome-extension://") ||
-              hostUrl.startsWith("devtools://");
-            if (hostTab && !isInternal && !hostTab.pinned) {
-              await chrome.runtime
-                .sendMessage({
-                  type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
-                  conversationId: agentConversationId,
-                  tabId: agentHostTabId,
-                })
-                .catch(() => {});
-              setTargetTabId(agentHostTabId);
-            }
-          }
-        } catch {
-          // Best-effort; the agent's own bootstrap fallback (getActiveUserTab)
-          // will pick up where this leaves off.
-        }
+      // Capture the resolved tab info for the indicator UI / "tab badge"
+      // shown alongside the tool call. Pulled from the explicit `tab` arg
+      // when available — same source the tool's own execute() will use.
+      const resolved = await resolveTabFromInput(cid, input);
+      if (resolved) {
+        toolTabInfoStore.set(options.toolCallId, {
+          tabId: resolved.tabId,
+          title: resolved.tab.title ?? "",
+          favIconUrl: resolved.tab.favIconUrl,
+        });
       }
-      try {
-        const tab = await getActiveUserTab();
-        if (tab.id && tab.title) {
-          toolTabInfoStore.set(options.toolCallId, {
-            tabId: tab.id,
-            title: tab.title,
-            favIconUrl: tab.favIconUrl,
-          });
-        }
-      } catch {}
     }
     try {
       // Threaded ToolContext from the SDK's experimental_context channel.
@@ -581,16 +594,16 @@ function toSDKTool<TInput, TOutput>(
       const result = await t.execute(input, ctx);
       toolResultStore.set(options.toolCallId, result);
       if (isTabTool) {
-        try {
-          const tab = await getActiveUserTab();
-          if (tab.id && tab.title) {
-            toolTabInfoStore.set(options.toolCallId, {
-              tabId: tab.id,
-              title: tab.title,
-              favIconUrl: tab.favIconUrl,
-            });
-          }
-        } catch {}
+        // Refresh the tab info post-execute so the UI shows the landed
+        // URL/title (navigate / clickElement may have changed it).
+        const resolved = await resolveTabFromInput(cid, input);
+        if (resolved) {
+          toolTabInfoStore.set(options.toolCallId, {
+            tabId: resolved.tabId,
+            title: resolved.tab.title ?? "",
+            favIconUrl: resolved.tab.favIconUrl,
+          });
+        }
       }
       return result;
     } catch (err) {
@@ -599,36 +612,52 @@ function toSDKTool<TInput, TOutput>(
       };
       toolResultStore.set(options.toolCallId, errResult);
       return errResult as TOutput;
-    } finally {
-      if (pinnedTabId != null) {
-        setTargetTabId(previousTargetTabId);
-      }
     }
   };
 
   const onInputAvailable =
     approvalRequired && isTabTool
-      ? async (opts: { toolCallId: string }) => {
-          try {
-            const tab = await getActiveUserTab();
-            if (tab.id) capturedTabIds.set(opts.toolCallId, tab.id);
-            if (tab.url) {
-              capturedToolOrigins.set(opts.toolCallId, new URL(tab.url).origin);
+      ? async (opts: { input: unknown; toolCallId: string }) => {
+          // Resolve the agent-supplied `tab` arg to a concrete tab so the
+          // approval UI can show "Always allow on <site>". This runs before
+          // the SDK transitions to `approval-requested`, so the UI sees the
+          // origin on first render. Capture cid once at entry — see
+          // resolveTabFromInput's contract.
+          const cid = agentConversationId;
+          const resolved = await resolveTabFromInput(cid, opts.input);
+          if (!resolved) return;
+          if (resolved.tab.id != null) {
+            capturedTabIds.set(opts.toolCallId, resolved.tab.id);
+          }
+          if (resolved.tab.url) {
+            try {
+              capturedToolOrigins.set(
+                opts.toolCallId,
+                new URL(resolved.tab.url).origin,
+              );
+            } catch {
+              // Non-URL-shaped value (e.g. about:blank); skip allowlist.
             }
-            if (tab.id && tab.title) {
-              toolTabInfoStore.set(opts.toolCallId, {
-                tabId: tab.id,
-                title: tab.title,
-                favIconUrl: tab.favIconUrl,
-              });
-            }
-          } catch {}
+          }
+          if (resolved.tab.id != null) {
+            toolTabInfoStore.set(opts.toolCallId, {
+              tabId: resolved.tab.id,
+              title: resolved.tab.title ?? "",
+              favIconUrl: resolved.tab.favIconUrl,
+            });
+          }
         }
       : undefined;
 
   const toModelOutput = isImageTool
     ? ({ output }: { output: TOutput }) => {
-        const { imageDataUrl } = output as { imageDataUrl: string };
+        const imageDataUrl = (output as { imageDataUrl?: string })
+          .imageDataUrl;
+        if (!imageDataUrl) {
+          // Tool errored or otherwise produced no image; let the SDK fall
+          // back to the default JSON output by returning undefined.
+          return undefined;
+        }
         const base64 = imageDataUrl.replace(/^data:image\/png;base64,/, "");
         return {
           type: "content" as const,
@@ -652,6 +681,8 @@ function toSDKTool<TInput, TOutput>(
     strict: true,
     execute,
     needsApproval,
+    ...(onInputAvailable && { onInputAvailable }),
+    ...(toModelOutput && { toModelOutput }),
   } as ToolSet[string];
 }
 
@@ -760,6 +791,12 @@ export async function createAgentTransport(
       .map((t, i) => `${i + 1}. [${t.status.toUpperCase()}] ${t.content}`)
       .join("\n");
   }
+
+  // The tab legend is intentionally NOT appended to `instructions` here.
+  // ownedTabIds and tab URLs change mid-conversation (navigate adds a tab,
+  // user closes a tab, etc.); a static legend baked at transport-construction
+  // time would go stale. Instead we build it just-in-time inside `prepareCall`
+  // below so every model call sees the live state.
 
   const memories = await memoryDb.list(spaceId);
   if (memories.length > 0) {
@@ -897,6 +934,29 @@ export async function createAgentTransport(
   // by the wrapper transport so a previous turn's signal doesn't leak.
   let needsMidStreamCompaction = false;
 
+  /**
+   * Build the dynamic "## Tabs in this conversation" block from live state.
+   * Re-reads ownedTabIds from chatDb and queries chrome.tabs each call so
+   * the agent sees the current tab set on every turn (not the snapshot
+   * baked at transport-construction time).
+   */
+  async function buildLegendBlock(): Promise<string> {
+    const cid = agentConversationId;
+    if (!cid) return "";
+    const liveConv = await chatDb.getConversation(cid);
+    const entries = await buildTabLegendEntries({
+      conversationId: cid,
+      ownedTabIds: liveConv?.ownedTabIds ?? [],
+      getTab: async (tabId) => {
+        const tab = await chrome.tabs.get(Number(tabId));
+        return { url: tab.url, title: tab.title };
+      },
+      getOrCreateHandle: (c, tabId) => getOrCreateTabHandle(c, Number(tabId)),
+      activeTabId: getTargetTabId(),
+    });
+    return renderTabLegend(entries);
+  }
+
   const agent = new ToolLoopAgent({
     model,
     tools,
@@ -907,6 +967,20 @@ export async function createAgentTransport(
     // Session helpers read live agent state via getters so the same context
     // object stays valid across conversation switches.
     experimental_context: buildExtensionToolContext(),
+    // Append a fresh tab legend on every model call. The SDK invokes
+    // prepareCall right before each generate/stream, so this picks up
+    // tabs added by `navigate`, removed by closure, etc. — even
+    // mid-conversation.
+    prepareCall: async (callArgs) => {
+      const legend = await buildLegendBlock();
+      const baseInstructions = callArgs.instructions ?? "";
+      return {
+        ...callArgs,
+        instructions: legend
+          ? `${baseInstructions}\n\n${legend}`
+          : baseInstructions,
+      };
+    },
     onStepFinish: (stepResult) => {
       const usage = stepResult.usage;
       if (usage.inputTokens != null || usage.outputTokens != null) {

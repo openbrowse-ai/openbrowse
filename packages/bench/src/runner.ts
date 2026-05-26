@@ -18,8 +18,13 @@ import type { LanguageModel } from "ai";
 import { resolve } from "node:path";
 import type { BrowserDriver, ToolContext } from "@agent/driver";
 import {
+  buildTabLegendEntries,
+  renderTabLegend,
+} from "@agent/tab-legend";
+import {
   BENCH_TOOL_CATALOG,
   buildBenchAgent,
+  buildBenchSystemPrompt,
   DEFAULT_TOOL_SET,
   type BenchToolName,
 } from "./agent/build-agent";
@@ -234,15 +239,61 @@ async function runTrialInner(
       driver: driverFacade,
       session: {
         conversationId: null,
+        // Bench TabIds are already stable strings (`t0`, `t1`, ...) emitted
+        // by PlaywrightDriver, so we identity-map them as agent-facing
+        // handles. No persistence needed — bench trials are single-run.
+        getOrCreateHandle: (tabId) => String(tabId),
+        resolveHandle: (handle) => handle,
         isAgentOwnedTab: async () => true,
         getTodos: async () => trialTodos,
         setTodos: async (todos) => { trialTodos = todos; },
       },
     };
 
+    // Pre-navigate to the task's startUrl BEFORE building the agent so the
+    // initial tab can be included in the system-prompt tab legend. This
+    // mirrors how a user would start a session: "I'm on amazon.com, find
+    // me a keyboard." `createTab` returns the new tab id but doesn't pin
+    // it (mirrors the ExtensionDriver — pinning is the navigate tool's job
+    // in production). The runner pins explicitly here so the agent's
+    // first tool call has a valid working tab.
+    //
+    // We use the inner driver here (not the visualizing wrapper) because
+    // the initial setup navigation isn't a click/type action — no overlay
+    // needed.
+    const initialTabId = await driver.createTab(task.startUrl).catch((e) => {
+      throw {
+        kind: "infrastructure-error",
+        message: `Failed to navigate to start URL: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      };
+    });
+    await driver.setActiveTab(initialTabId);
+    await driver.waitForLoad(initialTabId);
+
+    // Build the system prompt with a one-tab legend for the pre-navigated
+    // page. Reuses the same builder/renderer as the production extension
+    // so bench trials see byte-for-byte the same prompt structure as
+    // chrome-side, and any future legend-format change propagates here
+    // automatically.
+    const baseSystemPrompt = config.systemPrompt ?? buildBenchSystemPrompt();
+    const driverForLegend = driver;
+    const legendEntries = await buildTabLegendEntries({
+      conversationId: "bench",
+      ownedTabIds: [initialTabId],
+      getTab: async (tabId) => {
+        const info = await driverForLegend.getTab(tabId).catch(() => null);
+        return { url: info?.url, title: info?.title };
+      },
+      getOrCreateHandle: (_cid, tabId) => String(tabId),
+      activeTabId: initialTabId,
+    });
+    const promptWithLegend = `${baseSystemPrompt}\n\n${renderTabLegend(legendEntries)}`;
+
     const { agent, transport, getNeedsMidStreamCompaction } = buildBenchAgent(ctx, {
       model: config.model,
-      systemPrompt: config.systemPrompt,
+      systemPrompt: promptWithLegend,
       toolNames: config.toolNames,
       onStepFinish: (step) => {
         steps += 1;
@@ -261,24 +312,6 @@ async function runTrialInner(
         }
       },
     });
-
-    // Pre-navigate to the task's startUrl so the agent doesn't have to spend
-    // its first turn just opening the page. This mirrors how a user would
-    // start a session: "I'm on amazon.com, find me a keyboard."
-    //
-    // `createTab` returns the new tab id but doesn't pin it (mirrors the
-    // ExtensionDriver — pinning is the navigate tool's job in production).
-    // The runner pins explicitly here so the agent's first tool call has a
-    // valid working tab.
-    //
-    // We use the inner driver here (not the visualizing wrapper) because
-    // the initial setup navigation isn't a click/type action — no overlay
-    // needed.
-    const initialTabId = await driver.createTab(task.startUrl).catch(e => {
-      throw { kind: "infrastructure-error", message: `Failed to navigate to start URL: ${e instanceof Error ? e.message : String(e)}` };
-    });
-    await driver.setActiveTab(initialTabId);
-    await driver.waitForLoad(initialTabId);
 
     // Set up an abort controller for timeout
     const abortController = new AbortController();

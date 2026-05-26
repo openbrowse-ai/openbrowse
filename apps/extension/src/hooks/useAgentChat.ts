@@ -65,14 +65,6 @@ interface UseAgentChatOptions {
   spaceId: string | null;
   onNewConversation: (id: string) => void;
   /**
-   * Override for the host tab id used by the agent's implicit
-   * first-tool-call binding. When `undefined`, useAgentChat resolves the
-   * panel's host tab from the active tab in the current window. Pass an
-   * explicit value (or `null`) when the panel is rendered in a popover and
-   * `currentWindow` would resolve to the popup itself.
-   */
-  hostTabIdOverride?: number | null;
-  /**
    * Initial value of the chat input editor. Used by the "Try in chat" flow
    * to pre-seed the input with a slash command when the home page opens
    * with a `?prefill=` URL parameter.
@@ -471,7 +463,6 @@ export function useAgentChat({
   conversationId,
   spaceId,
   onNewConversation,
-  hostTabIdOverride,
   initialInput,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -480,21 +471,6 @@ export function useAgentChat({
   );
   const [input, setInput] = useState(initialInput ?? "");
 
-  // Latest host tab override; the resolver below reads it via ref so
-  // resolveHostTabId() doesn't need to be a dep of every effect that uses it.
-  const hostTabOverrideRef = useRef<number | null | undefined>(hostTabIdOverride);
-  hostTabOverrideRef.current = hostTabIdOverride;
-
-  const resolveHostTabId = useCallback(async (): Promise<number | null> => {
-    const override = hostTabOverrideRef.current;
-    if (override !== undefined) return override;
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      return tab?.id ?? null;
-    } catch {
-      return null;
-    }
-  }, []);
   const [isCompacting, setIsCompacting] = useState(false);
   // AbortController for the in-flight compaction summary call. The chat's
   // `stop()` cancels the agent stream; this cancels the summarization
@@ -1093,11 +1069,10 @@ export function useAgentChat({
           createdAt: Date.now(),
         });
 
-        // Bind the panel's host tab so the agent has a working target on
-        // its first tab tool call.
-        resolveHostTabId().then((hostTabId) => {
-          setAgentContext(conversationId, hostTabId);
-        });
+        // Hydrate the conversation's tab handle map for the next agent
+        // run. Tools that need a target tab read explicit `tab` args, so
+        // there's no implicit "host tab" to pin any more.
+        setAgentContext(conversationId);
 
         const text = claimed.text + claimed.mentionContext + claimed.attachmentBlock;
         const files = claimed.visionFiles.map((vf) => ({
@@ -1137,7 +1112,6 @@ export function useAgentChat({
     messages,
     setMessages,
     sendMessage,
-    resolveHostTabId,
   ]);
 
   // Track what triggered the load effect to avoid overwriting in-memory approval state.
@@ -1204,16 +1178,18 @@ export function useAgentChat({
       if (msgs.length > 0) {
         const uiMsgs = msgs.map(dbMessageToUIMessage);
         setMessages(uiMsgs);
+        // Hydrate the agent context (and tab handle map) for any
+        // subsequent action — retry, regenerate, approve a pending tool
+        // call, or auto-resume below. Doing it unconditionally on
+        // conversation load means resolveTabHandle has live state regardless
+        // of which path the user takes after opening the conversation.
+        setAgentContext(conversationId);
         const lastMsg = uiMsgs[uiMsgs.length - 1];
         if (lastMsg.role === "user" && transport) {
-          // Bind the panel's host tab so the agent has a working target on
-          // its first tab tool call. Compaction-aware message assembly now
-          // lives in the transport, so we no longer prefilter the message
-          // list here — the wrapper reads chatDb compaction state at
-          // send-time.
-          resolveHostTabId().then((hostTabId) => {
-            setAgentContext(conversationId, hostTabId);
-          });
+          // Auto-resume: an unanswered user message at the tail of the
+          // conversation. Compaction-aware message assembly lives in the
+          // transport, so we no longer prefilter the message list here —
+          // the wrapper reads chatDb compaction state at send-time.
           sendMessage();
         }
       }
@@ -1366,11 +1342,10 @@ export function useAgentChat({
         url: vf.url,
       }));
 
-      // Compaction-aware message assembly now lives in the transport. Here
-      // we just bind the host tab so tool calls have a default target.
-      resolveHostTabId().then((hostTabId) => {
-        setAgentContext(convId, hostTabId);
-      });
+      // Compaction-aware message assembly now lives in the transport.
+      // We just register the conversation context here so the agent's
+      // tab-handle map is hydrated before tool calls run.
+      setAgentContext(convId);
 
       if (isNew) {
         // Set conversation ID first — the effect will load the user message

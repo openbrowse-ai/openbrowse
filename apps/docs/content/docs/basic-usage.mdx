@@ -47,9 +47,14 @@ A "Sharing [tab]" pill in the popover stays anchored to the original tab. If tha
 
 Click **Reattach to side panel** to put it back. The panel returns to the exact tab it came from, falling back to the origin window's active tab (or any normal window) if the original tab has since been closed.
 
-### Implicit host-tab binding
+### Acquiring a working tab
 
-The first time the agent calls a tab-interacting tool (`navigate`, `clickElement`, `readPage`, etc.) in a fresh conversation, the panel's current tab is automatically folded into the conversation's owned-tabs group. There's no manual "Work on this tab" button — binding happens on first use.
+Tab-interacting tools (`snapshot`, `clickElement`, `readPage`, etc.) require an explicit `tab` handle. The agent has two ways to get one:
+
+- **Bootstrap**: call `navigate({ url })` with no `tab` arg. This opens a new background tab, binds it into the conversation, and returns the new handle (e.g. `t1`) for subsequent tool calls.
+- **Bind an existing tab**: call `listTabs` to discover handles for tabs the user already has open, then `selectTab({ tab })` to fold one into the conversation.
+
+There's no implicit "the panel's current tab is yours" binding any more — every tab a conversation operates on is an explicit, named handle.
 
 ## Global chat popup
 

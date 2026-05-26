@@ -15,7 +15,7 @@
  * (`agent-transport.ts`), not in the portable tool surface.
  */
 
-import type { BrowserDriver, TabId } from "./browser-driver";
+import type { BrowserDriver, BrowserTabInfo, TabId } from "./browser-driver";
 import type { TodoItem } from "../../types";
 
 export interface ToolSession {
@@ -69,4 +69,50 @@ export interface ToolContext {
  */
 export function handleForTab(ctx: ToolContext, tabId: TabId): string {
   return ctx.session?.getOrCreateHandle?.(tabId) ?? `t${tabId}`;
+}
+
+/**
+ * Resolve a `tab` arg (a stable handle like `t1`) to a concrete tab id.
+ *
+ * This is the canonical entry point for every tab-interacting tool's
+ * execute(): tools never pick a tab via the driver's "active" notion any
+ * more — they always operate on the explicit handle the agent passed.
+ *
+ * Throws a structured `ToolTabResolutionError` so the SDK wrapper can
+ * surface a clean message to the agent without a stack trace.
+ */
+export class ToolTabResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolTabResolutionError";
+  }
+}
+
+export function resolveTabIdOrThrow(
+  ctx: ToolContext,
+  handle: string,
+): TabId {
+  const tabId = ctx.session?.resolveHandle?.(handle);
+  if (tabId == null) {
+    throw new ToolTabResolutionError(
+      `Unknown tab handle "${handle}". Call listTabs to see available handles, or navigate to open a new tab.`,
+    );
+  }
+  return tabId;
+}
+
+export async function resolveTabOrThrow(
+  ctx: ToolContext,
+  handle: string,
+): Promise<BrowserTabInfo> {
+  const tabId = resolveTabIdOrThrow(ctx, handle);
+  try {
+    return await ctx.driver.getTab(tabId);
+  } catch (err) {
+    throw new ToolTabResolutionError(
+      `Tab ${handle} (id=${String(tabId)}) is no longer available: ${
+        err instanceof Error ? err.message : String(err)
+      }. Call listTabs to refresh handles.`,
+    );
+  }
 }

@@ -1,6 +1,7 @@
 import { generateObject, jsonSchema } from "ai";
 import { z } from "zod";
 import { getCurrentAgentModel } from "../agent-transport";
+import { resolveTabOrThrow } from "../driver";
 import { captureSnapshot, captureSnapshotWithUrlIds } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
 
@@ -35,6 +36,11 @@ type JSONSchemaObject = {
 type UrlPath = (string | "*")[];
 
 const parameters = z.object({
+  tab: z
+    .string()
+    .describe(
+      "Tab handle to extract from (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+    ),
   instruction: z
     .string()
     .describe(
@@ -56,6 +62,7 @@ const parameters = z.object({
 
 type Input = z.infer<typeof parameters>;
 type Output = {
+  tab: string;
   data: unknown;
   warnings?: string[];
 };
@@ -73,9 +80,9 @@ Rules:
 export const extractTool: BrowserTool<Input, Output> = {
   name: "extract",
   description:
-    "Extract structured data from the current page using its accessibility tree. Provide an instruction (what to extract) and optionally a JSON Schema (output shape) and a CSS selector (subtree scope). Preferred over raw DOM-scraping via executeOnPage for text-based data like search results, product lists, table rows, or article content. For URL fields in the schema, use {type: 'string', format: 'uri'} — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them automatically.",
+    "Extract structured data from a tab using its accessibility tree. Pass `tab` (handle from the tab legend or listTabs), an `instruction` (what to extract), optionally a JSON Schema (output shape) and a CSS selector (subtree scope). Preferred over raw DOM-scraping via executeOnPage for text-based data like search results, product lists, table rows, or article content. For URL fields in the schema, use {type: 'string', format: 'uri'} — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them automatically.",
   parameters,
-  execute: async ({ instruction, selector, schema }, ctx) => {
+  execute: async ({ tab: handle, instruction, selector, schema }, ctx) => {
     const model = getCurrentAgentModel();
     if (!model) {
       // Invariant: if the tool is running, the agent is running, so the model
@@ -85,7 +92,7 @@ export const extractTool: BrowserTool<Input, Output> = {
       );
     }
 
-    const tab = await ctx.driver.getActiveTab();
+    const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
 
     // Normalize the user-supplied schema. Some LLMs (notably Claude) hedge on
@@ -197,8 +204,8 @@ export const extractTool: BrowserTool<Input, Output> = {
     rehydrateUrls(object, urlPaths, urlMap, warnings);
 
     return warnings.length > 0
-      ? { data: object, warnings }
-      : { data: object };
+      ? { tab: handle, data: object, warnings }
+      : { tab: handle, data: object };
   },
 };
 

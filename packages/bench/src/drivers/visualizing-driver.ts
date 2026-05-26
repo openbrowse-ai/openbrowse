@@ -193,6 +193,10 @@ export class VisualizingDriver implements BrowserDriver {
     return this.inner.getActiveTab();
   }
 
+  getTab(tabId: TabId): Promise<BrowserTabInfo> {
+    return this.inner.getTab(tabId);
+  }
+
   setActiveTab(tabId: TabId | null): Promise<void> {
     return this.inner.setActiveTab(tabId);
   }
