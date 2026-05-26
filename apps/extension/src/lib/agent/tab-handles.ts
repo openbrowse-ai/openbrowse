@@ -274,7 +274,18 @@ export function getOrCreateHandle(
 ): string {
   const map = getMap(conversationId);
   const existing = map.tabToHandle.get(tabId);
-  if (existing) return existing;
+  if (existing) {
+    // Re-persist on every access. Cheap (the coalesce in `persist()`
+    // collapses N calls in a tick to 1 chatDb write) and necessary: a
+    // handle minted ephemerally — e.g. by `listTabs` for a tab that was
+    // not yet in `ownedTabIds` — gets filtered out by `snapshotOwned()`
+    // at mint time. If `selectTab` later binds that tab into the
+    // conversation, we need a chance to re-snapshot so the handle lands
+    // in chatDb. Without this re-persist, that ephemeral handle would
+    // be lost on the next service-worker restart.
+    persist(conversationId);
+    return existing;
+  }
 
   const handle = `t${map.counter++}`;
   map.handleToTab.set(handle, tabId);

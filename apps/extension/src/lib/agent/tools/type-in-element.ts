@@ -90,21 +90,9 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     }
 
     if (shouldPressEnter) {
-      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-      });
-      await ctx.driver.sendCommand(tabId, "Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-        nativeVirtualKeyCode: 13,
-      });
-
+      // Wait for any navigation the Enter key may have triggered to settle.
+      // The Enter dispatch itself happened inside the try block above; this
+      // post-action block is purely settle/wait, no second dispatch.
       await new Promise((r) => setTimeout(r, 200));
       await ctx.driver.waitForLoad(tabId, 8000).catch(() => {});
     }

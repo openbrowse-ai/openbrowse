@@ -12,15 +12,15 @@ import type { TabId } from "./driver";
 
 export interface TabLegendInput {
   conversationId: string;
-  ownedTabIds: number[];
+  ownedTabIds: TabId[];
   /**
    * Per-tab info fetcher. Should resolve with the live tab info, or reject
    * if the tab no longer exists (the legend renderer treats rejection as
    * "drop this entry").
    */
-  getTab: (tabId: number) => Promise<{ url: string | undefined; title: string | undefined }>;
+  getTab: (tabId: TabId) => Promise<{ url: string | undefined; title: string | undefined }>;
   /** Mint or retrieve a stable handle for the given (conversation, tabId). */
-  getOrCreateHandle: (conversationId: string, tabId: number) => string;
+  getOrCreateHandle: (conversationId: string, tabId: TabId) => string;
   /** The currently-tracked active tab (used to mark `[active]`). May be null. */
   activeTabId: TabId | null;
 }

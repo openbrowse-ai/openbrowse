@@ -19,12 +19,13 @@ const parameters = z
 type Input = z.infer<typeof parameters>;
 
 const outputSchema = z.object({
-  navigated: z.literal(true),
+  navigated: z.boolean(),
   url: z.string(),
-  tab: z.string(),
+  tab: z.string().optional(),
   snapshot: z.string().optional(),
   refCount: z.number().optional(),
   note: z.string().optional(),
+  error: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
 
@@ -47,14 +48,14 @@ export const navigateTool: BrowserTool<Input, Output> = {
         await ctx.driver.updateTabUrl(target.id, url);
         tabId = target.id;
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         return {
-          navigated: true,
+          navigated: false,
           url,
           tab: handle,
-          note: `Failed to navigate ${handle}: ${
-            err instanceof Error ? err.message : String(err)
-          }. The tab may have been closed.`,
-        } as Output;
+          error: message,
+          note: `Failed to navigate ${handle}: ${message}. The tab may have been closed.`,
+        };
       }
     } else {
       // No handle → create a new background tab. This is the bootstrap

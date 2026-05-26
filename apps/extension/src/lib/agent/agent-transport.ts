@@ -511,14 +511,21 @@ function toSDKTool<TInput, TOutput>(
    * origin, used by both the approval allowlist check and the per-tool-call
    * origin capture for the "Always allow on <site>" UI.
    *
-   * Returns `null` if no handle is present (e.g. tools that don't take a
-   * `tab` arg) or it can't be resolved (stale handle, conversation switch
-   * mid-flight). Callers fall back to safe defaults in that case.
+   * Takes an explicit `cid` rather than reading the module-level
+   * `agentConversationId` so that a single tool call (which may invoke
+   * this from `needsApproval`, `onInputAvailable`, and `execute` separately)
+   * always resolves against the same conversation map even if the user
+   * switches conversations mid-call.
+   *
+   * Returns `null` if no cid is provided, no handle is present, the handle
+   * doesn't resolve (stale handle, conversation switch mid-flight), or
+   * `chrome.tabs.get` rejects (closed tab). Callers fall back to safe
+   * defaults in that case.
    */
   const resolveTabFromInput = async (
+    cid: string | null,
     input: unknown,
   ): Promise<{ tabId: number; tab: chrome.tabs.Tab } | null> => {
-    const cid = agentConversationId;
     if (!cid) return null;
     const handle = (input as { tab?: unknown })?.tab;
     if (typeof handle !== "string" || handle.length === 0) return null;
@@ -535,7 +542,9 @@ function toSDKTool<TInput, TOutput>(
   const needsApproval =
     approvalRequired && isTabTool
       ? async ({ input }: { input: unknown }) => {
-          const resolved = await resolveTabFromInput(input);
+          // Capture cid once at entry — see resolveTabFromInput's contract.
+          const cid = agentConversationId;
+          const resolved = await resolveTabFromInput(cid, input);
           if (resolved?.tab.url) {
             try {
               const origin = new URL(resolved.tab.url).origin;
@@ -552,6 +561,10 @@ function toSDKTool<TInput, TOutput>(
     input: TInput,
     options: { toolCallId: string; experimental_context?: unknown },
   ) => {
+    // Capture cid once at entry so all resolveTabFromInput calls below
+    // (pre- and post-execute) hit the same conversation map even if the
+    // user switches conversations mid-tool.
+    const cid = agentConversationId;
     if (isTabTool) {
       agentActive = true;
       notifyAgentStatus(true, currentSpaceColor);
@@ -562,7 +575,7 @@ function toSDKTool<TInput, TOutput>(
       // Capture the resolved tab info for the indicator UI / "tab badge"
       // shown alongside the tool call. Pulled from the explicit `tab` arg
       // when available — same source the tool's own execute() will use.
-      const resolved = await resolveTabFromInput(input);
+      const resolved = await resolveTabFromInput(cid, input);
       if (resolved) {
         toolTabInfoStore.set(options.toolCallId, {
           tabId: resolved.tabId,
@@ -583,7 +596,7 @@ function toSDKTool<TInput, TOutput>(
       if (isTabTool) {
         // Refresh the tab info post-execute so the UI shows the landed
         // URL/title (navigate / clickElement may have changed it).
-        const resolved = await resolveTabFromInput(input);
+        const resolved = await resolveTabFromInput(cid, input);
         if (resolved) {
           toolTabInfoStore.set(options.toolCallId, {
             tabId: resolved.tabId,
@@ -608,8 +621,10 @@ function toSDKTool<TInput, TOutput>(
           // Resolve the agent-supplied `tab` arg to a concrete tab so the
           // approval UI can show "Always allow on <site>". This runs before
           // the SDK transitions to `approval-requested`, so the UI sees the
-          // origin on first render.
-          const resolved = await resolveTabFromInput(opts.input);
+          // origin on first render. Capture cid once at entry — see
+          // resolveTabFromInput's contract.
+          const cid = agentConversationId;
+          const resolved = await resolveTabFromInput(cid, opts.input);
           if (!resolved) return;
           if (resolved.tab.id != null) {
             capturedTabIds.set(opts.toolCallId, resolved.tab.id);
@@ -777,23 +792,11 @@ export async function createAgentTransport(
       .join("\n");
   }
 
-  // Inject the live tab legend. Tools that take a `tab` arg expect handles
-  // from this list; the agent reads it each turn to know what's available.
-  // Owned-tabs only: tabs the user has open elsewhere don't appear here
-  // until the agent calls selectTab to bind them.
-  if (agentConversationId) {
-    const entries = await buildTabLegendEntries({
-      conversationId: agentConversationId,
-      ownedTabIds: conv?.ownedTabIds ?? [],
-      getTab: async (tabId) => {
-        const tab = await chrome.tabs.get(tabId);
-        return { url: tab.url, title: tab.title };
-      },
-      getOrCreateHandle: getOrCreateTabHandle,
-      activeTabId: getTargetTabId(),
-    });
-    instructions += `\n\n${renderTabLegend(entries)}`;
-  }
+  // The tab legend is intentionally NOT appended to `instructions` here.
+  // ownedTabIds and tab URLs change mid-conversation (navigate adds a tab,
+  // user closes a tab, etc.); a static legend baked at transport-construction
+  // time would go stale. Instead we build it just-in-time inside `prepareCall`
+  // below so every model call sees the live state.
 
   const memories = await memoryDb.list(spaceId);
   if (memories.length > 0) {
@@ -931,6 +934,29 @@ export async function createAgentTransport(
   // by the wrapper transport so a previous turn's signal doesn't leak.
   let needsMidStreamCompaction = false;
 
+  /**
+   * Build the dynamic "## Tabs in this conversation" block from live state.
+   * Re-reads ownedTabIds from chatDb and queries chrome.tabs each call so
+   * the agent sees the current tab set on every turn (not the snapshot
+   * baked at transport-construction time).
+   */
+  async function buildLegendBlock(): Promise<string> {
+    const cid = agentConversationId;
+    if (!cid) return "";
+    const liveConv = await chatDb.getConversation(cid);
+    const entries = await buildTabLegendEntries({
+      conversationId: cid,
+      ownedTabIds: liveConv?.ownedTabIds ?? [],
+      getTab: async (tabId) => {
+        const tab = await chrome.tabs.get(Number(tabId));
+        return { url: tab.url, title: tab.title };
+      },
+      getOrCreateHandle: (c, tabId) => getOrCreateTabHandle(c, Number(tabId)),
+      activeTabId: getTargetTabId(),
+    });
+    return renderTabLegend(entries);
+  }
+
   const agent = new ToolLoopAgent({
     model,
     tools,
@@ -941,6 +967,20 @@ export async function createAgentTransport(
     // Session helpers read live agent state via getters so the same context
     // object stays valid across conversation switches.
     experimental_context: buildExtensionToolContext(),
+    // Append a fresh tab legend on every model call. The SDK invokes
+    // prepareCall right before each generate/stream, so this picks up
+    // tabs added by `navigate`, removed by closure, etc. — even
+    // mid-conversation.
+    prepareCall: async (callArgs) => {
+      const legend = await buildLegendBlock();
+      const baseInstructions = callArgs.instructions ?? "";
+      return {
+        ...callArgs,
+        instructions: legend
+          ? `${baseInstructions}\n\n${legend}`
+          : baseInstructions,
+      };
+    },
     onStepFinish: (stepResult) => {
       const usage = stepResult.usage;
       if (usage.inputTokens != null || usage.outputTokens != null) {

@@ -1178,13 +1178,18 @@ export function useAgentChat({
       if (msgs.length > 0) {
         const uiMsgs = msgs.map(dbMessageToUIMessage);
         setMessages(uiMsgs);
+        // Hydrate the agent context (and tab handle map) for any
+        // subsequent action — retry, regenerate, approve a pending tool
+        // call, or auto-resume below. Doing it unconditionally on
+        // conversation load means resolveTabHandle has live state regardless
+        // of which path the user takes after opening the conversation.
+        setAgentContext(conversationId);
         const lastMsg = uiMsgs[uiMsgs.length - 1];
         if (lastMsg.role === "user" && transport) {
-          // Hydrate the conversation's tab handle map. Compaction-aware
-          // message assembly lives in the transport, so we no longer
-          // prefilter the message list here — the wrapper reads chatDb
-          // compaction state at send-time.
-          setAgentContext(conversationId);
+          // Auto-resume: an unanswered user message at the tail of the
+          // conversation. Compaction-aware message assembly lives in the
+          // transport, so we no longer prefilter the message list here —
+          // the wrapper reads chatDb compaction state at send-time.
           sendMessage();
         }
       }

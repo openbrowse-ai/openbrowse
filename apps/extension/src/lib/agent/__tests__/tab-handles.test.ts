@@ -149,6 +149,30 @@ describe("tab-handles", () => {
       expect(conv?.handleState?.counter).toBe(3);
     });
 
+    it("re-persists when an ephemeral handle's tab gets bound (selectTab flow)", async () => {
+      // Mint an ephemeral handle while ownedTabIds is empty.
+      await seedConv(CONV_A, []);
+      getOrCreateHandle(CONV_A, 555);
+      await flushPersist();
+
+      // chatDb should not contain the unowned handle yet.
+      let conv = await chatDb.getConversation(CONV_A);
+      expect(conv?.handleState?.handles).toEqual({});
+
+      // Simulate selectTab binding 555 into ownedTabIds.
+      await chatDb.updateConversation(CONV_A, { ownedTabIds: [555] });
+
+      // Re-call getOrCreateHandle for the same tabId. The function returns
+      // the existing handle BUT must also schedule a fresh persist so the
+      // now-owned handle lands in chatDb.
+      const handle = getOrCreateHandle(CONV_A, 555);
+      expect(handle).toBe("t1");
+      await flushPersist();
+
+      conv = await chatDb.getConversation(CONV_A);
+      expect(conv?.handleState?.handles).toEqual({ t1: 555 });
+    });
+
     it("persists newly-minted handles to chatDb (owned tabs)", async () => {
       await seedConv(CONV_A, [100, 200]);
       getOrCreateHandle(CONV_A, 100);

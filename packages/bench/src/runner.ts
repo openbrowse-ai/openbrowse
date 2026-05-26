@@ -16,7 +16,7 @@
 
 import type { LanguageModel } from "ai";
 import { resolve } from "node:path";
-import type { BrowserDriver, ToolContext, TabId } from "@agent/driver";
+import type { BrowserDriver, ToolContext } from "@agent/driver";
 import {
   buildTabLegendEntries,
   renderTabLegend,
@@ -281,14 +281,9 @@ async function runTrialInner(
     const driverForLegend = driver;
     const legendEntries = await buildTabLegendEntries({
       conversationId: "bench",
-      ownedTabIds: [initialTabId as number],
+      ownedTabIds: [initialTabId],
       getTab: async (tabId) => {
-        // The bench's BENCH_TOOL_CATALOG passes string ids through. Coerce
-        // to whatever shape the driver expects; PlaywrightDriver uses
-        // strings, ExtensionDriver uses numbers.
-        const info = await driverForLegend
-          .getTab(tabId as unknown as TabId)
-          .catch(() => null);
+        const info = await driverForLegend.getTab(tabId).catch(() => null);
         return { url: info?.url, title: info?.title };
       },
       getOrCreateHandle: (_cid, tabId) => String(tabId),

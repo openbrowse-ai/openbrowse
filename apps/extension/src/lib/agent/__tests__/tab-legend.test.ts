@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { TabId } from "../driver";
 import {
   buildTabLegendEntries,
   isInternalChromeUrl,
@@ -7,7 +8,7 @@ import {
 
 const CONV = "conv-x";
 
-function fakeGetOrCreateHandle(_convId: string, tabId: number): string {
+function fakeGetOrCreateHandle(_convId: string, tabId: TabId): string {
   return `t${tabId}`;
 }
 
@@ -31,7 +32,7 @@ describe("isInternalChromeUrl", () => {
 
 describe("buildTabLegendEntries", () => {
   it("returns one entry per live, non-internal tab", async () => {
-    const getTab = vi.fn(async (tabId: number) => ({
+    const getTab = vi.fn(async (tabId: TabId) => ({
       url: `https://example.com/${tabId}`,
       title: `Tab ${tabId}`,
     }));
@@ -50,7 +51,7 @@ describe("buildTabLegendEntries", () => {
   });
 
   it("marks the active tab", async () => {
-    const getTab = async (tabId: number) => ({
+    const getTab = async (tabId: TabId) => ({
       url: `https://example.com/${tabId}`,
       title: `Tab ${tabId}`,
     });
@@ -66,7 +67,7 @@ describe("buildTabLegendEntries", () => {
   });
 
   it("drops tabs whose getTab() rejects (closed tab)", async () => {
-    const getTab = async (tabId: number) => {
+    const getTab = async (tabId: TabId) => {
       if (tabId === 99) throw new Error("No tab with id 99");
       return { url: `https://example.com/${tabId}`, title: `Tab ${tabId}` };
     };
@@ -81,7 +82,7 @@ describe("buildTabLegendEntries", () => {
   });
 
   it("drops tabs that landed on a chrome-extension:// URL", async () => {
-    const getTab = async (tabId: number) => {
+    const getTab = async (tabId: TabId) => {
       if (tabId === 5) {
         return {
           url: "chrome-extension://abc/something.html",
@@ -101,7 +102,7 @@ describe("buildTabLegendEntries", () => {
   });
 
   it("falls back to '(untitled)' when title is empty", async () => {
-    const getTab = async (_tabId: number) => ({
+    const getTab = async (_tabId: TabId) => ({
       url: "https://example.com/foo",
       title: "  ",
     });
