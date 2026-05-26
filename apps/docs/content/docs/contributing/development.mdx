@@ -56,13 +56,28 @@ packages/
 
 ## Cutting a release
 
-Releases are driven by [Changesets](https://github.com/changesets/changesets).
+OpenBrowse doesn't have release CI yet — releases are produced manually.
 
-1. If a PR changes user-facing behavior, run `pnpm changeset` and commit the generated `.changeset/*.md` file. See [`.changeset/README.md`](https://github.com/openbrowse-ai/openbrowse/blob/main/.changeset/README.md).
-2. On every push to `main`, the **Changesets** workflow automatically opens or updates a "Version Packages" PR that bumps `apps/extension/package.json`, regenerates `apps/extension/CHANGELOG.md`, and consumes the changeset files.
-3. Merging the Version Packages PR creates a `vX.Y.Z` git tag.
-4. The tag triggers the **Release extension** workflow, which builds `apps/extension/.output/openbrowse-<version>-chrome.zip`, asserts the pinned manifest `key`, and publishes a GitHub Release with the zip attached. The docs' [Install page](/docs/overview#manual-install-current) links to `releases/latest`, so the new zip becomes the recommended manual download automatically.
-5. The Chrome Web Store upload is intentionally a manual step — log into the developer dashboard and upload the exact same zip from the GitHub release as a new version of the listing.
+1. Bump `version` in `apps/extension/package.json` and the `version`
+   field in the `manifest` block of `apps/extension/wxt.config.ts`.
+   Keep them in sync.
+2. From the repo root:
+   ```bash
+   pnpm zip
+   ```
+   This builds the extension and packages it as
+   `apps/extension/.output/openbrowse-<version>-chrome.zip`.
+3. Tag the commit and push:
+   ```bash
+   git tag v<version>
+   git push origin v<version>
+   ```
+4. Create a GitHub Release for that tag and attach the zip. The docs'
+   [Install page](/docs/overview#manual-install-current) links to
+   `releases/latest`, so the new zip becomes the recommended download
+   automatically.
+5. Upload the same zip to the Chrome Web Store dashboard as a new
+   version of the listing.
 
 import { Callout } from "fumadocs-ui/components/callout";
 
