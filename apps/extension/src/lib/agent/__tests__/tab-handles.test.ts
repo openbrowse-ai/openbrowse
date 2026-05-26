@@ -4,6 +4,7 @@ import { chatDb } from "../../chat-db";
 import {
   clearHandles,
   dropTab,
+  flushPersistsForTests,
   getOrCreateHandle,
   listHandles,
   loadHandlesForConversation,
@@ -25,14 +26,11 @@ async function seedConv(id: string, ownedTabIds: number[] = []) {
 }
 
 /**
- * Wait one microtask + one macrotask. The persistence write inside
- * `getOrCreateHandle` is fire-and-forget; tests need a flush point so the
- * chatDb write settles before they re-read.
+ * Deterministic flush of pending persistence writes for a conversation.
+ * Replaces a previous timing-based helper that was flaky under load.
  */
-async function flushPersist() {
-  await Promise.resolve();
-  await new Promise((r) => setTimeout(r, 0));
-  await Promise.resolve();
+async function flushPersist(convId: string = CONV_A) {
+  await flushPersistsForTests(convId);
 }
 
 describe("tab-handles", () => {

@@ -23,6 +23,7 @@ import {
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
+import { buildTabLegendEntries, renderTabLegend } from "./tab-legend";
 import {
   clickElementTool,
   createSkillTool,
@@ -767,6 +768,24 @@ export async function createAgentTransport(
     instructions += conv.todos
       .map((t, i) => `${i + 1}. [${t.status.toUpperCase()}] ${t.content}`)
       .join("\n");
+  }
+
+  // Inject the live tab legend. Tools that take a `tab` arg expect handles
+  // from this list; the agent reads it each turn to know what's available.
+  // Owned-tabs only: tabs the user has open elsewhere don't appear here
+  // until the agent calls selectTab to bind them.
+  if (agentConversationId) {
+    const entries = await buildTabLegendEntries({
+      conversationId: agentConversationId,
+      ownedTabIds: conv?.ownedTabIds ?? [],
+      getTab: async (tabId) => {
+        const tab = await chrome.tabs.get(tabId);
+        return { url: tab.url, title: tab.title };
+      },
+      getOrCreateHandle: getOrCreateTabHandle,
+      activeTabId: getTargetTabId(),
+    });
+    instructions += `\n\n${renderTabLegend(entries)}`;
   }
 
   const memories = await memoryDb.list(spaceId);
