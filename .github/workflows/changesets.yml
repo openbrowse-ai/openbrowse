@@ -51,13 +51,16 @@ jobs:
       - name: Open / update Version Packages PR (or tag release)
         uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
         with:
-          # Inlined instead of `pnpm version` — under pnpm 11, the
-          # `version` token is intercepted as the built-in
-          # npm-compatible version command (which requires a bump
-          # arg) instead of running the root package.json script of
-          # the same name. Inlining the script body removes the
-          # dependency on script-vs-builtin resolution.
-          version: pnpm exec changeset version && pnpm install --lockfile-only
+          # `pnpm run version` (NOT `pnpm version`) — the latter is
+          # pnpm's built-in npm-compat command and would require a
+          # bump argument; `pnpm run` invokes the script alias from
+          # the root package.json, whose body
+          # (`changeset version && pnpm install --lockfile-only`)
+          # runs in sh so the `&&` chain is interpreted correctly.
+          # The Changesets action's `version:` input does not run
+          # commands through a shell, so chaining commands directly
+          # here would pass them as args to the first binary.
+          version: pnpm run version
           # No npm publish — we do not publish to npm. The git tag
           # created here is the trigger for release.yml to build and
           # publish the GitHub Release zip.
