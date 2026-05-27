@@ -782,11 +782,13 @@ export async function createAgentTransport(
 
   // Resolve the evaluator model once at transport build time. When
   // settings.completionCheck.evaluatorModel is unset (the recommended
-  // default), the gate falls back to the executor's current model with
-  // a fresh context — Anthropic's "same-model-fresh-window" pattern.
-  // We set this to `null` explicitly so the gate's call site can read
-  // "no override; use current agent model" without a separate flag.
-  let evaluatorLanguageModel: LanguageModel | null = null;
+  // default), the gate uses THIS transport's executor model — same
+  // model, fresh context window. We pin to the local `model` rather
+  // than letting the gate fall back to the module-global
+  // `currentAgentModel` so concurrent transports (e.g. side panel +
+  // popup window) don't race when one calls `setCurrentAgentModel`
+  // mid-stream of the other.
+  let evaluatorLanguageModel: LanguageModel = model;
   const evaluatorModelId = settings.completionCheck?.evaluatorModel;
   if (evaluatorModelId) {
     try {

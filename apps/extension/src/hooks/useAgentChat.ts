@@ -293,8 +293,11 @@ function healPendingTools(
       const ap = pp.approval as
         | { id?: unknown; approved?: unknown }
         | undefined;
+      // Strict denial shape: must have a string id AND `approved`
+      // explicitly false. `approved: true` paired with state
+      // `output-denied` is contradictory and gets healed.
       return !(
-        ap && typeof ap.id === "string" && typeof ap.approved === "boolean"
+        ap && typeof ap.id === "string" && ap.approved === false
       );
     }
     return false;
@@ -318,16 +321,20 @@ function healPendingTools(
 
       // approval-requested keeps its dedicated path so the UI's
       // "denied" affordance renders consistently with explicit
-      // user-deny actions.
+      // user-deny actions. Validate the approval id is a real string
+      // before trusting it; malformed approvals fall through to the
+      // default output-error heal below.
       if (state === "approval-requested" && p.approval) {
-        const approval = p.approval as { id: string };
-        changed = true;
-        return {
-          ...part,
-          input,
-          state: "output-denied",
-          approval: { id: approval.id, approved: false, reason: denyReason },
-        } as typeof part;
+        const approval = p.approval as { id?: unknown };
+        if (typeof approval.id === "string") {
+          changed = true;
+          return {
+            ...part,
+            input,
+            state: "output-denied",
+            approval: { id: approval.id, approved: false, reason: denyReason },
+          } as typeof part;
+        }
       }
 
       // Default heal: every other malformed/non-terminal case becomes

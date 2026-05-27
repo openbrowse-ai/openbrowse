@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { ConcernDimension } from "./completion-check/types";
 
 export interface ChatMessage {
   id: string;
@@ -78,7 +79,7 @@ export interface CompletionCheckRejectionData {
   rejectionRound: number;
   reasoning: string;
   concerns: {
-    dimension: string;
+    dimension: ConcernDimension;
     /**
      * Internal/export-only technical description of the concern.
      * Surfaced in the markdown export and in the synthetic feedback

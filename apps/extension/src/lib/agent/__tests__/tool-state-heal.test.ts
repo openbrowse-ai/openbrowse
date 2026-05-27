@@ -299,6 +299,44 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(part.errorText).toMatch(/interrupted/i);
   });
 
+  it("downgrades output-denied with approved=true (contradictory) to output-error", () => {
+    // Strict-shape contract: state=output-denied REQUIRES approved=false.
+    // `approved: true` paired with that state is semantically nonsense
+    // and gets healed to a clean output-error.
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "denied-but-approved",
+        state: "output-denied",
+        input: { url: "https://example.com" },
+        approval: { id: "ap1", approved: true },
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    const part = out[1].parts[0] as { state: string; errorText: string };
+    expect(part.state).toBe("output-error");
+  });
+
+  it("approval-requested with non-string id falls through to output-error heal", () => {
+    // Defensive: malformed approval id (e.g. undefined or number)
+    // shouldn't be carried forward into a synthesized output-denied —
+    // we don't trust it. Heal to output-error instead.
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "approval-bad-id",
+        state: "approval-requested",
+        input: { url: "https://example.com" },
+        approval: { id: undefined },
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    const part = out[1].parts[0] as { state: string; errorText: string };
+    expect(part.state).toBe("output-error");
+  });
+
   it("preserves a fully well-formed output-available part as the same instance", () => {
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),

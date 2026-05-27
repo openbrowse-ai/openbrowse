@@ -22,6 +22,7 @@ import {
   type RunCompletionCheckInput,
 } from "./completion-check";
 import type {
+  ConcernDimension,
   EvaluatorVerdict,
   GateOutcome,
   ToolCallTraceEntry,
@@ -518,10 +519,13 @@ function repairToolPart(
     const approval = raw.approval as
       | { id?: unknown; approved?: unknown; reason?: unknown }
       | undefined;
+    // Strict denial shape: state=output-denied REQUIRES `approved: false`.
+    // `approved: true` paired with that state is contradictory and gets
+    // healed to a clean output-error rather than carried forward.
     const hasValidApproval =
       approval &&
       typeof approval.id === "string" &&
-      typeof approval.approved === "boolean";
+      approval.approved === false;
     if (!hasValidApproval) {
       return {
         ...raw,
@@ -1192,7 +1196,7 @@ export function emitCompletionCheckRejectionChunk(
     rejectionRound: number;
     reasoning: string;
     concerns: {
-      dimension: string;
+      dimension: ConcernDimension;
       detail: string;
       userSummary: string;
       evidence?: string;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -90,6 +90,7 @@ export function CompletionCheckBlock({
   data: CompletionCheckRejectionData;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const bodyId = useId();
   const variant = selectVariant(data);
 
   // Evaluator-error variant: minimal, non-interactive note. No
@@ -122,6 +123,8 @@ export function CompletionCheckBlock({
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls={bodyId}
         className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left"
       >
         {expanded ? (
@@ -135,7 +138,10 @@ export function CompletionCheckBlock({
         </span>
       </button>
       {expanded && (
-        <div className="border-t border-current/15 px-2.5 py-2">
+        <div
+          id={bodyId}
+          className="border-t border-current/15 px-2.5 py-2"
+        >
           <ul className="space-y-1 leading-relaxed">
             {data.concerns.map((c, i) => (
               <li key={i} className="flex gap-1.5">

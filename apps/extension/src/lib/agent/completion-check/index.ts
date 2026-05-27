@@ -179,13 +179,17 @@ export async function runCompletionCheck(
   } catch (err) {
     // Evaluator failure is treated as force-emit-with-warning rather
     // than blocking. We don't want a transient evaluator error to
-    // break the user's task. The error is recorded in telemetry so
-    // the user can see it in the diagnostics UI.
+    // break the user's task. Detailed error info goes to the console
+    // (for developer diagnostics) but NOT into the persisted/
+    // user-facing `reasoning` field — error messages from provider
+    // SDKs sometimes carry request payloads or other internal
+    // details we don't want flowing into chatDb or markdown exports.
     console.warn("[completion-check] evaluator threw:", err);
     const fallbackVerdict: EvaluatorVerdict = {
       decision: "approve",
       concerns: [],
-      reasoning: `Evaluator error: ${err instanceof Error ? err.message : String(err)}. Forcing emit with warning.`,
+      reasoning:
+        "Evaluator encountered an internal error; proceeding with warning.",
       confidence: 0,
     };
     await recordTelemetrySafe({
