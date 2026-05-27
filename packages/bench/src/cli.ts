@@ -44,6 +44,12 @@ interface CliArgs {
   outDir?: string;
   driverKind: "local" | "kernel";
   concurrency: number;
+  /** R2 upload mode. `auto` = upload iff R2 env vars are set; `always` = upload (error if env missing); `never` = skip. */
+  upload: "auto" | "always" | "never";
+  /** Eval-set name (used in run-id and manifest when upload happens). */
+  evalSet?: string;
+  /** Arm name within the eval-set. */
+  arm?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -59,6 +65,7 @@ function parseArgs(argv: string[]): CliArgs {
     driverKind: "local",
     concurrency: 0, // 0 means default later
     seed: 42,
+    upload: "auto",
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -126,6 +133,24 @@ function parseArgs(argv: string[]): CliArgs {
       case "--concurrency":
         out.concurrency = parseInt(argv[++i], 10) || 0;
         break;
+      case "--upload": {
+        const v = argv[++i];
+        if (v !== "auto" && v !== "always" && v !== "never") {
+          console.error(`--upload must be one of: auto, always, never`);
+          process.exit(2);
+        }
+        out.upload = v;
+        break;
+      }
+      case "--no-upload":
+        out.upload = "never";
+        break;
+      case "--eval-set":
+        out.evalSet = argv[++i];
+        break;
+      case "--arm":
+        out.arm = argv[++i];
+        break;
       case "--help":
       case "-h":
         printHelp();
@@ -172,6 +197,17 @@ Options:
                       (default: .bench/runs/<auto-id>/ at repo root)
   --driver <kind>     Browser driver to use: "local" (default) or "kernel"
   --concurrency <n>   Parallel trials (default: local=CPUs/2, kernel=5)
+  --upload <mode>     R2 upload behavior. One of:
+                        auto    upload iff R2_* env vars are set (default)
+                        always  upload; error if env vars missing
+                        never   skip upload entirely
+  --no-upload         Alias for --upload never
+  --eval-set <name>   Eval-set name. When set together with --arm, the
+                      run-id becomes <ts>-<eval-set>-<arm> and the
+                      manifest records both fields. Useful when running
+                      the same task list under multiple configurations.
+  --arm <name>        Arm name within an eval-set (eg. a, b, c, or
+                      descriptive labels like "gpt-5", "claude-4-5")
   --help              Print this help`);
 }
 
@@ -253,6 +289,37 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  // Fail fast on upload misconfigurations before running any trials.
+  const { uploadRun, createR2Client, r2EnvPresent } = await import("./upload");
+  let plannedUpload = false;
+  switch (args.upload) {
+    case "never":
+      plannedUpload = false;
+      break;
+    case "always":
+      plannedUpload = true;
+      if (!r2EnvPresent()) {
+        console.error(
+          "ERROR: --upload always was specified but required R2 env vars are not set.\n" +
+            "  Set R2_ACCOUNT_ID, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET\n" +
+            "  in .env or your shell, then re-run.",
+        );
+        process.exit(2);
+      }
+      break;
+    case "auto":
+      plannedUpload = r2EnvPresent();
+      break;
+  }
+  if (plannedUpload && (!args.evalSet || !args.arm)) {
+    console.error(
+      "ERROR: upload requires both --eval-set and --arm. " +
+        "These get embedded in the run-id and manifest so the artifacts are traceable.\n" +
+        "  Either pass both flags, or use --no-upload to skip upload.",
+    );
+    process.exit(2);
+  }
+
   // Resolve the task list. Single-task mode picks one; suite mode picks
   // every task whose source matches.
   let tasks: any[];
@@ -295,6 +362,8 @@ async function main(): Promise<void> {
       modelLabel: args.modelLabel,
       suite: args.suite,
       taskId: args.taskId,
+      evalSet: args.evalSet,
+      arm: args.arm,
     });
     runDir = resolveRunDir({
       runId,
@@ -737,6 +806,38 @@ async function main(): Promise<void> {
   console.log(`Trials:  ${paths.trialsDir}`);
   if (recordVideo) {
     console.log(`Videos:  ${paths.videosDir}`);
+  }
+
+  // Decide whether to upload (re-evaluate `auto` mode in case env was
+  // mutated mid-run; otherwise reuse the validated decision from earlier).
+  const shouldUpload =
+    args.upload === "never"
+      ? false
+      : args.upload === "always"
+        ? true
+        : r2EnvPresent();
+
+  if (shouldUpload) {
+    console.log("");
+    console.log(`Uploading to R2 (bucket=${process.env.R2_BUCKET})...`);
+    const uploadStart = Date.now();
+    try {
+      const { client, bucket } = createR2Client();
+      const manifest = await uploadRun({
+        paths,
+        runId,
+        evalSet: args.evalSet!,
+        arm: args.arm!,
+        deps: { s3Client: client, bucket },
+      });
+      const uploadDuration = ((Date.now() - uploadStart) / 1000).toFixed(1);
+      console.log(`  ${Object.keys(manifest.trials).length} trial(s) uploaded in ${uploadDuration}s`);
+      console.log(`  Manifest: ${paths.manifestPath}`);
+    } catch (err) {
+      console.error("Upload failed:", err instanceof Error ? err.message : String(err));
+      console.error("Local artifacts preserved in:", paths.runDir);
+      process.exit(1);
+    }
   }
 }
 

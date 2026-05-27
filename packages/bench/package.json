@@ -6,6 +6,8 @@
   "description": "Evaluation harness for the OpenBrowse agent. Runs the agent headlessly via Playwright across a matrix of model × prompt × tool-set configurations.",
   "scripts": {
     "compile": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
     "bench": "tsx src/cli.ts",
     "baseline": "tsx scripts/bench-baseline.ts"
   },
@@ -13,6 +15,7 @@
     "@ai-sdk/anthropic": "^3.0.71",
     "@ai-sdk/google": "^3.0.64",
     "@ai-sdk/openai": "^3.0.53",
+    "@aws-sdk/client-s3": "^3.1054.0",
     "@huggingface/hub": "^2.12.0",
     "@onkernel/sdk": "^0.55.0",
     "ai": "^6.0.168",
@@ -28,6 +31,7 @@
     "pixelmatch": "^7.2.0",
     "pngjs": "^7.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }

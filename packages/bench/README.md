@@ -64,6 +64,49 @@ The `llm-judge` evaluator uses Gemini 3.5 Flash, so
 
 To use the Kernel driver for parallel cloud execution, provide `KERNEL_API_KEY`.
 
+## Optional: Cloudflare R2 upload
+
+The bench can upload run artifacts to a Cloudflare R2 bucket alongside the local `.bench/runs/<run-id>/` directory. Useful for sharing traces in PRs, archiving large sweeps off-disk, and feeding downstream analysis tooling. **Entirely optional** — without R2 env vars, behavior is unchanged.
+
+To enable, populate these in `.env`:
+
+```bash
+R2_ACCOUNT_ID=...
+R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=...
+```
+
+Then runs that pass `--eval-set <name> --arm <name>` will upload by default. Manifests are written to `<runDir>/manifest.json` and the local `videos/` directory is removed after a successful upload.
+
+```bash
+# Upload a sweep (auto-detects R2 env). The eval-set + arm names get
+# embedded in the run-id and manifest, so e.g. running the same suite
+# under two model configurations only differs by the --arm value.
+pnpm --filter @openbrowse/bench bench \
+  --suite webbench-mini --driver kernel \
+  --eval-set models-comparison --arm gpt-5
+
+# Force off
+pnpm --filter @openbrowse/bench bench --task example-com-heading --no-upload
+
+# Force on (errors if R2 env missing)
+pnpm --filter @openbrowse/bench bench --suite webbench-mini \
+  --eval-set my-experiment --arm a --upload always
+```
+
+Layout in R2:
+
+```
+runs/<run-id>/summary.json                    (lightweight; indefinite retention)
+runs/<run-id>/trials/<task-id>.json           (lightweight, no trace[]/parts[])
+traces/<run-id>/<task-id>.json.zst            (full trace[] + parts[]; 365-day TTL)
+videos/<run-id>/<task-id>.{mp4,webm}          (90-day TTL)
+```
+
+If an upload fails partway through (network blip, expired token, etc.), the partial progress is recorded in `<runDir>/.upload-state.json`. Re-running `bench` with `--upload always` on the same run dir resumes from where it left off — already-uploaded trials are skipped, only the remaining ones are sent. The state file is removed on full success and `manifest.json` becomes the source of truth.
+
 ## Architecture
 
 ```

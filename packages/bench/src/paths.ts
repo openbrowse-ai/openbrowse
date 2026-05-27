@@ -48,13 +48,28 @@ export function safeSegment(s: string): string {
   return s.replace(/[^a-zA-Z0-9-_.]/g, "_");
 }
 
-/** Generate a stable per-run directory id. */
+/** Generate a stable per-run directory id.
+ *
+ * Two shapes are supported:
+ *
+ * - Legacy (CLI default): `<ts>-<modelLabel>-<suite-or-task>`. Used when
+ *   no `{ evalSet, arm }` pair is supplied.
+ * - Experiment: `<ts>-<evalSet>-<arm>`. Used when an eval-set runner
+ *   passes both fields through; the `modelLabel` is recorded in the run
+ *   summary instead of the directory name (eval-sets fix the model per
+ *   arm, so embedding it in every run-id would be redundant).
+ */
 export function makeRunId(opts: {
   modelLabel: string;
   suite?: string;
   taskId?: string;
+  evalSet?: string;
+  arm?: string;
 }): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  if (opts.evalSet && opts.arm) {
+    return `${stamp}-${safeSegment(opts.evalSet)}-${safeSegment(opts.arm)}`;
+  }
   const tail = opts.suite ?? opts.taskId ?? "task";
   return `${stamp}-${safeSegment(opts.modelLabel)}-${safeSegment(tail)}`;
 }
@@ -66,8 +81,12 @@ export interface RunPaths {
   trialsDir: string;
   /** `<runDir>/videos` */
   videosDir: string;
+  /** `<runDir>/traces` (created lazily; only used by the upload pipeline). */
+  tracesDir: string;
   /** `<runDir>/summary.json` */
   summaryPath: string;
+  /** `<runDir>/manifest.json` (written after a successful R2 upload). */
+  manifestPath: string;
 }
 
 /** Resolve the directory for a run, given either an explicit dir override
@@ -96,13 +115,18 @@ export function resolveRunDir(opts: {
 export function createRunPaths(runDir: string): RunPaths {
   const trialsDir = resolve(runDir, "trials");
   const videosDir = resolve(runDir, "videos");
+  const tracesDir = resolve(runDir, "traces");
   mkdirSync(trialsDir, { recursive: true });
   mkdirSync(videosDir, { recursive: true });
+  // tracesDir is created on demand by the upload pipeline; reserve the
+  // path here so callers don't need to know the layout.
   return {
     runDir,
     trialsDir,
     videosDir,
+    tracesDir,
     summaryPath: resolve(runDir, "summary.json"),
+    manifestPath: resolve(runDir, "manifest.json"),
   };
 }
 
@@ -126,11 +150,15 @@ export function ensureRunDirExists(runDir: string): RunPaths {
   if (!existsSync(videosDir)) {
     mkdirSync(videosDir, { recursive: true });
   }
-  
+
+  const tracesDir = resolve(absoluteDir, "traces");
+
   return {
     runDir: absoluteDir,
     trialsDir,
     videosDir,
+    tracesDir,
     summaryPath: resolve(absoluteDir, "summary.json"),
+    manifestPath: resolve(absoluteDir, "manifest.json"),
   };
 }
