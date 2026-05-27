@@ -1,10 +1,49 @@
-import type { AgentUIMessage } from "./types";
+import type { CompletionCheckRejectionData } from "./types";
 
 export function formatPartAsMarkdown(part: any): string | null {
   if (part.type === "text" && part.text.trim()) {
     return part.text;
   }
-  
+
+  // Completion-check rejection block: render as a blockquote section so
+  // the export reflects what the user saw in the UI.
+  //
+  // We intentionally do NOT also render the synthetic "follow-up sent
+  // to agent" message here. That payload duplicates the reasoning and
+  // concerns already shown above, and the only unique content (the
+  // round number and the boilerplate "Continue working…" directive)
+  // doesn't earn its keep — the directive is a fixed constant, and
+  // round numbers are a UX leak per earlier preference.
+  //
+  // Force-emit and evaluator-error variants share the same render
+  // path; they just don't have a "follow-up" concept anyway because
+  // the loop terminates without sending anything.
+  if (part.type === "data-completion-check-rejection") {
+    const data = part.data as CompletionCheckRejectionData;
+
+    if (data.reason === "evaluator-error") {
+      return `> _Quality check skipped — evaluator could not complete._`;
+    }
+
+    const heading = data.forceEmittedNext
+      ? "**Completion check failed**"
+      : "**Completion check**";
+    const lines: string[] = [`> ${heading}`, `>`];
+    if (data.reasoning) lines.push(`> ${data.reasoning}`, `>`);
+    for (const c of data.concerns) {
+      lines.push(`> - **${c.dimension}**: ${c.detail}`);
+      if (c.evidence) lines.push(`>   _Evidence:_ ${c.evidence}`);
+    }
+    return lines.join("\n");
+  }
+
+  // Running indicator (spinner): per user preference, exports carry
+  // only rejection blocks. Drop the running indicator entirely so
+  // clean turns don't add a line of noise to the export.
+  if (part.type === "data-completion-check-running") {
+    return null;
+  }
+
   if (
     part.type === "dynamic-tool" ||
     (typeof part.type === "string" &&

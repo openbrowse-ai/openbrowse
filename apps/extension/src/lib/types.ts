@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { CompletionCheckSettings } from "./agent/completion-check/types";
 import type { McpServerConfig } from "./mcp/types";
 
 export interface FavoriteTab {
@@ -57,6 +58,12 @@ export interface Settings {
 
   // Connectors
   mcpServers: McpServerConfig[];
+
+  // Completion check (verify-gated completion). The check is always on
+  // by default; the only user-facing knob is the evaluator model.
+  // Optional for backward compatibility with persisted Settings records
+  // that pre-date this feature.
+  completionCheck?: CompletionCheckSettings;
 
   // DEPRECATED — kept for migration only
   aiProvider?: AIProvider;

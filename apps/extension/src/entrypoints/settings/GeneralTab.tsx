@@ -162,6 +162,43 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
         </Select>
       </div>
 
+      <div className="space-y-2">
+        <Label>Completion check model</Label>
+        <p className="text-xs text-muted-foreground">
+          Before each final response reaches you, a separate skeptical
+          evaluator reviews it for completeness and evidence grounding.
+          Defaults to the agent model with a fresh context. Choose a
+          cheaper/faster model here to reduce per-turn cost — typically
+          a smaller model from the same provider works well.
+        </p>
+        <Select
+          value={settings.completionCheck?.evaluatorModel || "__default__"}
+          onValueChange={(v) =>
+            onChange({
+              completionCheck: {
+                ...settings.completionCheck,
+                evaluatorModel: v === "__default__" ? undefined : v,
+              },
+            })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Same as agent model" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__default__">Same as agent model</SelectItem>
+            {enabledModelOptions.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                <span className="flex items-center gap-2">
+                  {opt.providerId && <RegistryIcon id={opt.providerId} className="size-4" />}
+                  {opt.label}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="space-y-4 pt-4 border-t">
         <h3 className="text-sm font-medium">Keyboard Shortcuts</h3>
         <p className="text-xs text-muted-foreground">

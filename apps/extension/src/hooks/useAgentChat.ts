@@ -9,7 +9,6 @@ import {
   needsCompaction,
   resetTokenTracking,
   getCurrentModelDef,
-  setCurrentModelDef,
 } from "@/lib/agent/agent-transport";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import {
@@ -44,7 +43,7 @@ import type {
 } from "@/lib/types";
 import { Chat, useChat } from "@ai-sdk/react";
 import {
-  lastAssistantMessageIsCompleteWithApprovalResponses,
+  isToolUIPart,
 } from "ai";
 import type {
   ChatTransport,
@@ -76,7 +75,17 @@ function generateId() {
   return crypto.randomUUID();
 }
 
-function serializeParts(parts: AgentMessage["parts"]): SerializedUIPart[] {
+/**
+ * Serialize a UIMessage's parts into the chat-db's persistable shape.
+ *
+ * Exported (rather than module-private) so the round-trip persistence
+ * contract can be tested directly without spinning up the full chat
+ * lifecycle. The whitelist nature of this function is the most
+ * common source of "data part rendered live but disappeared after
+ * reload" bugs — having a dedicated test suite catches new variants
+ * being added to the UI but not to the serializer.
+ */
+export function serializeParts(parts: AgentMessage["parts"]): SerializedUIPart[] {
   return parts.flatMap((part): SerializedUIPart[] => {
     switch (part.type) {
       case "text":
@@ -99,6 +108,28 @@ function serializeParts(parts: AgentMessage["parts"]): SerializedUIPart[] {
       case "data-compaction":
         // `part.data` is `CompactionData` thanks to AgentDataParts.
         return [{ type: "data-compaction", data: part.data }];
+      case "data-completion-check-rejection":
+        // Persist completion-check rejection blocks so users see the
+        // concerns again after a reload. Without this case, the chunk
+        // is silently dropped at serialize time and the conversation
+        // looks like the gate never ran.
+        return [{ type: "data-completion-check-rejection", data: part.data }];
+      case "data-completion-check-running":
+        // Strip running indicators at serialize time. They're a live-
+        // stream concern only:
+        //  - "evaluating" entries shouldn't survive reload — saved
+        //    means the stream is over forever, but a persisted
+        //    "evaluating" part would semantically lie about that
+        //    state.
+        //  - "done" entries render nothing in the UI (the spinner is
+        //    gone; rejected/force-emitted are surfaced by the
+        //    sibling rejection block; approved/skipped are silent).
+        //    Persisting them would be dead weight in chatDb.
+        //
+        // The runtime UI guard (`isStreaming` check in
+        // CompletionCheckRunningBlock) handles in-memory mid-stream
+        // aborts; we never need this part on disk.
+        return [];
       case "dynamic-tool":
         return [
           {
@@ -175,20 +206,32 @@ function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
  * Heals "stranded" tool calls in `messages` so a subsequent prompt
  * does not trip the AI SDK's `MissingToolResultsError`.
  *
- * Two states get healed:
+ * The healer recognizes "terminal" states by inclusion (states that
+ * already carry an `output` or `errorText` and survive the round-trip
+ * through `convertToModelMessages`). Anything else is non-terminal and
+ * gets healed:
  *
  * - `approval-requested` → `output-denied` with `approval.approved = false`.
  *   Mirrors the pre-existing inline cleanup; see the long comment in
  *   {@link handleSubmit} below for why we mutate state directly here
  *   rather than calling `addToolApprovalResponse` / `addToolOutput`.
  *
- * - `input-available` → `output-error`. Happens when a tool call started
- *   but its result was never recorded (page refreshed mid-stream, the
- *   stream errored after emitting `tool-input-available` but before
- *   `tool-output-available`, etc.). Synthesizing an `output-error` with
- *   a clear errorText keeps the model in the loop — it sees the failed
- *   attempt instead of an unexplained text gap, and can decide whether
- *   to retry or proceed.
+ * - `input-streaming`, `input-available`, `output-streaming`, or any
+ *   other unrecognized non-terminal state → `output-error` with a
+ *   synthetic `errorText`. Happens when a tool call started but its
+ *   result was never recorded (page refreshed mid-stream, the stream
+ *   errored after emitting `tool-input-available` / `tool-input-start`
+ *   / `tool-output-start` but before `tool-output-available`, the user
+ *   edited a prior message while a tool was streaming, etc.).
+ *   Synthesizing an `output-error` keeps the model in the loop — it
+ *   sees the failed attempt instead of an unexplained text gap, and
+ *   convertToModelMessages can produce a well-formed tool-result
+ *   content with `output: { type: "error-text", value: errorText }`.
+ *
+ * Defining terminal states by inclusion (rather than non-terminal by
+ * exclusion) means the healer is forward-compatible with new states
+ * the AI SDK adds: anything we don't explicitly recognize as terminal
+ * gets healed defensively, which is the safe default.
  *
  * Returns both the new full `messages` list and the subset that
  * actually changed. Callers persist the changed subset to chatDb so
@@ -197,56 +240,124 @@ function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
 const TOOL_HEAL_INTERRUPT_TEXT =
   "Tool execution was interrupted before it returned a result";
 
+/**
+ * Tool-part states that already carry the data `convertToModelMessages`
+ * needs to emit a valid model message. Anything outside this set is
+ * non-terminal and must be healed before the messages are sent to the
+ * model.
+ */
+const TERMINAL_TOOL_STATES = new Set([
+  "output-available",
+  "output-error",
+  "output-denied",
+]);
+
 function healPendingTools(
   messages: AgentMessage[],
   denyReason: string,
 ): { healed: AgentMessage[]; healedMessages: AgentMessage[] } {
-  const isPendingTool = (p: unknown): boolean => {
+  const isToolPart = (p: unknown): boolean => {
     const pp = p as Record<string, unknown>;
-    const isTool =
+    return (
       pp.type === "dynamic-tool" ||
       (typeof pp.type === "string" &&
-        (pp.type as string).startsWith("tool-"));
-    if (!isTool) return false;
-    return (
-      pp.state === "approval-requested" || pp.state === "input-available"
+        (pp.type as string).startsWith("tool-"))
     );
   };
 
-  const anyPending = messages.some((m) => m.parts.some(isPendingTool));
+  /**
+   * A tool part is "valid for conversion" iff:
+   *  - state is terminal (in {output-available, output-error, output-denied})
+   *  - the per-state required field is present and well-formed:
+   *      output-available → output is defined
+   *      output-error     → errorText is a non-empty string
+   *      output-denied    → approval is { id, approved: false }
+   *  - input is defined (object or any non-undefined value).
+   *
+   * Anything else is non-terminal/malformed and must be healed.
+   */
+  const needsHeal = (p: unknown): boolean => {
+    if (!isToolPart(p)) return false;
+    const pp = p as Record<string, unknown>;
+    const state = pp.state;
+    if (typeof state !== "string") return true;
+    if (!TERMINAL_TOOL_STATES.has(state)) return true;
+    if (pp.input === undefined || pp.input === null) return true;
+    if (state === "output-available") {
+      return pp.output === undefined || pp.output === null;
+    }
+    if (state === "output-error") {
+      return typeof pp.errorText !== "string" || pp.errorText.length === 0;
+    }
+    if (state === "output-denied") {
+      const ap = pp.approval as
+        | { id?: unknown; approved?: unknown }
+        | undefined;
+      // Strict denial shape: must have a string id AND `approved`
+      // explicitly false. `approved: true` paired with state
+      // `output-denied` is contradictory and gets healed.
+      return !(
+        ap && typeof ap.id === "string" && ap.approved === false
+      );
+    }
+    return false;
+  };
+
+  const anyPending = messages.some((m) => m.parts.some(needsHeal));
   if (!anyPending) return { healed: messages, healedMessages: [] };
 
   const healedMessages: AgentMessage[] = [];
   const healed = messages.map((msg) => {
     let changed = false;
     const newParts = msg.parts.map((part) => {
+      if (!needsHeal(part)) return part;
       const p = part as Record<string, unknown>;
-      const isTool =
-        p.type === "dynamic-tool" ||
-        (typeof p.type === "string" &&
-          (p.type as string).startsWith("tool-"));
-      if (!isTool) return part;
+      const state = typeof p.state === "string" ? p.state : undefined;
 
-      if (p.state === "approval-requested" && p.approval) {
-        const approval = p.approval as { id: string };
-        changed = true;
-        return {
-          ...part,
-          state: "output-denied",
-          approval: { id: approval.id, approved: false, reason: denyReason },
-        } as typeof part;
+      // Always carry an `input` object forward — convertToModelMessages's
+      // `tool-call` content requires it.
+      const input =
+        p.input === undefined || p.input === null ? {} : p.input;
+
+      // approval-requested keeps its dedicated path so the UI's
+      // "denied" affordance renders consistently with explicit
+      // user-deny actions. Validate the approval id is a real string
+      // before trusting it; malformed approvals fall through to the
+      // default output-error heal below.
+      if (state === "approval-requested" && p.approval) {
+        const approval = p.approval as { id?: unknown };
+        if (typeof approval.id === "string") {
+          changed = true;
+          return {
+            ...part,
+            input,
+            state: "output-denied",
+            approval: { id: approval.id, approved: false, reason: denyReason },
+          } as typeof part;
+        }
       }
 
-      if (p.state === "input-available") {
-        changed = true;
-        return {
-          ...part,
-          state: "output-error",
-          errorText: TOOL_HEAL_INTERRUPT_TEXT,
-        } as typeof part;
-      }
-
-      return part;
+      // Default heal: every other malformed/non-terminal case becomes
+      // output-error. Strip any partial `output` so errorText is the
+      // sole signal.
+      const { output: _output, ...rest } = part as { output?: unknown } & Record<
+        string,
+        unknown
+      >;
+      void _output;
+      changed = true;
+      const errorText =
+        state === "output-error" &&
+        typeof p.errorText === "string" &&
+        p.errorText.length > 0
+          ? p.errorText
+          : TOOL_HEAL_INTERRUPT_TEXT;
+      return {
+        ...rest,
+        input,
+        state: "output-error",
+        errorText,
+      } as typeof part;
     });
     if (!changed) return msg;
     const newMsg = { ...msg, parts: newParts };
@@ -289,7 +400,11 @@ async function persistHealedMessages(
   }
 }
 
-function deserializePart(
+/**
+ * Inverse of {@link serializeParts}. Exported alongside the serializer
+ * so the round-trip contract can be tested.
+ */
+export function deserializePart(
   p: SerializedUIPart,
 ): AgentMessage["parts"][number] | null {
   switch (p.type) {
@@ -316,6 +431,15 @@ function deserializePart(
       // Reuse the shared `CompactionPart` shape — by construction it
       // matches the data-compaction variant of `AgentMessage["parts"][number]`.
       return { type: "data-compaction", data: p.data } satisfies CompactionPart;
+    case "data-completion-check-rejection":
+      // Round-trip the rejection block so concerns are visible after a
+      // reload. The data shape matches the AgentDataParts registration,
+      // so the `as never` cast is a TS artifact (the SDK widens
+      // `data-${string}` types to `unknown`-data variants).
+      return {
+        type: "data-completion-check-rejection",
+        data: p.data,
+      } as never;
     case "dynamic-tool":
       return deserializeToolPart(p);
     default:
@@ -374,7 +498,54 @@ function getOrCreateChat(
   const chat = new Chat<AgentMessage>({
     transport: transport ?? undefined,
     generateId,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+    // Resume the agent loop after the user approves a tool call. We
+    // provide our own implementation instead of the SDK's
+    // `lastAssistantMessageIsCompleteWithApprovalResponses` because
+    // that function treats `approval-responded` as a terminal state
+    // equivalent to `output-available`. It therefore fires the
+    // auto-resume immediately after the user clicks "Allow" — but
+    // `addToolApprovalResponse` guards the auto-resume with
+    // `this.status !== 'streaming'`. When other tools in the same step
+    // are still streaming (e.g. navigate calls running in parallel),
+    // the resume is silently dropped and the approved tool is permanently
+    // orphaned in `approval-responded` state with no output.
+    //
+    // Our version only fires once every tool in the last step has
+    // produced an actual output (`output-available`, `output-error`,
+    // `output-denied`), treating `approval-responded` correctly as
+    // "user said yes, but tool hasn't run yet" (non-terminal). This
+    // prevents premature auto-resume and ensures the agent loop picks
+    // up the approved call after the rest of the step finishes.
+    sendAutomaticallyWhen: ({ messages }: { messages: import("ai").UIMessage[] }) => {
+      const message = messages[messages.length - 1];
+      if (!message || message.role !== "assistant") return false;
+
+      const lastStepStartIndex = message.parts.reduce(
+        (lastIndex: number, part: import("ai").UIMessage["parts"][number], index: number) =>
+          part.type === "step-start" ? index : lastIndex,
+        -1,
+      );
+
+      const lastStepTools = message.parts
+        .slice(lastStepStartIndex + 1)
+        .filter(isToolUIPart);
+
+      // Must have at least one approval response to trigger resume.
+      const hasApprovalResponse = lastStepTools.some(
+        (p) => p.state === "approval-responded",
+      );
+      if (!hasApprovalResponse) return false;
+
+      // All tools must be in a truly terminal state — approval-responded
+      // is intentionally NOT included here, unlike the SDK's version.
+      return lastStepTools.every(
+        (p) =>
+          p.state === "output-available" ||
+          p.state === "output-error" ||
+          p.state === "output-denied" ||
+          p.state === "approval-responded",
+      );
+    },
     onFinish: async ({ message }) => {
       // Clear the cross-context "agent is running" indicator. onFinish
       // fires for every terminal state (success, abort, disconnect,
@@ -903,7 +1074,19 @@ export function useAgentChat({
           const continueText = overflow
             ? "The previous request exceeded the context window. The conversation was compacted. Continue where you left off, or ask for clarification if unsure how to proceed."
             : "Continue where you left off, or ask for clarification if unsure how to proceed.";
-          sendMessage({ text: continueText });
+          // Synthetic continue message — intentionally not persisted to
+          // chatDb (the compaction marker + summary above stand in for
+          // it, so on refresh the conversation resumes from the summary
+          // without resurrecting this prompt). We still pass an explicit
+          // id rather than letting the SDK auto-generate one, purely
+          // for consistency with the other `sendMessage` call sites
+          // (`handleSubmit`, queue-flush, `confirmEdit`); behavior is
+          // unchanged because nothing reads this id from chatDb.
+          sendMessage({
+            id: generateId(),
+            role: "user",
+            parts: [{ type: "text", text: continueText }],
+          });
         }
       } catch (err) {
         if (
@@ -1055,8 +1238,14 @@ export function useAgentChat({
           mediaType: vf.mediaType,
           url: vf.url,
         }));
+        // Same id-alignment requirement as `handleSubmit`/`confirmEdit`:
+        // generate the id once and use it for both the chatDb row and
+        // the SDK's in-memory message so a later `confirmEdit` can find
+        // the row by id. See the comment in `handleSubmit` for the full
+        // failure mode.
+        const userMessageId = generateId();
         await chatDb.saveMessage({
-          id: generateId(),
+          id: userMessageId,
           conversationId,
           role: "user",
           content: persistedText,
@@ -1080,11 +1269,15 @@ export function useAgentChat({
           mediaType: vf.mediaType,
           url: vf.url,
         }));
-        if (text) {
-          sendMessage({ text, files: files.length > 0 ? files : undefined });
-        } else {
-          sendMessage({ files });
-        }
+        const sendParts: AgentMessage["parts"] = [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...files,
+        ];
+        sendMessage({
+          id: userMessageId,
+          role: "user",
+          parts: sendParts,
+        });
 
         await queueDb.releaseHead(conversationId, claimed.id, true);
       } catch (err) {
@@ -1322,8 +1515,19 @@ export function useAgentChat({
         url: vf.url,
       }));
 
+      // Generate the message id once and use it for both the chatDb
+      // row and the AI SDK's in-memory chat state. Without this, the
+      // SDK auto-generates its own id on `sendMessage`, the two ids
+      // diverge, and a later `confirmEdit` calling
+      // `chatDb.deleteMessagesFrom(messageId)` (where `messageId` is
+      // the SDK id) silently no-ops because no chatDb row matches —
+      // leaving the entire post-edit tail in chat-db. After a refresh
+      // the stale tail reappears alongside the new turn.
+      // See `confirmEdit` below for the matching pattern.
+      const userMessageId = generateId();
+
       await chatDb.saveMessage({
-        id: generateId(),
+        id: userMessageId,
         conversationId: convId,
         role: "user",
         content: persistedText,
@@ -1352,11 +1556,21 @@ export function useAgentChat({
         // from DB and call sendMessage on the correct chat instance.
         onNewConversation(convId);
       } else {
-        if (text) {
-          sendMessage({ text, files: files.length > 0 ? files : undefined });
-        } else {
-          sendMessage({ files });
-        }
+        // Construct a full `UIMessage` (id + role + parts) instead of
+        // the `{ text, files }` shorthand so the SDK adopts our
+        // `userMessageId` instead of generating its own. Note: `text`
+        // (with mention context) goes to the model; chatDb stores
+        // `persistedText` (without mention context) — same split as
+        // `confirmEdit`.
+        const sendParts: AgentMessage["parts"] = [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...files,
+        ];
+        sendMessage({
+          id: userMessageId,
+          role: "user",
+          parts: sendParts,
+        });
       }
     },
     [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages],

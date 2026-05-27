@@ -1,6 +1,6 @@
 import { generateObject, jsonSchema } from "ai";
 import { z } from "zod";
-import { getCurrentAgentModel } from "../agent-transport";
+import { getCurrentAgentModel } from "../current-agent-model";
 import { resolveTabOrThrow } from "../driver";
 import { captureSnapshot, captureSnapshotWithUrlIds } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
