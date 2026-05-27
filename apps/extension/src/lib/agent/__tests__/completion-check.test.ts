@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MockLanguageModelV3 } from "ai/test";
 import type { LanguageModel, UIMessageChunk } from "ai";
 import type { TodoItem } from "../../types";
