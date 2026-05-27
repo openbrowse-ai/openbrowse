@@ -30,7 +30,7 @@ A markdown file is created in `.changeset/` — commit it with your PR.
 
 1. PRs land on `main`, each carrying a `.changeset/*.md`.
 2. The `Changesets` workflow (`.github/workflows/changesets.yml`) opens or updates a "Version Packages" PR that bumps `apps/extension/package.json`, regenerates `apps/extension/CHANGELOG.md`, and deletes the consumed changeset files.
-3. Merging the Version Packages PR creates a git tag `vX.Y.Z`.
+3. Merging the Version Packages PR creates a git tag `openbrowse@X.Y.Z` (Changesets' workspace tag format).
 4. The tag triggers `release.yml`, which builds the extension zip and publishes it as a GitHub Release.
 5. Chrome Web Store upload is still a deliberate manual step.
 
