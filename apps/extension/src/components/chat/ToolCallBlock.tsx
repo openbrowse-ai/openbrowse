@@ -8,7 +8,7 @@ import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
 import { getMcpRegistry } from "@/lib/mcp";
 import { cn } from "@/lib/utils";
 import { getConnectorForMcpTool } from "@openbrowse/connectors";
-import { ChevronRight, Globe, X } from "lucide-react";
+import { AlertCircle, ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { CodeResult } from "./tool-results/execute-code";
@@ -52,7 +52,7 @@ interface ToolCallBlockProps {
   toolCallId: string;
   args: Record<string, unknown>;
   result?: unknown;
-  state: "call" | "result" | "denied";
+  state: "call" | "result" | "denied" | "errored";
 }
 
 const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
@@ -173,6 +173,7 @@ export function ToolCallBlock({
   const [expanded, setExpanded] = useState(false);
   const pending = state === "call";
   const denied = state === "denied";
+  const errored = state === "errored";
   const resolvedResult = result ?? toolResultStore.get(toolCallId);
   const serverIdMatch = toolName.match(/^mcp_([^_]+)_/);
   const serverUrl = serverIdMatch
@@ -246,12 +247,24 @@ export function ToolCallBlock({
                   id={mcpInfo.connector.id}
                   className="size-3.5 shrink-0"
                 />
+              ) : errored ? (
+                <AlertCircle className="size-3 shrink-0 text-red-500/80" />
               ) : (
                 <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
-              <span className="text-sm text-muted-foreground">
+              <span
+                className={cn(
+                  "text-sm",
+                  errored ? "text-red-600/90 dark:text-red-400/90" : "text-muted-foreground",
+                )}
+              >
                 {dynamicLabels.done}
               </span>
+              {errored && (
+                <span className="text-[11px] text-red-600/70 dark:text-red-400/70 ml-1">
+                  Failed
+                </span>
+              )}
               {showTabBadge && <TabBadge toolCallId={toolCallId} />}
               <ChevronRight
                 className={cn(
@@ -291,6 +304,8 @@ export function ToolCallBlock({
               id={mcpInfo.connector.id}
               className="size-3.5 shrink-0"
             />
+          ) : errored ? (
+            <AlertCircle className="size-3 shrink-0 text-red-500/80" />
           ) : (
             <span
               className={cn(
@@ -311,7 +326,21 @@ export function ToolCallBlock({
               {dynamicLabels.pending}
             </span>
           ) : (
-            <span className="text-sm text-muted-foreground">{dynamicLabels.done}</span>
+            <span
+              className={cn(
+                "text-sm",
+                errored
+                  ? "text-red-600/90 dark:text-red-400/90"
+                  : "text-muted-foreground",
+              )}
+            >
+              {dynamicLabels.done}
+            </span>
+          )}
+          {errored && (
+            <span className="text-[11px] text-red-600/70 dark:text-red-400/70 ml-1">
+              Failed
+            </span>
           )}
           {showTabBadge && <TabBadge toolCallId={toolCallId} />}
           {!pending && (

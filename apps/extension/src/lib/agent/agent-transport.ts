@@ -2,6 +2,7 @@ import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
   ChatTransport,
+  JSONValue,
   LanguageModel,
   ToolLoopAgentSettings,
   ToolSet,
@@ -18,7 +19,6 @@ import { CompactingChatTransport } from "./compacting-transport";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
 import {
-  clearHandles,
   getOrCreateHandle as getOrCreateTabHandle,
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
@@ -306,19 +306,18 @@ let lastTotalTokens = 0;
 let currentModelDef: ModelDefinition | undefined;
 
 /**
- * The LanguageModel instance for the currently-active agent session. Tools
- * that need to make their own LLM calls (e.g. `extract`) read this instead of
- * wiring the model through tool context. Set in `createAgentTransport`.
+ * The LanguageModel instance for the currently-active agent session is
+ * held in {@link ./current-agent-model.ts} so tools and the completion-check
+ * evaluator can read it without dragging the full agent-transport
+ * import graph into their unit tests. We re-export the accessors here
+ * so existing call sites that imported them from this module keep
+ * working.
  */
-let currentAgentModel: LanguageModel | null = null;
-
-export function getCurrentAgentModel(): LanguageModel | null {
-  return currentAgentModel;
-}
-
-export function setCurrentAgentModel(model: LanguageModel | null): void {
-  currentAgentModel = model;
-}
+export {
+  getCurrentAgentModel,
+  setCurrentAgentModel,
+} from "./current-agent-model";
+import { setCurrentAgentModel } from "./current-agent-model";
 
 export function getLastTotalTokens(): number {
   return lastTotalTokens;
@@ -341,15 +340,32 @@ export function resetTokenTracking() {
   lastTotalTokens = 0;
 }
 
+/**
+ * Set the conversation that subsequent agent loops should bind to. This is
+ * the source of truth read by `CompactingChatTransport.sendMessages` (and
+ * by the wrapper around each tool call) at the moment a loop starts; from
+ * that point on the cid is captured and pinned for the duration of the
+ * loop / tool call.
+ *
+ * In-memory tab-handle maps for previously-active conversations are
+ * intentionally retained. The maps in `tab-handles.ts` are keyed by
+ * conversation id, so multiple conversations' handle maps coexist without
+ * interference. Wiping a previous conversation's map here used to corrupt
+ * any in-flight tool call still resolving handles for that conversation
+ * after a mid-stream switch; keeping them in memory is correct and the
+ * memory cost (a few ints per tab) is negligible. The persisted record in
+ * chatDb (`handleState`) remains the durable source of truth and is
+ * re-merged on next activation by `loadHandlesForConversation`.
+ */
 export function setAgentContext(conversationId: string | null) {
-  if (agentConversationId && agentConversationId !== conversationId) {
-    clearHandles(agentConversationId);
-  }
   agentConversationId = conversationId;
   // Hydrate the persisted handle map for the new conversation. Fire-and-
   // forget: tools that hit a not-yet-hydrated map will see "Unknown tab
   // handle" and recover via listTabs. In practice the user-message →
   // first-tool-call window is large enough for this to settle.
+  // `loadHandlesForConversation` merges restored state into whatever
+  // in-memory state already exists for this cid, so re-firing on every
+  // call is idempotent.
   if (conversationId) {
     loadHandlesForConversation(conversationId).catch(() => {});
   }
@@ -410,34 +426,38 @@ export async function allowToolOnSite(
 
 /**
  * Singleton driver instance for the production extension. Tools receive this
- * via the `ToolContext` threaded through `experimental_context`. Stateless;
- * the driver itself is just a thin facade over `cdp-session`/`active-tab`.
+ * via the `ToolContext` built per-tool-call inside `toSDKTool.execute`.
+ * Stateless; the driver itself is just a thin facade over
+ * `cdp-session`/`active-tab`.
  */
 const extensionDriver = new ExtensionDriver();
 
 /**
- * Build the `ToolContext` for an agent session. The context exposes the
- * driver plus session-level orchestration callbacks (tab handle map,
- * conversation-tab binding) that only make sense in the extension. The bench
- * harness builds its own minimal context with `session` left undefined.
+ * Build the `ToolContext` for a single tool call.
  *
- * Session helpers read `getAgentContext().conversationId` lazily at call
- * time so the same context object stays valid across conversation switches.
+ * The `pinnedConversationId` argument is captured synchronously at the
+ * tool-call boundary (see `toSDKTool.execute`) and threaded through every
+ * session helper. This guarantees that even if `setAgentContext(...)` is
+ * called mid-execute (e.g. the user switches conversations while a tool
+ * await is pending), all chatDb reads/writes and tab-handle lookups for
+ * this tool call still target the conversation that originated the call.
+ *
+ * The bench harness builds its own minimal context with `session` left
+ * undefined.
  */
-function buildExtensionToolContext(): ToolContext {
+export function buildExtensionToolContext(
+  pinnedConversationId: string | null,
+): ToolContext {
   return {
     driver: extensionDriver,
     session: {
-      get conversationId() {
-        return getAgentContext().conversationId;
-      },
+      conversationId: pinnedConversationId,
       bindTabsToConversation: async (tabIds) => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return;
+        if (!pinnedConversationId) return;
         try {
           await chrome.runtime.sendMessage({
             type: "BIND_TABS_TO_CONVERSATION",
-            conversationId: cid,
+            conversationId: pinnedConversationId,
             tabIds: tabIds.map((t) => Number(t)),
           });
         } catch {
@@ -445,12 +465,11 @@ function buildExtensionToolContext(): ToolContext {
         }
       },
       bindActiveTabToConversation: async (tabId) => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return;
+        if (!pinnedConversationId) return;
         try {
           await chrome.runtime.sendMessage({
             type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
-            conversationId: cid,
+            conversationId: pinnedConversationId,
             tabId: Number(tabId),
           });
         } catch {
@@ -458,37 +477,33 @@ function buildExtensionToolContext(): ToolContext {
         }
       },
       getOrCreateHandle: (tabId) => {
-        const cid = getAgentContext().conversationId;
-        return cid
-          ? getOrCreateTabHandle(cid, Number(tabId))
+        return pinnedConversationId
+          ? getOrCreateTabHandle(pinnedConversationId, Number(tabId))
           : `t${Number(tabId)}`;
       },
       resolveHandle: (handle) => {
-        const cid = getAgentContext().conversationId;
-        return cid ? resolveTabHandle(cid, handle) : undefined;
+        return pinnedConversationId
+          ? resolveTabHandle(pinnedConversationId, handle)
+          : undefined;
       },
       isAgentOwnedTab: async (tabId) => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return false;
-        const conv = await chatDb.getConversation(cid);
+        if (!pinnedConversationId) return false;
+        const conv = await chatDb.getConversation(pinnedConversationId);
         return !!conv?.ownedTabIds.includes(Number(tabId));
       },
       hasOwnedTabGroup: async () => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return false;
-        const conv = await chatDb.getConversation(cid);
+        if (!pinnedConversationId) return false;
+        const conv = await chatDb.getConversation(pinnedConversationId);
         return conv?.ownedGroupId != null;
       },
       getTodos: async () => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return [];
-        const conv = await chatDb.getConversation(cid);
+        if (!pinnedConversationId) return [];
+        const conv = await chatDb.getConversation(pinnedConversationId);
         return conv?.todos || [];
       },
       setTodos: async (todos) => {
-        const cid = getAgentContext().conversationId;
-        if (!cid) return;
-        await chatDb.updateConversation(cid, {
+        if (!pinnedConversationId) return;
+        await chatDb.updateConversation(pinnedConversationId, {
           todos,
           updatedAt: Date.now(),
         });
@@ -561,9 +576,12 @@ function toSDKTool<TInput, TOutput>(
     input: TInput,
     options: { toolCallId: string; experimental_context?: unknown },
   ) => {
-    // Capture cid once at entry so all resolveTabFromInput calls below
-    // (pre- and post-execute) hit the same conversation map even if the
-    // user switches conversations mid-tool.
+    // Capture cid once at entry. Every chatDb / handle-map operation
+    // reachable from this tool call — both inside the wrapper
+    // (resolveTabFromInput, capture stores) and inside the tool's own
+    // execute via `ctx.session` — pins to this snapshot. So if the user
+    // switches conversations mid-tool-await, the in-flight call still
+    // writes to the conversation that originated it.
     const cid = agentConversationId;
     if (isTabTool) {
       agentActive = true;
@@ -585,12 +603,12 @@ function toSDKTool<TInput, TOutput>(
       }
     }
     try {
-      // Threaded ToolContext from the SDK's experimental_context channel.
-      // Tools that haven't migrated still receive (input) — TS allows
-      // dropping the second param. Once all tools read ctx the cast can
-      // tighten to a non-optional check.
-      const ctx = (options.experimental_context as ToolContext | undefined)
-        ?? buildExtensionToolContext();
+      // Build the ToolContext fresh for this call, pinned to the cid we
+      // captured above. We deliberately ignore `options.experimental_context`
+      // — every tool registered with the agent flows through this wrapper,
+      // so building here gives us per-call pinning without relying on a
+      // construction-time global read.
+      const ctx = buildExtensionToolContext(cid);
       const result = await t.execute(input, ctx);
       toolResultStore.set(options.toolCallId, result);
       if (isTabTool) {
@@ -654,9 +672,24 @@ function toSDKTool<TInput, TOutput>(
         const imageDataUrl = (output as { imageDataUrl?: string })
           .imageDataUrl;
         if (!imageDataUrl) {
-          // Tool errored or otherwise produced no image; let the SDK fall
-          // back to the default JSON output by returning undefined.
-          return undefined;
+          // Tool errored, produced no image, or had its base64 data
+          // stripped during compaction (`stripScreenshotsFromParts`
+          // replaces the output with `{ removed: "..." }`).
+          //
+          // Returning `undefined` here used to delegate to the SDK's
+          // default JSON serializer, but AI SDK v5 (`createToolModelOutput`)
+          // now passes `undefined` straight through to the prompt, so
+          // the resulting `tool-result` content has `output: undefined`
+          // and `standardizePrompt`'s strict Zod validation throws
+          // `AI_InvalidPromptError` on the next turn (visible to the
+          // user as "Invalid prompt: messages do not match the
+          // ModelMessage[] schema"). Emit an explicit JSON fallback
+          // ourselves so every screenshot tool-result has a well-formed
+          // `output` regardless of whether image data is present.
+          return {
+            type: "json" as const,
+            value: output as JSONValue,
+          };
         }
         const base64 = imageDataUrl.replace(/^data:image\/png;base64,/, "");
         return {
@@ -677,7 +710,14 @@ function toSDKTool<TInput, TOutput>(
   return {
     description: t.description,
     inputSchema: t.parameters,
-    outputSchema: t.outputSchema,
+    // Tools throwing inside `execute` (e.g. navigate timing out) get caught
+    // above and serialized as `{ error: string }`. The AI SDK validates the
+    // returned value against `outputSchema`, so we widen the schema with an
+    // error-shaped variant; otherwise validation rejects graceful failures
+    // and surfaces a hard framework error in the UI.
+    outputSchema: t.outputSchema
+      ? t.outputSchema.or(z.object({ error: z.string() }))
+      : undefined,
     strict: true,
     execute,
     needsApproval,
@@ -730,6 +770,61 @@ export async function createAgentTransport(
   const model = await provider.createLanguageModel(config, actualModelId);
   setCurrentAgentModel(model);
 
+  // Tell the compaction trigger about the model's actual context window
+  // and max-output budget. Without this, `needsCompaction()` falls back
+  // to the conservative default (~100K usable tokens) regardless of
+  // model capability — which fires `stopWhen` after a single step on
+  // any conversation past 100K, producing the "agent stops after one
+  // tool call" symptom on long-context models like Gemini 2.5 Flash
+  // (1M window) or Claude Sonnet 4.5 (200K window).
+  const modelDef = provider.models.find((m) => m.id === actualModelId);
+  setCurrentModelDef(modelDef);
+
+  // Resolve the evaluator model once at transport build time. When
+  // settings.completionCheck.evaluatorModel is unset (the recommended
+  // default), the gate falls back to the executor's current model with
+  // a fresh context — Anthropic's "same-model-fresh-window" pattern.
+  // We set this to `null` explicitly so the gate's call site can read
+  // "no override; use current agent model" without a separate flag.
+  let evaluatorLanguageModel: LanguageModel | null = null;
+  const evaluatorModelId = settings.completionCheck?.evaluatorModel;
+  if (evaluatorModelId) {
+    try {
+      const [evalProviderId, ...evalIdParts] = evaluatorModelId.split(":");
+      const evalActualModelId =
+        evalIdParts.length > 0 ? evalIdParts.join(":") : evaluatorModelId;
+      const evalProvider =
+        (evalIdParts.length > 0
+          ? providers.find((p) => p.id === evalProviderId)
+          : undefined) ??
+        providers.find((p) => p.models.some((m) => m.id === evalActualModelId));
+      if (evalProvider) {
+        const evalConfig = settings.providerConfigs[evalProvider.id] ?? {};
+        const evalRequired =
+          evalProvider.configSchema?.filter((f) => f.required) ?? [];
+        if (evalRequired.every((f) => !!evalConfig[f.key])) {
+          evaluatorLanguageModel = await evalProvider.createLanguageModel(
+            evalConfig,
+            evalActualModelId,
+          );
+        } else {
+          console.warn(
+            `[completion-check] evaluator override ${evaluatorModelId} is not configured (missing required fields); falling back to executor model`,
+          );
+        }
+      } else {
+        console.warn(
+          `[completion-check] evaluator override ${evaluatorModelId} did not resolve to a known provider; falling back to executor model`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[completion-check] failed to construct evaluator override; falling back to executor model:",
+        err,
+      );
+    }
+  }
+
   const fsTools = createFsTools(conversationId);
 
   const browserTools: Record<string, ToolSet[string]> = {
@@ -762,6 +857,34 @@ export async function createAgentTransport(
     LS: toSDKTool(fsTools.lsTool, "LS"),
   };
 
+  // Read-only subset for the completion-check evaluator. The evaluator
+  // may call these to ground factual claims (e.g. verify a price the
+  // executor cited actually appears on the page) before deciding the
+  // verdict. Excluded:
+  //  - clickElement, typeInElement, navigate, scrollPage, selectTab —
+  //    page-state mutations.
+  //  - executeOnPage, executeCode — arbitrary side effects.
+  //  - todoWrite — plan ownership belongs to the executor.
+  //  - saveMemory/updateMemory/deleteMemory — write-mode memory ops.
+  //  - install_skill/create_skill — config mutation.
+  //  - Write, Edit — filesystem mutations.
+  //  - MCP tools — out of scope for Phase 5; many are write-mode.
+  // The evaluator's system prompt explicitly tells it the tools are
+  // read-only and that it should call them sparingly.
+  const evaluatorReadOnlyTools: Record<string, ToolSet[string]> = {
+    snapshot: browserTools.snapshot,
+    readPage: browserTools.readPage,
+    screenshot: browserTools.screenshot,
+    listTabs: browserTools.listTabs,
+    extract: browserTools.extract,
+    recallMemory: browserTools.recallMemory,
+    Read: browserTools.Read,
+    Glob: browserTools.Glob,
+    Grep: browserTools.Grep,
+    LS: browserTools.LS,
+    read_opfs_file: browserTools.read_opfs_file,
+  };
+
   const mcpTools = getMcpRegistry().toSDKTools();
 
   const mcpToolsList = getMcpRegistry().getAllTools();
@@ -771,6 +894,31 @@ export async function createAgentTransport(
   if (spaceId && spaceName) {
     instructions += `\n\nYou are chatting from the space "${spaceName}" (id: ${spaceId}). When saving space-scoped memories, use this spaceId.`;
   }
+
+  // Completion check: every final assistant response is reviewed by a
+  // separate skeptical evaluator before reaching the user. On
+  // rejection, a synthetic user-role message prefixed with
+  // "[Completion check]" is appended to the executor's context with
+  // the concerns to address. The prompt section below tells the
+  // executor (a) that the check happens, (b) how to recognize the
+  // synthetic feedback, and (c) what to do with it.
+  //
+  // Always injected — the check is always-on and there is no
+  // user-facing toggle.
+  instructions += `\n\n## Completion checks
+
+Your final response (text emitted without a tool call) will be reviewed by a skeptical evaluator before the user sees it. If the evaluator finds the response incomplete or unsupported, it will reject and you will receive a synthetic user-role message starting with the prefix \`[Completion check]\` containing structured concerns.
+
+When you receive a \`[Completion check]\` message, treat it as a continuation directive, not a fresh user request. Address each listed concern by taking whatever tool calls are needed, then produce a corrected final response. Do not respond with apologies or restatements; just fix the gaps and continue.
+
+Concerns are tagged by dimension:
+- **completeness**: the response did not fulfill the original request end-to-end.
+- **planClosure**: open todos contradict the claim of completion.
+- **evidenceGrounding**: a factual claim is not supported by tool observations from this turn.
+- **noPrematureHandoff**: the response punts work back to the user that was within scope.
+- **surfaceAccuracy**: the page state described in the response disagrees with what a verification call observed.
+
+To minimize wasted rejection rounds: before producing a final response, re-read the original request, verify each factual claim was actually observed via a tool call this turn, and confirm your todo list is fully closed out.`;
 
   // Inject current todo plan into system prompt
   const conv = agentConversationId
@@ -962,11 +1110,12 @@ export async function createAgentTransport(
     tools,
     instructions,
     ...(providerOptions && { providerOptions }),
-    // Per-call ToolContext threaded through `experimental_context` →
-    // `ToolExecutionOptions.experimental_context` → our `toSDKTool` wrapper.
-    // Session helpers read live agent state via getters so the same context
-    // object stays valid across conversation switches.
-    experimental_context: buildExtensionToolContext(),
+    // Note: we deliberately do NOT thread an `experimental_context` here.
+    // Every tool registered with this agent is wrapped by `toSDKTool`,
+    // which builds a fresh `ToolContext` per tool call pinned to the
+    // conversation id captured synchronously at execute-entry. This
+    // guarantees pinning at the per-tool-call grain, which is the only
+    // grain that survives mid-stream conversation switches.
     // Append a fresh tab legend on every model call. The SDK invokes
     // prepareCall right before each generate/stream, so this picks up
     // tabs added by `navigate`, removed by closure, etc. — even
@@ -1001,6 +1150,78 @@ export async function createAgentTransport(
     agent,
     onSendStart: () => {
       needsMidStreamCompaction = false;
+    },
+    // Capture the active cid synchronously at the top of every
+    // `sendMessages`. The transport pins it for the duration of the loop
+    // and threads it to `buildCompletionCheckInput`, so a mid-stream
+    // `setAgentContext(other)` cannot redirect the gate's chatDb reads.
+    getActiveConversationId: () => agentConversationId,
+    // Wire the completion-check gate. Returns `undefined` when no
+    // conversationId is bound, so the gate sits dormant for transient
+    // (non-persisted) runs (e.g. the chat title generator).
+    buildCompletionCheckInput: async ({
+      sendMessages,
+      finalText,
+      toolCallTrace,
+      pinnedConversationId,
+    }) => {
+      const cid = pinnedConversationId;
+      if (!cid) return undefined;
+
+      // Last user-role message in the SDK message list is the original
+      // request that drove this turn. Bail if for any reason there is
+      // no user turn (defensive — the SDK shouldn't ever invoke
+      // sendMessages without one).
+      const lastUser = [...sendMessages]
+        .reverse()
+        .find((m) => m.role === "user");
+      if (!lastUser) return undefined;
+      const originalRequest = lastUser.parts
+        .filter((p): p is { type: "text"; text: string } => p.type === "text")
+        .map((p) => p.text)
+        .join("\n")
+        .trim();
+
+      // Turn ordinal: count of user-role messages up to and including
+      // the most recent one. 0-indexed for telemetry consistency with
+      // arrays.
+      const turnIndex = Math.max(
+        0,
+        sendMessages.filter((m) => m.role === "user").length - 1,
+      );
+
+      // Snapshot todos at gate time. The gate's trigger heuristic
+      // (todos-or-tool-calls) needs this to decide whether to run.
+      let todos: import("../types").TodoItem[] = [];
+      try {
+        const conv = await chatDb.getConversation(cid);
+        todos = conv?.todos ?? [];
+      } catch (err) {
+        // Best-effort: if chat-db read fails, fall back to no todos.
+        // The gate will likely skip but the user's response isn't
+        // blocked.
+        console.warn("[completion-check] todo lookup failed:", err);
+      }
+
+      return {
+        conversationId: cid,
+        turnIndex,
+        // Rejection rounds are managed by the rejection loop in the
+        // transport; the gate invocation here is always for the
+        // current round, which the transport tracks.
+        rejectionRound: 0,
+        originalRequest,
+        draftedResponse: finalText,
+        todos,
+        toolCallTrace,
+        // Threaded once at transport build; null means "fall back to
+        // the executor's current model" inside the evaluator.
+        evaluatorModel: evaluatorLanguageModel,
+        // Read-only tool subset for grounded verification. The
+        // evaluator's `allowTools` flips on automatically when this is
+        // non-empty; the system prompt branches accordingly.
+        evaluatorTools: evaluatorReadOnlyTools as unknown as import("ai").ToolSet,
+      };
     },
   });
 }

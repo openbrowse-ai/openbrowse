@@ -358,7 +358,20 @@ export const chatDb = {
       conversationId,
     );
     const target = msgs.find((m) => m.id === messageId);
-    if (!target) return;
+    if (!target) {
+      // Loud rather than silent: a missing target almost always means the
+      // caller passed an id from one source (e.g. the AI SDK's in-memory
+      // chat state) that does not match the id stored in chatDb. The
+      // historical "edit user message leaves stale tail in chat-db"
+      // bug was caused by exactly this kind of id mismatch in
+      // `handleSubmit` / queue-flush, and went undetected for months
+      // because this function returned silently. Surface it now so the
+      // next regression is visible at the first repro.
+      console.warn(
+        `[chatDb] deleteMessagesFrom: messageId ${messageId} not found in conversation ${conversationId}; nothing deleted`,
+      );
+      return;
+    }
     const toDelete = msgs.filter((m) => m.createdAt >= target.createdAt);
     const tx = db.transaction("messages", "readwrite");
     for (const msg of toDelete) {
