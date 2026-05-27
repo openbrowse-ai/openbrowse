@@ -54,6 +54,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -61,7 +62,8 @@ import { join } from "node:path";
 import { compress, type CompressionAlgo } from "./compress";
 import {
   buildManifest,
-  r2KeysFor,
+  r2SummaryKey,
+  r2TrialKeys,
   type Manifest,
   type ManifestTrialEntry,
   type ManifestTrialUpload,
@@ -158,13 +160,14 @@ function indexVideos(videosDir: string): Map<string, VideoOnDisk> {
     return out;
   }
   // Two passes: collect mp4s first (preferred), then webms only if no mp4
-  // exists for that taskId.
+  // exists for that taskId. Use stat (metadata only) to read sizes — the
+  // file body itself is read once, later, when we actually upload it.
   for (const name of entries) {
     const lower = name.toLowerCase();
     if (!lower.endsWith(".mp4")) continue;
     const taskId = name.replace(/\.mp4$/i, "");
     const absPath = join(videosDir, name);
-    const bytes = readFileSync(absPath).byteLength;
+    const bytes = statSync(absPath).size;
     out.set(taskId, { taskId, ext: "mp4", absPath, bytes });
   }
   for (const name of entries) {
@@ -173,7 +176,7 @@ function indexVideos(videosDir: string): Map<string, VideoOnDisk> {
     const taskId = name.replace(/\.webm$/i, "");
     if (out.has(taskId)) continue;
     const absPath = join(videosDir, name);
-    const bytes = readFileSync(absPath).byteLength;
+    const bytes = statSync(absPath).size;
     out.set(taskId, { taskId, ext: "webm", absPath, bytes });
   }
   return out;
@@ -283,16 +286,10 @@ export async function uploadRun(opts: UploadOpts): Promise<Manifest> {
   // if a previous attempt already completed it.
   if (!state.summaryUploaded) {
     const summaryBody = readFileSync(paths.summaryPath);
-    const summaryKey = r2KeysFor({
-      runId,
-      taskId: null,
-      compressionAlgo: compression,
-      videoExt: "mp4",
-    }).summary;
     await putObject(
       deps.s3Client,
       deps.bucket,
-      summaryKey,
+      r2SummaryKey(runId),
       summaryBody,
       "application/json",
     );
@@ -315,7 +312,10 @@ export async function uploadRun(opts: UploadOpts): Promise<Manifest> {
     if (state.trials[trial.taskId]) continue;
 
     const { lightweight, fullTrace } = splitTrial(trial);
-    const trialKeys = r2KeysFor({
+    // The `trial` and `trace` keys don't depend on the actual video
+    // extension on disk, so derive them with a placeholder. The video
+    // key is recomputed below with the real extension if a video exists.
+    const trialKeys = r2TrialKeys({
       runId,
       taskId: trial.taskId,
       compressionAlgo: compression,
@@ -351,7 +351,7 @@ export async function uploadRun(opts: UploadOpts): Promise<Manifest> {
     let videoBytes: number | null = null;
     const video = videoIndex.get(trial.taskId);
     if (video) {
-      const videoKeys = r2KeysFor({
+      const videoKeys = r2TrialKeys({
         runId,
         taskId: trial.taskId,
         compressionAlgo: compression,
@@ -369,16 +369,13 @@ export async function uploadRun(opts: UploadOpts): Promise<Manifest> {
       videoBytes = video.bytes;
     }
 
-    // All cloud PUTs for this trial succeeded. NOW it's safe to:
-    //   1. Rewrite the local trial JSON as lightweight (R2 has the heavy
-    //      half so loss of the on-disk copy is no longer a concern).
-    //   2. Mark the trial as complete in the state file.
-    writeFileSync(
-      absPath,
-      JSON.stringify(lightweight, null, 2) + "\n",
-      "utf-8",
-    );
-
+    // All cloud PUTs for this trial succeeded. Persist the state file
+    // BEFORE rewriting the local trial JSON: the rewrite is what removes
+    // the heavy half from disk, so if a crash interrupted the sequence
+    // between rewrite and state-persist, a future re-run would see no
+    // state record, re-read the now-lightweight trial, and overwrite the
+    // good R2 trace with a garbage one. Persisting state first means a
+    // re-run will hit the skip-check and never re-process this trial.
     const entry: ManifestTrialEntry = {
       trace: trialKeys.trace,
       traceBytes: compressed.byteLength,
@@ -389,6 +386,14 @@ export async function uploadRun(opts: UploadOpts): Promise<Manifest> {
     }
     state.trials[trial.taskId] = entry;
     writeUploadState(paths, state);
+
+    // Now safe to rewrite the local trial JSON as lightweight (R2 has
+    // the heavy half + state confirms it).
+    writeFileSync(
+      absPath,
+      JSON.stringify(lightweight, null, 2) + "\n",
+      "utf-8",
+    );
   }
 
   // All trials done. Build the manifest from the now-complete state.

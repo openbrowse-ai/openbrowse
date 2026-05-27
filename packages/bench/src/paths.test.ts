@@ -15,9 +15,9 @@ describe("makeRunId", () => {
   it("uses model-label + suite tail when evalSet/arm are absent (legacy shape)", () => {
     const id = makeRunId({ modelLabel: "claude-sonnet-4-5", suite: "webbench-mini" });
 
-    // shape: <ts>-<modelLabel>-<suite>
+    // shape: <ts>-<rand>-<modelLabel>-<suite>
     expect(id).toMatch(
-      /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-claude-sonnet-4-5-webbench-mini$/,
+      /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[0-9a-f]{4}-claude-sonnet-4-5-webbench-mini$/,
     );
   });
 
@@ -28,9 +28,9 @@ describe("makeRunId", () => {
       arm: "arm-a",
     });
 
-    // shape: <ts>-<evalSet>-<arm>
+    // shape: <ts>-<rand>-<evalSet>-<arm>
     expect(id).toMatch(
-      /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-example-experiment-arm-a$/,
+      /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[0-9a-f]{4}-example-experiment-arm-a$/,
     );
   });
 
@@ -41,14 +41,25 @@ describe("makeRunId", () => {
       arm: "arm one!",
     });
 
-    // shape: <ts>-<sanitized-evalSet>-<sanitized-arm>
-    expect(id).toMatch(/-foo_bar_baz-arm_one_$/);
+    // shape: <ts>-<rand>-<sanitized-evalSet>-<sanitized-arm>
+    expect(id).toMatch(/-[0-9a-f]{4}-foo_bar_baz-arm_one_$/);
   });
 
   it("falls back to legacy shape when only evalSet is provided (without arm)", () => {
     const id = makeRunId({ modelLabel: "claude", evalSet: "example-experiment" });
 
-    expect(id).toMatch(/-claude-task$/); // unchanged legacy fallback
+    expect(id).toMatch(/-[0-9a-f]{4}-claude-task$/); // unchanged legacy fallback
+  });
+
+  it("produces unique ids for rapid back-to-back invocations within the same second", () => {
+    const ids = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      ids.add(makeRunId({ modelLabel: "m", evalSet: "e", arm: "a" }));
+    }
+    // Without the entropy suffix, all 100 ids would collapse into 1-2 unique
+    // values (depending on whether the loop crosses a second boundary). With
+    // 4 hex chars of entropy, collisions are vanishingly rare.
+    expect(ids.size).toBeGreaterThanOrEqual(99);
   });
 });
 

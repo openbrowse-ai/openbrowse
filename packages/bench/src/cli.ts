@@ -818,6 +818,20 @@ async function main(): Promise<void> {
         : r2EnvPresent();
 
   if (shouldUpload) {
+    // Defense-in-depth: the early validation block above already guarded
+    // this combination, but re-evaluating `auto` against current env may
+    // flip the decision. Re-check here so we never reach `uploadRun`
+    // with missing eval-set/arm.
+    if (!args.evalSet || !args.arm) {
+      console.error(
+        "ERROR: upload requires both --eval-set and --arm. " +
+          "Either pass both flags, or use --no-upload to skip upload.",
+      );
+      process.exit(2);
+    }
+    const evalSet = args.evalSet;
+    const arm = args.arm;
+
     console.log("");
     console.log(`Uploading to R2 (bucket=${process.env.R2_BUCKET})...`);
     const uploadStart = Date.now();
@@ -826,8 +840,8 @@ async function main(): Promise<void> {
       const manifest = await uploadRun({
         paths,
         runId,
-        evalSet: args.evalSet!,
-        arm: args.arm!,
+        evalSet,
+        arm,
         deps: { s3Client: client, bucket },
       });
       const uploadDuration = ((Date.now() - uploadStart) / 1000).toFixed(1);

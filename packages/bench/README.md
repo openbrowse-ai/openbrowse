@@ -99,11 +99,21 @@ pnpm --filter @openbrowse/bench bench --suite webbench-mini \
 Layout in R2:
 
 ```
-runs/<run-id>/summary.json                    (lightweight; indefinite retention)
+runs/<run-id>/summary.json
 runs/<run-id>/trials/<task-id>.json           (lightweight, no trace[]/parts[])
-traces/<run-id>/<task-id>.json.zst            (full trace[] + parts[]; 365-day TTL)
-videos/<run-id>/<task-id>.{mp4,webm}          (90-day TTL)
+traces/<run-id>/<task-id>.json.zst            (full trace[] + parts[])
+videos/<run-id>/<task-id>.{mp4,webm}
 ```
+
+Retention is enforced by **R2 bucket lifecycle policies**, not by this
+package. Configure them once on your bucket; the bench just produces the
+prefix structure that the policies match against. Recommended policies:
+
+| Prefix | Retention | Why |
+|---|---|---|
+| `runs/*` | indefinite | Tiny structured data; cheap to keep |
+| `traces/*` | 365 days | Useful for historical comparison; ~10× smaller than videos |
+| `videos/*` | 90 days | Heavy; primarily for visual debugging recent runs |
 
 If an upload fails partway through (network blip, expired token, etc.), the partial progress is recorded in `<runDir>/.upload-state.json`. Re-running `bench` with `--upload always` on the same run dir resumes from where it left off — already-uploaded trials are skipped, only the remaining ones are sent. The state file is removed on full success and `manifest.json` becomes the source of truth.
 

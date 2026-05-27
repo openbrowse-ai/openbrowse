@@ -23,6 +23,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -50,12 +51,15 @@ export function safeSegment(s: string): string {
 
 /** Generate a stable per-run directory id.
  *
- * Two shapes are supported:
+ * Format: `<ts>-<rand>-<tail>` where `<ts>` is the ISO timestamp at
+ * second resolution, `<rand>` is 4 hex chars of randomness (so parallel
+ * invocations within the same second don't collide), and `<tail>` is
+ * one of two shapes:
  *
- * - Legacy (CLI default): `<ts>-<modelLabel>-<suite-or-task>`. Used when
- *   no `{ evalSet, arm }` pair is supplied.
- * - Experiment: `<ts>-<evalSet>-<arm>`. Used when an eval-set runner
- *   passes both fields through; the `modelLabel` is recorded in the run
+ * - Legacy (CLI default): `<modelLabel>-<suite-or-task>`. Used when no
+ *   `{ evalSet, arm }` pair is supplied.
+ * - Experiment: `<evalSet>-<arm>`. Used when an eval-set runner passes
+ *   both fields through; the `modelLabel` is recorded in the run
  *   summary instead of the directory name (eval-sets fix the model per
  *   arm, so embedding it in every run-id would be redundant).
  */
@@ -67,11 +71,12 @@ export function makeRunId(opts: {
   arm?: string;
 }): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const rand = randomBytes(2).toString("hex");
   if (opts.evalSet && opts.arm) {
-    return `${stamp}-${safeSegment(opts.evalSet)}-${safeSegment(opts.arm)}`;
+    return `${stamp}-${rand}-${safeSegment(opts.evalSet)}-${safeSegment(opts.arm)}`;
   }
   const tail = opts.suite ?? opts.taskId ?? "task";
-  return `${stamp}-${safeSegment(opts.modelLabel)}-${safeSegment(tail)}`;
+  return `${stamp}-${rand}-${safeSegment(opts.modelLabel)}-${safeSegment(tail)}`;
 }
 
 export interface RunPaths {

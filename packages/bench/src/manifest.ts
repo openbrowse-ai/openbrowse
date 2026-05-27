@@ -19,34 +19,34 @@ const COMPRESSION_EXT: Record<CompressionAlgo, string> = {
   gzip: ".json.gz",
 };
 
-export interface R2Keys {
+export interface R2TrialKeys {
   /** `runs/<runId>/trials/<taskId>.json` (lightweight trial JSON). */
   trial: string;
   /** `traces/<runId>/<taskId>.<ext>` (compressed full trace). */
   trace: string;
   /** `videos/<runId>/<taskId>.<videoExt>`. */
   video: string;
-  /** `runs/<runId>/summary.json`. */
-  summary: string;
 }
 
-/** Compute the R2 keys for a given run + (optional) task. */
-export function r2KeysFor(opts: {
+/** Compute the per-trial R2 keys. */
+export function r2TrialKeys(opts: {
   runId: string;
-  /** Pass `null` when only the summary key is needed. */
-  taskId: string | null;
+  taskId: string;
   compressionAlgo: CompressionAlgo;
   videoExt: VideoExt;
-}): R2Keys {
+}): R2TrialKeys {
   const { runId, taskId, compressionAlgo, videoExt } = opts;
   const traceExt = COMPRESSION_EXT[compressionAlgo];
-  const tid = taskId ?? "";
   return {
-    trial: `runs/${runId}/trials/${tid}.json`,
-    trace: `traces/${runId}/${tid}${traceExt}`,
-    video: `videos/${runId}/${tid}.${videoExt}`,
-    summary: `runs/${runId}/summary.json`,
+    trial: `runs/${runId}/trials/${taskId}.json`,
+    trace: `traces/${runId}/${taskId}${traceExt}`,
+    video: `videos/${runId}/${taskId}.${videoExt}`,
   };
+}
+
+/** Compute the run-level summary key. */
+export function r2SummaryKey(runId: string): string {
+  return `runs/${runId}/summary.json`;
 }
 
 export interface ManifestTrialUpload {
@@ -95,8 +95,13 @@ export function buildManifest(opts: {
       traceBytes: u.traceBytes,
     };
     if (u.videoKey !== null) {
+      if (u.videoBytes == null || u.videoBytes < 0) {
+        throw new Error(
+          `videoKey set but videoBytes missing/invalid for taskId=${u.taskId} (got ${u.videoBytes})`,
+        );
+      }
       entry.video = u.videoKey;
-      entry.videoBytes = u.videoBytes ?? 0;
+      entry.videoBytes = u.videoBytes;
     }
     trials[u.taskId] = entry;
   }

@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Evaluation harness for the OpenBrowse agent. Runs the agent headlessly via Playwright across a matrix of model × prompt × tool-set configurations.",
+  "engines": {
+    "node": ">=22.15"
+  },
   "scripts": {
     "compile": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",

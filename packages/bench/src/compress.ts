@@ -2,9 +2,10 @@
  * Compression for full-trace blobs uploaded to R2.
  *
  * Defaults to zstd (better ratio + speed than gzip for JSON-heavy data).
- * Node 22.15+ ships zstd in core `node:zlib`, so no native dependency is
- * needed. Gzip is supported as an explicit override (used as a portable
- * fallback if zstd is unavailable in some future runtime).
+ * The package's `engines.node` is pinned at >=22.15 so the named zstd
+ * exports below are guaranteed to exist. Gzip is supported as an
+ * explicit override when callers want maximum portability for blobs
+ * consumed outside this package.
  */
 
 import {
