@@ -4,8 +4,10 @@ name: Changesets
 #   - If there are pending changesets in .changeset/, open or update a
 #     "Version Packages" PR that bumps versions and updates CHANGELOG.
 #   - When that PR is merged, this workflow creates the matching git
-#     tag (e.g. v0.3.0). The existing release.yml workflow picks up the
-#     tag and publishes the GitHub Release zip.
+#     tag (e.g. openbrowse@0.2.3 — Changesets' workspace tag format
+#     for private packages, enabled via `privatePackages.tag` in
+#     .changeset/config.json). The release.yml workflow picks up
+#     the tag and publishes the GitHub Release zip (titled vX.Y.Z).
 #
 # Contributors who change user-facing behavior should run
 # `pnpm changeset` and commit the generated `.changeset/*.md` file.

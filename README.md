@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/openbrowse-ai/openbrowse/actions/workflows/ci.yml"><img src="https://github.com/openbrowse-ai/openbrowse/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/openbrowse-ai/openbrowse/releases/latest"><img src="https://img.shields.io/github/v/release/openbrowse-ai/openbrowse?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/openbrowse-ai/openbrowse/releases/latest"><img src="https://img.shields.io/github/v/release/openbrowse-ai/openbrowse?display_name=release&sort=semver" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/openbrowse-ai/openbrowse" alt="License: MIT"></a>
   <a href="https://discord.gg/v47UJ27TTa"><img src="https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/openbrowse-ai/openbrowse/stargazers"><img src="https://img.shields.io/github/stars/openbrowse-ai/openbrowse?style=flat" alt="GitHub stars"></a>

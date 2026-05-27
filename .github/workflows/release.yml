@@ -2,8 +2,9 @@ name: Release extension
 
 # Builds the Chrome extension and publishes it as a GitHub Release.
 #
-# Triggered by pushing a tag matching v* (e.g. v0.1.0), or manually via
-# the Actions UI. The workflow asserts that the tag's version matches
+# Triggered by pushing a tag matching v* or openbrowse@* (e.g.
+# openbrowse@0.2.2), or manually via the Actions UI. The workflow
+# asserts that the resolved version matches
 # apps/extension/package.json so a tag/manifest mismatch fails fast
 # rather than producing a confusing release.
 #
@@ -15,10 +16,11 @@ on:
   push:
     tags:
       - "v*"
+      - "openbrowse@*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build (e.g. v0.1.0)"
+        description: "Existing tag to build (e.g. openbrowse@0.2.2 or v0.1.0)"
         required: true
 
 permissions:
@@ -43,8 +45,13 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          # Strip the leading 'v' for comparison against package.json.
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # Strip whichever prefix is present. Changesets tags
+          # private workspace packages as 'openbrowse@X.Y.Z'; legacy
+          # tags use 'vX.Y.Z'. We accept both so workflow_dispatch
+          # against old tags still works.
+          VERSION="${TAG#v}"
+          VERSION="${VERSION#openbrowse@}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -105,6 +112,11 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          # Display the release on the Releases page as 'vX.Y.Z' even
+          # though the underlying tag is 'openbrowse@X.Y.Z' (Changesets
+          # workspace format). Keeps the GH release UI clean and
+          # backwards-compatible with the v0.1.x / v0.2.x history.
+          name: v${{ steps.tag.outputs.version }}
           files: apps/extension/.output/openbrowse-*-chrome.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
