@@ -43,6 +43,15 @@ export type { SkipReason, CompletionCheckSettings } from "./types";
  * The trigger fires when ALL of the following hold:
  *  - There is non-empty final text (otherwise the model only produced
  *    tool calls; nothing to evaluate yet).
+ *  - All of the iteration's tool calls reached a terminal state
+ *    (`completed` / `errored` / `denied`). Any entry left in
+ *    `pending` means the iteration paused mid-task — most commonly
+ *    waiting for human tool approval (`tool-approval-request` chunk
+ *    closed the stream without ever emitting `tool-output-available`).
+ *    The drafted text at that point is mid-narration ("I'll now run X
+ *    to do Y") and isn't the agent's final response. The gate will
+ *    fire on the next iteration after approval, when the tool
+ *    actually has output.
  *  - The turn was non-trivial: either the conversation has todos
  *    (planned multi-step task) OR the executor made tool calls this
  *    turn (acted on the world). Pure Q&A turns with no tools and no
@@ -63,6 +72,16 @@ export function shouldGate(
 ): { gate: true } | { gate: false; reason: SkipReason } {
   if (!candidate.finalText.trim()) {
     return { gate: false, reason: "no-final-text" };
+  }
+
+  // Iteration paused on a non-terminal tool call (most commonly an
+  // approval-gated tool waiting for the user). The "drafted response"
+  // here is mid-task narration, not a final answer; evaluating it
+  // would burn evaluator tokens against incomplete content and risk
+  // false rejections that loop the agent before the human even
+  // approves the tool. Skip; the gate fires on the next iteration.
+  if (candidate.toolCallTrace.some((t) => t.state === "pending")) {
+    return { gate: false, reason: "pending-tool-calls" };
   }
 
   // Non-trivial turn heuristic: either the agent planned (todos) or
