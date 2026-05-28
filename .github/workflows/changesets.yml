@@ -6,8 +6,17 @@ name: Changesets
 #   - When that PR is merged, this workflow creates the matching git
 #     tag (e.g. openbrowse@0.2.3 — Changesets' workspace tag format
 #     for private packages, enabled via `privatePackages.tag` in
-#     .changeset/config.json). The release.yml workflow picks up
-#     the tag and publishes the GitHub Release zip (titled vX.Y.Z).
+#     .changeset/config.json), then invokes `release.yml` directly via
+#     `workflow_call` to build the extension zip and attach it to the
+#     GitHub Release Changesets created.
+#
+# Why workflow_call instead of relying on the tag-push trigger:
+# the tag is created here using GITHUB_TOKEN, and tags pushed by
+# GITHUB_TOKEN do NOT fire downstream `on: push: tags:` workflows
+# (GitHub's anti-recursion safeguard). Using workflow_call lets us
+# stay on GITHUB_TOKEN without needing a PAT. release.yml's
+# `workflow_dispatch` trigger remains as a manual escape hatch for
+# re-running the build against an already-tagged release.
 #
 # Contributors who change user-facing behavior should run
 # `pnpm changeset` and commit the generated `.changeset/*.md` file.
@@ -31,6 +40,11 @@ jobs:
     permissions:
       contents: write # commit version bumps + create tags
       pull-requests: write # open the Version Packages PR
+    outputs:
+      # Surfaced so the build-release job below can decide whether a
+      # release zip needs building, and which tag to target.
+      published: ${{ steps.changesets.outputs.published }}
+      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -51,6 +65,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Open / update Version Packages PR (or tag release)
+        id: changesets
         uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
         with:
           # `pnpm run version` (NOT `pnpm version`) — the latter is
@@ -64,10 +79,36 @@ jobs:
           # here would pass them as args to the first binary.
           version: pnpm run version
           # No npm publish — we do not publish to npm. The git tag
-          # created here is the trigger for release.yml to build and
-          # publish the GitHub Release zip.
+          # created here used to trigger release.yml via the tag-push
+          # event, but GITHUB_TOKEN-authored tag pushes don't fire
+          # downstream workflows. The `build-release` job below
+          # invokes release.yml directly via workflow_call instead.
           publish: pnpm exec changeset tag
           commit: "chore(release): version packages"
           title: "chore(release): version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build the Chrome extension zip and attach it to the GitHub Release
+  # that the Changesets action just created. Runs only when the publish
+  # step actually emitted a tag (i.e. the Version Packages PR was just
+  # merged). Skipped on every other main push, including the push that
+  # opens/updates the Version Packages PR itself.
+  #
+  # See release.yml for the build/test/zip/upload steps. We invoke it
+  # via workflow_call rather than relying on the tag push because tags
+  # created with GITHUB_TOKEN don't trigger `on: push: tags:` workflows.
+  build-release:
+    name: Build + publish release zip
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      # publishedPackages is a JSON array of `{ name, version }` for
+      # each package the action just tagged. We tag exactly one
+      # package (`openbrowse`), so [0] is safe. The tag format
+      # (`openbrowse@X.Y.Z`) matches what `changeset tag` emits for
+      # private workspace packages.
+      tag: openbrowse@${{ fromJson(needs.release.outputs.publishedPackages)[0].version }}

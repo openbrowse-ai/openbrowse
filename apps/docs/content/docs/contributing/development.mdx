@@ -61,8 +61,10 @@ Releases are driven by [Changesets](https://github.com/changesets/changesets).
 1. If a PR changes user-facing behavior, run `pnpm changeset` and commit the generated `.changeset/*.md` file. See [`.changeset/README.md`](https://github.com/openbrowse-ai/openbrowse/blob/main/.changeset/README.md).
 2. On every push to `main`, the **Changesets** workflow automatically opens or updates a "Version Packages" PR that bumps `apps/extension/package.json`, regenerates `apps/extension/CHANGELOG.md`, and consumes the changeset files.
 3. Merging the Version Packages PR creates an `openbrowse@X.Y.Z` git tag (Changesets' workspace tag format for private packages, enabled via `privatePackages.tag` in `.changeset/config.json`).
-4. The tag triggers the **Release extension** workflow, which builds `apps/extension/.output/openbrowse-<version>-chrome.zip`, asserts the pinned manifest `key`, and publishes a GitHub Release titled `vX.Y.Z` with the zip attached. The docs' [Install page](/docs/overview#manual-install-current) links to `releases/latest`, so the new zip becomes the recommended manual download automatically.
+4. After tagging, the **Changesets** workflow invokes the **Release extension** workflow (via `workflow_call`), which builds `apps/extension/.output/openbrowse-<version>-chrome.zip`, asserts the pinned manifest `key`, and updates the GitHub Release that Changesets created — renaming it to `vX.Y.Z` and attaching the zip. The docs' [Install page](/docs/overview#manual-install-current) links to `releases/latest`, so the new zip becomes the recommended manual download automatically.
 5. The Chrome Web Store upload is intentionally a manual step — log into the developer dashboard and upload the exact same zip from the GitHub release as a new version of the listing.
+
+If the build/upload step fails for an already-tagged release (e.g. flaky CI, transient outage), re-trigger via Actions → **Release extension** → Run workflow → enter the tag (e.g. `openbrowse@0.3.0`). An existing release is updated in place — name, body, and zip are refreshed.
 
 import { Callout } from "fumadocs-ui/components/callout";
 

@@ -2,9 +2,18 @@ name: Release extension
 
 # Builds the Chrome extension and publishes it as a GitHub Release.
 #
-# Triggered by pushing a tag matching v* or openbrowse@* (e.g.
-# openbrowse@0.2.2), or manually via the Actions UI. The workflow
-# asserts that the resolved version matches
+# Three trigger paths:
+#   - `push: tags: [v*, openbrowse@*]` — fires when a tag is pushed
+#     by a real user/credential. (Tags pushed by GITHUB_TOKEN do NOT
+#     trigger this — that's GitHub's anti-recursion safeguard, which
+#     is why the Changesets workflow uses workflow_call below.)
+#   - `workflow_call` — invoked by `changesets.yml` after it creates
+#     a release tag. This is the primary path for normal releases.
+#   - `workflow_dispatch` — manual escape hatch for re-running the
+#     build/upload against an existing tag (e.g. transient CI failure
+#     that left a release without its zip).
+#
+# The workflow asserts that the resolved version matches
 # apps/extension/package.json so a tag/manifest mismatch fails fast
 # rather than producing a confusing release.
 #
@@ -22,6 +31,12 @@ on:
       tag:
         description: "Existing tag to build (e.g. openbrowse@0.2.2 or v0.1.0)"
         required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,11 +53,30 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
+        # Pass inputs through env rather than `${{ ... }}` interpolation
+        # in the shell body. workflow_dispatch.inputs.tag is operator-
+        # controlled and would otherwise be substituted before the shell
+        # parses the script — i.e. a classic command-injection vector.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
+          # workflow_dispatch and workflow_call both populate INPUT_TAG;
+          # push events fall back to the ref. We branch on event_name to
+          # make the intent explicit rather than relying on INPUT_TAG
+          # being empty for push events.
+          case "$EVENT_NAME" in
+            workflow_dispatch) TAG="$INPUT_TAG" ;;
+            workflow_call)     TAG="$INPUT_TAG" ;;
+            *)                 TAG="${GITHUB_REF#refs/tags/}" ;;
+          esac
+          # Validate format before doing anything with TAG. Accept the
+          # two formats this repo actually produces: 'vX.Y.Z' (legacy)
+          # and 'openbrowse@X.Y.Z' (Changesets workspace tag), each
+          # with optional semver prerelease/build metadata.
+          if ! printf '%s' "$TAG" | grep -Eq '^(v|openbrowse@)[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$'; then
+            echo "::error::Invalid tag format: '$TAG' (expected vX.Y.Z or openbrowse@X.Y.Z)"
+            exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # Strip whichever prefix is present. Changesets tags
