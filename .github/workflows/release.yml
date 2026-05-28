@@ -53,16 +53,31 @@ jobs:
     steps:
       - name: Resolve tag
         id: tag
+        # Pass inputs through env rather than `${{ ... }}` interpolation
+        # in the shell body. workflow_dispatch.inputs.tag is operator-
+        # controlled and would otherwise be substituted before the shell
+        # parses the script — i.e. a classic command-injection vector.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          # workflow_dispatch and workflow_call both populate inputs.tag;
+          # workflow_dispatch and workflow_call both populate INPUT_TAG;
           # push events fall back to the ref. We branch on event_name to
-          # make the intent explicit rather than relying on inputs.tag
+          # make the intent explicit rather than relying on INPUT_TAG
           # being empty for push events.
-          case "${{ github.event_name }}" in
-            workflow_dispatch) TAG="${{ inputs.tag }}" ;;
-            workflow_call)     TAG="${{ inputs.tag }}" ;;
+          case "$EVENT_NAME" in
+            workflow_dispatch) TAG="$INPUT_TAG" ;;
+            workflow_call)     TAG="$INPUT_TAG" ;;
             *)                 TAG="${GITHUB_REF#refs/tags/}" ;;
           esac
+          # Validate format before doing anything with TAG. Accept the
+          # two formats this repo actually produces: 'vX.Y.Z' (legacy)
+          # and 'openbrowse@X.Y.Z' (Changesets workspace tag), each
+          # with optional semver prerelease/build metadata.
+          if ! printf '%s' "$TAG" | grep -Eq '^(v|openbrowse@)[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$'; then
+            echo "::error::Invalid tag format: '$TAG' (expected vX.Y.Z or openbrowse@X.Y.Z)"
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # Strip whichever prefix is present. Changesets tags
           # private workspace packages as 'openbrowse@X.Y.Z'; legacy
