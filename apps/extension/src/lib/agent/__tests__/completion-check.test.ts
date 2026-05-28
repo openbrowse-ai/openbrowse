@@ -139,6 +139,59 @@ describe("shouldGate", () => {
     });
     expect(r).toEqual({ gate: true });
   });
+
+  // Iteration paused mid-task on a tool that needs human approval.
+  // The SDK closes the stream after `tool-input-available` +
+  // `tool-approval-request` without ever emitting an output chunk, so
+  // the trace entry is left in `state: "pending"`. The drafted text
+  // is mid-narration ("I'll now run X to do Y") and shouldn't trigger
+  // the evaluator — the gate fires on the next iteration after
+  // approval, when the tool actually has output.
+  it("skips when any tool call is still pending (e.g. awaiting approval)", () => {
+    const r = shouldGate({
+      finalText: "I'll run executeOnPage to inspect the page now.",
+      todos: [],
+      toolCallTrace: [makeTrace("executeOnPage", { state: "pending" })],
+    });
+    expect(r).toEqual({
+      gate: false,
+      reason: "pending-tool-calls" satisfies SkipReason,
+    });
+  });
+
+  // A pending entry poisons the gate even when other tools in the
+  // same iteration completed. Multi-tool steps where one auto-allowed
+  // tool ran and the next is approval-gated would otherwise leak
+  // through.
+  it("skips when at least one tool call is pending alongside completed ones", () => {
+    const r = shouldGate({
+      finalText: "Found the price; about to verify.",
+      todos: [],
+      toolCallTrace: [
+        makeTrace("snapshot", { state: "completed" }),
+        makeTrace("executeOnPage", { state: "pending" }),
+      ],
+    });
+    expect(r).toEqual({
+      gate: false,
+      reason: "pending-tool-calls" satisfies SkipReason,
+    });
+  });
+
+  // Pending takes priority over the trivial-turn skip too — a tool
+  // call exists, just not in a terminal state. Prefer the more
+  // specific "still in flight" reason for telemetry.
+  it("skips with pending-tool-calls when the only trace entry is pending and no todos", () => {
+    const r = shouldGate({
+      finalText: "Running…",
+      todos: [],
+      toolCallTrace: [makeTrace("executeOnPage", { state: "pending" })],
+    });
+    expect(r).toEqual({
+      gate: false,
+      reason: "pending-tool-calls" satisfies SkipReason,
+    });
+  });
 });
 
 describe("runEvaluator (real, mocked LLM)", () => {
@@ -855,6 +908,38 @@ describe("runCompletionCheck (real evaluator with mocked LLM)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].outcomeKind).toBe("skipped");
     expect(rows[0].skipReason).toBe("trigger-not-met");
+  });
+
+  // Reproduces the bug where the gate fired against an iteration
+  // that was paused on tool approval. The drafted text is non-empty
+  // and the trace has a tool call, but the call is in `pending`
+  // state because the user hasn't clicked Allow yet. Skip cleanly
+  // and record the new telemetry skip reason.
+  it("skips with pending-tool-calls when the iteration is paused on tool approval", async () => {
+    const out = await runCompletionCheck({
+      conversationId: "c-pending",
+      turnIndex: 0,
+      rejectionRound: 0,
+      originalRequest: "open bookface and find a profile",
+      draftedResponse: "I'll run executeOnPage to inspect the listing.",
+      todos: [],
+      toolCallTrace: [
+        {
+          name: "executeOnPage",
+          inputSummary: '{"tab":"t1"}',
+          outputSummary: null,
+          state: "pending",
+        },
+      ],
+    });
+    expect(out.kind).toBe("skipped");
+    if (out.kind === "skipped") {
+      expect(out.reason).toBe("pending-tool-calls");
+    }
+    const rows = await completionCheckTelemetry.listForConversation("c-pending");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].outcomeKind).toBe("skipped");
+    expect(rows[0].skipReason).toBe("pending-tool-calls");
   });
 
   it("approves when the trigger fires and the evaluator approves", async () => {

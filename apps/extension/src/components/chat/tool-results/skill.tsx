@@ -1,5 +1,6 @@
 import { BookOpen } from "lucide-react";
 import Markdown from "react-markdown";
+import { ExpandableText } from "./expandable-text";
 
 interface Props {
   args: Record<string, unknown>;
@@ -21,7 +22,17 @@ export function SkillResult({ args, result }: Props) {
         <div className="bg-background/50 max-h-64 overflow-y-auto styled-scrollbar">
           {resultObj.error ? (
             <div className="px-3 py-2">
-              <pre className="whitespace-pre-wrap font-mono text-red-400">{resultObj.error}</pre>
+              {/*
+                * Skill errors can be long stack traces or wrapped
+                * underlying errors. Use ExpandableText to clamp at
+                * 10 visual lines with an inline expand toggle —
+                * matches the executeCode / executePython error
+                * surfaces.
+                */}
+              <ExpandableText
+                text={resultObj.error}
+                className="font-mono text-red-400"
+              />
             </div>
           ) : resultObj.content ? (
             <div className="px-3 py-2 prose prose-sm dark:prose-invert max-w-none text-foreground/80 prose-p:leading-snug prose-pre:bg-muted/50">

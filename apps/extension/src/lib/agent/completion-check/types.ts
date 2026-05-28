@@ -171,7 +171,10 @@ export interface EvaluatorVerdict {
  * is no verdict to report.
  */
 export type GateOutcome =
-  | { kind: "skipped"; reason: "trigger-not-met" | "no-final-text" }
+  | {
+      kind: "skipped";
+      reason: "trigger-not-met" | "no-final-text" | "pending-tool-calls";
+    }
   | { kind: "approved"; verdict: EvaluatorVerdict }
   | { kind: "rejected"; verdict: EvaluatorVerdict; rejectionRound: number }
   | {
@@ -212,12 +215,25 @@ export interface CompletionCheckSettings {
 export const MAX_REJECTION_ROUNDS = 3;
 
 /**
- * Why the gate skipped, when it did. The two states correspond to the
- * two early-exits in `shouldGate`:
+ * Why the gate skipped, when it did. The three states correspond to the
+ * three early-exits in `shouldGate`:
  *  - "no-final-text": tool-only step; no draft to evaluate yet.
+ *  - "pending-tool-calls": at least one tool call ended the iteration in
+ *    `state: "pending"` — its input was emitted but no output/error/denial
+ *    chunk arrived before the stream closed. The most common cause is
+ *    a tool that requires human approval: the SDK pauses the iteration
+ *    after `tool-input-available` + `tool-approval-request` and never
+ *    emits `tool-output-available` until the user clicks Allow. The
+ *    drafted text at that point is mid-task ("I'll now run X to do Y")
+ *    and shouldn't be evaluated as a final response. The gate fires on
+ *    the next iteration (after approval) when the tool actually has
+ *    output.
  *  - "trigger-not-met": trivial Q&A turn (no todos, no tool calls).
  */
-export type SkipReason = "trigger-not-met" | "no-final-text";
+export type SkipReason =
+  | "trigger-not-met"
+  | "no-final-text"
+  | "pending-tool-calls";
 
 /**
  * One entry in the trace of tool calls the executor made during the

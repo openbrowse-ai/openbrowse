@@ -5,6 +5,7 @@ import {
 } from "./ChatInput";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
+import { ExpandableText } from "./tool-results/expandable-text";
 import {
   Conversation,
   ConversationContent,
@@ -896,9 +897,19 @@ function ErrorMessage({
             <p className="text-xs text-destructive font-medium">
               Something went wrong
             </p>
-            <p className="text-xs text-muted-foreground mt-0.5 break-words">
-              {error.message}
-            </p>
+            {/*
+              * Provider SDK errors can carry full request payloads,
+              * stack traces, or upstream HTML responses — easily
+              * dozens of visual lines. Clamp to ~10 visual lines with
+              * an inline expand toggle. `font-sans` overrides
+              * ExpandableText's <pre> default so the banner keeps the
+              * surrounding chat font; `text-muted-foreground` and
+              * `break-words` reproduce the previous styling.
+              */}
+            <ExpandableText
+              text={error.message}
+              className="text-xs text-muted-foreground mt-0.5 break-words font-sans"
+            />
             <div className="flex items-center gap-2 mt-1.5">
               <button
                 type="button"
