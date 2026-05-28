@@ -35,7 +35,12 @@ export function estimateVisualLines(
   text: string,
   charsPerLine: number = ESTIMATED_CHARS_PER_VISUAL_LINE,
 ): number {
-  if (!text) return 0;
+  // Per the contract above, even an empty string occupies one line of
+  // layout. The split below produces `[""]` for empty input, the loop
+  // runs once, and `Math.max(1, …)` yields 1 — so we don't need a
+  // dedicated empty-string branch. Callers that want zero rows for
+  // empty input should short-circuit at the call site (see
+  // `ExpandableText` itself, which returns `null` before calling).
   const lines = text.split("\n");
   let total = 0;
   for (const line of lines) {

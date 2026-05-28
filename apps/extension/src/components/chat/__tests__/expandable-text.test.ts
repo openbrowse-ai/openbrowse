@@ -18,8 +18,14 @@ import { estimateVisualLines } from "../tool-results/expandable-text";
 const COL_WIDTH = 80; // matches the component's default
 
 describe("estimateVisualLines", () => {
-  it("returns 0 for empty input", () => {
-    expect(estimateVisualLines("")).toBe(0);
+  // The JSDoc contract: "Always returns at least 1 (empty strings
+  // still occupy a line of layout)." Callers that want zero rows for
+  // empty input must short-circuit at the call site — `ExpandableText`
+  // itself returns `null` before calling, so this branch is currently
+  // unreachable in practice but the contract is preserved for any
+  // future caller.
+  it("returns 1 for empty input (one line of layout)", () => {
+    expect(estimateVisualLines("")).toBe(1);
   });
 
   it("counts each \\n-delimited line as at least one visual line", () => {

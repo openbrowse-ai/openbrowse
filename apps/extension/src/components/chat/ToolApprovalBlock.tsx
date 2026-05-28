@@ -72,13 +72,28 @@ export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, site
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        // Mirror the disabled state of the click buttons. While
+        // `persistingAllowlist` is true, the click handler is
+        // awaiting the chrome.storage.local write before calling
+        // onApprove itself; bypassing that via Cmd+Enter would race
+        // the next tool call's needsApproval against the in-flight
+        // write (the exact bug fixed for the click path). Swallow
+        // the shortcut entirely until the persist resolves.
+        if (persistingAllowlist) {
+          e.preventDefault();
+          return;
+        }
         e.preventDefault();
         onApprove(approvalId);
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [approvalId, onApprove]);
+    // `persistingAllowlist` is intentionally in the deps array: the
+    // effect re-registers on each transition (false → true → false)
+    // so the closure captures the latest value. addEventListener /
+    // removeEventListener are O(1); the re-register cost is trivial.
+  }, [approvalId, onApprove, persistingAllowlist]);
 
   const displayOrigin = siteOrigin ? new URL(siteOrigin).hostname : undefined;
 
