@@ -15,13 +15,13 @@
     "baseline": "tsx scripts/bench-baseline.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.71",
-    "@ai-sdk/google": "^3.0.64",
-    "@ai-sdk/openai": "^3.0.53",
+    "@ai-sdk/anthropic": "^3.0.81",
+    "@ai-sdk/google": "^3.0.80",
+    "@ai-sdk/openai": "^3.0.67",
     "@aws-sdk/client-s3": "^3.1054.0",
     "@huggingface/hub": "^2.12.0",
-    "@onkernel/sdk": "^0.55.0",
-    "ai": "^6.0.168",
+    "@onkernel/sdk": "^0.58.0",
+    "ai": "^6.0.193",
     "csv-parse": "^6.2.1",
     "dotenv": "^17.4.2",
     "parquetjs": "^0.11.2",
