@@ -22,6 +22,8 @@ interface CliArgs {
   taskId?: string;
   /** Run a whole suite by source (e.g. "webbench", "custom"). */
   suite?: "webbench-mini" | "webbench" | "custom" | "all";
+  /** Read newline-delimited task IDs from a file. */
+  tasksFile?: string;
   modelId: string;
   modelLabel: string;
   headless: boolean;
@@ -85,6 +87,13 @@ function parseArgs(argv: string[]): CliArgs {
         out.suite = v as any;
         break;
       }
+      case "--tasks-file":
+        if (i + 1 >= argv.length || argv[i + 1].startsWith("-")) {
+          console.error("--tasks-file requires a file path argument");
+          process.exit(2);
+        }
+        out.tasksFile = argv[++i];
+        break;
       case "--model":
         out.modelId = argv[++i];
         out.modelLabel = out.modelId;
@@ -172,10 +181,13 @@ function printHelp(): void {
 Usage:
   bench --task <task-id> [options]              # single task
   bench --suite <name>  [options]               # run an entire suite
+  bench --tasks-file <path> [options]           # run tasks from a list
 
 Options:
   --task <id>         Single task id from any registered suite
   --suite <name>      Run all tasks in a suite. One of: webbench-mini, webbench, custom, all
+  --tasks-file <path> File containing one task ID per line. Comments (#)
+                      and blank lines are ignored.
   --model <id>        Provider model id (default: claude-sonnet-4-5-20250929)
                       Examples:
                         claude-sonnet-4-5-20250929  (Anthropic)
@@ -239,6 +251,7 @@ async function main(): Promise<void> {
     { WEBBENCH_REVISION },
     { LLM_JUDGE_VERSION, JUDGE_MODEL_ID },
     { sampleTasks },
+    { loadTasksFromFile },
   ] = await Promise.all([
     import("@ai-sdk/anthropic"),
     import("@ai-sdk/google"),
@@ -252,6 +265,7 @@ async function main(): Promise<void> {
     import("./tasks/webbench/revision"),
     import("./judges/llm-judge"),
     import("./tasks/sample"),
+    import("./tasks/from-file"),
   ]);
 
   type LanguageModel = Awaited<ReturnType<typeof anthropic>>;
@@ -266,7 +280,7 @@ async function main(): Promise<void> {
     );
   }
 
-  if (!args.taskId && !args.suite) {
+  if (!args.taskId && !args.suite && !args.tasksFile) {
     printHelp();
     console.log(`\nAvailable tasks (custom):`);
     for (const t of await tasksBySource("custom")) {
@@ -276,6 +290,18 @@ async function main(): Promise<void> {
     for (const t of await tasksBySource("webbench-mini")) {
       console.log(`  ${t.id.padEnd(40)}  ${truncate(t.instruction, 60)}`);
     }
+    process.exit(2);
+  }
+
+  const selectionMechanisms = [
+    args.taskId ? "--task" : null,
+    args.suite ? "--suite" : null,
+    args.tasksFile ? "--tasks-file" : null,
+  ].filter(Boolean);
+  if (selectionMechanisms.length > 1) {
+    console.error(
+      `These flags are mutually exclusive: ${selectionMechanisms.join(", ")}. Pick exactly one.`,
+    );
     process.exit(2);
   }
 
@@ -321,9 +347,16 @@ async function main(): Promise<void> {
   }
 
   // Resolve the task list. Single-task mode picks one; suite mode picks
-  // every task whose source matches.
+  // every task whose source matches; tasks-file mode reads a custom list.
   let tasks: any[];
-  if (args.taskId) {
+  if (args.tasksFile) {
+    try {
+      tasks = await loadTasksFromFile(args.tasksFile, findTask);
+    } catch (e: any) {
+      console.error(e.message);
+      process.exit(2);
+    }
+  } else if (args.taskId) {
     const task = await findTask(args.taskId);
     if (!task) {
       console.error(`Unknown task id: ${args.taskId}`);

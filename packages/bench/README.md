@@ -30,6 +30,12 @@ pnpm --filter @openbrowse/bench bench --suite webbench-mini --driver kernel
 
 The first run will download Playwright's Chromium binary if it isn't cached.
 
+```bash
+# Example: Run a subset of tasks from a text file
+echo "example-com-heading" > my-tasks.txt
+pnpm --filter @openbrowse/bench bench --tasks-file my-tasks.txt
+```
+
 ## Resuming an interrupted run
 
 If a suite crashes, times out, or you kill it manually, you can resume it. The runner will automatically skip tasks that already have a trial JSON in the directory. 
