@@ -9,6 +9,8 @@ import stripeSvg from "@openbrowse/connectors/icons/stripe.svg?raw";
 import supabaseSvg from "@openbrowse/connectors/icons/supabase.svg?raw";
 import vercelSvg from "@openbrowse/connectors/icons/vercel.svg?raw";
 import vercelDarkSvg from "@openbrowse/connectors/icons/vercel-dark.svg?raw";
+import attioSvg from "@openbrowse/connectors/icons/attio.svg?raw";
+import attioDarkSvg from "@openbrowse/connectors/icons/attio-dark.svg?raw";
 
 interface IconEntry {
   light: string;
@@ -54,6 +56,7 @@ const icons: Record<string, IconEntry> = {
   stripe: { light: stripeSvg },
   supabase: { light: supabaseSvg },
   vercel: { light: vercelSvg, dark: vercelDarkSvg },
+  attio: { light: attioSvg, dark: attioDarkSvg },
 };
 
 interface RegistryIconProps {

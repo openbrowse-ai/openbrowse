@@ -6,6 +6,7 @@ import { definition as github } from "./github";
 import { definition as stripe } from "./stripe";
 import { definition as vercel } from "./vercel";
 import { definition as sentry } from "./sentry";
+import { definition as attio } from "./attio";
 import type { ConnectorDefinition } from "./types";
 
 export const connectors: ConnectorDefinition[] = [
@@ -17,6 +18,7 @@ export const connectors: ConnectorDefinition[] = [
   stripe,
   vercel,
   sentry,
+  attio,
 ];
 
 export function getConnector(id: string): ConnectorDefinition | undefined {

@@ -17,6 +17,7 @@ const CONNECTORS: Connector[] = [
   { name: "Stripe", icon: "stripe", description: "Search customers and charges" },
   { name: "Supabase", icon: "supabase", description: "Run SQL, manage projects" },
   { name: "Vercel", icon: "vercel", description: "Deployments and environments", darkIcon: true },
+  { name: "Attio", icon: "attio", description: "CRM records, notes, and tasks", darkIcon: true },
 ];
 
 export function ConnectorsGrid() {

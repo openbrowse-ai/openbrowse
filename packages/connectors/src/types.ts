@@ -12,7 +12,8 @@ export type ConnectorCategory =
   | "developer-tools"
   | "productivity"
   | "databases"
-  | "analytics";
+  | "analytics"
+  | "crm";
 
 /**
  * Labels shown in the chat UI while a tool call is in progress

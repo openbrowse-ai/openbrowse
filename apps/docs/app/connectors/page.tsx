@@ -12,6 +12,7 @@ const categoryLabels: Record<string, string> = {
   productivity: "Productivity",
   databases: "Databases",
   analytics: "Analytics",
+  crm: "CRM",
 };
 
 export default function ConnectorsPage() {
