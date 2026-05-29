@@ -21,7 +21,6 @@ export const exploreAgent: AgentDefinition = {
     "snapshot",
     "screenshot",
     "extract",
-    "executeOnPage",
     "scrollPage",
     "selectTab",
     "listTabs",
@@ -55,7 +54,9 @@ Workflow:
 
 3. For each target, prefer extract(...) for structured data, snapshot(...)
    for layout-aware reads, readPage(...) for plain text. For multi-source
-   work, chain navigate calls — they're cheap.
+   work, chain navigate calls — they're cheap. You cannot run arbitrary
+   JavaScript on the page (executeOnPage is not in your toolset); rely
+   on the dedicated read tools instead.
 
 4. Return the answer in your final text:
    - Single page: concise summary or extracted fields, formatted as markdown.

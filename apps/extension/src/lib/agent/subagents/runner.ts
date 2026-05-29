@@ -164,44 +164,49 @@ export async function runSubagent(
 
   acquireSubagentSlot(parentConversationId);
 
-  let childConversationId: string;
+  let childConversationId: string | null = null;
   let incognitoWindowId: number | null = null;
   let ephemeralWindowId: number | undefined;
 
-  // Open the window first (incognito only) so we can stamp its id
-  // onto the conversation row at creation time. If window creation
-  // fails outright we still record the failure on a child row so the
-  // user has something to see in the UI.
-  if (isolation === "incognito") {
-    try {
-      const win = await openIncognitoWindow(windowsAPI!);
-      incognitoWindowId = win.windowId;
-      ephemeralWindowId = win.windowId;
-    } catch (err) {
-      releaseSubagentSlot(parentConversationId);
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`incognito window open failed: ${message}`);
-    }
-  }
-
-  const child = await createChildConversation({
-    parentConversationId,
-    slug: agentDef.slug,
-    isolation,
-    title: deriveChildTitle(context.task),
-    ...(isolation === "incognito" && { spaceId: null }),
-    ...(ephemeralWindowId !== undefined && { ephemeralWindowId }),
-    ...(parentToolCallId !== undefined && { parentToolCallId }),
-  });
-  childConversationId = child.id;
-
-  // Notify any listeners (e.g. the delegate tool's UI broadcast) that
-  // the child conversation has been created. Lets the parent's
-  // `DelegateResult` block subscribe to live updates while the
-  // subagent is still running.
-  onChildAssigned?.(child.id);
-
+  // Single try/finally that covers both resource-acquisition steps
+  // (open incognito window, create child conversation row) AND the
+  // run loop. Earlier versions opened the window OUTSIDE the try, so
+  // a `createChildConversation` throw left the window open and the
+  // slot acquired forever. The finally block now tolerates a partial
+  // setup state by null-checking each cleanup target.
   try {
+    // Open the window first (incognito only) so we can stamp its id
+    // onto the conversation row at creation time. If window creation
+    // fails outright we still record the failure on a child row so the
+    // user has something to see in the UI.
+    if (isolation === "incognito") {
+      try {
+        const win = await openIncognitoWindow(windowsAPI!);
+        incognitoWindowId = win.windowId;
+        ephemeralWindowId = win.windowId;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`incognito window open failed: ${message}`);
+      }
+    }
+
+    const child = await createChildConversation({
+      parentConversationId,
+      slug: agentDef.slug,
+      isolation,
+      title: deriveChildTitle(context.task),
+      ...(isolation === "incognito" && { spaceId: null }),
+      ...(ephemeralWindowId !== undefined && { ephemeralWindowId }),
+      ...(parentToolCallId !== undefined && { parentToolCallId }),
+    });
+    childConversationId = child.id;
+
+    // Notify any listeners (e.g. the delegate tool's UI broadcast) that
+    // the child conversation has been created. Lets the parent's
+    // `DelegateResult` block subscribe to live updates while the
+    // subagent is still running.
+    onChildAssigned?.(child.id);
+
     const childToolContext = buildChildToolContext({
       parentToolContext,
       parentConversationId,
@@ -254,19 +259,23 @@ export async function runSubagent(
       errorMessage: loopResult.errorMessage,
     };
   } finally {
-    // Close the incognito window unconditionally — covers success,
-    // failure, cancellation, and the rare "loop returned but
-    // finalize threw" path.
+    // Close the incognito window unconditionally if it was opened —
+    // covers success, failure, cancellation, and the rare "loop
+    // returned but finalize threw" path. Tolerates partial setup
+    // (incognito window opened but createChildConversation threw).
     if (incognitoWindowId != null && windowsAPI) {
       await closeIncognitoWindow(windowsAPI, incognitoWindowId);
       // Clear the ephemeralWindowId on the conversation row so the
       // startup orphan-cleanup pass doesn't attempt to re-close it.
-      try {
-        await chatDb.updateConversation(childConversationId, {
-          ephemeralWindowId: null,
-        });
-      } catch {
-        // chatDb may be unavailable in some test paths; ignore.
+      // Skip when the row was never created.
+      if (childConversationId != null) {
+        try {
+          await chatDb.updateConversation(childConversationId, {
+            ephemeralWindowId: null,
+          });
+        } catch {
+          // chatDb may be unavailable in some test paths; ignore.
+        }
       }
     }
     releaseSubagentSlot(parentConversationId);
@@ -341,24 +350,18 @@ function buildChildToolContext(args: {
         childConvId,
       ),
       isAgentOwnedTab: async (tabId: TabId) => {
-        // Lazy import to keep the runner pure for unit tests; the
-        // extension always has chatDb available.
-        const { chatDb } = await import("../../chat-db");
         const conv = await chatDb.getConversation(childConvId);
         return !!conv?.ownedTabIds.includes(Number(tabId));
       },
       hasOwnedTabGroup: async () => {
-        const { chatDb } = await import("../../chat-db");
         const conv = await chatDb.getConversation(childConvId);
         return conv?.ownedGroupId != null;
       },
       getTodos: async () => {
-        const { chatDb } = await import("../../chat-db");
         const conv = await chatDb.getConversation(childConvId);
         return conv?.todos ?? [];
       },
       setTodos: async (todos) => {
-        const { chatDb } = await import("../../chat-db");
         await chatDb.updateConversation(childConvId, {
           todos,
           updatedAt: Date.now(),

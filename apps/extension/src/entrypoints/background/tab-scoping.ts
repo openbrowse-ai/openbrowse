@@ -230,8 +230,13 @@ export async function bindTabsToConversation(
     if (conv.parentConversationId) {
       const parent = await chatDb.getConversation(conv.parentConversationId);
       const parentBase = (parent?.title ?? "").trim().slice(0, 16) || "Chat";
-      const slug = (conv.subagentSlug ?? "subagent").trim().slice(0, 16);
-      placeholder = `OB | ${parentBase} · ${slug}`;
+      const slug = (conv.subagentSlug ?? "").trim().slice(0, 16);
+      // Only append the slug suffix when it's a real, non-empty value.
+      // Defensive against rows where `subagentSlug` is set but blank
+      // (would otherwise produce a trailing " · ").
+      placeholder = slug
+        ? `OB | ${parentBase} · ${slug}`
+        : `OB | ${parentBase}`;
     } else {
       const base = (conv.title ?? "").trim().slice(0, 20) || "Chat";
       placeholder = `OB | ${base}`;

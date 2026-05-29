@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentUIMessage } from "../../../types";
 import { chatDb } from "../../../chat-db";
 import {
-  
   persistAssistantStream,
   persistDelegationMessage,
 } from "../persist-stream";

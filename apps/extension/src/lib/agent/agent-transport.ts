@@ -1231,8 +1231,20 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // Drain the stream once: persist the transcript and return an
       // `AssistantStreamResult` with the captured transcript so we can
       // ship it back to the parent's DelegateResult block uniformly.
+      //
+      // Defensive guard: `AgentLoopConfig.childConversationId` is typed
+      // as `string | null` because callers may want to pass null for
+      // detached/inline runs. The current caller (runner.ts) always
+      // passes a non-null id, but we assert here so a future caller
+      // that forgets gets a clear error instead of silent persistence
+      // under an `undefined` conversation key.
+      if (!cfg.childConversationId) {
+        throw new Error(
+          "childConversationId required for persistAssistantStream",
+        );
+      }
       const drained = await persistAssistantStream({
-        childConversationId: cfg.childConversationId!,
+        childConversationId: cfg.childConversationId,
         uiMessages,
       });
 

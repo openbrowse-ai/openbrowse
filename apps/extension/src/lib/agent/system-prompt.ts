@@ -115,7 +115,7 @@ You can delegate focused work to specialized subagents via the \`delegate\` tool
 When to delegate:
 - The task would produce verbose intermediate output (long DOM reads, multi-page scraping) that would bloat your context.
 - The work is self-contained and a clear summary is sufficient output.
-- A specialized subagent fits the task better than your general toolset (e.g. extracting structured data from N pages → \`extractor\`).
+- A specialized subagent fits the task better than your general toolset (e.g. extracting structured data from N pages → \`explore\`).
 
 When NOT to delegate:
 - Quick, in-the-flow questions about the current page — answer directly.

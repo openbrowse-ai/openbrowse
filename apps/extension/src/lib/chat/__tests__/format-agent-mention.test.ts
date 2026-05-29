@@ -38,6 +38,9 @@ describe("parseAgentMentions", () => {
   it("rejects slugs that start with a digit or contain whitespace", () => {
     expect(parseAgentMentions("@agent: leading space")).toEqual([]);
     expect(parseAgentMentions("@agent:")).toEqual([]);
+    // Regex enforces `[a-zA-Z]` as the first slug char so digit-led
+    // tokens like `@agent:1agent` aren't picked up as mentions.
+    expect(parseAgentMentions("@agent:1agent here")).toEqual([]);
   });
 
   it("requires a word boundary before @ to avoid email collisions", () => {

@@ -359,6 +359,55 @@ describe("runSubagent — incognito isolation", () => {
     ).rejects.toThrow(/windowsAPI/i);
   });
 
+  it("closes the incognito window and releases the slot when child-conversation creation fails", async () => {
+    // Force createChildConversation to throw by deleting the parent
+    // row before runSubagent reads it. The runner should still close
+    // the already-opened incognito window in its finally block, and
+    // release the concurrency slot — earlier versions leaked both.
+    const create = vi.fn(async () => ({ id: 9999 }));
+    const remove = vi.fn(async () => {});
+    const api: WindowsAPI = { create, remove };
+
+    // Drop the parent row so createChildConversation can't find it.
+    await chatDb.deleteConversation("parent-conv");
+
+    await expect(
+      runSubagent({
+        agentDef: fakeAgent,
+        context: minimalContext,
+        isolation: "incognito",
+        parentConversationId: "parent-conv",
+        parentToolContext: fakeCtx(),
+        windowsAPI: api,
+        runAgentLoop: async () => ({ finalText: "ok", status: "completed" }),
+      }),
+    ).rejects.toThrow(/parent-conv not found/);
+
+    // Window was opened before the throw; finally must close it.
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(9999);
+
+    // Slot should be released so subsequent runs against this parent
+    // can still acquire one. Re-create the parent and run a second
+    // subagent — if the slot leaked we'd hit the concurrency cap.
+    await chatDb.createConversation({
+      id: "parent-conv",
+      title: "Parent",
+      spaceId: "space-A",
+      createdAt: 100,
+      updatedAt: 100,
+    });
+    const ok = await runSubagent({
+      agentDef: fakeAgent,
+      context: minimalContext,
+      isolation: "peer",
+      parentConversationId: "parent-conv",
+      parentToolContext: fakeCtx(),
+      runAgentLoop: async () => ({ finalText: "ok", status: "completed" }),
+    });
+    expect(ok.status).toBe("completed");
+  });
+
   it("forwards abortSignal to runAgentLoop so the loop can cancel mid-stream", async () => {
     const controller = new AbortController();
     let observedSignal: AbortSignal | undefined;

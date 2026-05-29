@@ -98,6 +98,18 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
               input: p.input,
               output: "output" in p ? p.output : undefined,
               errorText: "errorText" in p ? (p.errorText as string) : undefined,
+              // Preserve approval metadata on the round-trip so a part
+              // serialized via this fallback path doesn't lose its
+              // approval id/state. Mirrors the explicit `dynamic-tool`
+              // branch above.
+              approval:
+                "approval" in p
+                  ? (p.approval as {
+                      id: string;
+                      approved?: boolean;
+                      reason?: string;
+                    })
+                  : undefined,
             },
           ];
         }
@@ -133,6 +145,13 @@ export function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
     if (p.type === "text" || p.type === "reasoning") return p.text.length > 0;
     if (p.type === "dynamic-tool") return true;
     if (p.type === "file" || p.type === "source-url") return true;
+    // Persisted completion-check rejection blocks must be considered
+    // meaningful — the serializer goes out of its way to round-trip
+    // them (see the `data-completion-check-rejection` branch in
+    // `serializeParts`). Without this case, a turn whose only saved
+    // content is a rejection would be dropped by the `onFinish`
+    // save gate, contradicting the persist-on-purpose contract.
+    if (p.type === "data-completion-check-rejection") return true;
     // step-start and data-compaction are markers, not user-visible content.
     return false;
   });

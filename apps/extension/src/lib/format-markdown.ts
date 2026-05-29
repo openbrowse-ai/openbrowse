@@ -180,7 +180,10 @@ export function formatPartAsMarkdown(part: any): string | null {
           ? out.finalText
           : "(no output)";
 
-      const slug = typeof input?.slug === "string" ? input.slug : "subagent";
+      const slug =
+        typeof input?.slug === "string" && input.slug.trim().length > 0
+          ? input.slug.trim()
+          : "subagent";
       const displayName = slug.charAt(0).toUpperCase() + slug.slice(1) + " Agent";
       const header = `**Tool: delegate** — ${displayName}`;
 
