@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import type { CompletionCheckSettings } from "./agent/completion-check/types";
+import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
 import type { McpServerConfig } from "./mcp/types";
 
 export interface FavoriteTab {
@@ -95,6 +96,28 @@ export interface Conversation {
   todos?: TodoItem[];
   createdAt: number;
   updatedAt: number;
+
+  // Subagent lineage (added in chat-db v8). All optional/nullable so
+  // pre-migration rows continue to read back cleanly.
+  /** Parent conversation that spawned this run; null for user-rooted conversations. */
+  parentConversationId?: string | null;
+  /** Slug of the AgentDefinition that produced this conversation. */
+  subagentSlug?: string | null;
+  /** Live run status, persisted across MV3 service-worker pauses. */
+  subagentStatus?: SubagentStatus | null;
+  /** The final text the subagent returned to the parent. */
+  subagentFinalText?: string | null;
+  /**
+   * Live trace title set by the subagent itself via the `setTaskTitle`
+   * tool. Updated as the subagent moves through phases of work. Surfaces
+   * in the parent's `DelegateResult` block and the child conversation's
+   * breadcrumb. Falls back to the delegation `task` string when unset.
+   */
+  subagentTraceTitle?: string | null;
+  /** How this conversation is isolated from its parent. */
+  isolationProfile?: IsolationProfile | null;
+  /** windowId of a incognito window owned by this run, so we can clean up on cancellation. */
+  ephemeralWindowId?: number | null;
 }
 
 export interface TodoItem {

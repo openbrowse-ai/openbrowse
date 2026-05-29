@@ -13,6 +13,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { CodeResult } from "./tool-results/execute-code";
 import { PythonResult } from "./tool-results/execute-python";
+import { DelegateResult } from "./tool-results/delegate";
 import {
   GlobResult,
   GrepResult,
@@ -29,6 +30,16 @@ import { getToolPreview } from "./tool-previews";
 type ResultRenderer = (props: {
   args: Record<string, unknown>;
   result: unknown;
+  toolCallId: string;
+  /**
+   * The underlying part state. Most renderers don't need it, but the
+   * `delegate` renderer uses it to distinguish a still-running call
+   * (`input-available`) from one that was healed after the parent
+   * stream errored (`errored`).
+   */
+  state?: "call" | "result" | "denied" | "errored";
+  /** Heal/error message attached when `state === "errored"`. */
+  errorText?: string;
 }) => ReactNode;
 
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
@@ -44,6 +55,15 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
   LS: ({ args, result }) => <LSResult args={args} result={result} />,
   skill: ({ args, result }) => <SkillResult args={args} result={result} />,
+  delegate: ({ args, result, toolCallId, state, errorText }) => (
+    <DelegateResult
+      args={args}
+      result={result}
+      toolCallId={toolCallId}
+      state={state}
+      errorText={errorText}
+    />
+  ),
   webFetch: ({ args, result }) => <WebFetchResult args={args} result={result} />,
 };
 
@@ -53,6 +73,8 @@ interface ToolCallBlockProps {
   args: Record<string, unknown>;
   result?: unknown;
   state: "call" | "result" | "denied" | "errored";
+  /** Surfaced when `state === "errored"` (e.g. heal-time errorText). */
+  errorText?: string;
 }
 
 const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
@@ -85,6 +107,9 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
     pending: "Reading bundled file...",
     done: "Read bundled file",
   },
+
+  // (No `delegate` entry — `delegate` bypasses the outer ToolCallBlock
+  // wrapper entirely; SubagentTrace renders the whole UI itself.)
 };
 
 const TAB_TOOLS = new Set([
@@ -169,6 +194,7 @@ export function ToolCallBlock({
   args,
   result,
   state,
+  errorText,
 }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const pending = state === "call";
@@ -217,6 +243,30 @@ export function ToolCallBlock({
     );
   }
 
+  // Errored: tool call was healed because its result never arrived
+  // (parent stream interrupted). Compact non-expandable row showing
+  // the heal errorText. The `delegate` tool bypasses this branch
+  // because its custom renderer (DelegateResult) handles errored
+  // state itself — falling through here would render the raw
+  // `delegate` label instead of the SubagentTrace.
+  if (errored && toolName !== "delegate") {
+    return (
+      <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
+        <X className="size-3 shrink-0 text-destructive/70" />
+        <span className="text-muted-foreground/70 line-through">
+          {dynamicLabels.done}
+        </span>
+        {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+        <span
+          className="text-[11px] text-muted-foreground/60 ml-1"
+          title={errorText}
+        >
+          Interrupted
+        </span>
+      </div>
+    );
+  }
+
   // Resolve custom renderer: built-in map first, then connector's renderResult
   const builtinRenderer = BUILTIN_RESULT_RENDERERS[toolName];
   const mcpToolName = mcpInfo?.toolName;
@@ -227,9 +277,32 @@ export function ToolCallBlock({
       ? ({ result }) => connectorRenderer(mcpToolName, result)
       : undefined);
 
+  // `delegate` is fully self-rendered: SubagentTrace IS the trigger +
+  // content. Wrapping it in another Collapsible/trigger row would
+  // double-stack chevrons and surface a misleading SDK-state label
+  // ("Subagent finished" / "Delegating to subagent...") above a trace
+  // whose own pill may say something different. Bypass the outer
+  // wrapper entirely — the custom renderer handles all states.
+  if (toolName === "delegate" && customRenderer) {
+    const rendered = customRenderer({
+      args,
+      result: resolvedResult,
+      toolCallId,
+      state,
+      errorText,
+    });
+    if (rendered !== null) {
+      return <>{rendered}</>;
+    }
+  }
+
   // Tools with custom renderers: always-expanded when done
   if (customRenderer && !pending && resolvedResult) {
-    const rendered = customRenderer({ args, result: resolvedResult });
+    const rendered = customRenderer({
+      args,
+      result: resolvedResult,
+      toolCallId,
+    });
     if (rendered !== null) {
       return (
         <Collapsible

@@ -54,6 +54,33 @@ export interface ToolSession {
   getTodos?: () => Promise<TodoItem[]>;
   /** Replace the current to-do list for this session. */
   setTodos?: (todos: TodoItem[]) => Promise<void>;
+  /**
+   * Set when this session is running as a subagent. Carries the parent's
+   * conversation id and the depth in the agent tree (root = 0, first-level
+   * subagent = 1). Used to enforce the depth cap and to label child
+   * conversations / tab groups with their parent's identity.
+   *
+   * `toolCallId` is the parent's `delegate` tool call id — used by
+   * subagent-only tools (e.g. `setTaskTitle`) to broadcast UI events
+   * keyed to a specific delegation block in the parent's chat.
+   *
+   * Absent on the root parent agent's session.
+   */
+  parent?: {
+    conversationId: string;
+    depth: number;
+    toolCallId?: string;
+  };
+  /**
+   * For `incognito` subagent runs: the windowId of the fresh incognito
+   * window the runner opened. Tools that create tabs (e.g. `navigate`)
+   * should pass this to `driver.createTab({windowId})` so the subagent's
+   * tabs land in its own window rather than the user's active window.
+   *
+   * Absent on `inline` and `peer` runs (and on the root agent), in which
+   * case tabs are created in the user's currently focused window.
+   */
+  targetWindowId?: number;
 }
 
 export interface ToolContext {
@@ -61,6 +88,15 @@ export interface ToolContext {
   session?: ToolSession;
   /** AbortSignal forwarded from the agent loop, when the SDK supplies one. */
   signal?: AbortSignal;
+  /**
+   * The AI SDK's tool-call id for this invocation, threaded through by
+   * the toSDKTool wrapper. Used by tools that emit cross-component
+   * events keyed to a specific call (e.g. `delegate` broadcasting
+   * `SUBAGENT_CHILD_ASSIGNED` so the parent's `DelegateResult` block
+   * can subscribe to live updates as soon as the child conversation
+   * exists, before the tool finishes).
+   */
+  toolCallId?: string;
 }
 
 /**

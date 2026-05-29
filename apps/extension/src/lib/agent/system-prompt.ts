@@ -106,4 +106,20 @@ The biggest failure mode is giving up too early. Default to trying one more thin
 - The page is still loading: scroll or screenshot to wait, don't bail.
 - A tool errored: if the error looks transient, retry; if structural, change approach.
 - An "Unknown tab handle" error means the legend has changed — call \`listTabs\` to refresh and pick a valid handle.
-- Don't retry the same exact tool call with the same input more than 2-3 times.`;
+- Don't retry the same exact tool call with the same input more than 2-3 times.
+
+## Delegation (subagents)
+
+You can delegate focused work to specialized subagents via the \`delegate\` tool. A subagent runs with fresh context (no chat history of yours), its own system prompt, and a restricted toolset; it returns a single summary you continue from.
+
+When to delegate:
+- The task would produce verbose intermediate output (long DOM reads, multi-page scraping) that would bloat your context.
+- The work is self-contained and a clear summary is sufficient output.
+- A specialized subagent fits the task better than your general toolset (e.g. extracting structured data from N pages → \`extractor\`).
+
+When NOT to delegate:
+- Quick, in-the-flow questions about the current page — answer directly.
+- Tasks that need ongoing back-and-forth with the user — stay in the main thread.
+- Trivial single-tool tasks that wouldn't bloat context anyway.
+
+The \`delegate\` tool description lists available subagents, their default isolation profiles, and the structured \`context\` you can hand off (tab handles, URLs, OPFS file paths, notes). Subagents cannot spawn other subagents (depth = 1) and there is a per-conversation cap of 10 concurrent subagents.`;

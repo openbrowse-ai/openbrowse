@@ -59,8 +59,15 @@ export const navigateTool: BrowserTool<Input, Output> = {
       }
     } else {
       // No handle → create a new background tab. This is the bootstrap
-      // path used on the first action of a conversation.
-      tabId = await ctx.driver.createTab(url, { active: false });
+      // path used on the first action of a conversation. For subagents
+      // running with `incognito` isolation, `session.targetWindowId`
+      // is set so the new tab lands in the subagent's own incognito
+      // window rather than the user's currently focused window.
+      const targetWindowId = ctx.session?.targetWindowId;
+      tabId = await ctx.driver.createTab(url, {
+        active: false,
+        ...(targetWindowId !== undefined && { windowId: targetWindowId }),
+      });
       createdNew = true;
     }
 

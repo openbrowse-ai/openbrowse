@@ -7,7 +7,7 @@ import type {
   ToolLoopAgentSettings,
   ToolSet,
 } from "ai";
-import { ToolLoopAgent, tool } from "ai";
+import { ToolLoopAgent, readUIMessageStream, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
 import { getMcpRegistry } from "../mcp";
@@ -18,6 +18,14 @@ import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
+import type {
+  AgentLoopConfig,
+  AgentLoopResult,
+} from "./subagents/runner";
+import {
+  persistAssistantStream,
+  persistDelegationMessage,
+} from "./subagents/persist-stream";
 import {
   getOrCreateHandle as getOrCreateTabHandle,
   loadHandlesForConversation,
@@ -47,7 +55,9 @@ import {
   typeInElementTool,
   updateMemoryTool,
 } from "./tools";
+import { createDelegateTool } from "./tools/delegate";
 import { createFsTools } from "./tools/fs";
+import { setTaskTitleTool } from "./tools/set-task-title";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT } from "./system-prompt";
@@ -512,7 +522,17 @@ export function buildExtensionToolContext(
   };
 }
 
-function toSDKTool<TInput, TOutput>(
+/**
+ * Wrap a `BrowserTool` in the AI SDK's tool shape so the SDK can call
+ * it with `(input, options)` semantics. Handles approval gating, tab
+ * resolution, abort-signal propagation, and result capture.
+ *
+ * Exported for unit tests that exercise the wrapper's contract directly
+ * (in particular, that `options.abortSignal` is forwarded into
+ * `ctx.signal` so `delegate` can cancel running subagents). Production
+ * callers should use the pre-built tool sets exposed below.
+ */
+export function toSDKTool<TInput, TOutput>(
   t: BrowserTool<TInput, TOutput>,
   toolKey: string,
 ): ToolSet[string] {
@@ -574,7 +594,21 @@ function toSDKTool<TInput, TOutput>(
 
   const execute = async (
     input: TInput,
-    options: { toolCallId: string; experimental_context?: unknown },
+    options: {
+      toolCallId: string;
+      experimental_context?: unknown;
+      /**
+       * Forwarded by the AI SDK on every tool invocation. When the
+       * outer chat stream is aborted (user clicks Stop, or the parent
+       * loop is cancelled), this signal fires so tools that wrap
+       * long-running async work — most importantly `delegate`, which
+       * runs an entire subagent loop — can propagate the cancellation
+       * downstream. We stamp it onto `ctx.signal` below so tools read
+       * it through the portable ToolContext surface rather than
+       * coupling to the SDK's options shape.
+       */
+      abortSignal?: AbortSignal;
+    },
   ) => {
     // Capture cid once at entry. Every chatDb / handle-map operation
     // reachable from this tool call — both inside the wrapper
@@ -603,12 +637,27 @@ function toSDKTool<TInput, TOutput>(
       }
     }
     try {
-      // Build the ToolContext fresh for this call, pinned to the cid we
-      // captured above. We deliberately ignore `options.experimental_context`
-      // — every tool registered with the agent flows through this wrapper,
-      // so building here gives us per-call pinning without relying on a
-      // construction-time global read.
-      const ctx = buildExtensionToolContext(cid);
+      // Threaded ToolContext from the SDK's experimental_context channel.
+      // Subagents inject their child ToolContext this way; for the parent
+      // agent, we fall back to building one fresh, pinned to the cid we
+      // captured above so a mid-call conversation switch can't race.
+      const baseCtx = (options.experimental_context as ToolContext | undefined)
+        ?? buildExtensionToolContext(cid);
+      // Stamp the toolCallId on a per-invocation ctx copy so tools that
+      // need it (e.g. `delegate` for live-progress broadcasts) can read
+      // it without changing the BrowserTool signature.
+      //
+      // Also stamp `signal` from the SDK's per-call abortSignal. This
+      // is what makes Stop work for `delegate`: ctx.signal flows into
+      // runSubagent → subagent.stream({ abortSignal }), and recursively
+      // into every child tool's own execute via the same wrapper.
+      // baseCtx.signal (if any) is overridden — the SDK's per-call
+      // signal is always the most accurate source of truth.
+      const ctx: ToolContext = {
+        ...baseCtx,
+        toolCallId: options.toolCallId,
+        ...(options.abortSignal && { signal: options.abortSignal }),
+      };
       const result = await t.execute(input, ctx);
       toolResultStore.set(options.toolCallId, result);
       if (isTabTool) {
@@ -1048,7 +1097,17 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use read_opfs_file({ path }).\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
-  const tools = { ...browserTools, ...mcpTools };
+  // Compose the parent's full tool set BEFORE constructing `runSubagentAgentLoop`,
+  // because the loop filters from this set when building the subagent's tools.
+  const parentTools = { ...browserTools, ...mcpTools };
+
+  // Tools available ONLY inside a subagent run — never exposed to the
+  // parent. `setTaskTitle` is the lone entry: it's how a subagent
+  // updates the trace title shown in the parent's `DelegateResult`
+  // block, but the parent itself has no use for it.
+  const subagentOnlyTools: Record<string, ToolSet[string]> = {
+    setTaskTitle: toSDKTool(setTaskTitleTool, "setTaskTitle"),
+  };
 
   let providerOptions: ToolLoopAgentSettings["providerOptions"];
   if (thinkingConfig?.enabled && thinkingConfig.config) {
@@ -1076,6 +1135,136 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       }
     }
   }
+
+  // The runner that the `delegate` tool uses to actually spawn a nested
+  // ToolLoopAgent. Closes over `model`, `parentTools`, and `providerOptions`;
+  // the runner filters tools per the subagent's `allowedTools` and always
+  // strips `delegate` (depth cap = 1).
+  //
+  // Streaming + persistence:
+  //   - For peer / incognito runs (`childConversationId` is set), we
+  //     consume the SDK's UIMessage stream via `readUIMessageStream` and
+  //     persist each meaningful tick under the child conversation. This
+  //     means clicking "Open child →" shows the subagent's full transcript
+  //     using the existing chat rendering — no new UI components needed.
+  //   - For inline runs (`childConversationId` is null), we still stream
+  //     so the loop progresses, but skip persistence — inline subagent
+  //     messages would interleave with the parent's chat in a confusing
+  //     way. Inline runs surface as the parent's `DelegateResult` block;
+  //     a follow-up phase will populate that block with the subagent's
+  //     tool trace via a different mechanism (Fix B).
+  //
+  // The `parent` block on the child's session marks the run as a
+  // subagent so the depth cap can fire if anything tries to call
+  // `delegate` again.
+  const runSubagentAgentLoop = async (
+    cfg: AgentLoopConfig,
+  ): Promise<AgentLoopResult> => {
+    const subagentTools: Record<string, ToolSet[string]> = {};
+    const allow = new Set(cfg.agentDef.allowedTools);
+    const deny = new Set(cfg.agentDef.deniedTools ?? []);
+    // Subagent tools come from two sources:
+    //   1. Parent's tool set (minus `delegate`, depth cap=1).
+    //   2. Subagent-only tools like `setTaskTitle` that have no parent
+    //      use case.
+    // Both sources go through the same allowedTools / deniedTools filter
+    // so an agent definition can opt out of either.
+    for (const [name, sdkTool] of Object.entries({
+      ...parentTools,
+      ...subagentOnlyTools,
+    })) {
+      if (name === "delegate") continue; // depth cap
+      if (!allow.has(name)) continue;
+      if (deny.has(name)) continue;
+      subagentTools[name] = sdkTool;
+    }
+
+    const maxSteps = cfg.agentDef.maxSteps ?? 30;
+    let stepCount = 0;
+
+    const subagent = new ToolLoopAgent({
+      model,
+      tools: subagentTools,
+      instructions: cfg.systemPrompt,
+      ...(providerOptions && { providerOptions }),
+      experimental_context: cfg.toolContext,
+      onStepFinish: () => {
+        stepCount += 1;
+      },
+      stopWhen: stepCountIs(maxSteps),
+    });
+
+    // Persist the synthesized delegation prompt as the first user
+    // message in the child conversation BEFORE we start the model loop —
+    // so a user opening the child mid-run sees the task spec the
+    // subagent received even if no assistant tokens have streamed yet.
+    if (cfg.childConversationId) {
+      try {
+        await persistDelegationMessage(
+          cfg.childConversationId,
+          cfg.userMessage,
+        );
+      } catch (err) {
+        console.warn(
+          "[subagents] persistDelegationMessage failed:",
+          err,
+        );
+        // Continue — UI will be missing the user message but the
+        // assistant transcript still renders.
+      }
+    }
+
+    try {
+      const streamResult = await subagent.stream({
+        prompt: cfg.userMessage,
+        ...(cfg.abortSignal && { abortSignal: cfg.abortSignal }),
+      });
+
+      // The UI message stream — same shape `useAgentChat` consumes for
+      // the parent — gives us per-step UIMessages (tool calls, text
+      // deltas, step markers) we can serialize and persist.
+      const uiMessageStream = streamResult.toUIMessageStream();
+      const uiMessages = readUIMessageStream<AgentUIMessage>({
+        stream: uiMessageStream,
+      });
+
+      // Drain the stream once: persist the transcript and return an
+      // `AssistantStreamResult` with the captured transcript so we can
+      // ship it back to the parent's DelegateResult block uniformly.
+      const drained = await persistAssistantStream({
+        childConversationId: cfg.childConversationId!,
+        uiMessages,
+      });
+
+      const finalText =
+        drained.finalText.trim().length > 0
+          ? drained.finalText
+          : `(no final text returned; subagent ran ${stepCount} step(s))`;
+      const status: AgentLoopResult["status"] =
+        stepCount >= maxSteps && drained.finalText.length === 0
+          ? "budget-exceeded"
+          : "completed";
+      return { finalText, status, transcript: drained.transcript };
+    } catch (err) {
+      const isAbort =
+        err instanceof Error &&
+        (err.name === "AbortError" || /aborted/i.test(err.message));
+      if (isAbort) {
+        return {
+          finalText: "(subagent cancelled)",
+          status: "cancelled",
+          errorMessage: "aborted",
+        };
+      }
+      throw err;
+    }
+  };
+
+  const delegateTool = createDelegateTool({
+    runAgentLoop: runSubagentAgentLoop,
+  });
+
+  const tools = { ...parentTools, delegate: toSDKTool(delegateTool, "delegate") };
 
   // Per-stream "needs mid-stream compaction" signal. Set by `onStepFinish`
   // when token usage crosses the threshold; read by `stopWhen` to break
