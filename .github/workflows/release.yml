@@ -9,6 +9,10 @@ name: Release extension
 #     is why the Changesets workflow uses workflow_call below.)
 #   - `workflow_call` — invoked by `changesets.yml` after it creates
 #     a release tag. This is the primary path for normal releases.
+#     NOTE: inside a called workflow, `github.event_name` reflects the
+#     CALLER's event (here: `push` to main), NOT `workflow_call`. So
+#     the tag is resolved from the `tag` input, never by branching on
+#     the event name — see the Resolve tag step below.
 #   - `workflow_dispatch` — manual escape hatch for re-running the
 #     build/upload against an existing tag (e.g. transient CI failure
 #     that left a release without its zip).
@@ -58,18 +62,21 @@ jobs:
         # controlled and would otherwise be substituted before the shell
         # parses the script — i.e. a classic command-injection vector.
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
-          # workflow_dispatch and workflow_call both populate INPUT_TAG;
-          # push events fall back to the ref. We branch on event_name to
-          # make the intent explicit rather than relying on INPUT_TAG
-          # being empty for push events.
-          case "$EVENT_NAME" in
-            workflow_dispatch) TAG="$INPUT_TAG" ;;
-            workflow_call)     TAG="$INPUT_TAG" ;;
-            *)                 TAG="${GITHUB_REF#refs/tags/}" ;;
-          esac
+          # workflow_dispatch and workflow_call both populate INPUT_TAG,
+          # which is the source of truth whenever it is set. We do NOT
+          # branch on github.event_name: in a workflow_call'd reusable
+          # workflow it reflects the CALLER's event (here `push`), not
+          # `workflow_call`, so an event-name switch would wrongly fall
+          # through to the push arm and read refs/heads/main as the tag.
+          # A real tag-push event leaves INPUT_TAG empty, so we fall
+          # back to the pushed ref in that case.
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
           # Validate format before doing anything with TAG. Accept the
           # two formats this repo actually produces: 'vX.Y.Z' (legacy)
           # and 'openbrowse@X.Y.Z' (Changesets workspace tag), each
