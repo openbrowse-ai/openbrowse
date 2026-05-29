@@ -493,7 +493,24 @@ function getOrCreateChat(
   origin: "sidepanel" | "home" = "sidepanel",
 ): Chat<AgentMessage> {
   const existing = chatInstances.get(conversationId);
-  if (existing) return existing.chat;
+  if (existing) {
+    // Keep the cached chat instance bound to the latest transport. The
+    // transport is rebuilt whenever MCP state changes (servers connecting,
+    // tools loading) via the `mcpVersion` dependency. Without this, the chat
+    // stays stuck with the first non-null transport it ever received — which
+    // on a fresh `home.html` load is built before MCP servers finish
+    // connecting, so it has zero MCP tools baked in.
+    //
+    // `transport` is typed `private readonly` on AbstractChat but is a plain
+    // mutable field at runtime (only read at sendMessage/resume time, so
+    // swapping it between turns is safe). The cast is required to reassign it.
+    if (transport) {
+      (existing.chat as unknown as {
+        transport: ChatTransport<AgentMessage>;
+      }).transport = transport;
+    }
+    return existing.chat;
+  }
 
   const chat = new Chat<AgentMessage>({
     transport: transport ?? undefined,

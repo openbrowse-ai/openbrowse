@@ -177,6 +177,11 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 
 // Store PKCE verifiers in memory (keyed by serverId)
 const pkceVerifiers = new Map<string, string>();
+// Store OAuth state values in memory (keyed by serverId) for CSRF protection.
+// Some providers (e.g. Attio) reject authorize requests that omit `state` or
+// use a low-entropy value, so we always generate one and validate it on the
+// callback per RFC 6749 §10.12.
+const oauthStates = new Map<string, string>();
 
 async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => void, passedConfig?: import("@/lib/mcp/types").McpServerConfig) {
   try {
@@ -236,6 +241,13 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
     const codeChallenge = await generateCodeChallenge(codeVerifier);
     pkceVerifiers.set(serverId, codeVerifier);
 
+    // Generate an opaque, high-entropy state value. RFC 6749 recommends `state`
+    // for CSRF protection; some providers (Attio) require it and reject
+    // requests with short or missing values. `generateCodeVerifier()` returns
+    // 32 bytes URL-safe base64, which clears every provider's threshold.
+    const state = generateCodeVerifier();
+    oauthStates.set(serverId, state);
+
     // Build authorization URL
     const params = new URLSearchParams({
       client_id: clientId,
@@ -243,6 +255,7 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
       response_type: "code",
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
+      state,
     });
 
     if (metadata.scopes_supported?.length) {
@@ -259,14 +272,35 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
 
     if (!responseUrl) {
       pkceVerifiers.delete(serverId);
+      oauthStates.delete(serverId);
       sendResponse({ ok: false, error: "Auth flow cancelled" });
       return;
     }
 
-    const code = new URL(responseUrl).searchParams.get("code");
+    const responseParams = new URL(responseUrl).searchParams;
+    const code = responseParams.get("code");
+    const returnedState = responseParams.get("state");
+    const expectedState = oauthStates.get(serverId);
+    oauthStates.delete(serverId);
+
     if (!code) {
       pkceVerifiers.delete(serverId);
       sendResponse({ ok: false, error: "No authorization code in response" });
+      return;
+    }
+
+    // Validate state matches what we sent (RFC 6749 §10.12 CSRF protection).
+    // Providers that ignore the param will simply not echo it back; treat that
+    // as acceptable for backwards compatibility, but reject any explicit
+    // mismatch.
+    if (expectedState && returnedState && returnedState !== expectedState) {
+      pkceVerifiers.delete(serverId);
+      console.error("[MCP OAuth] State mismatch", {
+        serverId,
+        expected: expectedState,
+        received: returnedState,
+      });
+      sendResponse({ ok: false, error: "OAuth state mismatch (possible CSRF)" });
       return;
     }
 
@@ -310,6 +344,8 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
 
     sendResponse({ ok: true, states: backgroundMcpRegistry.getStates() });
   } catch (err) {
+    pkceVerifiers.delete(serverId);
+    oauthStates.delete(serverId);
     sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
 }

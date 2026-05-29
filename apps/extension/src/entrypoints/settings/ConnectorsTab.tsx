@@ -33,6 +33,14 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { ConnectorPermissions } from "./ConnectorPermissions";
 
+const CATEGORY_LABELS: Record<string, string> = {
+  "developer-tools": "Developer Tools",
+  productivity: "Productivity",
+  databases: "Databases",
+  analytics: "Analytics",
+  crm: "CRM",
+};
+
 interface ConnectorsTabProps {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => Promise<void> | void;
@@ -204,7 +212,7 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
   );
 
   return (
-    <div className="flex h-full -m-4">
+    <div className="flex h-full">
       {/* Left panel — connector list */}
       <div className="w-64 shrink-0 border-r border-border flex flex-col">
         {/* List header */}
@@ -382,7 +390,7 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
                             {connector.name}
                           </div>
                           <div className="text-xs text-muted-foreground">
-                            {connector.category.replace("-", " ")}
+                            {CATEGORY_LABELS[connector.category] ?? connector.category.replace("-", " ")}
                           </div>
                         </div>
                         <Plus className="h-4 w-4 text-muted-foreground shrink-0" />
