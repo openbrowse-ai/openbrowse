@@ -221,9 +221,26 @@ export async function bindTabsToConversation(
   // overwrite this with a better 2-4 word label when it succeeds; on failure
   // the placeholder remains. The "OB | " prefix tags the group as an
   // OpenBrowse-owned agent group.
+  //
+  // Subagent runs (rows with `parentConversationId`) get a richer label
+  // that surfaces both the parent's title and the subagent slug, so the
+  // user can tell which child run a tab group belongs to at a glance.
   if (existingGroupId == null) {
-    const base = (conv.title ?? "").trim().slice(0, 20) || "Chat";
-    const placeholder = `OB | ${base}`;
+    let placeholder: string;
+    if (conv.parentConversationId) {
+      const parent = await chatDb.getConversation(conv.parentConversationId);
+      const parentBase = (parent?.title ?? "").trim().slice(0, 16) || "Chat";
+      const slug = (conv.subagentSlug ?? "").trim().slice(0, 16);
+      // Only append the slug suffix when it's a real, non-empty value.
+      // Defensive against rows where `subagentSlug` is set but blank
+      // (would otherwise produce a trailing " · ").
+      placeholder = slug
+        ? `OB | ${parentBase} · ${slug}`
+        : `OB | ${parentBase}`;
+    } else {
+      const base = (conv.title ?? "").trim().slice(0, 20) || "Chat";
+      placeholder = `OB | ${base}`;
+    }
     chrome.tabGroups
       .update(groupId, { title: placeholder, color: "grey" })
       .catch(() => {

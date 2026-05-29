@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { queueDb } from "./queue-db";
+import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
 import type { SerializedUIPart, TodoItem } from "./types";
 import { OPFS } from "./vfs/opfs";
 
@@ -29,10 +30,28 @@ interface ChatDB extends DBSchema {
       handleState?: PersistedHandleState;
       createdAt: number;
       updatedAt: number;
+      // v8 — subagent lineage. All optional / nullable so pre-migration
+      // rows still parse. See `Conversation` in lib/types.ts for the
+      // public-facing shape that mirrors these fields.
+      parentConversationId?: string | null;
+      subagentSlug?: string | null;
+      subagentStatus?: SubagentStatus | null;
+      subagentFinalText?: string | null;
+      subagentTraceTitle?: string | null;
+      isolationProfile?: IsolationProfile | null;
+      ephemeralWindowId?: number | null;
+      // v12 — toolCallId of the parent's `delegate` tool call that
+      // spawned this child conversation. Lets the parent's heal path
+      // (and the SW startup reconciliation) link a healed delegate
+      // part back to its specific child row so it can be finalized.
+      // Optional: undefined for parent (root) conversations and for
+      // child rows created before v12.
+      parentToolCallId?: string | null;
     };
     indexes: {
       "by-updated": number;
       "by-space": string;
+      "by-parent": string;
     };
   };
   messages: {
@@ -59,6 +78,54 @@ interface ChatDB extends DBSchema {
 
 let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null;
 
+/**
+ * In-process pubsub for message-table mutations. Used by
+ * `DelegateResult` (and other UI surfaces) to live-update when a
+ * subagent persists messages under a child conversation.
+ *
+ * Cross-context delivery (sidepanel popup vs main panel) is not
+ * implemented here — every existing UI subscriber lives in the same
+ * JS context as the writer (the runner's persistAssistantStream
+ * runs inside the side panel's `createAgentTransport` call). If we
+ * later need cross-context, mirror queue-db's chrome.runtime
+ * broadcast pattern.
+ */
+type MessageChangeListener = (conversationId: string) => void;
+const messageChangeListeners = new Set<MessageChangeListener>();
+
+function emitMessageChange(conversationId: string): void {
+  for (const listener of messageChangeListeners) {
+    try {
+      listener(conversationId);
+    } catch (err) {
+      console.warn("[chat-db] message change listener threw:", err);
+    }
+  }
+}
+
+/**
+ * Sibling pubsub for the `conversations` table. Fires after any
+ * `createConversation` / `updateConversation` mutation. Used by the
+ * subagent UI to live-update fields like `subagentTraceTitle`,
+ * `subagentStatus`, etc. without a chat-db round-trip on every event.
+ *
+ * Mirrors the message-change pattern (in-process only — cross-context
+ * delivery via chrome.runtime is out of scope; every existing
+ * subscriber lives in the same JS context as the writer).
+ */
+type ConversationChangeListener = (conversationId: string) => void;
+const conversationChangeListeners = new Set<ConversationChangeListener>();
+
+function emitConversationChange(conversationId: string): void {
+  for (const listener of conversationChangeListeners) {
+    try {
+      listener(conversationId);
+    } catch (err) {
+      console.warn("[chat-db] conversation change listener threw:", err);
+    }
+  }
+}
+
 function getDb(): Promise<IDBPDatabase<ChatDB>> {
   if (!dbPromise) {
     // v7: migrates legacy `{ type: "compaction", auto, ... }` parts
@@ -67,7 +134,16 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     // v8: introduces `handleState` (tab-handle persistence) on conversations.
     // No data migration: the field is optional and tab-handles.ts treats
     // missing/empty state as a fresh map starting at counter 1.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 8, {
+    // v9: adds subagent lineage fields and the by-parent index.
+    // v10: adds `subagentTraceTitle` (set by subagent via setTaskTitle).
+    //      Optional field; no backfill required.
+    // v11: renames `subagentSummary` → `subagentFinalText`. Storage rename
+    //      only; the value's meaning is unchanged.
+    // v12: adds `parentToolCallId` on conversations. Optional / nullable;
+    //      no backfill (existing children stay unlinked, which is fine —
+    //      the SW startup reconciliation pass also covers them via the
+    //      blanket "running" sweep).
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 12, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -75,6 +151,9 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           });
           convStore.createIndex("by-updated", "updatedAt");
           convStore.createIndex("by-space", "spaceId");
+          // by-parent is added properly by the v8 upgrade path; on a
+          // fresh install we still create it here so v1→v8 first-time
+          // bootstraps don't double-create.
 
           const msgStore = db.createObjectStore("messages", { keyPath: "id" });
           msgStore.createIndex("by-conversation", "conversationId");
@@ -173,10 +252,75 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           };
           migrateCompactionParts();
         }
+
         if (oldVersion < 8) {
           // `handleState` is optional on the conversation record; tab-handles.ts
           // treats `undefined` as "fresh map, counter starts at 1". No data
           // backfill required — the schema bump only signals the field exists.
+        }
+
+        if (oldVersion < 9) {
+          // Subagent lineage. Existing rows have no parent — set the field
+          // to null so the by-parent index treats them uniformly. The
+          // remaining lineage fields are optional and read back as
+          // undefined for pre-v9 rows; that's fine for the UI.
+          const convStore = transaction.objectStore("conversations");
+          if (!convStore.indexNames.contains("by-parent" as never)) {
+            convStore.createIndex("by-parent", "parentConversationId");
+          }
+          const migrateConversationsParent = async () => {
+            let cursor = await convStore.openCursor();
+            while (cursor) {
+              const record = cursor.value as Record<string, unknown>;
+              if (record.parentConversationId === undefined) {
+                record.parentConversationId = null;
+              }
+              cursor.update(record as ChatDB["conversations"]["value"]);
+              cursor = await cursor.continue();
+            }
+          };
+          migrateConversationsParent();
+        }
+
+        if (oldVersion < 10) {
+          // `subagentTraceTitle` is optional on the conversation record;
+          // no data backfill needed — pre-v10 rows read back with
+          // `subagentTraceTitle === undefined`, and the UI falls back to
+          // the delegation `task` string when unset. The schema bump
+          // exists only to mark the field's introduction so the
+          // structured clone path inside IndexedDB recognizes it.
+        }
+
+        if (oldVersion < 11) {
+          // v11: rename `subagentSummary` → `subagentFinalText` on conversations.
+          // Same content (the last assistant text-part the subagent emitted) — the
+          // rename clarifies it isn't a generated summary.
+          const convStore = transaction.objectStore("conversations");
+          const migrateConversationsFinalText = async () => {
+            let cursor = await convStore.openCursor();
+            while (cursor) {
+              const record = cursor.value as Record<string, unknown>;
+              if ("subagentSummary" in record) {
+                if (
+                  record.subagentSummary !== undefined &&
+                  record.subagentSummary !== null
+                ) {
+                  record.subagentFinalText = record.subagentSummary;
+                }
+                delete record.subagentSummary;
+                cursor.update(record as ChatDB["conversations"]["value"]);
+              }
+              cursor = await cursor.continue();
+            }
+          };
+          migrateConversationsFinalText();
+        }
+
+        if (oldVersion < 12) {
+          // v12: `parentToolCallId` is optional. No backfill needed —
+          // pre-v12 child rows simply read back with the field undefined,
+          // which the heal path treats as "unlinked" (falling back to
+          // the SW startup blanket reconciliation pass).
         }
       },
     });
@@ -196,6 +340,46 @@ export const chatDb = {
       all = await db.getAll("conversations");
     }
     return all.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /**
+   * Return the immediate children of a parent conversation, ordered by
+   * creation time ascending (oldest subagent run first). Used by the
+   * side panel to render nested subagent runs under the parent.
+   */
+  async listChildren(
+    parentConversationId: string,
+  ): Promise<ChatDB["conversations"]["value"][]> {
+    const db = await getDb();
+    const all = await db.getAllFromIndex(
+      "conversations",
+      "by-parent",
+      parentConversationId,
+    );
+    return all.sort((a, b) => a.createdAt - b.createdAt);
+  },
+
+  /**
+   * Find a child conversation by the parent `delegate` tool call id
+   * that spawned it. Returns undefined when no row matches (e.g. the
+   * child was created before v12 introduced `parentToolCallId`, or the
+   * parent had a different toolCallId).
+   *
+   * Implemented as an in-memory filter over `by-parent` rather than a
+   * dedicated index because the parent typically has only a handful of
+   * children and we already query by parent id elsewhere.
+   */
+  async findChildByParentToolCallId(
+    parentConversationId: string,
+    parentToolCallId: string,
+  ): Promise<ChatDB["conversations"]["value"] | undefined> {
+    const db = await getDb();
+    const all = await db.getAllFromIndex(
+      "conversations",
+      "by-parent",
+      parentConversationId,
+    );
+    return all.find((c) => c.parentToolCallId === parentToolCallId);
   },
 
   async getConversation(
@@ -224,6 +408,7 @@ export const chatDb = {
       todos: [],
       ...conv,
     });
+    emitConversationChange(conv.id);
     // Broadcast so other extension contexts (home tab, side panels, popups)
     // can refresh their conversation lists. Always sidebar-relevant.
     try {
@@ -255,6 +440,7 @@ export const chatDb = {
       await tx.store.put({ ...existing, ...updates });
     }
     await tx.done;
+    emitConversationChange(id);
     // Only broadcast for fields that materially affect conversation-list UIs.
     // Excludes high-frequency churn like `updatedAt` (per message turn),
     // `ownedTabIds`/`ownedGroupId` (tab-scoping reconciliation), and `todos`
@@ -336,6 +522,7 @@ export const chatDb = {
   async saveMessage(msg: ChatDB["messages"]["value"]): Promise<void> {
     const db = await getDb();
     await db.put("messages", msg);
+    emitMessageChange(msg.conversationId);
   },
 
   async saveMessages(msgs: ChatDB["messages"]["value"][]): Promise<void> {
@@ -345,6 +532,40 @@ export const chatDb = {
       await tx.store.put(msg);
     }
     await tx.done;
+    // De-dup conversation ids before emitting so a save of N messages
+    // for one conv only fires one listener call.
+    const convIds = new Set(msgs.map((m) => m.conversationId));
+    for (const convId of convIds) emitMessageChange(convId);
+  },
+
+  /**
+   * Subscribe to message-table mutations. Listener receives the
+   * `conversationId` of the affected conversation. Returns an
+   * unsubscribe function.
+   */
+  subscribeMessageChange(listener: MessageChangeListener): () => void {
+    messageChangeListeners.add(listener);
+    return () => {
+      messageChangeListeners.delete(listener);
+    };
+  },
+
+  /**
+   * Subscribe to `conversations`-table mutations (create + update).
+   * Mirrors `subscribeMessageChange` for the conversation row itself —
+   * lets UI surfaces live-update when subagent lineage fields like
+   * `subagentTraceTitle` or `subagentStatus` change.
+   *
+   * Returns an unsubscribe function. Same in-process-only delivery
+   * semantics as the message listener.
+   */
+  subscribeConversationChange(
+    listener: ConversationChangeListener,
+  ): () => void {
+    conversationChangeListeners.add(listener);
+    return () => {
+      conversationChangeListeners.delete(listener);
+    };
   },
 
   async deleteMessagesFrom(

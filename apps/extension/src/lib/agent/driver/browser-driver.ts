@@ -88,8 +88,16 @@ export interface BrowserDriver {
    * Open a new tab at the given URL. By default the new tab is created in
    * the background (not focused) so the agent doesn't steal focus from the
    * user's current tab.
+   *
+   * `windowId` (extension only): create the tab in a specific window
+   * rather than the user's currently focused window. Subagents running
+   * with `incognito` isolation use this to keep their tabs in the
+   * fresh incognito window the runner opened for them.
    */
-  createTab(url: string, opts?: { active?: boolean }): Promise<TabId>;
+  createTab(
+    url: string,
+    opts?: { active?: boolean; windowId?: number },
+  ): Promise<TabId>;
 
   /** Wait until a tab fires its `complete` lifecycle event. */
   waitForLoad(tabId: TabId, timeoutMs?: number): Promise<void>;

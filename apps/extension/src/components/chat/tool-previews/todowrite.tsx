@@ -3,7 +3,7 @@ import {
   TaskContent,
   TaskItem,
   TaskTrigger,
-} from "../../ai-elements/task";
+} from "../../ai-elements/plan-todos";
 import { registerToolPreview } from "./registry";
 import type { TodoItem } from "@/lib/types";
 

@@ -90,11 +90,12 @@ export class ExtensionDriver implements BrowserDriver {
 
   async createTab(
     url: string,
-    opts: { active?: boolean } = {},
+    opts: { active?: boolean; windowId?: number } = {},
   ): Promise<TabId> {
     const tab = await chrome.tabs.create({
       url,
       active: opts.active ?? false,
+      ...(opts.windowId !== undefined && { windowId: opts.windowId }),
     });
     return tab.id!;
   }

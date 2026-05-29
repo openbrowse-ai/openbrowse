@@ -68,7 +68,13 @@ export function ChatPicker({
 
   const refresh = useCallback(async () => {
     const convs = await chatDb.listConversations(spaceId);
-    setConversations(convs);
+    // Hide subagent child conversations from the top-level picker — they
+    // are reachable via "Open child →" inside the parent's tool block,
+    // and as a back-link from the child view itself. Listing them at the
+    // top would clutter the picker with auto-spawned rows.
+    setConversations(
+      convs.filter((c) => !c.parentConversationId),
+    );
   }, [spaceId]);
 
   useEffect(() => {

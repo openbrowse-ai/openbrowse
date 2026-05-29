@@ -169,6 +169,27 @@ export function formatPartAsMarkdown(part: any): string | null {
         .join("\n");
     }
 
+    if (toolName === "delegate") {
+      const inputStr = input
+        ? "```json\n" + JSON.stringify(input, null, 2) + "\n```\n"
+        : "";
+
+      const out = output as Record<string, unknown> | undefined;
+      const text =
+        typeof out?.finalText === "string" && out.finalText.trim().length > 0
+          ? out.finalText
+          : "(no output)";
+
+      const slug =
+        typeof input?.slug === "string" && input.slug.trim().length > 0
+          ? input.slug.trim()
+          : "subagent";
+      const displayName = slug.charAt(0).toUpperCase() + slug.slice(1) + " Agent";
+      const header = `**Tool: delegate** — ${displayName}`;
+
+      return [header, inputStr.trim(), text].filter(Boolean).join("\n\n");
+    }
+
     if (toolName === "todoWrite") {
       const todos = (input?.todos as Array<Record<string, unknown>>) || [];
       if (todos.length === 0) {

@@ -134,6 +134,10 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
               );
             }
             const toolState = resolveToolPartState(part, { isStreaming });
+            const errorText =
+              toolState.state === "errored" && "errorText" in part
+                ? ((part as { errorText?: string }).errorText ?? "")
+                : undefined;
             return (
               <ToolCallBlock
                 key={part.toolCallId}
@@ -142,6 +146,7 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
                 args={(part.input as Record<string, unknown>) ?? {}}
                 result={toolState.result}
                 state={toolState.state}
+                {...(errorText !== undefined && { errorText })}
               />
             );
           }
@@ -204,6 +209,10 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
                 );
               }
               const toolState = resolveToolPartState(p, { isStreaming });
+              const errorText =
+                toolState.state === "errored" && typeof p.errorText === "string"
+                  ? (p.errorText as string)
+                  : undefined;
               return (
                 <ToolCallBlock
                   key={part.toolCallId}
@@ -212,6 +221,7 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
                   args={(p.input as Record<string, unknown>) ?? {}}
                   result={toolState.result}
                   state={toolState.state}
+                  {...(errorText !== undefined && { errorText })}
                 />
               );
             }

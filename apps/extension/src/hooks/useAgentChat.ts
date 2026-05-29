@@ -26,6 +26,23 @@ import {
   type Attachment,
   formatMentionContext,
 } from "@/components/chat/ChatInput";
+import { listAgents } from "@/lib/agent/subagents/registry";
+import { finalizeOrphanedChildrenForHeals } from "@/lib/agent/subagents/heal-orphan-children";
+import {
+  formatAgentMentionPrefix,
+  parseAgentMentions,
+} from "@/lib/chat/format-agent-mention";
+import {
+  extractTextContent,
+  hasMeaningfulContent,
+  serializeParts,
+} from "@/lib/agent/serialize-parts";
+
+// Re-export so existing tests (and any external imports) that pulled
+// `serializeParts` from this module continue to resolve. The canonical
+// definition lives in `lib/agent/serialize-parts.ts` so the subagent
+// runner can share it.
+export { serializeParts };
 import { DEFAULT_AGENT_SETTINGS, DEFAULT_SETTINGS } from "@/lib/constants";
 import { getMcpRegistry } from "@/lib/mcp";
 import { storage } from "@/lib/storage";
@@ -75,132 +92,10 @@ function generateId() {
   return crypto.randomUUID();
 }
 
-/**
- * Serialize a UIMessage's parts into the chat-db's persistable shape.
- *
- * Exported (rather than module-private) so the round-trip persistence
- * contract can be tested directly without spinning up the full chat
- * lifecycle. The whitelist nature of this function is the most
- * common source of "data part rendered live but disappeared after
- * reload" bugs — having a dedicated test suite catches new variants
- * being added to the UI but not to the serializer.
- */
-export function serializeParts(parts: AgentMessage["parts"]): SerializedUIPart[] {
-  return parts.flatMap((part): SerializedUIPart[] => {
-    switch (part.type) {
-      case "text":
-        return [{ type: "text", text: part.text }];
-      case "reasoning":
-        return [{ type: "reasoning", text: part.text }];
-      case "file":
-        return [{ type: "file", mediaType: part.mediaType, url: part.url }];
-      case "source-url":
-        return [
-          {
-            type: "source-url",
-            sourceId: part.sourceId,
-            url: part.url,
-            title: part.title,
-          },
-        ];
-      case "step-start":
-        return [{ type: "step-start" }];
-      case "data-compaction":
-        // `part.data` is `CompactionData` thanks to AgentDataParts.
-        return [{ type: "data-compaction", data: part.data }];
-      case "data-completion-check-rejection":
-        // Persist completion-check rejection blocks so users see the
-        // concerns again after a reload. Without this case, the chunk
-        // is silently dropped at serialize time and the conversation
-        // looks like the gate never ran.
-        return [{ type: "data-completion-check-rejection", data: part.data }];
-      case "data-completion-check-running":
-        // Strip running indicators at serialize time. They're a live-
-        // stream concern only:
-        //  - "evaluating" entries shouldn't survive reload — saved
-        //    means the stream is over forever, but a persisted
-        //    "evaluating" part would semantically lie about that
-        //    state.
-        //  - "done" entries render nothing in the UI (the spinner is
-        //    gone; rejected/force-emitted are surfaced by the
-        //    sibling rejection block; approved/skipped are silent).
-        //    Persisting them would be dead weight in chatDb.
-        //
-        // The runtime UI guard (`isStreaming` check in
-        // CompletionCheckRunningBlock) handles in-memory mid-stream
-        // aborts; we never need this part on disk.
-        return [];
-      case "dynamic-tool":
-        return [
-          {
-            type: "dynamic-tool",
-            toolName: part.toolName,
-            toolCallId: part.toolCallId,
-            state: part.state,
-            input: part.input,
-            output: "output" in part ? part.output : undefined,
-            errorText: "errorText" in part ? part.errorText : undefined,
-            approval: "approval" in part ? part.approval : undefined,
-          },
-        ];
-      default: {
-        const p = part as Record<string, unknown>;
-        if (
-          typeof part.type === "string" &&
-          part.type.startsWith("tool-") &&
-          "toolCallId" in p &&
-          "state" in p &&
-          "input" in p
-        ) {
-          return [
-            {
-              type: "dynamic-tool",
-              toolName: part.type.slice(5),
-              toolCallId: p.toolCallId as string,
-              state: p.state as string,
-              input: p.input,
-              output: "output" in p ? p.output : undefined,
-              errorText: "errorText" in p ? (p.errorText as string) : undefined,
-            },
-          ];
-        }
-        return [];
-      }
-    }
-  });
-}
-
-function extractTextContent(parts: SerializedUIPart[]): string {
-  return parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
-    .join("");
-}
-
-/**
- * Whether `parts` represents an assistant turn worth persisting/showing.
- *
- * The AI SDK's `onFinish` callback fires for every terminal state —
- * including errors that hit before the model produced any content. In
- * that path `parts` ends up empty (or just a `step-start` marker). If
- * we save such a message to chatDb anyway, the conversation gets
- * stuck with a bare regenerate-icon bubble after the next page reload
- * (the in-memory error banner from `useChat`'s `error` state doesn't
- * survive refreshes).
- *
- * Returning false here from `onFinish` skips the save; on conversation
- * load, a trailing message that fails this predicate is also self-
- * healed out of chatDb so previously-broken chats recover automatically.
- */
-function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
-  return parts.some((p) => {
-    if (p.type === "text" || p.type === "reasoning") return p.text.length > 0;
-    if (p.type === "dynamic-tool") return true;
-    if (p.type === "file" || p.type === "source-url") return true;
-    // step-start and data-compaction are markers, not user-visible content.
-    return false;
-  });
-}
+// `serializeParts`, `extractTextContent`, and `hasMeaningfulContent` were
+// extracted to `lib/agent/serialize-parts.ts` so the subagent runner can
+// reuse the exact same encoding when persisting child-conversation
+// transcripts. Re-imported here under the original local names.
 
 /**
  * Heals "stranded" tool calls in `messages` so a subsequent prompt
@@ -398,6 +293,50 @@ async function persistHealedMessages(
   if (updates.length > 0) {
     await chatDb.saveMessages(updates);
   }
+  // Finalize any child conversations whose parent delegate tool call
+  // was just healed. Best-effort: failures are logged but don't block
+  // the heal write — the SW startup reconciliation pass will catch any
+  // stragglers on next restart.
+  const healedDelegateToolCallIds =
+    extractHealedDelegateToolCallIds(healedMessages);
+  if (healedDelegateToolCallIds.length > 0) {
+    await finalizeOrphanedChildrenForHeals({
+      parentConversationId: conversationId,
+      healedDelegateToolCallIds,
+    });
+  }
+}
+
+/**
+ * Collect the toolCallIds of all `delegate` parts in the healed
+ * messages. These are the parents of orphaned child conversations
+ * that need finalization.
+ */
+function extractHealedDelegateToolCallIds(
+  healedMessages: AgentMessage[],
+): string[] {
+  const ids: string[] = [];
+  for (const m of healedMessages) {
+    for (const part of m.parts) {
+      const p = part as Record<string, unknown>;
+      const isTool =
+        p.type === "dynamic-tool" ||
+        (typeof p.type === "string" &&
+          (p.type as string).startsWith("tool-"));
+      if (!isTool) continue;
+      const toolName =
+        p.type === "dynamic-tool"
+          ? (p.toolName as string | undefined)
+          : typeof p.type === "string"
+            ? (p.type as string).slice(5)
+            : undefined;
+      if (toolName !== "delegate") continue;
+      const toolCallId =
+        typeof p.toolCallId === "string" ? p.toolCallId : null;
+      if (toolCallId) ids.push(toolCallId);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -1280,7 +1219,12 @@ export function useAgentChat({
         // there's no implicit "host tab" to pin any more.
         setAgentContext(conversationId);
 
-        const text = claimed.text + claimed.mentionContext + claimed.attachmentBlock;
+        const agentPrefix = formatAgentMentionPrefix(
+          parseAgentMentions(claimed.text),
+          new Set(listAgents().map((a) => a.slug)),
+        );
+        const text =
+          agentPrefix + claimed.text + claimed.mentionContext + claimed.attachmentBlock;
         const files = claimed.visionFiles.map((vf) => ({
           type: "file" as const,
           mediaType: vf.mediaType,
@@ -1523,7 +1467,13 @@ export function useAgentChat({
       // user's question clean in history); the attachment block, in
       // contrast, must persist so `UserMessage` can re-render filename
       // chips after a reload.
-      const text = baseText + mentionContext + attachmentBlock;
+      // The agent-mention prefix is model-only too (`@agent:<slug>` instructs
+      // the parent's first tool call), so we keep it out of `persistedText`.
+      const agentPrefix = formatAgentMentionPrefix(
+        parseAgentMentions(baseText),
+        new Set(listAgents().map((a) => a.slug)),
+      );
+      const text = agentPrefix + baseText + mentionContext + attachmentBlock;
       const persistedText = baseText + attachmentBlock;
 
       const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
@@ -1824,7 +1774,11 @@ export function useAgentChat({
       }
 
       // See `handleSubmit` for rationale on the text/persistedText split.
-      const text = baseText + mentionContext + attachmentBlock;
+      const agentPrefix = formatAgentMentionPrefix(
+        parseAgentMentions(baseText),
+        new Set(listAgents().map((a) => a.slug)),
+      );
+      const text = agentPrefix + baseText + mentionContext + attachmentBlock;
       const persistedText = baseText + attachmentBlock;
 
       const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({

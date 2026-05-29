@@ -4,6 +4,7 @@ import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel
 import { openHomePage } from "./messages";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { chatDb } from "@/lib/chat-db";
+import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
 
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
   return (data[key] as TidyState) ?? {
@@ -17,6 +18,50 @@ function getTidyState(data: Record<string, unknown>, key: string): TidyState {
 export default defineBackground({
   main() {
     registerModelsDevRefresh();
+
+    // Defensive cleanup for orphaned subagent runs that survived an
+    // MV3 service-worker death. Any conversation row with
+    // `subagentStatus === "running"` post-restart is by definition
+    // orphaned: the runner only writes "running" while alive in
+    // memory, so a "running" row after SW boot means the runner died
+    // before reaching `finalizeChildConversation`.
+    //
+    // We do two things in order:
+    //   1. Finalize the orphaned child rows (status: failed).
+    //   2. Close any incognito windows (`ephemeralWindowId`) tied to
+    //      orphaned (newly-finalized or already-finalized) rows.
+    //
+    // Both steps are idempotent — the helper only finalizes "running"
+    // rows, and chrome.windows.remove no-ops on already-closed windows.
+    void (async () => {
+      try {
+        await finalizeAllRunningChildrenAtStartup();
+
+        // Close any incognito windows still attached to a finalized
+        // child row. Covers both:
+        //   - rows the helper just moved off "running" (above), and
+        //   - the legacy "runner finished but `finally` block didn't
+        //     close the window before the worker died" case.
+        const all = await chatDb.listConversations();
+        const lingeringWindows = all.filter(
+          (c) =>
+            c.ephemeralWindowId != null &&
+            c.subagentStatus !== "running" &&
+            c.subagentStatus !== null,
+        );
+        for (const conv of lingeringWindows) {
+          if (conv.ephemeralWindowId == null) continue;
+          try {
+            await chrome.windows.remove(conv.ephemeralWindowId);
+          } catch {
+            // Window already gone — that's fine.
+          }
+          await chatDb.updateConversation(conv.id, { ephemeralWindowId: null });
+        }
+      } catch (err) {
+        console.warn("[subagents] orphan cleanup failed:", err);
+      }
+    })();
 
     chrome.action.onClicked.addListener(async (tab) => {
       if (!tab.id || !tab.windowId) return;
