@@ -327,7 +327,7 @@ export function buildBenchAgent(
       };
     } else if (typeof modelId === "string" && (modelId.startsWith("gpt") || modelId.startsWith("o"))) {
       providerOptions = {
-        openai: { reasoning: { effort: "medium" } },
+        openai: { reasoningEffort: "medium" },
       };
     }
   }

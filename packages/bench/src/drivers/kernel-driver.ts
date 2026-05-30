@@ -83,62 +83,83 @@ export class KernelDriver extends PlaywrightDriver {
       liveViewUrl = created.browser_live_view_url ?? "";
     }
 
-    // Connect Playwright over CDP.
-    const browser = await chromium.connectOverCDP(cdpWsUrl);
+    // From here on the Kernel session (acquired or freshly created) is live.
+    // If Playwright connection / context / CDP setup fails before we hand back
+    // a KernelDriver, the caller has no handle to clean up — so on ANY error
+    // we must close the partial Playwright connection AND free the Kernel
+    // session (release the pool slot, or delete the standalone browser),
+    // otherwise we leak a browser / pool slot. Then rethrow so the caller still
+    // sees the failure.
+    let browser: Browser | undefined;
+    try {
+      // Connect Playwright over CDP.
+      browser = await chromium.connectOverCDP(cdpWsUrl);
 
-    // Context isolation policy:
-    //   - Non-pool (fresh browser per trial): the default context is pristine,
-    //     so reuse it.
-    //   - Pool (warm browser reused across trials): the default context still
-    //     holds the PREVIOUS trial's cookies / localStorage / sessionStorage /
-    //     fingerprint state. Reusing it would leak state across trials and
-    //     break the per-trial isolation guarantee the local driver provides.
-    //     Create a FRESH BrowserContext instead — Chromium isolates cookies +
-    //     storage per BrowserContext, and `super.close()` closes this context
-    //     after each trial (so contexts don't accumulate while the pristine
-    //     default context stays untouched).
-    //
-    // NOTE: `connectOverCDP` + `newContext()` storage isolation against
-    // Kernel's REMOTE Chrome must be validated on a live pool. If the remote
-    // rejects multiple contexts or shares storage across them, fall back to
-    // explicit CDP storage clearing (Network.clearBrowserCookies +
-    // Storage.clearDataForOrigin) on acquire. Not yet exercised end-to-end.
-    const context = opts.poolId
-      ? await browser.newContext()
-      : browser.contexts()[0] || (await browser.newContext());
-    // Bump default navigation timeout from Playwright's 30s default to 90s,
-    // matching the local PlaywrightDriver. Kernel's stealth layer often auto-
-    // solves CAPTCHAs / bot challenges that take 40-60s, and the 30s default
-    // would cut the cord mid-solve and produce a spurious "page.goto Timeout"
-    // infrastructure error.
-    context.setDefaultNavigationTimeout(90_000);
-    const page = context.pages()[0] || (await context.newPage());
-    const cdpSession = await context.newCDPSession(page);
+      // Context isolation policy:
+      //   - Non-pool (fresh browser per trial): the default context is pristine,
+      //     so reuse it.
+      //   - Pool (warm browser reused across trials): the default context still
+      //     holds the PREVIOUS trial's cookies / localStorage / sessionStorage /
+      //     fingerprint state. Reusing it would leak state across trials and
+      //     break the per-trial isolation guarantee the local driver provides.
+      //     Create a FRESH BrowserContext instead — Chromium isolates cookies +
+      //     storage per BrowserContext, and `super.close()` closes this context
+      //     after each trial (so contexts don't accumulate while the pristine
+      //     default context stays untouched).
+      //
+      // NOTE: `connectOverCDP` + `newContext()` storage isolation against
+      // Kernel's REMOTE Chrome must be validated on a live pool. If the remote
+      // rejects multiple contexts or shares storage across them, fall back to
+      // explicit CDP storage clearing (Network.clearBrowserCookies +
+      // Storage.clearDataForOrigin) on acquire. Not yet exercised end-to-end.
+      const context = opts.poolId
+        ? await browser.newContext()
+        : browser.contexts()[0] || (await browser.newContext());
+      // Bump default navigation timeout from Playwright's 30s default to 90s,
+      // matching the local PlaywrightDriver. Kernel's stealth layer often auto-
+      // solves CAPTCHAs / bot challenges that take 40-60s, and the 30s default
+      // would cut the cord mid-solve and produce a spurious "page.goto Timeout"
+      // infrastructure error.
+      context.setDefaultNavigationTimeout(90_000);
+      const page = context.pages()[0] || (await context.newPage());
+      await context.newCDPSession(page);
 
-    const driver = new KernelDriver(
-      browser,
-      context,
-      kernel,
-      sessionId,
-      liveViewUrl,
-      opts,
-    );
+      const driver = new KernelDriver(
+        browser,
+        context,
+        kernel,
+        sessionId,
+        liveViewUrl,
+        opts,
+      );
 
-    // If recording is requested, start a replay natively via Kernel.
-    // Replays work with both fresh browsers and pool-acquired browsers — the
-    // session_id is what matters.
-    if (opts.recordVideoDir) {
-      try {
-        const replay = await kernel.browsers.replays.start(sessionId);
-        driver.currentReplayId = replay.replay_id;
-      } catch (err) {
-        console.warn(
-          `KernelDriver: failed to start replay recording: ${err instanceof Error ? err.message : String(err)}`,
-        );
+      // If recording is requested, start a replay natively via Kernel.
+      // Replays work with both fresh browsers and pool-acquired browsers — the
+      // session_id is what matters.
+      if (opts.recordVideoDir) {
+        try {
+          const replay = await kernel.browsers.replays.start(sessionId);
+          driver.currentReplayId = replay.replay_id;
+        } catch (err) {
+          console.warn(
+            `KernelDriver: failed to start replay recording: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
-    }
 
-    return driver;
+      return driver;
+    } catch (err) {
+      // Best-effort teardown so a failed init doesn't strand a Kernel browser.
+      await browser?.close().catch(() => {});
+      if (opts.poolId) {
+        await kernel.browserPools
+          .release(opts.poolId, { session_id: sessionId, reuse: false })
+          .catch(() => {});
+      } else {
+        await kernel.browsers.deleteByID(sessionId).catch(() => {});
+      }
+      throw err;
+    }
   }
 
   async close(): Promise<void> {

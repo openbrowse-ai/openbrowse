@@ -40,6 +40,10 @@ if (!apiKey) {
 
 const kernel = new Kernel({ apiKey });
 
+// Tracks a pool we successfully created so failure paths can delete it instead
+// of orphaning it. Set only after browserPools.create resolves.
+let createdPoolId: string | undefined;
+
 (async () => {
   console.error(`Creating Kernel browser pool (size=${size}${name ? `, name=${name}` : ""})...`);
   const pool = await kernel.browserPools.create({
@@ -56,6 +60,7 @@ const kernel = new Kernel({ apiKey });
     timeout_seconds: 600,
     ...(name ? { name } : {}),
   });
+  createdPoolId = pool.id;
   console.error(`Pool created: id=${pool.id}, target size=${pool.browser_pool_config.size}`);
   console.error(`Waiting for pool to warm up (poll until available_count >= 1)...`);
 
@@ -70,8 +75,7 @@ const kernel = new Kernel({ apiKey });
     );
     if (fresh.available_count >= 1) break;
     if (Date.now() - startMs > TIMEOUT_MS) {
-      console.error(`\nTimed out waiting for pool warm-up after ${TIMEOUT_MS}ms`);
-      process.exit(1);
+      throw new Error(`Timed out waiting for pool warm-up after ${TIMEOUT_MS}ms`);
     }
     await new Promise((r) => setTimeout(r, 3_000));
   }
@@ -79,7 +83,18 @@ const kernel = new Kernel({ apiKey });
 
   // Print ONLY the id to stdout — bash captures this.
   console.log(pool.id);
-})().catch((err) => {
-  console.error(`create-pool failed: ${err instanceof Error ? err.message : String(err)}`);
+})().catch(async (err) => {
+  console.error(`\ncreate-pool failed: ${err instanceof Error ? err.message : String(err)}`);
+  // Don't orphan a pool that was created but never became usable.
+  if (createdPoolId) {
+    console.error(`Cleaning up partially-created pool ${createdPoolId}...`);
+    await kernel.browserPools
+      .delete(createdPoolId, { force: true })
+      .catch((e) =>
+        console.error(
+          `  WARNING: failed to delete pool ${createdPoolId}: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      );
+  }
   process.exit(1);
 });
