@@ -3,7 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Evaluation harness for the OpenBrowse agent. Runs the agent headlessly via Playwright across a matrix of model × prompt × tool-set configurations.",
+  "description": "Evaluation harness for the OpenBrowse agent. Runs the agent headlessly via Playwright under declarative harness configs (prompt × tools × model × subagents).",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
   "engines": {
     "node": ">=22.15"
   },

@@ -13,6 +13,7 @@ import {
   COMPACTION_USER_PROMPT,
   SCREENSHOT_PROTECTED_TURNS,
   findProtectedTailStart,
+  keepOnlyLatestScreenshot,
   prunePartsAtSendTime,
   stripScreenshotsFromParts,
 } from "./compaction";
@@ -40,6 +41,24 @@ interface Options<TOOLS extends ToolSet> {
    * the next step's onStepFinish can re-trigger it cleanly.
    */
   onSendStart?: () => void;
+  /**
+   * When true, every `sendMessages` call strips all but the most recent
+   * page-screenshot tool result from the message history, regardless of
+   * user-turn boundaries. Used by the bench harness — bench trials have
+   * a single user turn (the task instruction), so the default user-turn
+   * protected-tail policy never strips anything in bench, leading to
+   * context bloat from accumulated screenshots. The extension agent runs
+   * with this off (default) so users keep multi-turn visual recall.
+   */
+  keepOnlyLatestImage?: boolean;
+  /**
+   * Tool names whose output is a page-state image, for the
+   * `keepOnlyLatestImage` policy. Defaults to the module's
+   * `PAGE_SCREENSHOT_TOOLS` (`["screenshot"]`). Headless harnesses pass their
+   * own page-state image tool names (e.g. `["viewPage"]`) so the public
+   * extension never hardcodes experiment tool names.
+   */
+  screenshotToolNames?: string[];
   /**
    * Snapshot the active conversation id at the moment `sendMessages` is
    * invoked. The transport captures this synchronously at the top of
@@ -129,17 +148,25 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
 {
   private readonly agent: Agent<never, TOOLS, never>;
   private readonly onSendStart?: () => void;
+  private readonly keepOnlyLatestImage: boolean;
+  private readonly screenshotToolNames?: Set<string>;
   private readonly getActiveConversationId?: () => string | null;
   private readonly buildCompletionCheckInput?: Options<TOOLS>["buildCompletionCheckInput"];
 
   constructor({
     agent,
     onSendStart,
+    keepOnlyLatestImage,
+    screenshotToolNames,
     getActiveConversationId,
     buildCompletionCheckInput,
   }: Options<TOOLS>) {
     this.agent = agent;
     this.onSendStart = onSendStart;
+    this.keepOnlyLatestImage = keepOnlyLatestImage ?? false;
+    this.screenshotToolNames = screenshotToolNames
+      ? new Set(screenshotToolNames)
+      : undefined;
     this.getActiveConversationId = getActiveConversationId;
     this.buildCompletionCheckInput = buildCompletionCheckInput;
   }
@@ -155,7 +182,10 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
     // by the gate inside this loop targets this cid even if
     // `setAgentContext(...)` is called by the UI mid-stream.
     const pinnedConversationId = this.getActiveConversationId?.() ?? null;
-    const rewritten = rewriteForLLM(messages);
+    let rewritten = rewriteForLLM(messages);
+    if (this.keepOnlyLatestImage) {
+      rewritten = keepOnlyLatestScreenshot(rewritten, this.screenshotToolNames);
+    }
 
     // Tie validateUIMessages' inferred UI_MESSAGE to *this transport's*
     // TOOLS so its `tools` parameter resolves to the same shape as
