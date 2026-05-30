@@ -136,6 +136,26 @@ export function ChatView({
     setLiveOriginTabId(originTabId ?? null);
   }, [originTabId]);
 
+  // The "Sharing X" pill in the side panel binds to this state. The
+  // mirroring ref lets `getSharedTabId` read the latest value without
+  // being re-created (and thus without destabilizing the `useCallback`s
+  // in `useAgentChat` that list it as a dependency).
+  const [activeTab, setActiveTab] = useState<{
+    id: number;
+    title: string;
+    favicon: string;
+    url: string;
+  } | null>(null);
+  const activeTabRef = useRef<typeof activeTab>(null);
+  activeTabRef.current = activeTab;
+
+  // Stable identity: reads the live tab via the ref, so an empty dep
+  // array is correct and keeps downstream callbacks memoized.
+  const getSharedTabId = useCallback(
+    () => activeTabRef.current?.id ?? null,
+    [],
+  );
+
   const {
     messages,
     input,
@@ -169,6 +189,7 @@ export function ChatView({
     spaceId,
     onNewConversation,
     initialInput,
+    getSharedTabId,
   });
 
   // Global Option+Space popup: persist unsent draft text across dismiss/reopen
@@ -313,11 +334,6 @@ export function ChatView({
     { kind: "sent" | "queued"; id: string } | null
   >(null);
   const [preEditInput, setPreEditInput] = useState("");
-  const [activeTab, setActiveTab] = useState<{
-    title: string;
-    favicon: string;
-    url: string;
-  } | null>(null);
 
   useEffect(() => {
     if (!isPopupMode) return;
@@ -386,11 +402,13 @@ export function ChatView({
           });
         }
         if (
+          tab?.id != null &&
           tab?.url &&
           !tab.url.startsWith("chrome://") &&
           !tab.url.startsWith(chrome.runtime.getURL(""))
         ) {
           setActiveTab({
+            id: tab.id,
             title: tab.title ?? "Untitled",
             favicon: tab.favIconUrl ?? "",
             url: tab.url,

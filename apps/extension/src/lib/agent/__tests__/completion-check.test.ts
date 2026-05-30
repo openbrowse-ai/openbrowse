@@ -1733,6 +1733,370 @@ describe("runWithRejectionLoop (transport integration)", () => {
     expect(evalCallCount).toBe(1);
   });
 
+  it("user stop mid-stream ⇒ stream closes WITHOUT running the completion check", async () => {
+    // Reproduces the bug: pressing Stop aborts the in-flight agent
+    // stream, but the loop only checked `abortSignal.aborted` at the
+    // TOP of the iteration — so after the partial stream drained it
+    // fell straight through to runCompletionCheck, evaluating a draft
+    // the user explicitly abandoned. The fix re-checks the abort signal
+    // after pipeAndObserve returns and closes the stream first.
+    const ctrl = new AbortController();
+
+    // Agent stub that aborts the controller *during* its stream, then
+    // still emits a final-text pair — exactly what happens when the
+    // user clicks Stop while the model is mid-response.
+    const agent: RejectionLoopAgent & { callCount: number } = {
+      tools: {},
+      get callCount() {
+        return callCount;
+      },
+      stream: async () => {
+        callCount++;
+        return {
+          toUIMessageStream: () =>
+            new ReadableStream<UIMessageChunk>({
+              start(controller) {
+                const id = "m-abort";
+                controller.enqueue({ type: "text-start", id } as never);
+                controller.enqueue({
+                  type: "text-delta",
+                  id,
+                  delta: "partial answer",
+                } as never);
+                // User presses Stop here, mid-stream.
+                ctrl.abort();
+                controller.enqueue({ type: "text-end", id } as never);
+                controller.close();
+              },
+            }),
+        };
+      },
+    };
+    let callCount = 0;
+
+    // Counting evaluator model: if the gate runs, doGenerate fires.
+    let evalCallCount = 0;
+    const evalModel = new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doGenerate: (async () => {
+        evalCallCount++;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                decision: "approve",
+                concerns: [],
+                reasoning: "ok",
+                confidence: 0.9,
+              }),
+            },
+          ],
+          finishReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+          warnings: [],
+        };
+      }) as never,
+    }) as unknown as LanguageModel;
+
+    const stream = runWithRejectionLoop({
+      agent,
+      validatedMessages: [userMessage("do X")],
+      sendMessagesAtCall: [userMessage("do X")],
+      abortSignal: ctrl.signal,
+      pinnedConversationId: null,
+      buildCompletionCheckInput: () => ({
+        conversationId: "c-abort-midstream",
+        turnIndex: 0,
+        rejectionRound: 0,
+        originalRequest: "do X",
+        draftedResponse: "(filled by loop)",
+        todos: [],
+        toolCallTrace: [makeTrace("snapshot")],
+        evaluatorModel: evalModel,
+      }),
+    });
+    await drainStream(stream);
+
+    expect(agent.callCount).toBe(1);
+    // The completion check must NOT have run on the abandoned draft.
+    expect(evalCallCount).toBe(0);
+  });
+
+  it("stop landing DURING the awaited buildCompletionCheckInput ⇒ no completion check", async () => {
+    // Production timing: the agent stream finishes cleanly (model
+    // produced its draft), so the abort is NOT set when the loop's
+    // post-stream guard runs. Then `buildCompletionCheckInput` awaits a
+    // chatDb read, and the user presses Stop *during* that await. A
+    // single guard before buildCompletionCheckInput misses this; the
+    // loop needs a second guard after the input is built, before
+    // runCompletionCheck fires the evaluator.
+    const ctrl = new AbortController();
+    const agent = makeStubAgent(["The complete answer."]);
+
+    let evalCallCount = 0;
+    const evalModel = new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doGenerate: (async () => {
+        evalCallCount++;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                decision: "approve",
+                concerns: [],
+                reasoning: "ok",
+                confidence: 0.9,
+              }),
+            },
+          ],
+          finishReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+          warnings: [],
+        };
+      }) as never,
+    }) as unknown as LanguageModel;
+
+    const stream = runWithRejectionLoop({
+      agent,
+      validatedMessages: [userMessage("do X")],
+      sendMessagesAtCall: [userMessage("do X")],
+      abortSignal: ctrl.signal,
+      pinnedConversationId: null,
+      // Async build that the user interrupts mid-await — exactly the
+      // chatDb-read window in production.
+      buildCompletionCheckInput: async () => {
+        await Promise.resolve();
+        ctrl.abort();
+        return {
+          conversationId: "c-abort-during-build",
+          turnIndex: 0,
+          rejectionRound: 0,
+          originalRequest: "do X",
+          draftedResponse: "(filled by loop)",
+          todos: [],
+          toolCallTrace: [makeTrace("snapshot")],
+          evaluatorModel: evalModel,
+        };
+      },
+    });
+    await drainStream(stream);
+
+    expect(agent.callCount).toBe(1);
+    expect(evalCallCount).toBe(0);
+  });
+
+  it("stop landing DURING the evaluator call ⇒ stream closes silently, no rejection/force-emit chunk", async () => {
+    // The abort lands after both guards pass, while the evaluator LLM
+    // call is in flight. The evaluator's abortSignal cancels it (throws
+    // AbortError), which runCompletionCheck catches and turns into a
+    // force-emit fallback. On a user-initiated stop we must NOT surface
+    // that fallback as a visible completion-check block — the user
+    // cancelled, so close silently.
+    const ctrl = new AbortController();
+    const agent = makeStubAgent(["The complete answer."]);
+
+    // Evaluator model whose doGenerate aborts then throws an
+    // AbortError, mimicking a stop arriving mid-evaluation.
+    const evalModel = new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doGenerate: (async () => {
+        ctrl.abort();
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      }) as never,
+    }) as unknown as LanguageModel;
+
+    const stream = runWithRejectionLoop({
+      agent,
+      validatedMessages: [userMessage("do X")],
+      sendMessagesAtCall: [userMessage("do X")],
+      abortSignal: ctrl.signal,
+      pinnedConversationId: null,
+      buildCompletionCheckInput: () => ({
+        conversationId: "c-abort-during-eval",
+        turnIndex: 0,
+        rejectionRound: 0,
+        originalRequest: "do X",
+        draftedResponse: "(filled by loop)",
+        todos: [],
+        toolCallTrace: [makeTrace("snapshot")],
+        evaluatorModel: evalModel,
+      }),
+    });
+    const chunks = await drainStream(stream);
+
+    // No visible completion-check rejection/force-emit block on a
+    // user-cancelled run.
+    const rejection = chunks.filter(
+      (c) =>
+        (c as { type: string }).type === "data-completion-check-rejection",
+    );
+    expect(rejection).toHaveLength(0);
+  });
+
+  it("abort lands during async buildCompletionCheckInput ⇒ no running pill, evaluator not called", async () => {
+    // Production timing: the agent stream finishes naturally (no abort
+    // chunk), the post-stream guard passes, then `buildCompletionCheckInput`
+    // awaits a chatDb read during which the user presses Stop. The loop
+    // must not flash a "Running quality check…" pill nor invoke the
+    // evaluator for a turn the user abandoned.
+    const ctrl = new AbortController();
+    const agent = makeStubAgent(["The complete answer."]);
+
+    let evalCallCount = 0;
+    const evalModel = new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doGenerate: (async () => {
+        evalCallCount++;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                decision: "approve",
+                concerns: [],
+                reasoning: "ok",
+                confidence: 0.9,
+              }),
+            },
+          ],
+          finishReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+          warnings: [],
+        };
+      }) as never,
+    }) as unknown as LanguageModel;
+
+    const stream = runWithRejectionLoop({
+      agent,
+      validatedMessages: [userMessage("do X")],
+      sendMessagesAtCall: [userMessage("do X")],
+      abortSignal: ctrl.signal,
+      pinnedConversationId: null,
+      buildCompletionCheckInput: async () => {
+        await Promise.resolve();
+        ctrl.abort();
+        return {
+          conversationId: "c-abort-during-build-pill",
+          turnIndex: 0,
+          rejectionRound: 0,
+          originalRequest: "do X",
+          draftedResponse: "(filled by loop)",
+          todos: [],
+          // Tool call ⇒ shouldGate would return gate:true (pill path).
+          toolCallTrace: [makeTrace("snapshot")],
+          evaluatorModel: evalModel,
+        };
+      },
+    });
+    const chunks = await drainStream(stream);
+
+    // No evaluator call on an aborted turn.
+    expect(evalCallCount).toBe(0);
+    // No "Running quality check…" pill flashed.
+    const running = chunks.filter(
+      (c) => (c as { type: string }).type === "data-completion-check-running",
+    );
+    expect(running).toHaveLength(0);
+  });
+
+  it("SDK abort chunk in the stream ⇒ no completion check, even when abortSignal flag is not yet set", async () => {
+    // Reproduces the real production path. On Stop, the AI SDK aborts
+    // the signal and its toUIMessageStream() emits a `{ type: "abort" }`
+    // chunk then CLOSES CLEANLY (it does not throw). pipeAndObserve
+    // therefore returns a populated finalText for an abandoned turn.
+    // The loop must treat the abort chunk itself as the terminate
+    // signal — not rely solely on the abortSignal.aborted flag, whose
+    // timing relative to the gate window is unreliable.
+    //
+    // Here abortSignal is intentionally left UN-aborted so the test
+    // proves detection comes from the chunk, not the flag.
+    const agent: RejectionLoopAgent & { callCount: number } = {
+      tools: {},
+      get callCount() {
+        return callCount;
+      },
+      stream: async () => {
+        callCount++;
+        return {
+          toUIMessageStream: () =>
+            new ReadableStream<UIMessageChunk>({
+              start(controller) {
+                const id = "m-sdk-abort";
+                controller.enqueue({ type: "text-start", id } as never);
+                controller.enqueue({
+                  type: "text-delta",
+                  id,
+                  delta: "partial before stop",
+                } as never);
+                // The SDK's abort emission: an abort chunk, then a
+                // clean close (no throw).
+                controller.enqueue({ type: "abort" } as never);
+                controller.close();
+              },
+            }),
+        };
+      },
+    };
+    let callCount = 0;
+
+    let evalCallCount = 0;
+    const evalModel = new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doGenerate: (async () => {
+        evalCallCount++;
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                decision: "approve",
+                concerns: [],
+                reasoning: "ok",
+                confidence: 0.9,
+              }),
+            },
+          ],
+          finishReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+          warnings: [],
+        };
+      }) as never,
+    }) as unknown as LanguageModel;
+
+    const stream = runWithRejectionLoop({
+      agent,
+      validatedMessages: [userMessage("do X")],
+      sendMessagesAtCall: [userMessage("do X")],
+      // Flag deliberately left unset — detection must come from the chunk.
+      abortSignal: undefined,
+      pinnedConversationId: null,
+      buildCompletionCheckInput: () => ({
+        conversationId: "c-sdk-abort",
+        turnIndex: 0,
+        rejectionRound: 0,
+        originalRequest: "do X",
+        draftedResponse: "(filled by loop)",
+        todos: [],
+        toolCallTrace: [makeTrace("snapshot")],
+        evaluatorModel: evalModel,
+      }),
+    });
+    const chunks = await drainStream(stream);
+
+    expect(agent.callCount).toBe(1);
+    // The completion check must NOT run for an aborted turn.
+    expect(evalCallCount).toBe(0);
+    // The abort chunk must still be forwarded to the UI.
+    const abortChunks = chunks.filter(
+      (c) => (c as { type: string }).type === "abort",
+    );
+    expect(abortChunks).toHaveLength(1);
+  });
+
   it("buildCompletionCheckInput returning undefined ⇒ single iteration, no loop", async () => {
     const agent = makeStubAgent(["Done."]);
     const stream = runWithRejectionLoop({

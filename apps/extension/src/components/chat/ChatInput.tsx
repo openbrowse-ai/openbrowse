@@ -1,3 +1,4 @@
+import { NoAutoLink } from "@/components/tiptap/link-extension";
 import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
 import {
@@ -584,7 +585,20 @@ export function ChatInput({
       // insertion-point line on drag-over. We handle file drops at
       // the container level (turning them into attachments) so the
       // editor's own drop cue is misleading.
-      StarterKit.configure({ hardBreak: false, dropcursor: false }),
+      // Drop StarterKit's bundled Link and use NoAutoLink instead, which
+      // disables all URL auto-detection (autolink, linkOnPaste, and the
+      // paste rule). Otherwise the Link paste rule wraps URL substrings
+      // inside a pasted markdown link like
+      // `[news.google.com](http://news.google.com)`, and getMarkdown()
+      // re-emits each as `[...](...)`, nesting one layer per
+      // copy/paste/resend cycle. NoAutoLink still parses/renders
+      // deliberate markdown links so they round-trip and stay clickable.
+      StarterKit.configure({
+        hardBreak: false,
+        dropcursor: false,
+        link: false,
+      }),
+      NoAutoLink,
       Placeholder.configure({
         placeholder: "Ask anything... Type @ to mention a tab, / for skills",
         showOnlyWhenEditable: false,

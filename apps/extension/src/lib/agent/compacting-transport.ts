@@ -770,6 +770,24 @@ export function runWithRejectionLoop(args: {
             controller,
           );
 
+          // A user-initiated Stop terminates the turn. The AI SDK
+          // surfaces this two ways, and we check both:
+          //   1. `observed.aborted` — the stream carried an
+          //      `{ type: "abort" }` chunk. This is the reliable signal:
+          //      it's emitted by the stream at the exact moment of abort
+          //      and survives regardless of how the abort flag's timing
+          //      lines up with the gate window.
+          //   2. `abortSignal?.aborted` — defensive fallback for a Stop
+          //      that lands between iterations.
+          // Either way: close the output and skip the completion check.
+          // Running it would grade an abandoned draft (the partial text
+          // streamed before Stop) — which is exactly the bug where
+          // pressing Stop triggered the quality check.
+          if (observed.aborted || abortSignal?.aborted) {
+            controller.close();
+            return;
+          }
+
           const input = await buildCompletionCheckInput({
             sendMessages: sendMessagesAtCall,
             finalText: observed.finalText,
@@ -778,6 +796,19 @@ export function runWithRejectionLoop(args: {
           });
 
           if (!input) {
+            controller.close();
+            return;
+          }
+
+          // Re-check the abort signal once more before committing to an
+          // evaluator call. `buildCompletionCheckInput` is async (it
+          // reads todos from chatDb in production), so a user-initiated
+          // Stop can land *during* that await — after the post-stream
+          // guard above already passed. Without this second check the
+          // gate would still fire the evaluator on an abandoned draft,
+          // which is exactly the "Stop still runs the completion check"
+          // bug.
+          if (abortSignal?.aborted) {
             controller.close();
             return;
           }
@@ -802,6 +833,11 @@ export function runWithRejectionLoop(args: {
             outcome = await runCompletionCheck({
               ...input,
               rejectionRound,
+              // Inject the outer signal so the evaluator is cancellable
+              // even though the production `buildCompletionCheckInput`
+              // doesn't set it. `input.abortSignal` (if any) wins via
+              // the explicit override below only when undefined here.
+              abortSignal: input.abortSignal ?? abortSignal,
             });
           } else {
             // Real evaluator call: surface the running indicator for
@@ -817,6 +853,7 @@ export function runWithRejectionLoop(args: {
               resolvedOutcome = await runCompletionCheck({
                 ...input,
                 rejectionRound,
+                abortSignal: input.abortSignal ?? abortSignal,
               });
             } finally {
               // Always flip the indicator off — even if
@@ -832,6 +869,18 @@ export function runWithRejectionLoop(args: {
               });
             }
             outcome = resolvedOutcome;
+          }
+
+          // A Stop that landed *during* the evaluator call cancels it
+          // (the evaluator honors `abortSignal`), which surfaces inside
+          // runCompletionCheck as a force-emit fallback. On a
+          // user-initiated abort we must not render that fallback as a
+          // visible completion-check block — the user cancelled, so
+          // close silently instead of emitting rejection/force-emit
+          // chunks.
+          if (abortSignal?.aborted) {
+            controller.close();
+            return;
           }
 
           if (outcome.kind !== "rejected") {
@@ -1075,6 +1124,16 @@ function stringifyTruncate(value: unknown, maxChars: number): string {
  * stream through to the user-visible output, then we have the full
  * final text + trace to hand to the gate. Errors during observation
  * are logged and never break the user-visible stream.
+ *
+ * `aborted` reports whether the stream carried an `{ type: "abort" }`
+ * chunk. On a user-initiated Stop the AI SDK aborts the signal and its
+ * `toUIMessageStream()` emits this chunk then closes the stream
+ * *cleanly* (no throw) — so a populated `finalText` here does NOT mean
+ * the turn finished. The rejection-loop driver uses `aborted` to skip
+ * the completion check on an abandoned draft, independent of the
+ * `abortSignal.aborted` flag (whose timing relative to the gate window
+ * is unreliable). The abort chunk is still forwarded to the controller
+ * so the UI can render the aborted state.
  */
 export async function pipeAndObserve(
   input: ReadableStream<UIMessageChunk>,
@@ -1082,11 +1141,13 @@ export async function pipeAndObserve(
 ): Promise<{
   finalText: string;
   toolCallTrace: ToolCallTraceEntry[];
+  aborted: boolean;
 }> {
   const textBuffers = new Map<string, string>();
   let lastTextMessageId: string | undefined;
   const toolCalls = new Map<string, ToolCallTraceEntry>();
   const toolCallOrder: string[] = [];
+  let aborted = false;
 
   const reader = input.getReader();
   try {
@@ -1094,6 +1155,9 @@ export async function pipeAndObserve(
       const { value, done } = await reader.read();
       if (done) break;
       controller.enqueue(value);
+      if ((value as { type?: string }).type === "abort") {
+        aborted = true;
+      }
       try {
         observeChunkForCompletionCheck(value, {
           textBuffers,
@@ -1119,7 +1183,7 @@ export async function pipeAndObserve(
   const toolCallTrace = toolCallOrder
     .map((id) => toolCalls.get(id))
     .filter((e): e is ToolCallTraceEntry => e !== undefined);
-  return { finalText, toolCallTrace };
+  return { finalText, toolCallTrace, aborted };
 }
 
 /**

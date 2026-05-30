@@ -10,6 +10,8 @@ import {
   resetTokenTracking,
   getCurrentModelDef,
 } from "@/lib/agent/agent-transport";
+import { setTargetTabId } from "@/lib/agent/active-tab";
+import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import {
   pruneMessages as pruneMessageParts,
@@ -86,6 +88,14 @@ interface UseAgentChatOptions {
    * with a `?prefill=` URL parameter.
    */
   initialInput?: string;
+  /**
+   * Returns the tab id the side panel is currently "sharing" (the active
+   * page pill). When a new conversation is created via `handleSubmit` /
+   * `queueMessage`, the shared tab is bound into the conversation so the
+   * agent sees it in the tab legend on the very first model call. Returns
+   * null when the user has dismissed the pill or no eligible tab is active.
+   */
+  getSharedTabId?: () => number | null;
 }
 
 function generateId() {
@@ -456,22 +466,22 @@ function getOrCreateChat(
     generateId,
     // Resume the agent loop after the user approves a tool call. We
     // provide our own implementation instead of the SDK's
-    // `lastAssistantMessageIsCompleteWithApprovalResponses` because
-    // that function treats `approval-responded` as a terminal state
-    // equivalent to `output-available`. It therefore fires the
-    // auto-resume immediately after the user clicks "Allow" — but
-    // `addToolApprovalResponse` guards the auto-resume with
-    // `this.status !== 'streaming'`. When other tools in the same step
-    // are still streaming (e.g. navigate calls running in parallel),
-    // the resume is silently dropped and the approved tool is permanently
-    // orphaned in `approval-responded` state with no output.
+    // `lastAssistantMessageIsCompleteWithApprovalResponses`. The SDK
+    // reference omits `output-denied` from its terminal set, which
+    // strands tool calls that `healPendingTools` resolved to
+    // `output-denied` (the resume would never fire and the approved
+    // sibling call would be permanently orphaned in `approval-responded`
+    // with no output). Our version adds `output-denied` so a denied/
+    // healed call counts as terminal.
     //
-    // Our version only fires once every tool in the last step has
-    // produced an actual output (`output-available`, `output-error`,
-    // `output-denied`), treating `approval-responded` correctly as
-    // "user said yes, but tool hasn't run yet" (non-terminal). This
-    // prevents premature auto-resume and ensures the agent loop picks
-    // up the approved call after the rest of the step finishes.
+    // We require at least one `approval-responded` part to trigger a
+    // resume at all, then only resume once EVERY tool in the last step
+    // has reached a terminal state. `approval-responded` is included in
+    // the terminal set on purpose: the just-approved call itself sits in
+    // that state, so excluding it would make `.every()` impossible to
+    // satisfy. This prevents a premature resume while sibling tools are
+    // still streaming, and ensures the loop picks up the approved call
+    // after the rest of the step finishes.
     sendAutomaticallyWhen: ({ messages }: { messages: import("ai").UIMessage[] }) => {
       const message = messages[messages.length - 1];
       if (!message || message.role !== "assistant") return false;
@@ -486,14 +496,19 @@ function getOrCreateChat(
         .slice(lastStepStartIndex + 1)
         .filter(isToolUIPart);
 
-      // Must have at least one approval response to trigger resume.
+      // Must have at least one approval response to trigger resume. This
+      // guard is also load-bearing for the empty-array case: with no
+      // tools, `some()` is false here so we return early and never reach
+      // the `.every()` below (which would vacuously return true).
       const hasApprovalResponse = lastStepTools.some(
         (p) => p.state === "approval-responded",
       );
       if (!hasApprovalResponse) return false;
 
-      // All tools must be in a truly terminal state — approval-responded
-      // is intentionally NOT included here, unlike the SDK's version.
+      // Every tool in the last step must be terminal. `output-denied`
+      // (added vs. the SDK reference) and `approval-responded` (the
+      // just-approved call awaiting execution) both count — see the
+      // block comment above for why.
       return lastStepTools.every(
         (p) =>
           p.state === "output-available" ||
@@ -591,6 +606,7 @@ export function useAgentChat({
   spaceId,
   onNewConversation,
   initialInput,
+  getSharedTabId,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
@@ -1516,6 +1532,23 @@ export function useAgentChat({
       // Compaction-aware message assembly now lives in the transport.
       // We just register the conversation context here so the agent's
       // tab-handle map is hydrated before tool calls run.
+      // Bind the side panel's currently-shared active tab into the new
+      // conversation BEFORE setAgentContext + onNewConversation. The
+      // legend block re-reads `ownedTabIds` from chatDb on every model
+      // call, so awaiting the bind here guarantees the auto-resume
+      // sendMessage triggered by the message-load effect (after
+      // `onNewConversation`) sees the shared tab in the very first
+      // turn. We also pin it as the target so tools default to it and
+      // the legend marks it `[active]`.
+      if (isNew) {
+        await bindSharedTab(
+          { conversationId: convId, tabId: getSharedTabId?.() ?? null },
+          {
+            send: (msg) => chrome.runtime.sendMessage(msg),
+            setTargetTabId,
+          },
+        );
+      }
       setAgentContext(convId);
 
       if (isNew) {
@@ -1540,7 +1573,7 @@ export function useAgentChat({
         });
       }
     },
-    [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages],
+    [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages, getSharedTabId],
   );
 
   /**
@@ -1611,13 +1644,23 @@ export function useAgentChat({
       setInput("");
 
       if (isNew) {
+        // Mirror handleSubmit: bind the side panel's currently-shared
+        // tab into the new conversation so the queued message's
+        // eventual flush sees it in the legend on the first turn.
+        await bindSharedTab(
+          { conversationId: convId, tabId: getSharedTabId?.() ?? null },
+          {
+            send: (msg) => chrome.runtime.sendMessage(msg),
+            setTargetTabId,
+          },
+        );
         // Make the brand-new conversation visible so its queue panel
         // and (eventually) the flush-side user message render in the
         // correct chat view.
         onNewConversation(convId);
       }
     },
-    [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation],
+    [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation, getSharedTabId],
   );
 
   const removeQueued = useCallback(async (id: string) => {
