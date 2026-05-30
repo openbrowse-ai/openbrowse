@@ -1,5 +1,11 @@
 # openbrowse
 
+## 0.4.2
+
+### Patch Changes
+
+- 610c535: Aux model picker shows all configured models; token-AND model search; fix approval-interrupt bug; expose executePython; improved MCP approval + skill-install UX.
+
 ## 0.4.1
 
 ### Patch Changes
