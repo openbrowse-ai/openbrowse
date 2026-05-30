@@ -31,7 +31,12 @@ import {
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
-import { buildTabLegendEntries, renderTabLegend } from "./tab-legend";
+import {
+  buildTabLegendEntries,
+  renderTabLegend,
+  buildOpenTabsAwarenessEntries,
+  renderOpenTabsAwareness,
+} from "./tab-legend";
 import {
   clickElementTool,
   createSkillTool,
@@ -576,7 +581,13 @@ export function toSDKTool<TInput, TOutput>(
 
   const needsApproval =
     approvalRequired && isTabTool
-      ? async ({ input }: { input: unknown }) => {
+      ? async (input: unknown) => {
+          // The AI SDK calls `needsApproval(input, options)` — `input` is the
+          // first positional arg (the tool's parsed input), NOT `{ input }`.
+          // Destructuring `{ input }` here (the onInputAvailable shape) read
+          // `input.input` (undefined), so the tab handle never resolved and
+          // approval was ALWAYS required — the allowlist was never consulted,
+          // so "Always allow on <site>" never took effect for later calls.
           // Capture cid once at entry — see resolveTabFromInput's contract.
           const cid = agentConversationId;
           const resolved = await resolveTabFromInput(cid, input);
@@ -1286,18 +1297,25 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   let needsMidStreamCompaction = false;
 
   /**
-   * Build the dynamic "## Tabs in this conversation" block from live state.
-   * Re-reads ownedTabIds from chatDb and queries chrome.tabs each call so
-   * the agent sees the current tab set on every turn (not the snapshot
+   * Build the dynamic "## Tabs in this conversation" block plus an
+   * awareness-only "## Other open tabs" block from live state. Re-reads
+   * ownedTabIds from chatDb and queries chrome.tabs each call so the
+   * agent sees the current tab set on every turn (not the snapshot
    * baked at transport-construction time).
+   *
+   * The awareness block lists tabs the user has open in the current
+   * window that are NOT bound to this conversation. The agent must
+   * `selectTab({ tab })` before passing those handles to tab-acting
+   * tools — handles in the awareness block are read-only context.
    */
   async function buildLegendBlock(): Promise<string> {
     const cid = agentConversationId;
     if (!cid) return "";
     const liveConv = await chatDb.getConversation(cid);
+    const ownedTabIds = liveConv?.ownedTabIds ?? [];
     const entries = await buildTabLegendEntries({
       conversationId: cid,
-      ownedTabIds: liveConv?.ownedTabIds ?? [],
+      ownedTabIds,
       getTab: async (tabId) => {
         const tab = await chrome.tabs.get(Number(tabId));
         return { url: tab.url, title: tab.title };
@@ -1305,7 +1323,34 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       getOrCreateHandle: (c, tabId) => getOrCreateTabHandle(c, Number(tabId)),
       activeTabId: getTargetTabId(),
     });
-    return renderTabLegend(entries);
+    const ownedBlock = renderTabLegend(entries);
+
+    // Awareness block: enumerate user's other open tabs in the current
+    // window. Reuses the driver's listTabs (already filters internal
+    // URLs and scopes to current window). Errors here must not break
+    // the legend — fall back to the owned-only block.
+    let awarenessBlock = "";
+    try {
+      const openTabs = await extensionDriver.listTabs();
+      const { entries: awarenessEntries, truncated } =
+        buildOpenTabsAwarenessEntries({
+          conversationId: cid,
+          ownedTabIds,
+          openTabs: openTabs.map((t) => ({
+            id: t.id,
+            url: t.url,
+            title: t.title,
+            active: !!t.active,
+          })),
+          getOrCreateHandle: (c, tabId) =>
+            getOrCreateTabHandle(c, Number(tabId)),
+        });
+      awarenessBlock = renderOpenTabsAwareness(awarenessEntries, truncated);
+    } catch {
+      // No window / chrome.tabs unavailable; skip awareness block.
+    }
+
+    return [ownedBlock, awarenessBlock].filter(Boolean).join("\n\n");
   }
 
   const agent = new ToolLoopAgent({
