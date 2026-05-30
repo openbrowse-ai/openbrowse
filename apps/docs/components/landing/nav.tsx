@@ -23,6 +23,12 @@ export function Nav() {
         </Link>
         <nav className="flex items-center gap-6 text-sm">
           <Link
+            href="/changelog"
+            className="text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Changelog
+          </Link>
+          <Link
             href="/docs"
             className="text-muted-foreground transition-colors hover:text-foreground"
           >
