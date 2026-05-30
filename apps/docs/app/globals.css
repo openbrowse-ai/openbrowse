@@ -115,7 +115,6 @@
   font-size: 0.875rem;
   line-height: 1.6;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 .changelog-prose h1,
 .changelog-prose h2 {

@@ -40,7 +40,7 @@ export async function fetchFromGitHub(): Promise<Release[]> {
 
   const res = await fetch(
     `https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100`,
-    { headers },
+    { headers, signal: AbortSignal.timeout(10_000) },
   );
   if (!res.ok) {
     throw new Error(`GitHub releases fetch failed: ${res.status}`);

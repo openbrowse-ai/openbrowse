@@ -95,15 +95,33 @@ export function remarkGithubLinks() {
     });
 
     // Pass 2: drop the "Full Changelog" compare paragraph from the prose; it's
-    // rendered as a separate React pill from structured release fields.
+    // rendered as a separate React pill from structured release fields. Narrow
+    // the match to the auto-generated footer specifically — it must contain a
+    // compare link AND the "Full Changelog" marker — so we never delete a
+    // release author's own prose that happens to reference a compare URL.
     visit(tree, "paragraph", (para: Paragraph, index, parent) => {
       if (index === undefined || !parent) return;
       const hasCompare = para.children.some(
         (c) => c.type === "link" && isCompareUrl((c as Link).url),
       );
       if (!hasCompare) return;
+      // "Full Changelog" is emitted inside a `strong` node, so collect text
+      // from nested children — not just top-level `text` nodes.
+      const text = collectText(para).toLowerCase().replace(/\s+/g, " ").trim();
+      if (!text.includes("full changelog")) return;
       parent.children.splice(index, 1);
       return index; // re-visit the node now at this index
     });
   };
+}
+
+/** Concatenate the visible text of a node tree (text + nested children). */
+function collectText(node: unknown): string {
+  if (!node || typeof node !== "object") return "";
+  const n = node as { value?: unknown; children?: unknown };
+  if (typeof n.value === "string") return n.value;
+  if (Array.isArray(n.children)) {
+    return n.children.map((c) => collectText(c)).join("");
+  }
+  return "";
 }

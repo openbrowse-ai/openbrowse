@@ -72,7 +72,11 @@ export function ReleaseEntry({ release }: { release: Release }) {
         </div>
         {isLong && (
           <details className="changelog-toggle">
-            <summary />
+            {/* Visible label is supplied via CSS ::after; this gives screen
+                readers an accessible name without duplicating it visually. */}
+            <summary>
+              <span className="sr-only">Toggle release details</span>
+            </summary>
           </details>
         )}
       </div>
