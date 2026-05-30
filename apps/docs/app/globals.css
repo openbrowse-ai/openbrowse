@@ -109,3 +109,165 @@
 [role="tooltip"] {
   box-shadow: none !important;
 }
+
+/* Changelog release-notes body */
+.changelog-prose {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.changelog-prose h1,
+.changelog-prose h2 {
+  margin-top: 1.75rem;
+  margin-bottom: 0.625rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.changelog-prose h2:first-child,
+.changelog-prose h1:first-child {
+  margin-top: 0;
+}
+/* Reset the first child's top margin regardless of element type so the gap
+   below the version header stays constant whether the body is clamped
+   (overflow:hidden creates a BFC that would otherwise preserve the margin)
+   or fully expanded. */
+.changelog-prose > :first-child {
+  margin-top: 0;
+}
+.changelog-prose h3,
+.changelog-prose h4 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.changelog-prose p {
+  margin: 0.5rem 0;
+  color: var(--muted-foreground);
+}
+.changelog-prose ul,
+.changelog-prose ol {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+  color: var(--muted-foreground);
+}
+.changelog-prose ul { list-style: disc; }
+.changelog-prose ol { list-style: decimal; }
+.changelog-prose li { margin: 0.25rem 0; }
+.changelog-prose a {
+  color: var(--primary);
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.changelog-prose a:hover { text-decoration: underline; }
+.changelog-prose code {
+  border-radius: 0.125rem;
+  background: var(--muted);
+  padding: 0.1rem 0.3rem;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.changelog-prose pre {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  border-radius: 0.125rem;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  padding: 0.75rem;
+  font-size: 0.8125rem;
+}
+.changelog-prose pre code {
+  background: transparent;
+  padding: 0;
+  overflow-wrap: normal;
+}
+.changelog-prose img { max-width: 100%; height: auto; }
+.changelog-prose hr {
+  margin: 1.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Changelog: collapsible long releases.
+   The prose is a normally-painted sibling (never inside <details>, which would
+   hide it via content-visibility). The <details> acts purely as a no-JS toggle
+   and controls the sibling clip through :has().
+
+   The clip wrapper is a single-row grid; animating the row track between a
+   fixed preview height and 1fr gives a smooth expand/collapse (the same
+   technique shadcn/Radix Collapsible uses for 0fr<->1fr), without needing JS
+   or animating to max-height:none. */
+.changelog-body-wrap:has(.changelog-toggle) {
+  padding-bottom: 2rem;
+}
+.changelog-prose-clip {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.changelog-body-wrap:has(.changelog-toggle) .changelog-prose-clip {
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  transition: grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.changelog-body-wrap:has(.changelog-toggle:not([open])) .changelog-prose-clip {
+  /* Collapsed preview height. Track the clip, not the prose, so it animates. */
+  grid-template-rows: minmax(0, 22rem);
+}
+.changelog-prose-clip > .changelog-prose {
+  min-height: 0;
+  overflow: hidden;
+}
+/* Fade overlay while collapsed (fades out as it expands) */
+.changelog-body-wrap:has(.changelog-toggle)::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 2rem;
+  height: 4rem;
+  background: linear-gradient(to bottom, transparent, var(--background));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.32s ease;
+}
+.changelog-body-wrap:has(.changelog-toggle:not([open]))::after {
+  opacity: 1;
+}
+.changelog-toggle {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+}
+.changelog-toggle > summary {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+  transition: color 0.15s;
+}
+.changelog-toggle > summary:hover {
+  color: var(--foreground);
+}
+.changelog-toggle > summary::marker,
+.changelog-toggle > summary::-webkit-details-marker {
+  display: none;
+  content: "";
+}
+.changelog-toggle > summary::after {
+  content: "Expand release \25BE";
+}
+.changelog-toggle[open] > summary::after {
+  content: "Collapse \25B4";
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .changelog-body-wrap:has(.changelog-toggle) .changelog-prose-clip,
+  .changelog-body-wrap:has(.changelog-toggle)::after {
+    transition: none;
+  }
+}

@@ -32,6 +32,9 @@ export function Footer() {
             <a href="https://github.com/openbrowse-ai/openbrowse" target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-foreground">
               GitHub
             </a>
+            <Link href="/changelog" className="text-muted-foreground hover:text-foreground">
+              Changelog
+            </Link>
             <Link href="/docs/contributing" className="text-muted-foreground hover:text-foreground">
               Contributing
             </Link>

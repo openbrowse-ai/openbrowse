@@ -1,0 +1,108 @@
+[
+  {
+    "tag": "openbrowse@0.4.2",
+    "name": "v0.4.2",
+    "date": "2026-05-30T20:00:35Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.4.2",
+    "bodyHtml": "<h3>Patch Changes</h3>\n<ul>\n<li>610c535: Aux model picker shows all configured models; token-AND model search; fix approval-interrupt bug; expose executePython; improved MCP approval + skill-install UX.</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>feat(extension): configurable aux model picker, token-AND search, and approval fixes by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/70\">#70</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/71\">#71</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/openbrowse@0.4.1...openbrowse@0.4.2",
+    "compareRange": "0.4.1 → 0.4.2"
+  },
+  {
+    "tag": "openbrowse@0.4.1",
+    "name": "v0.4.1",
+    "date": "2026-05-30T16:05:26Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.4.1",
+    "bodyHtml": "<h3>Patch Changes</h3>\n<ul>\n<li>\n<p>6010425: Fix tool-approval \"Always allow\", add other-tab awareness, and assorted abort/UX fixes:</p>\n<ul>\n<li>Respect \"Always allow\" by calling <code>needsApproval</code> with the AI SDK's positional <code>input</code> argument (previously <code>input</code> was always <code>undefined</code>, so the same-origin allowlist was never consulted and approval was always required).</li>\n<li>Surface the user's other open tabs to the agent as an awareness-only <code>## Other open tabs</code> block. Titles/URLs are sanitized (newlines/control chars collapsed, length-capped) before reaching the system prompt to prevent prompt injection, and only <code>http(s)</code> URLs are exposed.</li>\n<li>Bind the shared active tab on the first message of a new conversation so the legend marks it <code>[active]</code> immediately; the bind now honors a <code>{ ok: false }</code> background response instead of pinning an unbound tab.</li>\n<li>Skip the completion check when the user aborts generation (the SDK emits an <code>abort</code> chunk and closes cleanly, which previously caused the check to grade an abandoned draft).</li>\n<li>Stop TipTap from nesting pasted markdown links on each copy/paste/resend cycle.</li>\n<li>Disable per-word stagger in the markdown renderer to fix concurrent/parallel reveal of streamed sections.</li>\n</ul>\n</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>fix(ci): resolve release tag from input, not event_name by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/65\">#65</a></li>\n<li>fix: always-allow approval, tab awareness, and abort/UX fixes by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/66\">#66</a></li>\n<li>chore: refresh models.dev snapshot by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/69\">#69</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/67\">#67</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/openbrowse@0.4.0...openbrowse@0.4.1",
+    "compareRange": "0.4.0 → 0.4.1"
+  },
+  {
+    "tag": "openbrowse@0.4.0",
+    "name": "v0.4.0",
+    "date": "2026-05-29T18:58:16Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.4.0",
+    "bodyHtml": "<h3>Minor Changes</h3>\n<ul>\n<li>\n<p>dbbda3c: Subagents: the chat agent can now delegate focused tasks to specialized subagents that run with fresh context, their own tool allowlist, and isolated tab/window state.</p>\n<ul>\n<li><strong><code>explore</code></strong> — read-only research subagent. Use for background investigation that should not mutate state.</li>\n<li><strong><code>general</code></strong> — read/write subagent for general-purpose delegation when the parent's tools fit but the work would bloat the parent's context with verbose output.</li>\n</ul>\n<p>Each delegation appears inline as a collapsible trace block with a live transcript, a step counter, and a phase title the subagent updates as it works. Subagents run with isolation: <code>peer</code> puts the child in its own tab group within the same window (default), and <code>incognito</code> opens a fresh incognito window with no shared cookies/auth/storage that auto-closes when done. Stop now correctly cancels in-flight subagents along with the parent.</p>\n</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>feat(extension): subagents - explore and general agents by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/62\">#62</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/63\">#63</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/openbrowse@0.3.2...openbrowse@0.4.0",
+    "compareRange": "0.3.2 → 0.4.0"
+  },
+  {
+    "tag": "openbrowse@0.3.2",
+    "name": "openbrowse@0.3.2",
+    "date": "2026-05-29T09:52:51Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.3.2",
+    "bodyHtml": "<h3>Patch Changes</h3>\n<ul>\n<li>\n<p>402b8d0: Add Attio as a built-in MCP connector (new \"CRM\" category) with OAuth, all 37 tools, and light/dark icons. Also fixes MCP reliability:</p>\n<ul>\n<li>OAuth flow now sends a <code>state</code> parameter, required by strict providers like Attio (previously failed with \"Authorization page could not be loaded\").</li>\n<li>Connected MCP servers are no longer torn down and reconnected on every home.html load — this eliminated a multi-second window where the agent saw zero MCP tools.</li>\n<li>An active chat conversation now rebinds to the latest transport when MCP tools finish loading, so newly connected tools become available without a refresh.</li>\n<li>Settings → Connectors left panel border now spans the full height.</li>\n</ul>\n</li>\n</ul>"
+  },
+  {
+    "tag": "openbrowse@0.3.1",
+    "name": "v0.3.1",
+    "date": "2026-05-28T22:31:59Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.3.1",
+    "bodyHtml": "<h3>Patch Changes</h3>\n<ul>\n<li>\n<p>b5717e9: Fix three small chat issues:</p>\n<ul>\n<li>Completion check no longer runs while a tool call is paused on human approval. The drafted text at that point is mid-narration (\"I'll now run X to do Y\") and isn't a final response — the gate now waits for the next iteration after approval, when the tool actually has output.</li>\n<li>Long tool error logs collapse to ~10 visual lines with an inline expand toggle. Single-line errors that wrapped to dozens of visual lines now collapse correctly (the previous clamp only counted <code>\\n</code>-delimited lines). Applied to executeCode/executeOnPage/executePython error output, the skill tool's error block, and the top-level chat error banner.</li>\n<li>\"Always allow on \" now reliably persists before the agent resumes. The previous implementation fired the storage write and the approval synchronously, so the next tool call's <code>needsApproval</code> check could race the write and re-prompt — most reproducible on home.html with back-to-back executeOnPage calls.</li>\n</ul>\n</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>fix: completion-check pending tools, error log clamp, always-allow race by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/55\">#55</a></li>\n<li>ci(release): build extension zip from changesets workflow by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/53\">#53</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/56\">#56</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/openbrowse@0.3.0...openbrowse@0.3.1",
+    "compareRange": "0.3.0 → 0.3.1"
+  },
+  {
+    "tag": "openbrowse@0.3.0",
+    "name": "v0.3.0",
+    "date": "2026-05-27T23:53:33Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.3.0",
+    "bodyHtml": "<h3>Minor Changes</h3>\n<ul>\n<li>2604829: Agent: a separate skeptical evaluator now reviews each drafted final response before it reaches you, and asks the agent to revise if the response is incomplete or unsupported by what was actually observed. Mid-loop refinements show as a compact \"Refining answer\" pill; unresolved concerns surface as a soft warning. Choose a cheaper or faster evaluator model in Settings → General, or leave it on the default. Chat exports and the per-message Copy button now include the rejection block as part of the audit trail.</li>\n</ul>\n<h3>Patch Changes</h3>\n<ul>\n<li>\n<p>2604829: Agent reliability fixes:</p>\n<ul>\n<li>Tab handles now persist across mid-stream conversation switches, so in-flight tool calls in the previous chat don't lose the tab they were targeting.</li>\n<li>Stranded tool calls left over from interrupted streams heal cleanly on edit/retry/regenerate instead of breaking the conversation on resume.</li>\n<li>Approving a tool call while other tools are still running in the same step no longer drops the auto-resume — the agent now picks up the approved call once the rest of the step completes.</li>\n<li>Editing a user message in chat-db now logs a warning when the target id can't be found, surfacing the historical \"stale tail after edit\" failure mode at first repro instead of silently months later.</li>\n<li>The completion-check evaluator now pins to its transport instance, so multiple concurrent agent windows can't drift across each other's models mid-stream.</li>\n<li>Evaluator-error fallback messages no longer expose internal error details to the chat or markdown export; detailed errors stay in the developer console.</li>\n</ul>\n</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>chore: refresh models.dev snapshot by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/48\">#48</a></li>\n<li>feat(bench): optional Cloudflare R2 upload for run artifacts by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/49\">#49</a></li>\n<li>feat: completion check — review and refine drafted responses before they ship by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/50\">#50</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/52\">#52</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/openbrowse@0.2.2...openbrowse@0.3.0",
+    "compareRange": "0.2.2 → 0.3.0"
+  },
+  {
+    "tag": "openbrowse@0.2.2",
+    "name": "v0.2.2",
+    "date": "2026-05-27T00:24:54Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/openbrowse%400.2.2",
+    "bodyHtml": "<h3>Patch Changes</h3>\n<ul>\n<li>98f6004: Agent: tab arguments on browser tools are now explicit (<code>tab: \"t1\"</code>) instead of relying on an implicit \"active tab\". Fixes the \"Always allow on this domain\" approval button not appearing when the agent acted from the home tab. Conversation tab handles persist across service worker restarts. (#39)</li>\n</ul>\n<h2>What's Changed</h2>\n<ul>\n<li>chore: OSS foundation by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/26\">#26</a></li>\n<li>chore(actions): bump marocchino/sticky-pull-request-comment from 2.9.4 to 3.0.4 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/27\">#27</a></li>\n<li>chore(actions): bump actions/checkout from 4.2.2 to 6.0.2 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/29\">#29</a></li>\n<li>chore(actions): bump actions/setup-node from 4.4.0 to 6.4.0 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/30\">#30</a></li>\n<li>chore(actions): bump actions/upload-artifact from 4.6.2 to 7.0.1 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/31\">#31</a></li>\n<li>chore(actions): bump peter-evans/create-pull-request from 6.1.0 to 8.1.1 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/28\">#28</a></li>\n<li>chore(deps)(deps): bump dotenv from 16.6.1 to 17.4.2 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/34\">#34</a></li>\n<li>chore(deps)(deps-dev): bump @types/node from 22.19.19 to 25.9.1 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/37\">#37</a></li>\n<li>chore(deps)(deps-dev): bump vitest from 2.1.9 to 4.1.7 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/35\">#35</a></li>\n<li>chore(deps)(deps): bump @openrouter/ai-sdk-provider from 1.5.4 to 2.9.0 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/33\">#33</a></li>\n<li>fix(bench): drop deprecated baseUrl from tsconfig by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/38\">#38</a></li>\n<li>chore(deps)(deps-dev): bump typescript from 5.9.3 to 6.0.3 by @dependabot[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/36\">#36</a></li>\n<li>feat(agent): explicit tab args + fix Always-allow-on-domain approval button by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/39\">#39</a></li>\n<li>chore(release): make package.json the version source of truth by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/40\">#40</a></li>\n<li>chore: add changeset for v0.3.0 by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/41\">#41</a></li>\n<li>Revert \"chore(release): make package.json the version source of truth (#40)\" by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/42\">#42</a></li>\n<li>chore(release): make package.json the version source of truth by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/43\">#43</a></li>\n<li>fix(ci): use <code>pnpm run version</code> in Changesets workflow by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/44\">#44</a></li>\n<li>chore(release): version packages by @github-actions[bot] in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/45\">#45</a></li>\n<li>chore(release): adopt Changesets workspace tag format by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/47\">#47</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li>@dependabot[bot] made their first contribution in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/27\">#27</a></li>\n<li>@github-actions[bot] made their first contribution in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/45\">#45</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/v0.2.1...openbrowse@0.2.2",
+    "compareRange": "v0.2.1 → 0.2.2"
+  },
+  {
+    "tag": "v0.2.1",
+    "name": "v0.2.1",
+    "date": "2026-05-24T07:15:23Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/v0.2.1",
+    "bodyHtml": "<h2>What's Changed</h2>\n<ul>\n<li>fix(extension): rail layout mount and agent-transport compound keys by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/24\">#24</a></li>\n<li>chore(release): bump extension to v0.2.1 by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/25\">#25</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/v0.2.0...v0.2.1",
+    "compareRange": "v0.2.0 → v0.2.1"
+  },
+  {
+    "tag": "v0.2.0",
+    "name": "v0.2.0",
+    "date": "2026-05-24T02:11:05Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/v0.2.0",
+    "bodyHtml": "<h2>What's Changed</h2>\n<ul>\n<li>feat(extension): add webFetch tool + provider/model UX fixes by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/17\">#17</a></li>\n<li>feat: per-conversation file uploads to OPFS workspace by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/18\">#18</a></li>\n<li>feat(extension): Working folder viewers, resizable side-panel, and OPFS uploads by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/21\">#21</a></li>\n<li>feat: OpenBrowse offline evaluation harness &#x26; runner hardening by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/20\">#20</a></li>\n<li>feat(extension): message queueing while agent is streaming by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/22\">#22</a></li>\n<li>chore(release): bump extension to v0.2.0 by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/23\">#23</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/v0.1.1...v0.2.0",
+    "compareRange": "v0.1.1 → v0.2.0"
+  },
+  {
+    "tag": "v0.1.1",
+    "name": "v0.1.1",
+    "date": "2026-05-23T02:38:21Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/v0.1.1",
+    "bodyHtml": "<h2>What's Changed</h2>\n<ul>\n<li>feat(landing): mono headline, refined widths, manual-install CTA by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/15\">#15</a></li>\n<li>fix(extension): heal broken chat sessions and stranded tool calls by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/16\">#16</a></li>\n</ul>",
+    "compareUrl": "https://github.com/openbrowse-ai/openbrowse/compare/v0.1.0...v0.1.1",
+    "compareRange": "v0.1.0 → v0.1.1"
+  },
+  {
+    "tag": "v0.1.0",
+    "name": "v0.1.0",
+    "date": "2026-05-23T00:08:57Z",
+    "isPrerelease": false,
+    "htmlUrl": "https://github.com/openbrowse-ai/openbrowse/releases/tag/v0.1.0",
+    "bodyHtml": "<h2>What's Changed</h2>\n<ul>\n<li>feat: Add agent task planning UI and todowrite tool by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/1\">#1</a></li>\n<li>feat(overlay): unified ranked search with personalized shortcuts by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/2\">#2</a></li>\n<li>feat: detachable side panel popover with per-tab scoping by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/3\">#3</a></li>\n<li>docs: restructure site (sidebar, sections, new pages) by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/4\">#4</a></li>\n<li>feat: landing page redesign and self-hosted typography by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/5\">#5</a></li>\n<li>feat: add Option+Space global chat popup with conversation/draft persistence by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/6\">#6</a></li>\n<li>fix(agent): message-based compaction + reduce mid-task reluctance by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/7\">#7</a></li>\n<li>fix(overlay/search): rank open tabs above frecent history by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/8\">#8</a></li>\n<li>feat: agent skill system, virtual workspace, and OPFS filesystem tools by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/9\">#9</a></li>\n<li>refactor: convert to pnpm monorepo (apps/* + packages/*) by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/10\">#10</a></li>\n<li>feat: add Python execution sandbox via Pyodide and UI improvements by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/11\">#11</a></li>\n<li>feat(registry): dynamic provider registry powered by models.dev by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/12\">#12</a></li>\n<li>fix: auto-update bundled skills when extension is upgraded by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/13\">#13</a></li>\n<li>Docs update + manual install + release &#x26; CI workflows by @aschung01 in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/14\">#14</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li>@aschung01 made their first contribution in <a href=\"https://github.com/openbrowse-ai/openbrowse/pull/1\">#1</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a href=\"https://github.com/openbrowse-ai/openbrowse/commits/v0.1.0\">https://github.com/openbrowse-ai/openbrowse/commits/v0.1.0</a></p>"
+  }
+]
