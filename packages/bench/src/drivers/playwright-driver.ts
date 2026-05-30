@@ -88,6 +88,13 @@ export class PlaywrightDriver implements BrowserDriver {
         ? { recordVideo: { dir: opts.recordVideoDir, size: viewport } }
         : {}),
     });
+    // Bump default navigation timeout from Playwright's 30s default to 90s.
+    // Some sites (especially behind Cloudflare/PerimeterX) take 40-60s to
+    // render once Kernel's stealth layer auto-solves the bot challenge —
+    // 30s would cut the cord mid-CAPTCHA-solve, producing spurious
+    // "Failed to navigate" infrastructure errors. 90s gives Kernel enough
+    // headroom to finish the challenge before Playwright bails.
+    context.setDefaultNavigationTimeout(90_000);
     return new PlaywrightDriver(browser, context, opts.recordVideoDir);
   }
 

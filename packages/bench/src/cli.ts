@@ -7,6 +7,12 @@
  * Per the spec's resolved decisions: this is the only entry point in v1.
  * No CI, no cron, no GitHub Action wiring — manual invocation only.
  *
+ * This file is a thin shell over `runBench()` (see `./bench.ts`): it loads
+ * env, parses argv, resolves the provider model instance + task list, then
+ * builds a `BenchConfig` and calls `runBench`. All suite orchestration lives
+ * in `bench.ts` so harness authors and integration tests can drive sweeps
+ * programmatically without spawning the CLI.
+ *
  * IMPORTANT: this file uses dynamic imports for everything that depends on
  * provider env vars. ESM static imports are hoisted above any code in the
  * module, so a top-level `loadEnv()` call followed by `import { anthropic }
@@ -16,7 +22,6 @@
  */
 
 import { loadEnv } from "./env";
-import { runInPool } from "./worker-pool";
 
 interface CliArgs {
   taskId?: string;
@@ -26,6 +31,20 @@ interface CliArgs {
   tasksFile?: string;
   modelId: string;
   modelLabel: string;
+  /**
+   * Path to a harness config file (TS/JS) describing the agent-under-test.
+   * When omitted, the trial runs the no-harness default (DEFAULT_TOOL_SET +
+   * section-stripped prompt).
+   */
+  harnessPath?: string;
+  /** Enable provider-specific thinking/reasoning (overrides harness default). */
+  thinking: boolean;
+  /** Thinking token budget (only used when `thinking` is true). */
+  thinkingBudget: number;
+  /** True when --thinking / --thinking-budget were explicitly passed. */
+  thinkingExplicit: boolean;
+  /** True when --model was explicitly passed (else harness.model may win). */
+  modelExplicit: boolean;
   headless: boolean;
   replicas: number;
   /** Disable video recording (otherwise default-on, written to .bench/runs/<id>/videos/). */
@@ -52,12 +71,22 @@ interface CliArgs {
   evalSet?: string;
   /** Arm name within the eval-set. */
   arm?: string;
+  /**
+   * If set with --driver kernel, the runner acquires browsers from this
+   * pre-existing Kernel browser pool (id or name) instead of creating a
+   * fresh browser per trial.
+   */
+  kernelPoolId?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const out: CliArgs = {
     modelId: "claude-sonnet-4-5-20250929",
     modelLabel: "claude-sonnet-4-5",
+    thinking: false,
+    thinkingBudget: 4096,
+    thinkingExplicit: false,
+    modelExplicit: false,
     headless: false,
     replicas: 1,
     noVideo: false,
@@ -84,7 +113,7 @@ function parseArgs(argv: string[]): CliArgs {
           console.error(`--suite must be one of: webbench-mini, webbench, custom, all`);
           process.exit(2);
         }
-        out.suite = v as any;
+        out.suite = v as CliArgs["suite"];
         break;
       }
       case "--tasks-file":
@@ -97,6 +126,29 @@ function parseArgs(argv: string[]): CliArgs {
       case "--model":
         out.modelId = argv[++i];
         out.modelLabel = out.modelId;
+        out.modelExplicit = true;
+        break;
+      case "--harness":
+        if (i + 1 >= argv.length || argv[i + 1].startsWith("-")) {
+          console.error("--harness requires a file path argument");
+          process.exit(2);
+        }
+        out.harnessPath = argv[++i];
+        break;
+      case "--thinking":
+        out.thinking = true;
+        out.thinkingExplicit = true;
+        break;
+      case "--thinking-budget":
+        out.thinkingBudget = parseInt(argv[++i], 10);
+        out.thinkingExplicit = true;
+        if (isNaN(out.thinkingBudget) || out.thinkingBudget <= 0) {
+          console.error("--thinking-budget must be a positive integer");
+          process.exit(2);
+        }
+        break;
+      case "--kernel-pool":
+        out.kernelPoolId = argv[++i];
         break;
       case "--headless":
         out.headless = true;
@@ -194,6 +246,17 @@ Options:
                         gpt-5                       (OpenAI)
                         gemini-3-flash-preview      (Google)
                         gemini-2.5-flash            (Google)
+  --harness <path>    Path to a harness config file (TS/JS) describing the
+                      agent-under-test: system prompt, tools, page-state
+                      policy, subagents, and optional model/thinking defaults.
+                      When omitted, runs the no-harness default (production
+                      tool set + section-stripped prompt). Author harness
+                      files out-of-tree via defineHarness({...}).
+  --thinking          Enable provider-specific thinking/reasoning (overrides
+                      the harness default). Captures thought summaries.
+  --thinking-budget <N> Thinking token budget (default: 4096). Only used when
+                      --thinking is set. Gemini: thinkingBudget. Anthropic:
+                      adaptive. OpenAI: maps to medium effort.
   --replicas <n>      Number of times to run each task (default: 1)
   --headless          Run Chromium headless (default: headed)
   --no-video          Disable video recording (default: on)
@@ -208,6 +271,10 @@ Options:
   --out-dir <dir>     Override run output dir
                       (default: .bench/runs/<auto-id>/ at repo root)
   --driver <kind>     Browser driver to use: "local" (default) or "kernel"
+  --kernel-pool <id>  With --driver kernel, acquire browsers from this
+                      pre-existing Kernel browser pool (id or name) instead
+                      of creating a fresh browser per trial. Eliminates
+                      cold-start cost; recommended for high-concurrency runs.
   --concurrency <n>   Parallel trials (default: local=CPUs/2, kernel=5)
   --upload <mode>     R2 upload behavior. One of:
                         auto    upload iff R2_* env vars are set (default)
@@ -236,36 +303,24 @@ async function main(): Promise<void> {
 
   const args = parseArgs(process.argv.slice(2));
 
-  // Dynamic-import after loadEnv so the AI SDK providers see the keys when
-  // their default factory instances initialize.
   const [
     { anthropic },
     { google },
     { openai },
-    { runTrial },
-    { ALL_TASKS, findTask, tasksBySource },
-    { createRunPaths, resolveRunDir, makeRunId, ensureRunDirExists },
-    { writeTrial, writeSummary, readAllTrials },
-    { ffmpegAvailable, convertAllInDir },
-    { buildBenchSystemPrompt, DEFAULT_TOOL_SET, BENCH_TOOL_CATALOG },
-    { WEBBENCH_REVISION },
-    { LLM_JUDGE_VERSION, JUDGE_MODEL_ID },
+    { findTask, tasksBySource },
     { sampleTasks },
     { loadTasksFromFile },
+    { loadHarnessFromFile },
+    { runBench, BenchConfigError },
   ] = await Promise.all([
     import("@ai-sdk/anthropic"),
     import("@ai-sdk/google"),
     import("@ai-sdk/openai"),
-    import("./runner"),
     import("./tasks"),
-    import("./paths"),
-    import("./store"),
-    import("./video"),
-    import("./agent/build-agent"),
-    import("./tasks/webbench/revision"),
-    import("./judges/llm-judge"),
     import("./tasks/sample"),
     import("./tasks/from-file"),
+    import("./harness"),
+    import("./bench"),
   ]);
 
   type LanguageModel = Awaited<ReturnType<typeof anthropic>>;
@@ -315,45 +370,14 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Fail fast on upload misconfigurations before running any trials.
-  const { uploadRun, createR2Client, r2EnvPresent } = await import("./upload");
-  let plannedUpload = false;
-  switch (args.upload) {
-    case "never":
-      plannedUpload = false;
-      break;
-    case "always":
-      plannedUpload = true;
-      if (!r2EnvPresent()) {
-        console.error(
-          "ERROR: --upload always was specified but required R2 env vars are not set.\n" +
-            "  Set R2_ACCOUNT_ID, R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET\n" +
-            "  in .env or your shell, then re-run.",
-        );
-        process.exit(2);
-      }
-      break;
-    case "auto":
-      plannedUpload = r2EnvPresent();
-      break;
-  }
-  if (plannedUpload && (!args.evalSet || !args.arm)) {
-    console.error(
-      "ERROR: upload requires both --eval-set and --arm. " +
-        "These get embedded in the run-id and manifest so the artifacts are traceable.\n" +
-        "  Either pass both flags, or use --no-upload to skip upload.",
-    );
-    process.exit(2);
-  }
-
-  // Resolve the task list. Single-task mode picks one; suite mode picks
-  // every task whose source matches; tasks-file mode reads a custom list.
-  let tasks: any[];
+  // Resolve the task list.
+  type Tsk = Awaited<ReturnType<typeof tasksBySource>>[number];
+  let resolved: Tsk[];
   if (args.tasksFile) {
     try {
-      tasks = await loadTasksFromFile(args.tasksFile, findTask);
-    } catch (e: any) {
-      console.error(e.message);
+      resolved = await loadTasksFromFile(args.tasksFile, findTask);
+    } catch (e) {
+      console.error(e instanceof Error ? e.message : String(e));
       process.exit(2);
     }
   } else if (args.taskId) {
@@ -362,529 +386,72 @@ async function main(): Promise<void> {
       console.error(`Unknown task id: ${args.taskId}`);
       process.exit(2);
     }
-    tasks = [task];
+    resolved = [task];
   } else if (args.suite === "all") {
-    tasks = await tasksBySource("custom"); // Don't run 1580 tasks on all
+    resolved = await tasksBySource("custom"); // Don't run 1580 tasks on all
   } else {
-    tasks = await tasksBySource(args.suite!);
+    resolved = await tasksBySource(args.suite!);
   }
 
-  // Apply sampling if requested
-  const preSampleCount = tasks.length;
+  const preSampleCount = resolved.length;
   if (args.sampleSize) {
-    tasks = sampleTasks(tasks, args.sampleSize, args.seed);
+    resolved = sampleTasks(resolved, args.sampleSize, args.seed);
   }
 
-  const model = resolveModel(args.modelId);
+  // Load the harness config (if provided).
+  const harness = args.harnessPath
+    ? await loadHarnessFromFile(args.harnessPath)
+    : undefined;
 
-  let runId = "";
-  let runDir = "";
-  let paths: any;
-  let existingTrials: import("./runner").TrialResult[] = [];
+  // Model resolution: explicit --model wins; else harness default; else CLI default.
+  const resolvedModelId =
+    args.modelExplicit || !harness?.model ? args.modelId : harness.model.id;
+  const resolvedModelLabel =
+    args.modelExplicit || !harness?.model ? args.modelLabel : harness.model.id;
+  const model = resolveModel(resolvedModelId);
 
-  if (args.resumeDir) {
-    paths = ensureRunDirExists(args.resumeDir);
-    runDir = paths.runDir;
-    
-    // We must use dynamic imports here because require is not defined in ESM
-    const path = await import("node:path");
-    runId = path.basename(runDir);
-    existingTrials = readAllTrials(paths);
-  } else {
-    runId = makeRunId({
-      modelLabel: args.modelLabel,
-      suite: args.suite,
-      taskId: args.taskId,
+  // Thinking resolution: explicit CLI flags win; else harness default.
+  const resolvedThinking = args.thinkingExplicit
+    ? args.thinking
+      ? { enabled: true, budget: args.thinkingBudget }
+      : undefined
+    : harness?.thinking?.enabled
+      ? { enabled: true, budget: harness.thinking.budget ?? args.thinkingBudget }
+      : undefined;
+
+  try {
+    await runBench({
+      tasks: resolved,
+      model,
+      modelId: resolvedModelId,
+      modelLabel: resolvedModelLabel,
+      harness,
+      thinking: resolvedThinking,
+      replicas: args.replicas,
+      headless: args.headless,
+      noVideo: args.noVideo,
+      noVisualize: args.noVisualize,
+      keepWebm: args.keepWebm,
+      resumeDir: args.resumeDir,
+      keepErrors: args.keepErrors,
+      outDir: args.outDir,
+      driverKind: args.driverKind,
+      kernelPoolId: args.kernelPoolId,
+      concurrency: args.concurrency,
+      upload: args.upload,
       evalSet: args.evalSet,
       arm: args.arm,
-    });
-    runDir = resolveRunDir({
-      runId,
-      outDirOverride: args.outDir,
-    });
-    paths = createRunPaths(runDir);
-  }
-
-  const startedAt = new Date().toISOString();
-  // Determine which tasks to run based on resume state
-  const completedTaskIds = new Set<string>();
-  let erroredTaskIds = new Set<string>();
-  
-  if (args.resumeDir) {
-    for (const t of existingTrials) {
-      if (!args.keepErrors && t.error) {
-        // We will retry this error. Delete the old JSON so we don't leak it if the retry crashes.
-        erroredTaskIds.add(t.taskId);
-        try {
-          const fs = await import("node:fs");
-          const path = await import("node:path");
-          fs.unlinkSync(path.join(paths.trialsDir, `${t.taskId}.json`));
-        } catch {}
-      } else {
-        completedTaskIds.add(t.taskId);
-      }
-    }
-    
-    const initialCount = tasks.length;
-    tasks = tasks.filter(t => !completedTaskIds.has(t.id));
-    
-    // Append to a resume log
-    try {
-      const fs = await import("node:fs");
-      const path = await import("node:path");
-      const logMsg = `[${startedAt}] Resumed sweep. Original tasks: ${initialCount}, Already completed: ${completedTaskIds.size}, Retrying errors: ${erroredTaskIds.size}, Running now: ${tasks.length}\n`;
-      fs.appendFileSync(path.join(paths.runDir, "resume.log"), logMsg);
-    } catch {}
-  }
-
-  const startMs = Date.now();
-  const recordVideo = !args.noVideo;
-  const visualize = !args.noVisualize;
-
-  // Determine concurrency
-  let concurrency = args.concurrency;
-  if (concurrency === 0) {
-    if (args.driverKind === "kernel") {
-      concurrency = 5; // Default free tier
-    } else {
-      const os = await import("node:os");
-      concurrency = Math.max(1, Math.floor(os.cpus().length / 2));
-    }
-  }
-
-  console.log(
-    `Running ${tasks.length} task(s) × ${args.replicas} replicas, model=${args.modelLabel}, concurrency=${concurrency}`,
-  );
-  if (args.resumeDir) {
-    console.log(
-      `Resuming from ${paths.runDir}: ${completedTaskIds.size} already done, ${tasks.length} remaining (${erroredTaskIds.size} errored, will retry)`
-    );
-  } else {
-    console.log(`Run dir:   ${paths.runDir}`);
-  }
-  console.log(`Video:     ${recordVideo ? "enabled" : "disabled"}`);
-  console.log(`Visualize: ${recordVideo && visualize ? "enabled" : "disabled"}`);
-  console.log("");
-
-  type Row = {
-    taskId: string;
-    passed: number;
-    total: number;
-    infrastructureFailures: number;
-    agentFailures: number;
-    judgeRejects: number;
-    avgSteps: number;
-    avgTokensIn: number;
-    avgTokensOut: number;
-    avgDurationMs: number;
-    domain: string;
-    videoPaths: string[];
-    trialPaths: string[];
-  };
-  const rows: Row[] = [];
-  const allTrialPaths: string[] = [];
-
-  let completedTasks = 0;
-  const totalTasks = tasks.length;
-  let runningTasks = 0;
-
-  if (tasks.length > 0) {
-    await runInPool(tasks, concurrency, async (task, index) => {
-    runningTasks++;
-    
-    let passes = 0;
-    let infraFails = 0;
-    let agentFails = 0;
-    let judgeRejects = 0;
-    let stepsSum = 0;
-    let inSum = 0;
-    let outSum = 0;
-    let timeSum = 0;
-    let domain = "";
-    try {
-      domain = new URL(task.startUrl).hostname.replace(/^www\./, "");
-    } catch {}
-    const videos: string[] = [];
-    const trials: string[] = [];
-
-    // Buffer output so parallel runs don't interleave console lines
-    const logBuffer: string[] = [];
-    logBuffer.push(`=== ${task.id} ===`);
-    logBuffer.push(`  ${truncate(task.instruction, 100)}`);
-
-    for (let i = 1; i <= args.replicas; i++) {
-      const tag = args.replicas > 1 ? ` [${i}/${args.replicas}]` : "";
-      const result = await runTrial(task, {
-        model,
-        modelId: args.modelId,
-        modelLabel: args.modelLabel,
-        headless: args.headless,
-        videosDir: recordVideo ? paths.videosDir : undefined,
-        replicaIndex: args.replicas > 1 ? i : undefined,
-        visualize,
-        driverKind: args.driverKind,
-      });
-
-      // Persist each trial immediately so a sweep that crashes mid-way still
-      // leaves the completed trials on disk.
-      const trialPath = writeTrial(paths, result);
-      trials.push(trialPath);
-      allTrialPaths.push(trialPath);
-
-      logBuffer.push(
-        `  Trial${tag}: ${result.passed ? "PASS" : "FAIL"} steps=${result.steps} tokens=${result.tokens.in}/${result.tokens.out} time=${(result.durationMs / 1000).toFixed(1)}s`,
-      );
-      if (result.error) logBuffer.push(`    error: ${result.error.message}`);
-      logBuffer.push(`    answer: ${truncate(result.agentAnswer, 160)}`);
-      logBuffer.push(`    judge:  ${truncate(result.judge.reasoning, 160)}`);
-      if (result.videoPath) {
-        logBuffer.push(`    video:  ${result.videoPath}`);
-        videos.push(result.videoPath);
-      }
-      if (result.liveViewUrl) {
-        logBuffer.push(`    live:   ${result.liveViewUrl}`);
-      }
-
-      if (result.passed) {
-        passes++;
-      } else if (result.error) {
-        if (result.error.kind === "infrastructure-error") infraFails++;
-        else agentFails++;
-      } else {
-        judgeRejects++;
-      }
-
-      stepsSum += result.steps;
-      inSum += result.tokens.in;
-      outSum += result.tokens.out;
-      timeSum += result.durationMs;
-    }
-
-    const total = args.replicas;
-    rows.push({
-      taskId: task.id,
-      passed: passes,
-      total,
-      infrastructureFailures: infraFails,
-      agentFailures: agentFails,
-      judgeRejects: judgeRejects,
-      avgSteps: stepsSum / total,
-      avgTokensIn: inSum / total,
-      avgTokensOut: outSum / total,
-      avgDurationMs: timeSum / total,
-      domain,
-      videoPaths: videos,
-      trialPaths: trials,
-    });
-    
-    runningTasks--;
-    completedTasks++;
-    
-    // Print everything for this task in one block
-    console.log(logBuffer.join("\n"));
-    console.log(`[${completedTasks}/${totalTasks} done | ${runningTasks} in flight]`);
-    console.log("");
-  });
-  }
-
-  // Reload all trials from disk to assemble the final summary (this ensures
-  // previously-completed trials from a resumed run are included).
-  const finalTrials = readAllTrials(paths);
-  
-  // Group by taskId so we can compute replica aggregations
-  const finalRows: Row[] = [];
-  const trialsByTask = new Map<string, import("./runner").TrialResult[]>();
-  for (const t of finalTrials) {
-    if (!trialsByTask.has(t.taskId)) trialsByTask.set(t.taskId, []);
-    trialsByTask.get(t.taskId)!.push(t);
-  }
-  
-  for (const [taskId, trials] of trialsByTask.entries()) {
-    let passes = 0, infraFails = 0, agentFails = 0, judgeRejects = 0;
-    let stepsSum = 0, inSum = 0, outSum = 0, timeSum = 0;
-    const vPaths: string[] = [];
-    const tPaths: string[] = [];
-    let domain = "";
-    
-    for (const res of trials) {
-      if (res.passed) passes++;
-      else if (res.error) {
-        if (res.error.kind === "infrastructure-error") infraFails++;
-        else agentFails++;
-      } else {
-        judgeRejects++;
-      }
-      
-      stepsSum += res.steps;
-      inSum += res.tokens.in;
-      outSum += res.tokens.out;
-      timeSum += res.durationMs;
-      
-      if (res.videoPath) vPaths.push(res.videoPath);
-      
-      const path = await import("node:path");
-      tPaths.push(path.join(paths.trialsDir, `${res.taskId}.json`));
-      
-      if (!domain && res.finalUrl) {
-        try { domain = new URL(res.finalUrl).hostname.replace(/^www\./, ""); } catch {}
-      }
-    }
-    
-    const count = trials.length;
-    finalRows.push({
-      taskId,
-      passed: passes,
-      total: count,
-      infrastructureFailures: infraFails,
-      agentFailures: agentFails,
-      judgeRejects: judgeRejects,
-      avgSteps: stepsSum / count,
-      avgTokensIn: inSum / count,
-      avgTokensOut: outSum / count,
-      avgDurationMs: timeSum / count,
-      domain,
-      videoPaths: vPaths,
-      trialPaths: tPaths,
-    });
-  }
-  
-  // Summary table
-  console.log("Summary");
-  console.log("-------");
-  let overallPassed = 0;
-  let overallTotal = 0;
-  let overallInfraFails = 0;
-  let overallAgentFails = 0;
-  let overallJudgeRejects = 0;
-  let overallTokensIn = 0;
-  let overallTokensOut = 0;
-  let overallDurationMs = 0;
-  
-  const failuresByDomain: Record<string, number> = {};
-
-  for (const r of finalRows) {
-    overallPassed += r.passed;
-    overallTotal += r.total;
-    overallInfraFails += r.infrastructureFailures;
-    overallAgentFails += r.agentFailures;
-    overallJudgeRejects += r.judgeRejects;
-    overallTokensIn += r.avgTokensIn * r.total;
-    overallTokensOut += r.avgTokensOut * r.total;
-    overallDurationMs += r.avgDurationMs * r.total;
-    
-    if (r.total > r.passed) {
-      failuresByDomain[r.domain] = (failuresByDomain[r.domain] || 0) + (r.total - r.passed);
-    }
-    
-    console.log(
-      `  ${r.taskId.padEnd(35)} ${r.passed}/${r.total}   steps=${r.avgSteps.toFixed(1).padStart(5)}   in=${Math.round(r.avgTokensIn).toString().padStart(6)}   out=${Math.round(r.avgTokensOut).toString().padStart(4)}   time=${(r.avgDurationMs / 1000).toFixed(1)}s`,
-    );
-  }
-  console.log("");
-  console.log(
-    `Pass rate: ${overallPassed}/${overallTotal} (${((overallPassed / overallTotal) * 100).toFixed(0)}%)`,
-  );
-  if (overallTotal > 0) {
-    console.log(`Breakdown:`);
-    console.log(`  Agent Errors:  ${((overallAgentFails / overallTotal) * 100).toFixed(1)}%`);
-    console.log(`  Infra Errors:  ${((overallInfraFails / overallTotal) * 100).toFixed(1)}%`);
-    console.log(`  Judge Rejects: ${((overallJudgeRejects / overallTotal) * 100).toFixed(1)}%`);
-  }
-  console.log(
-    `Total tokens: in=${overallTokensIn.toLocaleString()}  out=${overallTokensOut.toLocaleString()}`,
-  );
-  console.log(
-    `Total wall time: ${(overallDurationMs / 1000 / 60).toFixed(1)} min`,
-  );
-
-  // Convert recorded videos to mp4. Done as a post-sweep batch (rather
-  // than per-trial) so trial timing reflects only agent + browser, not
-  // ffmpeg. Conversions run in parallel up to a fixed cap.
-  if (recordVideo) {
-    const ffOk = await ffmpegAvailable();
-    if (!ffOk) {
-      console.log("");
-      console.log(
-        "WARNING: ffmpeg not on PATH. Skipping mp4 conversion.\n" +
-          "  Install with: brew install ffmpeg   (macOS)\n" +
-          "                apt install ffmpeg    (Debian/Ubuntu)\n" +
-          `  Raw .webm videos still saved at: ${paths.videosDir}`,
-      );
-    } else {
-      console.log("");
-      console.log(`Converting videos to mp4...`);
-      const ffStart = Date.now();
-      const convResults = await convertAllInDir(paths.videosDir, {
-        deleteSource: !args.keepWebm,
-        concurrency: 4,
-      });
-      const okCount = convResults.filter((r) => r.ok).length;
-      const failCount = convResults.length - okCount;
-      console.log(
-        `  ${okCount}/${convResults.length} converted in ${((Date.now() - ffStart) / 1000).toFixed(1)}s`,
-      );
-      if (failCount > 0) {
-        for (const r of convResults.filter((r) => !r.ok)) {
-          console.log(`  FAILED: ${r.source}`);
-          if (r.stderr) console.log(`    ${r.stderr.trim().split("\n").pop()}`);
-        }
-      }
-    }
-  }
-
-    const path = await import("node:path");
-    const trialPaths = finalTrials.map(t => path.join(paths.trialsDir, `${t.taskId}.json`));
-    
-    
-    const crypto = await import("node:crypto");
-    const child_process = await import("node:child_process");
-    const { z } = await import("zod");
-    const zodToJsonSchema = z.toJSONSchema;
-
-    const systemPromptText = buildBenchSystemPrompt();
-    const systemPromptHash = crypto.createHash("sha256").update(systemPromptText).digest("hex").slice(0, 16);
-
-    let gitSha;
-    try {
-      gitSha = child_process.execSync("git rev-parse HEAD", { stdio: ["pipe", "pipe", "ignore"] }).toString().trim();
-    } catch {}
-
-    let benchVersion = "0.0.0";
-    try {
-      const pkg = JSON.parse(await (await import("node:fs/promises")).readFile(path.join(process.cwd(), "package.json"), "utf8"));
-      benchVersion = pkg.version || "0.0.0";
-    } catch {}
-
-    const harness = {
-      agent: {
-        modelId: args.modelId,
-        systemPromptId: "default",
-        systemPromptHash,
-        systemPromptText,
-        toolSet: DEFAULT_TOOL_SET.map(name => {
-          const t = BENCH_TOOL_CATALOG[name];
-          return {
-            name: t.name,
-            description: t.description,
-            inputSchema: z.toJSONSchema(t.parameters),
-            outputSchema: t.outputSchema ? z.toJSONSchema(t.outputSchema) : undefined,
-          };
-        }),
-        limits: {
-          contextWindow: 128000,
-          maxOutputTokens: 8000
-        }
-      },
-      driver: {
-        kind: args.driverKind,
-        headless: args.headless,
-        stealth: true,
-        visualize: !args.noVisualize,
-        viewport: { width: 1280, height: 800 }
-      },
-      run: {
-        concurrency: concurrency,
-        replicas: args.replicas,
-        timeoutMs: 15 * 60000,
-        hardTimeoutBufferMs: 30000
-      },
-      judge: {
-        modelId: JUDGE_MODEL_ID,
-        version: LLM_JUDGE_VERSION
-      },
-      suite: {
-        source: args.suite,
-        revision: WEBBENCH_REVISION,
-        totalTasks: preSampleCount,
-        sampleSize: args.sampleSize,
-        seed: args.seed,
-      },
-      provenance: {
-        benchVersion,
-        gitSha,
-        nodeVersion: process.version,
-        platform: process.platform
-      }
-    };
-    
-    // Write the aggregate summary alongside the per-trial JSONs.
-    const summaryPath = writeSummary(paths, {
-      runId,
-      model: args.modelLabel,
       suite: args.suite,
       taskId: args.taskId,
-      startedAt,
-      endedAt: new Date().toISOString(),
-      durationMs: Date.now() - startMs,
-      tasks: finalRows.length,
-      replicas: args.replicas,
-      passed: overallPassed,
-      passRate: overallPassed / overallTotal,
-      breakdown: {
-        agentAccuracy: overallPassed / overallTotal,
-        infrastructureFailureRate: overallInfraFails / overallTotal,
-        judgeRejectRate: overallJudgeRejects / overallTotal,
-      },
-      failuresByDomain,
-      tokens: {
-        in: overallTokensIn,
-        out: overallTokensOut,
-        total: overallTokensIn + overallTokensOut,
-      },
-      harness,
-      trialPaths,
+      preSampleCount,
+      sampleSize: args.sampleSize,
+      seed: args.seed,
     });
-  console.log("");
-  console.log(`Summary: ${summaryPath}`);
-  console.log(`Trials:  ${paths.trialsDir}`);
-  if (recordVideo) {
-    console.log(`Videos:  ${paths.videosDir}`);
-  }
-
-  // Decide whether to upload (re-evaluate `auto` mode in case env was
-  // mutated mid-run; otherwise reuse the validated decision from earlier).
-  const shouldUpload =
-    args.upload === "never"
-      ? false
-      : args.upload === "always"
-        ? true
-        : r2EnvPresent();
-
-  if (shouldUpload) {
-    // Defense-in-depth: the early validation block above already guarded
-    // this combination, but re-evaluating `auto` against current env may
-    // flip the decision. Re-check here so we never reach `uploadRun`
-    // with missing eval-set/arm.
-    if (!args.evalSet || !args.arm) {
-      console.error(
-        "ERROR: upload requires both --eval-set and --arm. " +
-          "Either pass both flags, or use --no-upload to skip upload.",
-      );
-      process.exit(2);
-    }
-    const evalSet = args.evalSet;
-    const arm = args.arm;
-
-    console.log("");
-    console.log(`Uploading to R2 (bucket=${process.env.R2_BUCKET})...`);
-    const uploadStart = Date.now();
-    try {
-      const { client, bucket } = createR2Client();
-      const manifest = await uploadRun({
-        paths,
-        runId,
-        evalSet,
-        arm,
-        deps: { s3Client: client, bucket },
-      });
-      const uploadDuration = ((Date.now() - uploadStart) / 1000).toFixed(1);
-      console.log(`  ${Object.keys(manifest.trials).length} trial(s) uploaded in ${uploadDuration}s`);
-      console.log(`  Manifest: ${paths.manifestPath}`);
-    } catch (err) {
-      console.error("Upload failed:", err instanceof Error ? err.message : String(err));
-      console.error("Local artifacts preserved in:", paths.runDir);
-      process.exit(1);
-    }
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    // Config/usage errors get exit code 2 (matching the CLI's other
+    // validation paths); genuine runtime failures get exit code 1.
+    process.exit(err instanceof BenchConfigError ? 2 : 1);
   }
 }
 

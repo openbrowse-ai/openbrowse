@@ -29,6 +29,7 @@ export interface RunSummary {
   breakdown?: {
     agentAccuracy: number;
     infrastructureFailureRate: number;
+    botBlockedRate?: number;
     judgeRejectRate: number;
   };
   /** Failure rate per domain to inform infrastructure tuning and exclusions. */
@@ -51,6 +52,8 @@ export interface RunSummary {
         contextWindow: number;
         maxOutputTokens: number;
       };
+      /** Provider-specific thinking/reasoning config for this run, when enabled. */
+      thinking?: { enabled: boolean; budget?: number };
     };
     driver: {
       kind: "local" | "kernel";
@@ -63,6 +66,8 @@ export interface RunSummary {
       concurrency: number;
       replicas: number;
       timeoutMs?: number;
+      /** Extra grace period beyond `timeoutMs` before the hard-timeout watchdog fires. */
+      hardTimeoutBufferMs?: number;
     };
     judge: {
       modelId: string;

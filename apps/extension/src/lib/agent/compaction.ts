@@ -173,6 +173,15 @@ export function prunePartsAtSendTime(
       continue;
     }
 
+    // Skip image-bearing tools — their large `imageDataUrl` is intentional
+    // and gets stripped wholesale (not truncated mid-base64) by
+    // `stripScreenshotsFromParts` for older messages. Truncating here would
+    // produce a corrupt base64 string that the model can't decode.
+    if (part.toolName && STRIPPABLE_IMAGE_TOOLS.has(part.toolName)) {
+      out.push(part);
+      continue;
+    }
+
     const outputStr =
       typeof part.output === "string"
         ? part.output
@@ -193,6 +202,26 @@ export function prunePartsAtSendTime(
   return changed ? out : parts;
 }
 
+export const STRIPPABLE_IMAGE_TOOLS = new Set(["screenshot"]);
+
+/**
+ * Tools whose output is, by construction, a screenshot of the current page
+ * state. Used as the DEFAULT allowlist by {@link keepOnlyLatestScreenshot} to
+ * safely identify which tool-result parts may have their image stripped.
+ *
+ * The extension itself only produces `screenshot`. Headless harnesses (the
+ * bench) may produce page-state images under other tool names (e.g.
+ * `viewPage`) and pass their own allowlist into `keepOnlyLatestScreenshot` —
+ * the public extension never hardcodes experiment tool names.
+ *
+ * IMPORTANT: any allowlist MUST only contain tools that capture page state.
+ * It MUST NOT include user-attached images or any other image-bearing
+ * channel. The detection is tool-name-based (not output-shape-based)
+ * precisely to avoid accidentally stripping images that came from somewhere
+ * other than the agent's own perception calls.
+ */
+export const PAGE_SCREENSHOT_TOOLS = new Set(["screenshot"]);
+
 /**
  * Replaces the output of every completed `screenshot` tool call in
  * `parts` with the typed placeholder shape (`{ removed: "..." }`) that
@@ -211,7 +240,7 @@ export function stripScreenshotsFromParts(
     if (
       part.type === "dynamic-tool" &&
       part.state === "output-available" &&
-      part.toolName === "screenshot"
+      part.toolName && STRIPPABLE_IMAGE_TOOLS.has(part.toolName)
     ) {
       out.push({
         ...part,
@@ -223,6 +252,80 @@ export function stripScreenshotsFromParts(
     out.push(part);
   }
   return changed ? out : parts;
+}
+
+/**
+ * Strict "only-latest screenshot" pruner.
+ *
+ * Walks every part of every message back-to-front and finds the *latest*
+ * page-screenshot tool result (where `toolName ∈ PAGE_SCREENSHOT_TOOLS`).
+ * That part is left intact. Every *earlier* page-screenshot tool result has
+ * its `output` replaced with the placeholder shape.
+ *
+ * This is far more aggressive than {@link stripScreenshotsFromParts} +
+ * {@link findProtectedTailStart}, which keep N user-turns of screenshots
+ * intact. Bench trials have only one user turn (the task instruction), so
+ * the user-turn-based policy effectively never strips anything in bench —
+ * leading to context bloat from accumulated screenshots. This function fixes
+ * that by ensuring at most ONE page screenshot is alive in context at any
+ * time.
+ *
+ * Safety: only inspects parts where `part.type === "dynamic-tool"` AND
+ * `part.toolName ∈ PAGE_SCREENSHOT_TOOLS`. User-attached images, file parts,
+ * text parts, reasoning parts, and tool calls from any other tool are
+ * untouched. This is intentional: we never want to strip a user-uploaded
+ * image. Tool-name-based detection is the safest predicate — it would not
+ * match even if some unrelated tool happened to return an `imageDataUrl`
+ * field in its output.
+ *
+ * Returns a new messages array if anything changed; the original array
+ * (referentially) otherwise.
+ */
+export function keepOnlyLatestScreenshot(
+  messages: AgentUIMessage[],
+  allowlist: Set<string> = PAGE_SCREENSHOT_TOOLS,
+): AgentUIMessage[] {
+  // First pass: find indices of (messageIdx, partIdx) for every page-screenshot
+  // tool result with an `imageDataUrl` (non-stripped) output.
+  const screenshotLocs: Array<{ m: number; p: number }> = [];
+  for (let m = 0; m < messages.length; m++) {
+    const msg = messages[m];
+    for (let p = 0; p < msg.parts.length; p++) {
+      const part = msg.parts[p] as any;
+      if (
+        part?.type === "dynamic-tool"
+        && part.state === "output-available"
+        && typeof part.toolName === "string"
+        && allowlist.has(part.toolName)
+        && part.output
+        && typeof part.output === "object"
+        && "imageDataUrl" in part.output
+      ) {
+        screenshotLocs.push({ m, p });
+      }
+    }
+  }
+
+  // Nothing to strip: 0 or 1 screenshots present.
+  if (screenshotLocs.length <= 1) return messages;
+
+  // Mark all but the last for stripping.
+  const stripSet = new Set(
+    screenshotLocs.slice(0, -1).map((loc) => `${loc.m}:${loc.p}`),
+  );
+
+  return messages.map((msg, m) => {
+    let touched = false;
+    const newParts = msg.parts.map((part, p) => {
+      if (!stripSet.has(`${m}:${p}`)) return part;
+      touched = true;
+      return {
+        ...(part as any),
+        output: { removed: "[older screenshot stripped]" },
+      };
+    });
+    return touched ? { ...msg, parts: newParts } : msg;
+  });
 }
 
 /**
@@ -312,8 +415,8 @@ export function pruneMessages(
         }
 
         // Beyond threshold, start pruning
-        // Check if this is a screenshot tool
-        if (part.toolName === "screenshot") {
+        // Check if this is an image-bearing tool (screenshot, viewPage, etc.)
+        if (part.toolName && STRIPPABLE_IMAGE_TOOLS.has(part.toolName)) {
           // Replace output with placeholder
           newParts.push({
             ...part,

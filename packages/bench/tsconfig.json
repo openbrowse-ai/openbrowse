@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-      "@agent/*": ["../../apps/extension/src/lib/agent/*"]
+      "@agent/*": ["../../apps/extension/src/lib/agent/*"],
+      "@openbrowse/bench": ["./src/index.ts"]
     },
     "types": ["node"],
     "noEmit": true,
