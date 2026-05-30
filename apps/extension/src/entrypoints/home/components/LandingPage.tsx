@@ -351,7 +351,7 @@ export function LandingPage({
           {!isConfigured && (
             <button
               type="button"
-              onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") })}
+              onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") })}
               className="mt-2 w-full text-center text-xs text-primary hover:underline"
             >
               Set up an AI model to get started

@@ -1,17 +1,7 @@
 import { NoAutoLink } from "@/components/tiptap/link-extension";
 import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
-import {
-  Combobox,
-  ComboboxContent,
-  ComboboxGroup,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxLabel,
-  ComboboxList,
-} from "@/components/ui/combobox";
 import { Kbd } from "@/components/ui/kbd";
-import { RegistryIcon } from "@/components/ui/registry-icon";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
@@ -39,42 +29,25 @@ import StarterKit from "@tiptap/starter-kit";
 import {
   ArrowUp,
   BrainIcon,
-  ChevronDown,
   Paperclip,
   Plus,
   Square,
-  Star,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 import { computeButtonMode } from "./chat-input-mode";
+import {
+  ModelPicker,
+  type ModelOption,
+  type ProviderModels,
+} from "./ModelPicker";
 
 // Derived alias kept for back-compat with call sites that destructure
 // images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
 // once they're gone we can delete the alias and the re-export.
 type ImagePreview = Extract<Attachment, { kind: "image" }>;
-
-interface ModelOption {
-  id: string;
-  name: string;
-  description?: string;
-  intelligence?: "high" | "medium" | "low";
-  speed?: "fast" | "medium" | "slow";
-  contextWindow?: number;
-  maxOutputTokens?: number;
-  pricing?: { inputPer1M: number; outputPer1M: number };
-  capabilities?: string[];
-  recommended?: boolean;
-}
-
-interface ProviderModels {
-  provider: string;
-  label: string;
-  models: ModelOption[];
-  enabled: boolean;
-}
 
 interface ChatInputProps {
   value: string;
@@ -323,105 +296,6 @@ export function ChatInput({
   );
   const lastExternalValue = useRef(value);
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
-  const [highlightedModelId, setHighlightedModelId] = useState<string | null>(
-    null,
-  );
-  const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const modelButtonRef = useRef<HTMLButtonElement>(null);
-
-  const allModelItems = useMemo(() => {
-    if (!providerModels) return [];
-    return providerModels.flatMap((g) =>
-      g.models.map((m) => `${g.provider}:${m.id}`),
-    );
-  }, [providerModels]);
-
-  const modelIdToName = useMemo(() => {
-    const map = new Map<string, string>();
-    if (!providerModels) return map;
-    for (const group of providerModels) {
-      for (const m of group.models) {
-        map.set(`${group.provider}:${m.id}`, m.name);
-      }
-    }
-    return map;
-  }, [providerModels]);
-
-  const modelIdToProvider = useMemo(() => {
-    const map = new Map<string, { provider: string; enabled: boolean }>();
-    if (!providerModels) return map;
-    for (const group of providerModels) {
-      for (const m of group.models) {
-        map.set(`${group.provider}:${m.id}`, {
-          provider: group.provider,
-          enabled: group.enabled,
-        });
-      }
-    }
-    return map;
-  }, [providerModels]);
-
-  const pickerSections = useMemo(() => {
-    if (!providerModels)
-      return { favorites: [], recommended: [], providers: [] };
-    const q = modelSearchQuery.toLowerCase().trim();
-
-    // Helper to filter models
-    const filterModels = (
-      models: (typeof providerModels)[0]["models"],
-      groupLabel: string,
-    ) => {
-      if (!q) return models;
-      return models.filter(
-        (m) =>
-          m.name.toLowerCase().includes(q) ||
-          groupLabel.toLowerCase().includes(q),
-      );
-    };
-
-    // 1. Favorites
-    const favoriteItems: Array<
-      (typeof providerModels)[0]["models"][0] & {
-        providerId: string;
-        providerLabel: string;
-        enabled: boolean;
-      }
-    > = [];
-    // 2. Recommended
-    const recommendedItems: typeof favoriteItems = [];
-
-    // We will collect all models into these arrays
-    for (const group of providerModels) {
-      const models = filterModels(group.models, group.label);
-      for (const m of models) {
-        const item = {
-          ...m,
-          providerId: group.provider,
-          providerLabel: group.label,
-          enabled: group.enabled,
-        };
-        if (favoriteModels.includes(`${group.provider}:${m.id}`)) {
-          favoriteItems.push(item);
-        } else if (m.recommended) {
-          recommendedItems.push(item);
-        }
-      }
-    }
-
-    // 3. Provider Groups
-    const providerGroups = providerModels
-      .map((group) => ({
-        ...group,
-        models: filterModels(group.models, group.label),
-      }))
-      .filter((group) => group.models.length > 0);
-
-    return {
-      favorites: favoriteItems,
-      recommended: recommendedItems,
-      providers: providerGroups,
-    };
-  }, [providerModels, modelSearchQuery, favoriteModels]);
 
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -827,19 +701,6 @@ export function ChatInput({
     }
   }, [editor, disabled, autoFocus]);
 
-  const selectedModelName = useMemo(() => {
-    if (!providerModels || !selectedModel) return selectedModel;
-    const [providerId, ...modelIdParts] = selectedModel.split(":");
-    const actualModelId =
-      modelIdParts.length > 0 ? modelIdParts.join(":") : selectedModel;
-    for (const group of providerModels) {
-      if (modelIdParts.length > 0 && group.provider !== providerId) continue;
-      const found = group.models.find((m) => m.id === actualModelId);
-      if (found) return found.name;
-    }
-    return actualModelId;
-  }, [providerModels, selectedModel]);
-
   return (
     <div
       onDragEnter={handleContainerDragEnter}
@@ -935,301 +796,73 @@ export function ChatInput({
         {/* Model selector */}
         <div>
           {providerModels && providerModels.length > 0 && onModelChange && (
-            <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    ref={modelButtonRef}
-                    type="button"
-                    onClick={() => setModelSelectorOpen(!modelSelectorOpen)}
-                    className="flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                  >
-                    <span className="truncate max-w-[140px]">
-                      {selectedModelName}
-                    </span>
-                    <ChevronDown className="size-3 shrink-0" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
+            <ModelPicker
+              trigger="chat"
+              providerModels={providerModels}
+              value={selectedModel}
+              onValueChange={onModelChange}
+              favoriteModels={favoriteModels}
+              onFavoriteToggle={onFavoriteToggle}
+              showRecommended
+              placeholder="Select a model..."
+              open={modelSelectorOpen}
+              onOpenChange={setModelSelectorOpen}
+              triggerTooltip={
+                <>
                   Switch model <Kbd>⌥/</Kbd>
-                </TooltipContent>
-              </Tooltip>
-              <Combobox
-                open={modelSelectorOpen}
-                onOpenChange={(open) => {
-                  setModelSelectorOpen(open);
-                  if (!open) {
-                    setHighlightedModelId(null);
-                    setModelSearchQuery("");
-                  }
-                }}
-                onInputValueChange={(value) => setModelSearchQuery(value)}
-                value={selectedModel ?? ""}
-                onValueChange={(val) => {
-                  if (val) {
-                    const info = modelIdToProvider.get(val);
-                    if (info?.enabled) {
-                      onModelChange(val);
+                </>
+              }
+              renderModelInfo={(model) => <ModelInfoContent model={model} />}
+              footer={
+                <div className="p-1 border-t border-border mt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
                       setModelSelectorOpen(false);
-                    }
-                  }
-                }}
-                items={allModelItems}
-                itemToStringLabel={(id) => modelIdToName.get(id) ?? id}
-                autoHighlight
-              >
-                <ComboboxContent
-                  side="top"
-                  sideOffset={4}
-                  anchor={modelButtonRef}
-                  className="w-[320px] border border-border shadow-lg"
-                >
-                  <ComboboxInput
-                    placeholder="Select a model..."
-                    showTrigger={false}
-                  />
-                  <ComboboxList className="max-h-[300px] overflow-y-auto">
-                    {pickerSections.favorites.length === 0 &&
-                      pickerSections.recommended.length === 0 &&
-                      pickerSections.providers.length === 0 && (
-                        <div className="flex w-full justify-center py-2 text-center text-sm text-muted-foreground">
-                          No models found
-                        </div>
-                      )}
-
-                    {pickerSections.favorites.length > 0 && (
-                      <ComboboxGroup>
-                        <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">
-                          Favorites
-                        </ComboboxLabel>
-                        {pickerSections.favorites.map((model) => {
-                          const compoundId = `${model.providerId}:${model.id}`;
-                          return (
-                            <Tooltip
-                              key={compoundId}
-                              open={highlightedModelId === compoundId}
-                            >
-                              <TooltipTrigger asChild>
-                                <ComboboxItem
-                                  value={compoundId}
-                                  disabled={!model.enabled}
-                                  onPointerMove={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                  onFocus={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                >
-                                  <RegistryIcon
-                                    id={model.providerId}
-                                    className="size-1.5 mr-1.5 shrink-0"
-                                  />
-                                  <span className="flex-1 truncate">
-                                    {model.name}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      onFavoriteToggle?.(compoundId);
-                                    }}
-                                    className="order-last ml-2 text-primary hover:scale-110 transition-transform"
-                                  >
-                                    <Star className="size-3.5 fill-current" />
-                                  </button>
-                                </ComboboxItem>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="right"
-                                sideOffset={12}
-                                hideArrow
-                                className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg"
-                              >
-                                <ModelInfoContent model={model} />
-                              </TooltipContent>
-                            </Tooltip>
-                          );
-                        })}
-                      </ComboboxGroup>
-                    )}
-
-                    {pickerSections.recommended.length > 0 && (
-                      <ComboboxGroup>
-                        <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">
-                          Recommended
-                        </ComboboxLabel>
-                        {pickerSections.recommended.map((model) => {
-                          const compoundId = `${model.providerId}:${model.id}`;
-                          return (
-                            <Tooltip
-                              key={compoundId}
-                              open={highlightedModelId === compoundId}
-                            >
-                              <TooltipTrigger asChild>
-                                <ComboboxItem
-                                  value={compoundId}
-                                  disabled={!model.enabled}
-                                  onPointerMove={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                  onFocus={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                >
-                                  <RegistryIcon
-                                    id={model.providerId}
-                                    className="size-[10px] mr-1.5 shrink-0 opacity-60 grayscale"
-                                  />
-                                  <span className="flex-1 truncate">
-                                    {model.name}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      onFavoriteToggle?.(compoundId);
-                                    }}
-                                    className="order-last ml-2 text-muted-foreground hover:text-primary transition-colors"
-                                  >
-                                    <Star className="size-3.5" />
-                                  </button>
-                                </ComboboxItem>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="right"
-                                sideOffset={12}
-                                hideArrow
-                                className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg"
-                              >
-                                <ModelInfoContent model={model} />
-                              </TooltipContent>
-                            </Tooltip>
-                          );
-                        })}
-                      </ComboboxGroup>
-                    )}
-
-                    {pickerSections.providers.map((group) => (
-                      <ComboboxGroup key={group.provider}>
-                        <ComboboxLabel className="sticky top-0 z-10 bg-popover/95 backdrop-blur-sm">
-                          {group.label}
-                        </ComboboxLabel>
-                        {group.models.map((model) => {
-                          const compoundId = `${group.provider}:${model.id}`;
-                          const isFavorite =
-                            favoriteModels.includes(compoundId);
-                          return (
-                            <Tooltip
-                              key={compoundId}
-                              open={highlightedModelId === compoundId}
-                            >
-                              <TooltipTrigger asChild>
-                                <ComboboxItem
-                                  value={compoundId}
-                                  disabled={!group.enabled}
-                                  onPointerMove={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                  onFocus={() =>
-                                    setHighlightedModelId(compoundId)
-                                  }
-                                >
-                                  <RegistryIcon
-                                    id={group.provider}
-                                    className="size-[10px] mr-1.5 shrink-0 opacity-60 grayscale"
-                                  />
-                                  <span className="flex-1 truncate">
-                                    {model.name}
-                                  </span>
-                                  {!group.enabled && (
-                                    <span className="text-[10px] text-muted-foreground mr-2">
-                                      Not configured
-                                    </span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      onFavoriteToggle?.(compoundId);
-                                    }}
-                                    className={`order-last ml-2 transition-colors ${isFavorite ? "text-primary" : "text-transparent group-hover/command-item:text-muted-foreground hover:!text-primary"}`}
-                                  >
-                                    <Star
-                                      className={`size-3.5 ${isFavorite ? "fill-current" : ""}`}
-                                    />
-                                  </button>
-                                </ComboboxItem>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="right"
-                                sideOffset={12}
-                                hideArrow
-                                className="max-w-none w-auto p-3 bg-popover text-popover-foreground border border-border shadow-lg"
-                              >
-                                <ModelInfoContent model={model} />
-                              </TooltipContent>
-                            </Tooltip>
-                          );
-                        })}
-                      </ComboboxGroup>
-                    ))}
-                  </ComboboxList>
-
-                  <div className="p-1 border-t border-border mt-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setModelSelectorOpen(false);
-                        chrome.tabs.create({
-                          url: chrome.runtime.getURL(
-                            "/settings.html?tab=models",
-                          ),
-                        });
-                      }}
+                      chrome.tabs.create({
+                        url: chrome.runtime.getURL("/settings.html?tab=models"),
+                      });
+                    }}
                     className="w-full flex items-center justify-center gap-2 rounded-sm px-2 py-1 text-xs outline-hidden select-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    Configure <Kbd className="ml-1 text-[10px] h-4 py-0">⌥⇧C</Kbd>
+                    Configure{" "}
+                    <Kbd className="ml-1 text-[10px] h-4 py-0">⌥⇧C</Kbd>
                   </button>
-                  </div>
-
-                  {selectedModelCapabilities?.includes("thinking") && (
-                    <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
-                      <BrainIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                      <Switch
-                        checked={thinkingEnabled ?? false}
-                        onCheckedChange={(checked) => {
-                          if (checked) {
-                            const defaultConfig = getDefaultThinkingConfig(
-                              selectedModel ?? "",
-                            );
-                            onThinkingChange?.(true, defaultConfig);
-                          } else {
-                            onThinkingChange?.(false, undefined);
-                          }
-                        }}
-                        className="scale-75 origin-left"
+                </div>
+              }
+              footerExtra={
+                selectedModelCapabilities?.includes("thinking") ? (
+                  <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
+                    <BrainIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <Switch
+                      checked={thinkingEnabled ?? false}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          const defaultConfig = getDefaultThinkingConfig(
+                            selectedModel ?? "",
+                          );
+                          onThinkingChange?.(true, defaultConfig);
+                        } else {
+                          onThinkingChange?.(false, undefined);
+                        }
+                      }}
+                      className="scale-75 origin-left"
+                    />
+                    {thinkingEnabled ? (
+                      <ThinkingControl
+                        config={thinkingConfig}
+                        modelId={selectedModel ?? ""}
+                        onChange={(config) => onThinkingChange?.(true, config)}
                       />
-                      {thinkingEnabled ? (
-                        <ThinkingControl
-                          config={thinkingConfig}
-                          modelId={selectedModel ?? ""}
-                          onChange={(config) =>
-                            onThinkingChange?.(true, config)
-                          }
-                        />
-                      ) : (
-                        <span className="text-xs text-muted-foreground">
-                          Thinking
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </ComboboxContent>
-              </Combobox>
-            </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        Thinking
+                      </span>
+                    )}
+                  </div>
+                ) : null
+              }
+            />
           )}
         </div>
 

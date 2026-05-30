@@ -186,7 +186,30 @@ function healPendingTools(
     const pp = p as Record<string, unknown>;
     const state = pp.state;
     if (typeof state !== "string") return true;
+    // `approval-responded` is non-terminal but is a legitimate resume
+    // point — the SDK re-executes an approved call from this state via
+    // the `tool-approval-response` it emits during convertToModelMessages.
+    // An approved (approved === true), output-less call must therefore
+    // be left intact so the tool actually runs; healing it to
+    // output-error here is exactly the "Interrupted on approval" bug.
+    // A denied (approved === false) call still needs heal (folded to
+    // output-denied below). Malformed approvals fall through to heal.
+    if (state === "approval-responded") {
+      const ap = pp.approval as
+        | { id?: unknown; approved?: unknown }
+        | undefined;
+      if (
+        ap &&
+        typeof ap.id === "string" &&
+        ap.approved === true &&
+        pp.output === undefined
+      ) {
+        return false;
+      }
+      return true;
+    }
     if (!TERMINAL_TOOL_STATES.has(state)) return true;
+
     if (pp.input === undefined || pp.input === null) return true;
     if (state === "output-available") {
       return pp.output === undefined || pp.output === null;
@@ -238,6 +261,34 @@ function healPendingTools(
             input,
             state: "output-denied",
             approval: { id: approval.id, approved: false, reason: denyReason },
+          } as typeof part;
+        }
+      }
+
+      // A denied `approval-responded` (approved === false) folds to the
+      // canonical output-denied terminal shape, preserving the user's
+      // reason. (An approved one never reaches here — `needsHeal`
+      // exempts it so the SDK can re-execute the tool.)
+      if (state === "approval-responded" && p.approval) {
+        const approval = p.approval as {
+          id?: unknown;
+          approved?: unknown;
+          reason?: unknown;
+        };
+        if (typeof approval.id === "string" && approval.approved === false) {
+          changed = true;
+          return {
+            ...part,
+            input,
+            state: "output-denied",
+            approval: {
+              id: approval.id,
+              approved: false,
+              reason:
+                typeof approval.reason === "string"
+                  ? approval.reason
+                  : denyReason,
+            },
           } as typeof part;
         }
       }

@@ -1,7 +1,9 @@
 import { Check, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { RegistryIcon } from "@/components/ui/registry-icon";
 import { getToolPreview } from "./tool-previews";
 import { DefaultPreview } from "./tool-previews/primitives";
+import { resolveMcpToolDisplay } from "./mcp-tool-display";
 import { TabBadge } from "./ToolCallBlock";
 
 interface ToolApprovalBlockProps {
@@ -64,6 +66,11 @@ export async function handleAlwaysAllow(args: {
 
 export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, siteOrigin, onApprove, onDeny, onAlwaysAllow }: ToolApprovalBlockProps) {
   const customPreview = getToolPreview(toolName);
+  // Resolve MCP connector logo + human-readable name so the approval
+  // header matches the non-approval tool-call rows instead of showing a
+  // raw `mcp_<serverId>_<toolName>` identifier.
+  const { mcpInfo, readableNameSentence } = resolveMcpToolDisplay(toolName);
+  const displayName = readableNameSentence ?? toolName;
   // True between the user clicking "Always allow on <site>" and the
   // storage write resolving. Disables both approval buttons during the
   // window so a quick second click can't bypass the await.
@@ -100,9 +107,16 @@ export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, site
   return (
     <div className="flex flex-col w-full">
       <div className="flex items-center gap-1.5 py-0.5">
-        <span className="size-1.5 rounded-full shrink-0 bg-amber-500 animate-pulse" />
+        {mcpInfo ? (
+          <RegistryIcon
+            id={mcpInfo.connector.id}
+            className="size-3.5 shrink-0"
+          />
+        ) : (
+          <span className="size-1.5 rounded-full shrink-0 bg-amber-500 animate-pulse" />
+        )}
         <span className="text-sm text-muted-foreground">
-          {toolName} — waiting for approval
+          {displayName} — waiting for approval
         </span>
         <TabBadge toolCallId={toolCallId} />
       </div>

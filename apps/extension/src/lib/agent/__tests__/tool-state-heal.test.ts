@@ -159,6 +159,101 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(part.state).toBe("output-error");
   });
 
+  // ── approval-responded: the resume point (NOT a heal target) ──
+
+  it("preserves an APPROVED approval-responded part so the SDK re-runs the tool (install_skill / MCP approval bug)", () => {
+    // The exact "Interrupted on approval" bug: user clicked Allow, the
+    // SDK marked the dynamic-tool part approval-responded(approved:true)
+    // and fired the resume. convertToModelMessages re-executes from this
+    // state via the tool-approval-response it emits — but ONLY if we
+    // leave the part intact. Collapsing it to output-error here means
+    // the tool never runs and the user sees "Interrupted".
+    const part = {
+      type: "dynamic-tool",
+      toolCallId: "install-1",
+      toolName: "install_skill",
+      state: "approval-responded",
+      input: { source: "sales-skills/sales/sales-attio" },
+      approval: { id: "ap1", approved: true },
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("install sales-attio"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    const healed = out[1].parts[0] as {
+      state: string;
+      approval: { id: string; approved: boolean };
+      errorText?: string;
+    };
+    expect(healed.state).toBe("approval-responded");
+    expect(healed.approval).toEqual({ id: "ap1", approved: true });
+    expect(healed.errorText).toBeUndefined();
+    // No mutation → same instance returned.
+    expect(out[1]).toBe(msgs[1]);
+  });
+
+  it("folds a DENIED approval-responded part to output-denied (preserving reason)", () => {
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "denied-resp",
+      state: "approval-responded",
+      input: { url: "https://example.com" },
+      approval: { id: "ap1", approved: false, reason: "nope" },
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    const healed = out[1].parts[0] as {
+      state: string;
+      approval: { id: string; approved: boolean; reason?: string };
+    };
+    expect(healed.state).toBe("output-denied");
+    expect(healed.approval).toEqual({
+      id: "ap1",
+      approved: false,
+      reason: "nope",
+    });
+  });
+
+  it("defaults missing input on an approved approval-responded part to {}", () => {
+    const part = {
+      type: "dynamic-tool",
+      toolCallId: "install-no-input",
+      toolName: "install_skill",
+      state: "approval-responded",
+      approval: { id: "ap2", approved: true },
+      // input deliberately missing
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("install"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    const healed = out[1].parts[0] as { state: string; input: unknown };
+    expect(healed.state).toBe("approval-responded");
+    expect(healed.input).toEqual({});
+  });
+
+  it("heals an approval-responded part with malformed approval to output-error", () => {
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "resp-bad",
+      state: "approval-responded",
+      input: { url: "https://example.com" },
+      approval: { id: undefined, approved: true },
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    const healed = out[1].parts[0] as { state: string };
+    expect(healed.state).toBe("output-error");
+  });
+
   it("preserves non-tool parts (text, data-*) regardless of healing", () => {
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),

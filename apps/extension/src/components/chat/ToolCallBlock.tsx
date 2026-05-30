@@ -5,9 +5,8 @@ import {
 } from "@/components/ui/collapsible";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
-import { getMcpRegistry } from "@/lib/mcp";
 import { cn } from "@/lib/utils";
-import { getConnectorForMcpTool } from "@openbrowse/connectors";
+import { resolveMcpToolDisplay } from "./mcp-tool-display";
 import { AlertCircle, ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
@@ -22,6 +21,7 @@ import {
 } from "./tool-results/fs";
 import { ScreenshotResult } from "./tool-results/screenshot";
 import { SkillResult } from "./tool-results/skill";
+import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
 
@@ -55,6 +55,7 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
   LS: ({ args, result }) => <LSResult args={args} result={result} />,
   skill: ({ args, result }) => <SkillResult args={args} result={result} />,
+  install_skill: ({ result }) => <InstallSkillResult result={result} />,
   delegate: ({ args, result, toolCallId, state, errorText }) => (
     <DelegateResult
       args={args}
@@ -155,12 +156,6 @@ export function TabBadge({ toolCallId }: { toolCallId: string }) {
   );
 }
 
-function parseMcpToolName(toolKey: string): string | null {
-  const match = toolKey.match(/^mcp_[^_]+_(.+)$/);
-  if (!match) return null;
-  return match[1].replace(/_/g, " ").replace(/-/g, " ");
-}
-
 /**
  * Build a webFetch-specific label that includes the request URL's host
  * (and path if short enough). Falls back to the static label when the
@@ -201,22 +196,14 @@ export function ToolCallBlock({
   const denied = state === "denied";
   const errored = state === "errored";
   const resolvedResult = result ?? toolResultStore.get(toolCallId);
-  const serverIdMatch = toolName.match(/^mcp_([^_]+)_/);
-  const serverUrl = serverIdMatch
-    ? getMcpRegistry()
-        .getStates()
-        .find((s) => s.config.id === serverIdMatch[1])?.config.url
-    : undefined;
-  const mcpInfo = getConnectorForMcpTool(toolName, serverUrl);
-  const mcpName = mcpInfo
-    ? mcpInfo.toolName.replace(/_/g, " ").replace(/-/g, " ")
-    : parseMcpToolName(toolName);
+  const { mcpInfo, readableName, readableNameSentence } =
+    resolveMcpToolDisplay(toolName);
   const connectorLabels =
     mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
   const labels = TOOL_LABELS[toolName] ??
     connectorLabels ?? {
-      pending: mcpName ? `Running ${mcpName}...` : `${toolName}...`,
-      done: mcpName ? mcpName : toolName,
+      pending: readableName ? `Running ${readableName}...` : `${toolName}...`,
+      done: readableNameSentence ? readableNameSentence : toolName,
     };
 
   // For webFetch, splice in the requested URL's host so the collapsed
