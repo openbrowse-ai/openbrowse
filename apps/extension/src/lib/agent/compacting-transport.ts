@@ -467,6 +467,55 @@ function repairToolPart(
     input = {};
   }
 
+  // `approval-responded` is NOT a terminal state, but it is a
+  // legitimate intermediate the SDK resumes from — DON'T heal it away.
+  //
+  // When the user clicks Allow, the SDK marks the tool part
+  // `approval-responded` with `approval.approved === true` and fires the
+  // auto-resume. `convertToModelMessages` maps a preserved
+  // approval-responded part (with `approval.approved != null`) into a
+  // `tool-call` + `tool-approval-request` + `tool-approval-response`
+  // triple, and the SDK's `collect-tool-approvals` then re-executes the
+  // approved call. If we collapse it to `output-error` here (as the
+  // generic non-terminal branch below would), the tool NEVER runs and
+  // the user sees "Interrupted" the instant they approve. So:
+  //   - approved (approved === true), no output yet → pass through so
+  //     the SDK runs `execute`.
+  //   - explicitly denied (approved === false) → fold to output-denied,
+  //     the canonical terminal shape for a denial.
+  //   - malformed approval (no id / approved not boolean) → fall through
+  //     to the generic heal below (output-error).
+  if (state === "approval-responded") {
+    const approval = raw.approval as
+      | { id?: unknown; approved?: unknown; reason?: unknown }
+      | undefined;
+    if (approval && typeof approval.id === "string") {
+      if (approval.approved === true) {
+        // Awaiting execution — preserve verbatim (only default `input`).
+        if (raw.input !== input) {
+          return { ...raw, input } as typeof part;
+        }
+        return part;
+      }
+      if (approval.approved === false) {
+        return {
+          ...raw,
+          input,
+          state: "output-denied",
+          approval: {
+            id: approval.id,
+            approved: false,
+            ...(typeof approval.reason === "string"
+              ? { reason: approval.reason }
+              : {}),
+          },
+          output: undefined,
+        } as typeof part;
+      }
+    }
+    // Malformed approval shape → generic heal below.
+  }
+
   // Non-terminal state → collapse to output-error. Drop any partial
   // output so the part is unambiguous.
   if (!state || !TERMINAL_TOOL_STATES.has(state)) {

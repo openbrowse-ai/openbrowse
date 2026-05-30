@@ -30,6 +30,7 @@ import {
 import { Logo } from "@/components/ui/logo";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useProviders } from "@/hooks/useProviders";
+import { useConfiguredModels } from "@/hooks/useConfiguredModels";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
@@ -235,45 +236,7 @@ export function ChatView({
 
   const { providers } = useProviders();
 
-  const providerModels = useMemo(() => {
-    return providers
-      .map((provider) => {
-        let enabled = true;
-        let availableModels = provider.models;
-
-        if (provider.setup === "byok") {
-          const config = settings.providerConfigs[provider.id] ?? {};
-          const requiredFields =
-            provider.configSchema?.filter((f) => f.required) ?? [];
-          enabled = requiredFields.every((f) => !!config[f.key]);
-          if (!enabled) return null;
-        } else if (provider.setup === "web-llm") {
-          availableModels = provider.models.filter((m) =>
-            settings.downloadedModels.includes(m.id),
-          );
-          enabled = availableModels.length > 0;
-          if (!enabled) return null;
-        } else if (provider.setup === "browser-ai") {
-          availableModels = provider.models.filter((m) =>
-            settings.downloadedModels.includes(m.id),
-          );
-          enabled = availableModels.length > 0;
-          if (!enabled) return null;
-        }
-
-        return {
-          provider: provider.id,
-          label: provider.name,
-          models: availableModels,
-          enabled,
-        };
-      })
-      .filter((p): p is NonNullable<typeof p> => p !== null);
-  }, [
-    providers,
-    settings.providerConfigs,
-    settings.downloadedModels,
-  ]);
+  const providerModels = useConfiguredModels(settings);
 
   // Auto-select a default model when none is set and at least one
   // provider is now configured. Mirrors the same effect in LandingPage

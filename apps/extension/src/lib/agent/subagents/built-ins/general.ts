@@ -21,6 +21,7 @@ export const generalAgent: AgentDefinition = {
     "screenshot",
     "extract",
     "executeOnPage",
+    "executePython",
     "scrollPage",
     "selectTab",
     "listTabs",

@@ -10,8 +10,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { Settings, AgentSettings } from "@/lib/types";
-import { useProviders } from "@/hooks/useProviders";
-import { RegistryIcon } from "@/components/ui/registry-icon";
+import { useConfiguredModels } from "@/hooks/useConfiguredModels";
+import { ModelPicker } from "@/components/chat/ModelPicker";
 
 interface GeneralTabProps {
   settings: Settings;
@@ -20,15 +20,14 @@ interface GeneralTabProps {
   onAgentSettingsChange: (patch: Partial<AgentSettings>) => void;
 }
 
+const SAME_AS_AGENT = {
+  value: "__default__",
+  label: "Same as agent model",
+} as const;
+
 export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsChange }: GeneralTabProps) {
-  const { providers } = useProviders();
-  const enabledModelOptions = settings.favoriteModels.map((m) => {
-    const [providerId, ...rest] = m.split(":");
-    const modelId = rest.join(":");
-    const provider = providers.find((p) => p.id === providerId);
-    const model = provider?.models.find((md) => md.id === modelId);
-    return { value: m, label: model?.name ?? m, providerId: provider?.id };
-  });
+  const providerModels = useConfiguredModels(settings);
+  const hasConfiguredModels = providerModels.length > 0;
 
   return (
     <div className="space-y-6">
@@ -107,30 +106,19 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
 
       <div className="space-y-2">
         <Label>Tidy model</Label>
-        <Select
-          value={settings.tidyModel || undefined}
-          onValueChange={(v) => onChange({ tidyModel: v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select a model for tidy" />
-          </SelectTrigger>
-          <SelectContent>
-            {enabledModelOptions.length === 0 ? (
-              <p className="px-2 py-1.5 text-sm text-muted-foreground">
-                Enable models in the Models tab first
-              </p>
-            ) : (
-              enabledModelOptions.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  <span className="flex items-center gap-2">
-                    {opt.providerId && <RegistryIcon id={opt.providerId} className="size-4" />}
-                    {opt.label}
-                  </span>
-                </SelectItem>
-              ))
-            )}
-          </SelectContent>
-        </Select>
+        {hasConfiguredModels ? (
+          <ModelPicker
+            trigger="settings"
+            providerModels={providerModels}
+            value={settings.tidyModel || undefined}
+            onValueChange={(v) => onChange({ tidyModel: v })}
+            placeholder="Select a model for tidy"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground rounded-md border border-input px-3 py-2">
+            Configure a provider in the Models tab first
+          </p>
+        )}
         <p className="text-xs text-muted-foreground">
           Model used for automatic tab tidying
         </p>
@@ -141,25 +129,24 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
         <p className="text-xs text-muted-foreground">
           Model used for summarizing conversation history when context limit is reached. Defaults to agent model.
         </p>
-        <Select
-          value={agentSettings.compactionModel || "__default__"}
-          onValueChange={(v) => onAgentSettingsChange({ compactionModel: v === "__default__" ? undefined : v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Same as agent model" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__default__">Same as agent model</SelectItem>
-            {enabledModelOptions.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                <span className="flex items-center gap-2">
-                  {opt.providerId && <RegistryIcon id={opt.providerId} className="size-4" />}
-                  {opt.label}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {hasConfiguredModels ? (
+          <ModelPicker
+            trigger="settings"
+            providerModels={providerModels}
+            value={agentSettings.compactionModel ?? SAME_AS_AGENT.value}
+            defaultOption={SAME_AS_AGENT}
+            onValueChange={(v) =>
+              onAgentSettingsChange({
+                compactionModel: v === SAME_AS_AGENT.value ? undefined : v,
+              })
+            }
+            placeholder="Same as agent model"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground rounded-md border border-input px-3 py-2">
+            Configure a provider in the Models tab first
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -171,32 +158,27 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
           cheaper/faster model here to reduce per-turn cost — typically
           a smaller model from the same provider works well.
         </p>
-        <Select
-          value={settings.completionCheck?.evaluatorModel || "__default__"}
-          onValueChange={(v) =>
-            onChange({
-              completionCheck: {
-                ...settings.completionCheck,
-                evaluatorModel: v === "__default__" ? undefined : v,
-              },
-            })
-          }
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Same as agent model" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__default__">Same as agent model</SelectItem>
-            {enabledModelOptions.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                <span className="flex items-center gap-2">
-                  {opt.providerId && <RegistryIcon id={opt.providerId} className="size-4" />}
-                  {opt.label}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        {hasConfiguredModels ? (
+          <ModelPicker
+            trigger="settings"
+            providerModels={providerModels}
+            value={settings.completionCheck?.evaluatorModel ?? SAME_AS_AGENT.value}
+            defaultOption={SAME_AS_AGENT}
+            onValueChange={(v) =>
+              onChange({
+                completionCheck: {
+                  ...settings.completionCheck,
+                  evaluatorModel: v === SAME_AS_AGENT.value ? undefined : v,
+                },
+              })
+            }
+            placeholder="Same as agent model"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground rounded-md border border-input px-3 py-2">
+            Configure a provider in the Models tab first
+          </p>
+        )}
       </div>
 
       <div className="space-y-4 pt-4 border-t">

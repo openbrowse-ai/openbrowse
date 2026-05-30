@@ -62,6 +62,7 @@ import {
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
 import { createFsTools } from "./tools/fs";
+import { createPythonTool } from "./tools/execute-python";
 import { setTaskTitleTool } from "./tools/set-task-title";
 import type { BrowserTool } from "./types";
 
@@ -888,6 +889,7 @@ export async function createAgentTransport(
   }
 
   const fsTools = createFsTools(conversationId);
+  const pythonTool = createPythonTool(conversationId);
 
   const browserTools: Record<string, ToolSet[string]> = {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
@@ -905,6 +907,7 @@ export async function createAgentTransport(
     deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
     skill: toSDKTool(skillTool, "skill"),
