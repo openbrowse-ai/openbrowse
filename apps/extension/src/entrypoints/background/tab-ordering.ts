@@ -20,7 +20,7 @@
  */
 
 import { storage } from "@/lib/storage";
-import { getAssociatedTabIds } from "./favorite-tabs";
+import { ensureAdoptedForWindow, getAssociatedTabIds } from "./favorite-tabs";
 
 type TabClass = "pinned" | "favorite" | "regular";
 
@@ -161,6 +161,10 @@ export async function enforceTabOrder(
     // (and set the echo flag) while we were waiting our turn.
     if (correctingWindows.has(windowId)) return;
     try {
+      // Make sure favorites in this window are adopted (and the map is
+      // hydrated) before classifying — otherwise a not-yet-adopted favorite
+      // would be seen as "regular" and the guard would miss it.
+      await ensureAdoptedForWindow(windowId);
       const { tabs, classOf } = await classifyWindowTabs(windowId);
       const correctIndex = computeCorrectIndex(tabs, classOf, movedTabId);
       if (correctIndex == null) return;
@@ -191,6 +195,7 @@ export async function positionFavoriteTab(
   return withWindowLock(windowId, async () => {
     if (correctingWindows.has(windowId)) return;
     try {
+      await ensureAdoptedForWindow(windowId);
       const tabs = await chrome.tabs.query({ windowId });
       tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
       const pinnedCount = tabs.filter((t) => t.pinned).length;

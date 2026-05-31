@@ -108,29 +108,37 @@ function persist(): void {
   }
 }
 
-let hydrated = false;
+let hydratePromise: Promise<void> | null = null;
 
 /**
- * Repopulate the in-memory map from session storage. Idempotent. Must run
- * before classification on a cold start; callers `await` it once at SW
- * startup (see background `main`).
+ * Repopulate the in-memory map from session storage. Idempotent — the
+ * first call kicks off hydration and every later call shares the same
+ * promise, so concurrent callers (e.g. the ordering guard on a cold SW
+ * wake) all wait for the same one-time load.
  */
-export async function hydrate(): Promise<void> {
-  if (hydrated) return;
-  hydrated = true;
-  try {
-    const stored = await chrome.storage.session.get(SESSION_KEY);
-    const data = stored[SESSION_KEY] as
-      | Record<string, FavoriteTabAssociation[]>
-      | undefined;
-    if (!data) return;
-    for (const [spaceId, list] of Object.entries(data)) {
-      const map = getSpaceMap(spaceId);
-      for (const assoc of list) map.set(assoc.favoriteUrl, assoc);
+export function hydrate(): Promise<void> {
+  if (hydratePromise) return hydratePromise;
+  hydratePromise = (async () => {
+    try {
+      const stored = await chrome.storage.session.get(SESSION_KEY);
+      const data = stored[SESSION_KEY] as
+        | Record<string, FavoriteTabAssociation[]>
+        | undefined;
+      if (!data) return;
+      for (const [spaceId, list] of Object.entries(data)) {
+        const map = getSpaceMap(spaceId);
+        for (const assoc of list) map.set(assoc.favoriteUrl, assoc);
+      }
+    } catch {
+      // ignore; map stays empty and bootstrap will re-adopt.
     }
-  } catch {
-    // ignore; map stays empty and bootstrap will re-adopt.
-  }
+  })();
+  return hydratePromise;
+}
+
+/** Await one-time hydration of the association map. */
+export function ensureHydrated(): Promise<void> {
+  return hydrate();
 }
 
 // ---------------------------------------------------------------------------
@@ -333,42 +341,69 @@ export async function handleTabRemoved(
 }
 
 // ---------------------------------------------------------------------------
-// Startup bootstrap
+// Startup bootstrap / on-demand reconciliation
 // ---------------------------------------------------------------------------
+
+/**
+ * Reconcile + adopt for a single space against its window's current tabs:
+ *  - drop associations whose tab is gone or wandered off the hostname;
+ *  - refresh live info for retained ones;
+ *  - adopt the first prefix-subset tab for any still-unassociated favorite.
+ * Honors "one adopted tab per favorite" via `maybeAdopt`.
+ */
+async function adoptForSpace(space: Space): Promise<void> {
+  if (!space.windowId || space.favorites.length === 0) return;
+  let tabs: chrome.tabs.Tab[];
+  try {
+    tabs = await chrome.tabs.query({ windowId: space.windowId });
+  } catch {
+    return;
+  }
+  const liveIds = new Set(
+    tabs.map((t) => t.id).filter((id): id is number => id != null),
+  );
+  const map = getSpaceMap(space.id);
+
+  for (const [favUrl, assoc] of [...map]) {
+    const tab = tabs.find((t) => t.id === assoc.tabId);
+    if (!tab || !liveIds.has(assoc.tabId) || (tab.url && !sameHostname(tab.url, favUrl))) {
+      map.delete(favUrl);
+    } else if (tab.url) {
+      assoc.currentUrl = tab.url;
+      assoc.currentTitle = tab.title ?? assoc.currentTitle;
+      assoc.currentFavicon = tab.favIconUrl ?? assoc.currentFavicon;
+    }
+  }
+
+  tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  for (const t of tabs) {
+    if (t.id == null || t.pinned || !t.url) continue;
+    if (findAssocByTab(t.id)) continue;
+    maybeAdopt(space, t.id, t.url, t.title, t.favIconUrl);
+  }
+  persist();
+}
+
+/**
+ * Ensure favorites in `windowId`'s space are adopted before code that reads
+ * the association map (e.g. the tab-ordering guard) runs. Awaits hydration
+ * first so a cold service-worker wake can't race an empty map, then runs a
+ * cheap adoption pass (no `chrome.tabs.move`, so it won't trigger onMoved).
+ */
+export async function ensureAdoptedForWindow(windowId: number): Promise<void> {
+  await ensureHydrated();
+  try {
+    const { storage } = await import("@/lib/storage");
+    const space = await storage.getSpaceByWindowId(windowId);
+    if (space) await adoptForSpace(space);
+  } catch {
+    // ignore; classification will fall back to whatever is in the map.
+  }
+}
 
 export async function bootstrap(spaces: Space[]) {
   await hydrate();
   for (const space of spaces) {
-    if (!space.windowId || space.favorites.length === 0) continue;
-    let tabs: chrome.tabs.Tab[];
-    try {
-      tabs = await chrome.tabs.query({ windowId: space.windowId });
-    } catch {
-      continue;
-    }
-    const liveIds = new Set(tabs.map((t) => t.id).filter((id): id is number => id != null));
-    const map = getSpaceMap(space.id);
-
-    // Drop hydrated associations whose tab no longer exists or whose tab
-    // has wandered off the favorite's hostname.
-    for (const [favUrl, assoc] of [...map]) {
-      const tab = tabs.find((t) => t.id === assoc.tabId);
-      if (!tab || !liveIds.has(assoc.tabId) || (tab.url && !sameHostname(tab.url, favUrl))) {
-        map.delete(favUrl);
-      } else if (tab.url) {
-        assoc.currentUrl = tab.url;
-        assoc.currentTitle = tab.title ?? assoc.currentTitle;
-        assoc.currentFavicon = tab.favIconUrl ?? assoc.currentFavicon;
-      }
-    }
-
-    // Adopt the first prefix-subset tab for any favorite still unassociated.
-    tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-    for (const t of tabs) {
-      if (t.id == null || t.pinned || !t.url) continue;
-      if (findAssocByTab(t.id)) continue;
-      maybeAdopt(space, t.id, t.url, t.title, t.favIconUrl);
-    }
-    persist();
+    await adoptForSpace(space);
   }
 }
