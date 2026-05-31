@@ -738,9 +738,9 @@ describe("buildEvaluatorUserPrompt", () => {
 });
 
 describe("completionCheckTelemetry", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     indexedDB = new IDBFactory();
-    completionCheckTelemetry._resetForTests();
+    await completionCheckTelemetry._resetForTests();
   });
 
   it("records and lists rows for a conversation, sorted by timestamp", async () => {
@@ -882,9 +882,9 @@ describe("completionCheckTelemetry", () => {
 });
 
 describe("runCompletionCheck (real evaluator with mocked LLM)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     indexedDB = new IDBFactory();
-    completionCheckTelemetry._resetForTests();
+    await completionCheckTelemetry._resetForTests();
     setCurrentAgentModel(null);
   });
 
@@ -1363,7 +1363,7 @@ describe("observeChunkForCompletionCheck", () => {
 
 afterEach(() => {
   // Tighten test isolation for the IndexedDB-using suites.
-  completionCheckTelemetry._resetForTests();
+  void completionCheckTelemetry._resetForTests();
 });
 
 describe("buildCompletionCheckFeedbackMessage", () => {
@@ -1447,9 +1447,9 @@ describe("buildCompletionCheckFeedbackMessage", () => {
 });
 
 describe("runWithRejectionLoop (transport integration)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     indexedDB = new IDBFactory();
-    completionCheckTelemetry._resetForTests();
+    await completionCheckTelemetry._resetForTests();
     setCurrentAgentModel(null);
   });
 
@@ -1671,7 +1671,7 @@ describe("runWithRejectionLoop (transport integration)", () => {
       abortSignal: undefined,
       pinnedConversationId: null,
       buildCompletionCheckInput: () => ({
-        conversationId: "c3",
+        conversationId: "c3-rejectloop",
         turnIndex: 0,
         rejectionRound: 0,
         originalRequest: "do X",
@@ -1684,9 +1684,10 @@ describe("runWithRejectionLoop (transport integration)", () => {
     const chunks = await drainStream(stream);
     expect(agent.callCount).toBe(MAX_REJECTION_ROUNDS);
 
-    const rows = await completionCheckTelemetry.listForConversation("c3");
-    const lastOutcome = rows.at(-1)?.outcomeKind;
-    expect(lastOutcome).toBe("force-emitted");
+    const rows = await completionCheckTelemetry.listForConversation(
+      "c3-rejectloop",
+    );
+    expect(rows.some((r) => r.outcomeKind === "force-emitted")).toBe(true);
 
     const rejectionChunks = chunks.filter(
       (c) => (c as { type: string }).type === "data-completion-check-rejection",

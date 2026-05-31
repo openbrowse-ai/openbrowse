@@ -5,6 +5,7 @@ import {
   formatMentionContext,
 } from "@/components/chat/ChatInput";
 import { formatAttachments } from "@/lib/chat/format-attachments";
+import { openSettingsTab } from "@/lib/open-settings";
 import {
   Suggestions,
   Suggestion,
@@ -351,7 +352,7 @@ export function LandingPage({
           {!isConfigured && (
             <button
               type="button"
-              onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") })}
+              onClick={() => void openSettingsTab("models")}
               className="mt-2 w-full text-center text-xs text-primary hover:underline"
             >
               Set up an AI model to get started

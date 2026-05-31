@@ -148,6 +148,13 @@ export const completionCheckTelemetry = {
    * All verdict rows for a conversation, sorted by timestamp ascending.
    * Most callers want the conversation-scoped view; the global view
    * (`listAll`) is for the future telemetry-aggregation UI.
+   *
+   * Timestamps are millisecond-resolution `Date.now()` values, so rows
+   * recorded within the same millisecond can tie. We break ties by
+   * `turnIndex` then `rejectionRound` — both monotonically increasing in
+   * insertion order within a turn — so equal-timestamp rows return in a
+   * deterministic, insertion-consistent order instead of relying on the
+   * IndexedDB primary-key (random uuid) ordering.
    */
   async listForConversation(
     conversationId: string,
@@ -158,7 +165,12 @@ export const completionCheckTelemetry = {
       "by-conversation",
       conversationId,
     );
-    return rows.sort((a, b) => a.timestamp - b.timestamp);
+    return rows.sort(
+      (a, b) =>
+        a.timestamp - b.timestamp ||
+        a.turnIndex - b.turnIndex ||
+        a.rejectionRound - b.rejectionRound,
+    );
   },
 
   /**
@@ -222,10 +234,22 @@ export const completionCheckTelemetry = {
   },
 
   /**
-   * Test/debug helper. Reset the in-memory db handle so a fresh
-   * `indexedDB` (e.g. fake-indexeddb in tests) is opened on next call.
+   * Test/debug helper. Reset per-test telemetry state: clear the
+   * `verdicts` store so rows can't leak across tests (with
+   * `fake-indexeddb`, the backing store is global and persists between
+   * tests in the same file), then drop the cached db handle so a fresh
+   * `indexedDB` (e.g. a newly-assigned `IDBFactory`) is opened on next
+   * call.
    */
-  _resetForTests(): void {
+  async _resetForTests(): Promise<void> {
+    try {
+      const db = await getDb();
+      await db.clear("verdicts");
+    } catch {
+      // Store may not exist yet, or the cached handle may point at a
+      // torn-down factory; either way a stale handle is about to be
+      // dropped below, so swallow.
+    }
     dbPromise = null;
   },
 };

@@ -1,7 +1,8 @@
 import { Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Settings } from "@/lib/types";
 import { useProviders } from "@/hooks/useProviders";
+import { Kbd } from "@/components/ui/kbd";
 import { QUIRKS } from "@/registry/models-dev/quirks";
 import { ProviderSection, type ModelState } from "./ProviderSection";
 
@@ -28,6 +29,28 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
   const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
+
+  // "/" focuses the search box (when not already typing somewhere), so
+  // the input is reachable without the mouse.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable === true;
+      if (isEditable) return;
+      e.preventDefault();
+      searchRef.current?.focus();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Listen for download progress messages from background
   useEffect(() => {
@@ -114,12 +137,28 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <input
+            ref={searchRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && query) {
+                e.preventDefault();
+                e.stopPropagation();
+                setQuery("");
+                searchRef.current?.blur();
+              }
+            }}
             placeholder="Search providers and models…"
-            className="w-full pl-8 pr-2 py-1.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full pl-8 pr-12 py-1.5 text-sm rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-ring"
           />
+          {query ? (
+            <Kbd className="absolute right-2 top-1/2 -translate-y-1/2">esc</Kbd>
+          ) : !searchFocused ? (
+            <Kbd className="absolute right-2 top-1/2 -translate-y-1/2">/</Kbd>
+          ) : null}
         </div>
       </div>
 

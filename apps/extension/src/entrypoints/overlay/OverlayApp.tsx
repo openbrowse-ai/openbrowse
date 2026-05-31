@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTidyProgress } from "./hooks/useTidyProgress";
 import type { AutoTidyNotification, FavoriteTabAssociation, Space, TidyState } from "@/lib/types";
 import { storage } from "@/lib/storage";
+import { openSettingsTab } from "@/lib/open-settings";
 import { useTheme } from "@/hooks/useTheme";
 import { OverlayHeader } from "./components/OverlayHeader";
 import { OverlayTabList, type ReorderEvent } from "./components/OverlayTabList";
@@ -101,7 +102,6 @@ export function OverlayApp() {
   const tidyProgress = useTidyProgress();
   const isTidying = tidyProgress !== "";
   const inputRef = useRef<HTMLInputElement>(null);
-  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const createSpaceSubmitRef = useRef<(() => void) | null>(null);
   const [recentlyClosed, setRecentlyClosed] = useState<OverlayTab[]>([]);
   const [historySearchResults, setHistorySearchResults] = useState<OverlayTab[]>([]);
@@ -956,7 +956,7 @@ export function OverlayApp() {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         if (e.code === "Comma") {
           e.preventDefault();
-          chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") });
+          void openSettingsTab();
           closeOverlay();
           return;
         }
@@ -1206,7 +1206,6 @@ export function OverlayApp() {
           <OverlayFooter
             actionsOpen={actionsOpen}
             onActionsOpenChange={setActionsOpen}
-            actionsButtonRef={actionsButtonRef}
             focusedTab={focusedTab}
             isFavorited={isFavorited}
             isActionMode={isActionMode}

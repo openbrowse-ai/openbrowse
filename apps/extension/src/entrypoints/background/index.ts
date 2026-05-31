@@ -1010,6 +1010,11 @@ export default defineBackground({
                     favorites: [...space.favorites, newFav],
                   });
                   assocFav(space.id, url, tabId, tab.url ?? url, tab.title ?? url, tab.favIconUrl ?? "");
+                  // Move the tab into the favorites zone right away so the
+                  // strip order reflects its new status (pinned → favorites
+                  // → regular) without waiting for a manual drag.
+                  const { positionFavoriteTab } = await import("./tab-ordering");
+                  await positionFavoriteTab(windowId, tabId);
                   sendResponse({ ok: true, undo: { action: "favorite", spaceId: space.id, prevFavorites } });
                   return;
                 }
@@ -1237,6 +1242,12 @@ export default defineBackground({
             };
             const overTab = await chrome.tabs.get(overTabId);
             await chrome.tabs.move(tabId, { index: overTab.index });
+            // Keep the pinned → favorites → regular invariant even when the
+            // in-app reorder UI requests a cross-zone move.
+            if (overTab.windowId != null) {
+              const { enforceTabOrder } = await import("./tab-ordering");
+              await enforceTabOrder(overTab.windowId, tabId);
+            }
 
             if (sectionChange !== null && sectionChange !== undefined) {
               const { storage } = await import("@/lib/storage");
@@ -1522,10 +1533,8 @@ export default defineBackground({
                 if (tab.id) await chrome.tabs.move(tab.id, { index: 0 });
               }
             } else if (action === "settings") {
-              await chrome.tabs.create({
-                url: chrome.runtime.getURL("/settings.html"),
-                ...(windowId ? { windowId } : {}),
-              });
+              const { openSettingsTab } = await import("@/lib/open-settings");
+              await openSettingsTab();
             } else if (action === "history") {
               // Handled entirely in the frontend
             } else if (action === "tidy") {
@@ -2168,6 +2177,16 @@ export default defineBackground({
       import("./favorite-tabs").then(({ disassociateByTab }) => {
         disassociateByTab(tabId);
       });
+    });
+
+    // Enforce the strip ordering invariant (pinned → favorites → regular)
+    // when a tab is moved — whether dragged manually in Chrome's tab strip
+    // or moved programmatically. Bounces a favorite back if it lands after
+    // a regular tab (or vice versa).
+    chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+      import("./tab-ordering").then(({ enforceTabOrder }) => {
+        enforceTabOrder(moveInfo.windowId, tabId);
+      }).catch(() => {});
     });
 
     import("./auto-tidy").then(({ startAutoTidy }) => {

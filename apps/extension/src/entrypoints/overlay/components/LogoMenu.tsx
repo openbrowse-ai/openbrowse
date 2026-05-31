@@ -1,4 +1,6 @@
 import { Maximize, Settings } from "lucide-react";
+import { openSettingsTab } from "@/lib/open-settings";
+import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import {
   Combobox,
   ComboboxCollection,
@@ -25,10 +27,9 @@ const itemToStringLabel = (id: MenuItemId) => ITEMS_BY_ID.get(id)?.label ?? id;
 interface LogoMenuProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
 }
 
-export function LogoMenu({ open, onOpenChange, anchorRef }: LogoMenuProps) {
+export function LogoMenu({ open, onOpenChange }: LogoMenuProps) {
   return (
     <Combobox
       open={open}
@@ -40,7 +41,7 @@ export function LogoMenu({ open, onOpenChange, anchorRef }: LogoMenuProps) {
         if (!value) return;
         onOpenChange(false);
         if (value === "settings") {
-          chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") });
+          void openSettingsTab();
           closeOverlay();
         } else if (value === "full-view") {
           chrome.tabs.create({ url: chrome.runtime.getURL("/home.html") });
@@ -48,7 +49,26 @@ export function LogoMenu({ open, onOpenChange, anchorRef }: LogoMenuProps) {
         }
       }}
     >
-      <ComboboxContent side="top" align="start" sideOffset={8} anchor={anchorRef} className="w-auto min-w-44">
+      {/* Trigger lives inside the Combobox so base-ui owns the
+          toggle-vs-outside-press behavior — clicking it while open closes
+          cleanly instead of close-then-reopen flashing (same as the model
+          picker). Rendered chevron-free via the base-ui primitive. */}
+      <ComboboxPrimitive.Trigger
+        className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        title="Menu"
+      >
+        <img
+          src={chrome.runtime.getURL("/icon/32.png")}
+          alt="OpenBrowse"
+          className="size-4 dark:hidden"
+        />
+        <img
+          src={chrome.runtime.getURL("/icon/32-dark.png")}
+          alt="OpenBrowse"
+          className="size-4 hidden dark:block"
+        />
+      </ComboboxPrimitive.Trigger>
+      <ComboboxContent side="top" align="start" sideOffset={8} className="w-auto min-w-44">
         <ComboboxList>
           <ComboboxCollection>
             {(id: MenuItemId) => {

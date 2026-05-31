@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Tooltip,
   TooltipContent,
@@ -334,11 +335,23 @@ export default function App() {
 
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
-    await chatDb.deleteConversation(deleteTarget.id);
-    if (deleteTarget.id === activeConversationId) {
+    const target = deleteTarget;
+    setDeleteTarget(null);
+    // Optimistically drop the row from the sidebar list immediately.
+    window.dispatchEvent(
+      new CustomEvent("chat-deleted", { detail: { id: target.id } }),
+    );
+    if (target.id === activeConversationId) {
       setActiveConversationId(null);
     }
-    setDeleteTarget(null);
+    try {
+      await chatDb.deleteConversation(target.id);
+    } catch {
+      // Reconcile the optimistic removal if the delete actually failed.
+      window.dispatchEvent(
+        new CustomEvent("chat-deleted-failed", { detail: { id: target.id } }),
+      );
+    }
   }, [deleteTarget, activeConversationId]);
 
   const handleNewConversation = useCallback((id: string) => {
@@ -530,12 +543,12 @@ export default function App() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={!renameValue.trim()}>
+              <Button type="submit" disabled={!renameValue.trim()} data-action="">
                 Save
-                <kbd className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] opacity-60">
+                <Kbd className="ml-1.5">
                   <span>⌘</span>
                   <span>↵</span>
-                </kbd>
+                </Kbd>
               </Button>
             </DialogFooter>
           </form>
@@ -568,10 +581,10 @@ export default function App() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={confirmDelete}>
               Delete
-              <kbd className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] opacity-60">
+              <Kbd className="ml-1.5">
                 <span>⌘</span>
                 <span>↵</span>
-              </kbd>
+              </Kbd>
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
