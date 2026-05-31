@@ -1,4 +1,3 @@
-import { resolveMcpToolDisplay } from "@/components/chat/mcp-tool-display";
 import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
@@ -17,6 +16,7 @@ import { memoryDb } from "../memory-db";
 import type { AgentUIMessage, Settings } from "../types";
 import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
+import { scanToolUsage, mergeDistinct } from "./tool-usage";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
 import type {
@@ -802,10 +802,11 @@ export function resetAgentIndicator() {
  * for end-of-turn message persistence). Fire-and-forget; failures are
  * swallowed. Main agent only — subagent steps are not recorded here.
  *
- * `toolCalls` is the AI SDK `StepResult.toolCalls` array; each entry has a
- * `toolName` and `input`. We count any invocation (matching the prior
- * "any invocation counts" semantics), mapping `mcp_*` tools to a connector id
- * and `skill` calls to a skill name. Unmatched MCP servers are skipped.
+ * Safe to call per step without locking: `onStepFinish` fires sequentially
+ * within a single agent loop (steps never overlap), so the read-merge-write
+ * below cannot race against itself. Concurrent writes to OTHER conversation
+ * fields (e.g. todos) are preserved by `updateConversation`'s in-transaction
+ * re-read + shallow merge.
  */
 async function recordToolUsageForStep(
   conversationId: string | null,
@@ -813,17 +814,7 @@ async function recordToolUsageForStep(
 ): Promise<void> {
   if (!conversationId || toolCalls.length === 0) return;
 
-  const connectorIds: string[] = [];
-  const skillNames: string[] = [];
-  for (const call of toolCalls) {
-    if (call.toolName.startsWith("mcp_")) {
-      const id = resolveMcpToolDisplay(call.toolName).mcpInfo?.connector.id;
-      if (id) connectorIds.push(id);
-    } else if (call.toolName === "skill") {
-      const name = (call.input as { name?: unknown } | undefined)?.name;
-      if (typeof name === "string" && name.length > 0) skillNames.push(name);
-    }
-  }
+  const { connectorIds, skillNames } = scanToolUsage(toolCalls);
   if (connectorIds.length === 0 && skillNames.length === 0) return;
 
   try {
@@ -832,6 +823,9 @@ async function recordToolUsageForStep(
     const mergedConnectors = mergeDistinct(conv.usedConnectorIds, connectorIds);
     const mergedSkills = mergeDistinct(conv.loadedSkillNames, skillNames);
 
+    // Note: we intentionally do NOT bump `updatedAt` here (unlike setTodos) —
+    // recording tool usage shouldn't reorder conversations or trigger sidebar
+    // churn on every step.
     const updates: { usedConnectorIds?: string[]; loadedSkillNames?: string[] } = {};
     if (mergedConnectors) updates.usedConnectorIds = mergedConnectors;
     if (mergedSkills) updates.loadedSkillNames = mergedSkills;
@@ -841,30 +835,6 @@ async function recordToolUsageForStep(
   } catch {
     // Best-effort; recording usage must never disrupt the agent loop.
   }
-}
-
-/**
- * Merge `incoming` ids into `existing`, preserving first-seen order and
- * deduping. Returns the new array only when it differs from `existing`
- * (i.e. at least one genuinely-new entry); returns `null` otherwise so
- * callers can skip a no-op write.
- */
-function mergeDistinct(
-  existing: string[] | undefined,
-  incoming: string[],
-): string[] | null {
-  const base = existing ?? [];
-  const seen = new Set(base);
-  let changed = false;
-  const out = [...base];
-  for (const item of incoming) {
-    if (!seen.has(item)) {
-      seen.add(item);
-      out.push(item);
-      changed = true;
-    }
-  }
-  return changed ? out : null;
 }
 
 
