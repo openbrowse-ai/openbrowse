@@ -1,3 +1,4 @@
+import { resolveMcpToolDisplay } from "@/components/chat/mcp-tool-display";
 import { getSkillsRegistry } from "@/lib/skills/registry";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
@@ -795,6 +796,78 @@ export function resetAgentIndicator() {
 }
 
 
+/**
+ * Record the connectors and skills invoked in a finished agent step onto the
+ * conversation row, so the Context card can show them live (without waiting
+ * for end-of-turn message persistence). Fire-and-forget; failures are
+ * swallowed. Main agent only — subagent steps are not recorded here.
+ *
+ * `toolCalls` is the AI SDK `StepResult.toolCalls` array; each entry has a
+ * `toolName` and `input`. We count any invocation (matching the prior
+ * "any invocation counts" semantics), mapping `mcp_*` tools to a connector id
+ * and `skill` calls to a skill name. Unmatched MCP servers are skipped.
+ */
+async function recordToolUsageForStep(
+  conversationId: string | null,
+  toolCalls: readonly { toolName: string; input?: unknown }[],
+): Promise<void> {
+  if (!conversationId || toolCalls.length === 0) return;
+
+  const connectorIds: string[] = [];
+  const skillNames: string[] = [];
+  for (const call of toolCalls) {
+    if (call.toolName.startsWith("mcp_")) {
+      const id = resolveMcpToolDisplay(call.toolName).mcpInfo?.connector.id;
+      if (id) connectorIds.push(id);
+    } else if (call.toolName === "skill") {
+      const name = (call.input as { name?: unknown } | undefined)?.name;
+      if (typeof name === "string" && name.length > 0) skillNames.push(name);
+    }
+  }
+  if (connectorIds.length === 0 && skillNames.length === 0) return;
+
+  try {
+    const conv = await chatDb.getConversation(conversationId);
+    if (!conv) return;
+    const mergedConnectors = mergeDistinct(conv.usedConnectorIds, connectorIds);
+    const mergedSkills = mergeDistinct(conv.loadedSkillNames, skillNames);
+
+    const updates: { usedConnectorIds?: string[]; loadedSkillNames?: string[] } = {};
+    if (mergedConnectors) updates.usedConnectorIds = mergedConnectors;
+    if (mergedSkills) updates.loadedSkillNames = mergedSkills;
+    if (Object.keys(updates).length === 0) return; // nothing new
+
+    await chatDb.updateConversation(conversationId, updates);
+  } catch {
+    // Best-effort; recording usage must never disrupt the agent loop.
+  }
+}
+
+/**
+ * Merge `incoming` ids into `existing`, preserving first-seen order and
+ * deduping. Returns the new array only when it differs from `existing`
+ * (i.e. at least one genuinely-new entry); returns `null` otherwise so
+ * callers can skip a no-op write.
+ */
+function mergeDistinct(
+  existing: string[] | undefined,
+  incoming: string[],
+): string[] | null {
+  const base = existing ?? [];
+  const seen = new Set(base);
+  let changed = false;
+  const out = [...base];
+  for (const item of incoming) {
+    if (!seen.has(item)) {
+      seen.add(item);
+      out.push(item);
+      changed = true;
+    }
+  }
+  return changed ? out : null;
+}
+
+
 export async function createAgentTransport(
   settings: Settings,
   agentModel: string,
@@ -1393,6 +1466,10 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       if (needsCompaction()) {
         needsMidStreamCompaction = true;
       }
+      // Record connectors/skills used this step onto the conversation row so
+      // the Context card surfaces them live (mirrors how todoWrite persists
+      // todos mid-turn, instead of waiting for end-of-turn message persistence).
+      void recordToolUsageForStep(agentConversationId, stepResult.toolCalls);
     },
     stopWhen: () => needsMidStreamCompaction,
   });

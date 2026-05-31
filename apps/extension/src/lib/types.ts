@@ -118,6 +118,18 @@ export interface Conversation {
   isolationProfile?: IsolationProfile | null;
   /** windowId of a incognito window owned by this run, so we can clean up on cancellation. */
   ephemeralWindowId?: number | null;
+  /**
+   * Connector ids (e.g. "slack", "linear") whose MCP tools the agent has
+   * invoked in this conversation. Written live at step-finish time so the
+   * Context card can surface them without waiting for end-of-turn message
+   * persistence. Deduped; first-seen order.
+   */
+  usedConnectorIds?: string[];
+  /**
+   * Skill names the agent has loaded (via the `skill` tool) in this
+   * conversation. Written live at step-finish time. Deduped; first-seen order.
+   */
+  loadedSkillNames?: string[];
 }
 
 export interface TodoItem {

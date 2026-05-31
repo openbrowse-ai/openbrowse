@@ -35,11 +35,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { RegistryIcon } from "@/components/ui/registry-icon";
-import {
-  deriveUsedConnectors,
-  deriveLoadedSkills,
-  type DerivedConnector,
-} from "@/lib/chat/context-derive";
+import { getConnector } from "@openbrowse/connectors";
+
+interface DerivedConnector {
+  id: string;
+  name: string;
+}
 
 interface CoworkPanelProps {
   conversationId: string;
@@ -377,12 +378,18 @@ function ContextCard({
       }
       if (isMounted) setTabs(hydrated);
 
-      // Connectors + skills (derived from persisted message parts)
-      const messages = await chatDb.getMessages(conversationId);
       if (!isMounted) return;
-      const allParts = messages.flatMap((m) => m.parts ?? []);
-      setConnectors(deriveUsedConnectors(allParts));
-      setSkills(deriveLoadedSkills(allParts));
+      // Connectors + skills are recorded live onto the conversation row at
+      // step-finish time (see recordToolUsageForStep in agent-transport), so
+      // we read them directly from `conv` rather than scanning message parts.
+      const connectorList: DerivedConnector[] = (conv?.usedConnectorIds ?? [])
+        .map((id) => {
+          const c = getConnector(id);
+          return c ? { id: c.id, name: c.name } : null;
+        })
+        .filter((c): c is DerivedConnector => c !== null);
+      setConnectors(connectorList);
+      setSkills(conv?.loadedSkillNames ?? []);
     }
 
     refresh();
