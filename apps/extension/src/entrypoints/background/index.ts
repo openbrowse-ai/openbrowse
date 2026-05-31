@@ -959,6 +959,20 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === "CLOSE_AGENT_TABS") {
+        (async () => {
+          const { handleCloseAgentTabs } = await import("./close-agent-tabs");
+          const { conversationId, tabIds } = message as {
+            type: string;
+            conversationId: string;
+            tabIds: number[];
+          };
+          const res = await handleCloseAgentTabs({ conversationId, tabIds });
+          sendResponse(res);
+        })();
+        return true;
+      }
+
       if (message.type === "OVERLAY_TAB_ACTION") {
         (async () => {
           try {
@@ -1180,6 +1194,10 @@ export default defineBackground({
             } else if (undoData.action === "clean") {
               for (const url of undoData.closedUrls ?? []) {
                 await chrome.tabs.create({ url, windowId: undoData.windowId });
+              }
+            } else if (undoData.action === "reopen") {
+              for (const t of undoData.tabs ?? []) {
+                await chrome.tabs.create({ url: t.url, windowId: t.windowId, pinned: t.pinned });
               }
             }
 

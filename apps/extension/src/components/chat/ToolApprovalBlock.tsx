@@ -26,6 +26,10 @@ interface ToolApprovalBlockProps {
    * `needsApproval` check before the storage write landed.
    */
   onAlwaysAllow?: (toolName: string, origin: string) => Promise<void> | void;
+  /** Label for a non-origin "always allow" button (e.g. closeTabs). */
+  alwaysAllowGlobalLabel?: string;
+  /** Persist a global (non-site-scoped) always-allow grant for this tool. */
+  onAlwaysAllowGlobal?: () => Promise<void> | void;
 }
 
 /**
@@ -64,7 +68,7 @@ export async function handleAlwaysAllow(args: {
   }
 }
 
-export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, siteOrigin, onApprove, onDeny, onAlwaysAllow }: ToolApprovalBlockProps) {
+export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, siteOrigin, onApprove, onDeny, onAlwaysAllow, alwaysAllowGlobalLabel, onAlwaysAllowGlobal }: ToolApprovalBlockProps) {
   const customPreview = getToolPreview(toolName);
   // Resolve MCP connector logo + human-readable name so the approval
   // header matches the non-approval tool-call rows instead of showing a
@@ -170,6 +174,30 @@ export function ToolApprovalBlock({ toolName, toolCallId, args, approvalId, site
             >
               <ShieldCheck className="size-3.5 shrink-0" />
               Always allow on {displayOrigin}
+            </button>
+          )}
+          {alwaysAllowGlobalLabel && onAlwaysAllowGlobal && (
+            <button
+              type="button"
+              disabled={persistingAllowlist}
+              onClick={async () => {
+                if (persistingAllowlist) return;
+                setPersistingAllowlist(true);
+                try {
+                  await onAlwaysAllowGlobal();
+                } catch (err) {
+                  console.warn(
+                    "[approval] failed to persist global allow grant; approving anyway",
+                    err,
+                  );
+                } finally {
+                  onApprove(approvalId);
+                }
+              }}
+              className="flex items-center justify-center gap-1.5 w-full rounded px-2.5 py-1.5 text-xs font-medium bg-muted text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-60 disabled:pointer-events-none"
+            >
+              <ShieldCheck className="size-3.5 shrink-0" />
+              {alwaysAllowGlobalLabel}
             </button>
           )}
         </div>

@@ -99,6 +99,7 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
+  closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },
@@ -183,6 +184,28 @@ function webFetchLabels(
   };
 }
 
+/**
+ * Refine the closeTabs collapsed-row label from its args so the user sees
+ * what's being closed (e.g. "Closing 2 tabs..." / "Closed 2 tabs", or
+ * "Closing tab group...") instead of the generic "Closing tabs...".
+ */
+export function closeTabsLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  if (args.target === "group") {
+    return { pending: "Closing tab group...", done: "Closed tab group" };
+  }
+  if (args.target === "tabs") {
+    const n = Array.isArray(args.handles) ? args.handles.length : 0;
+    if (n > 0) {
+      const noun = n === 1 ? "tab" : "tabs";
+      return { pending: `Closing ${n} ${noun}...`, done: `Closed ${n} ${noun}` };
+    }
+  }
+  return fallback;
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -210,7 +233,11 @@ export function ToolCallBlock({
   // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
   // rather than a generic "Fetching URL...".
   const dynamicLabels =
-    toolName === "webFetch" ? webFetchLabels(args, labels) : labels;
+    toolName === "webFetch"
+      ? webFetchLabels(args, labels)
+      : toolName === "closeTabs"
+        ? closeTabsLabels(args, labels)
+        : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

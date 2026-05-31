@@ -11,7 +11,7 @@ import { CompletionCheckRunningBlock } from "./CompletionCheckRunningBlock";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolApprovalBlock } from "./ToolApprovalBlock";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
-import { capturedToolOrigins, allowToolOnSite } from "@/lib/agent/agent-transport";
+import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
 import "@/components/chat/tool-previews";
 
 /**
@@ -130,6 +130,12 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
                   onApprove={(id) => onToolApproval({ id, approved: true })}
                   onDeny={(id) => onToolApproval({ id, approved: false })}
                   onAlwaysAllow={allowToolOnSite}
+                  {...(part.toolName === "closeTabs"
+                    ? {
+                        alwaysAllowGlobalLabel: "Always allow closing tabs the agent opened",
+                        onAlwaysAllowGlobal: () => setCloseTabsAlwaysAllowed(true),
+                      }
+                    : {})}
                 />
               );
             }
@@ -205,6 +211,12 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
                     onApprove={(id) => onToolApproval({ id, approved: true })}
                     onDeny={(id) => onToolApproval({ id, approved: false })}
                     onAlwaysAllow={allowToolOnSite}
+                    {...(toolName === "closeTabs"
+                      ? {
+                          alwaysAllowGlobalLabel: "Always allow closing tabs the agent opened",
+                          onAlwaysAllowGlobal: () => setCloseTabsAlwaysAllowed(true),
+                        }
+                      : {})}
                   />
                 );
               }

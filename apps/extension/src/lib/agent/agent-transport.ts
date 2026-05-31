@@ -40,6 +40,7 @@ import {
 } from "./tab-legend";
 import {
   clickElementTool,
+  closeTabsTool,
   createSkillTool,
   deleteMemoryTool,
   executeCodeTool,
@@ -475,6 +476,59 @@ export async function allowToolOnSite(
   }
 }
 
+const CLOSE_TABS_ALWAYS_ALLOW_KEY = "close-tabs-always-allow";
+
+/**
+ * Ownership-scoped "always allow" for closeTabs. Unlike the per-site
+ * allowlist, this is a single global boolean: "always allow closing tabs
+ * the agent opened." It only ever takes effect when EVERY target tab is
+ * agent-owned (see `shouldAutoApproveCloseTabs`), so the blast radius is
+ * bounded to tabs the agent itself created.
+ */
+export async function isCloseTabsAlwaysAllowed(): Promise<boolean> {
+  const r = await chrome.storage.local.get(CLOSE_TABS_ALWAYS_ALLOW_KEY);
+  return r[CLOSE_TABS_ALWAYS_ALLOW_KEY] === true;
+}
+
+export async function setCloseTabsAlwaysAllowed(
+  allowed: boolean,
+): Promise<void> {
+  await chrome.storage.local.set({ [CLOSE_TABS_ALWAYS_ALLOW_KEY]: allowed });
+}
+
+/**
+ * Resolve the target tab ids for a closeTabs input against the
+ * conversation's owned tabs.
+ */
+async function resolveCloseTabsTargetIds(
+  conversationId: string,
+  input: { target: "group" } | { target: "tabs"; tabIds: number[] },
+): Promise<number[]> {
+  if (input.target === "group") {
+    const conv = await chatDb.getConversation(conversationId);
+    return conv?.ownedTabIds ?? [];
+  }
+  return input.tabIds;
+}
+
+/**
+ * True when a closeTabs call may skip approval: the global flag is on AND
+ * every target tab is in the conversation's ownedTabIds. Any non-owned
+ * target forces manual approval regardless of the flag.
+ */
+export async function shouldAutoApproveCloseTabs(
+  conversationId: string,
+  input: { target: "group" } | { target: "tabs"; tabIds: number[] },
+): Promise<boolean> {
+  if (!(await isCloseTabsAlwaysAllowed())) return false;
+  const conv = await chatDb.getConversation(conversationId);
+  if (!conv) return false;
+  const owned = new Set(conv.ownedTabIds);
+  const targets = await resolveCloseTabsTargetIds(conversationId, input);
+  if (targets.length === 0) return false;
+  return targets.every((id) => owned.has(id));
+}
+
 /**
  * Singleton driver instance for the production extension. Tools receive this
  * via the `ToolContext` built per-tool-call inside `toSDKTool.execute`.
@@ -616,28 +670,48 @@ export function toSDKTool<TInput, TOutput>(
   };
 
   const needsApproval =
-    approvalRequired && isTabTool
+    approvalRequired && toolKey === "closeTabs"
       ? async (input: unknown) => {
-          // The AI SDK calls `needsApproval(input, options)` — `input` is the
-          // first positional arg (the tool's parsed input), NOT `{ input }`.
-          // Destructuring `{ input }` here (the onInputAvailable shape) read
-          // `input.input` (undefined), so the tab handle never resolved and
-          // approval was ALWAYS required — the allowlist was never consulted,
-          // so "Always allow on <site>" never took effect for later calls.
-          // Capture cid once at entry — see resolveTabFromInput's contract.
           const cid = agentConversationId;
-          const resolved = await resolveTabFromInput(cid, input);
-          if (resolved?.tab.url) {
-            try {
-              const origin = new URL(resolved.tab.url).origin;
-              const allowlist = await getToolSiteAllowlist();
-              const allowed = allowlist[toolKey] ?? [];
-              if (allowed.includes(origin)) return false;
-            } catch {}
+          if (!cid) return true;
+          const typed = input as
+            | { target: "group" }
+            | { target: "tabs"; handles?: string[] };
+          let resolved:
+            | { target: "group" }
+            | { target: "tabs"; tabIds: number[] };
+          if (typed?.target === "tabs") {
+            const tabIds = (typed.handles ?? [])
+              .map((h) => resolveTabHandle(cid, h))
+              .filter((id): id is number => id != null);
+            resolved = { target: "tabs", tabIds };
+          } else {
+            resolved = { target: "group" };
           }
-          return true;
+          return !(await shouldAutoApproveCloseTabs(cid, resolved));
         }
-      : approvalRequired;
+      : approvalRequired && isTabTool
+        ? async (input: unknown) => {
+            // The AI SDK calls `needsApproval(input, options)` — `input` is the
+            // first positional arg (the tool's parsed input), NOT `{ input }`.
+            // Destructuring `{ input }` here (the onInputAvailable shape) read
+            // `input.input` (undefined), so the tab handle never resolved and
+            // approval was ALWAYS required — the allowlist was never consulted,
+            // so "Always allow on <site>" never took effect for later calls.
+            // Capture cid once at entry — see resolveTabFromInput's contract.
+            const cid = agentConversationId;
+            const resolved = await resolveTabFromInput(cid, input);
+            if (resolved?.tab.url) {
+              try {
+                const origin = new URL(resolved.tab.url).origin;
+                const allowlist = await getToolSiteAllowlist();
+                const allowed = allowlist[toolKey] ?? [];
+                if (allowed.includes(origin)) return false;
+              } catch {}
+            }
+            return true;
+          }
+        : approvalRequired;
 
   const execute = async (
     input: TInput,
@@ -1011,6 +1085,7 @@ export async function createAgentTransport(
     typeInElement: toSDKTool(typeInElementTool, "typeInElement"),
     scrollPage: toSDKTool(scrollPageTool, "scrollPage"),
     selectTab: toSDKTool(selectTabTool, "selectTab"),
+    closeTabs: toSDKTool(closeTabsTool, "closeTabs"),
     saveMemory: toSDKTool(saveMemoryTool, "saveMemory"),
     updateMemory: toSDKTool(updateMemoryTool, "updateMemory"),
     recallMemory: toSDKTool(recallMemoryTool, "recallMemory"),
