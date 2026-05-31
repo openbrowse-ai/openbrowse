@@ -53,6 +53,10 @@ interface ChatDB extends DBSchema {
       // in lib/types.ts.
       usedConnectorIds?: string[];
       loadedSkillNames?: string[];
+      // v13 — completion marker for agent tab-cleanup. Optional; undefined
+      // on rows created before v13 and on conversations never completed.
+      lastCompletionApproved?: boolean;
+      taskCompletedAt?: number;
     };
     indexes: {
       "by-updated": number;
@@ -149,7 +153,9 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      no backfill (existing children stay unlinked, which is fine —
     //      the SW startup reconciliation pass also covers them via the
     //      blanket "running" sweep).
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 12, {
+    // v13: adds `lastCompletionApproved` + `taskCompletedAt` on
+    //      conversations for agent tab-cleanup. Optional; no backfill.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 13, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -327,6 +333,11 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // pre-v12 child rows simply read back with the field undefined,
           // which the heal path treats as "unlinked" (falling back to
           // the SW startup blanket reconciliation pass).
+        }
+
+        if (oldVersion < 13) {
+          // Completion marker fields are optional and default to undefined;
+          // no backfill needed. New writes set them via updateConversation.
         }
       },
     });

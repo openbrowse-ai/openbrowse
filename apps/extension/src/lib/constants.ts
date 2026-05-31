@@ -3,7 +3,8 @@ import type { AgentSettings, Settings } from "./types";
 export const DEFAULT_SETTINGS: Settings = {
   themeMode: "system",
   autoTidyAfterMinutes: 360,
-  agentGroupIdleHours: 6,
+  autoCloseCompletedAgentTabs: false,
+  autoCloseCompletedAgentTabsAfterMinutes: 30,
   archiveAggressiveness: "medium",
   tidyModel: "",
   notificationsEnabled: true,

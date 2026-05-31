@@ -32,6 +32,7 @@ import {
   TRACE_INPUT_TRUNCATE_CHARS,
   TRACE_OUTPUT_TRUNCATE_CHARS,
 } from "./completion-check/types";
+import { persistCompletionMarker } from "./persist-completion-marker";
 
 interface Options<TOOLS extends ToolSet> {
   agent: Agent<never, TOOLS, never>;
@@ -963,6 +964,12 @@ export function runWithRejectionLoop(args: {
           }
 
           if (outcome.kind !== "rejected") {
+            // Persist the tab-cleanup completion marker (no-op unless approved).
+            void persistCompletionMarker(
+              input.conversationId,
+              outcome.kind,
+              Date.now(),
+            );
             // approved | skipped | force-emitted — done.
             // For force-emitted, surface a final rejection-comment so
             // the user can see what concerns the agent ended on.

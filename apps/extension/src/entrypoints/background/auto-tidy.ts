@@ -21,9 +21,13 @@ export function updateLastTidyTimestamp(): void {
 async function checkAndAutoTidy(): Promise<void> {
   const settings = await storage.getSettings();
 
-  // Clean up idle agent-owned tab groups on every check
-  const { cleanupIdleOwnedGroups } = await import("./tab-scoping");
-  await cleanupIdleOwnedGroups(settings.agentGroupIdleHours).catch(() => {});
+  // Auto-close completed agent-owned tabs (replaces the old idle-ungroup
+  // behavior). No-op unless the user enabled the setting.
+  const { cleanupCompletedAgentTabs } = await import("./tab-scoping");
+  await cleanupCompletedAgentTabs({
+    enabled: settings.autoCloseCompletedAgentTabs,
+    timeoutMinutes: settings.autoCloseCompletedAgentTabsAfterMinutes,
+  }).catch(() => {});
 
   const thresholdMs = settings.autoTidyAfterMinutes * 60_000;
   const now = Date.now();
