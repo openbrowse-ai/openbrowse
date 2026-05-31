@@ -811,11 +811,24 @@ export function OverlayApp() {
 
   const handleReorder = useCallback(
     async (event: ReorderEvent) => {
-      const { zone, tabId, overTabId, fromSection, toSection } = event;
+      const { zone, tabId, overTabId, fromSection, toSection, activeTab, overTab } = event;
 
       if (zone === "favorites") {
-        const url = tabId as string;
-        const overUrl = overTabId as string;
+        // The favorites section mixes closed favorites (saved URL only,
+        // `kind === "favorite"`) and open favorites (live tabs adopted by a
+        // favorite). Resolve each side to its underlying *favorite URL* so
+        // we can reorder the persisted `favorites` array, and — for open
+        // favorites — also physically move the live Chrome tab.
+        const assocByTab = new Map(
+          favoriteAssociationsList.map((a) => [a.tabId, a.favoriteUrl]),
+        );
+        const favoriteUrlOf = (t?: OverlayTab): string | undefined => {
+          if (!t) return undefined;
+          if (t.kind === "favorite") return t.url; // closed favorite
+          return assocByTab.get(t.id) ?? t.url; // open favorite → its fav url
+        };
+        const url = favoriteUrlOf(activeTab) ?? (tabId as string);
+        const overUrl = favoriteUrlOf(overTab) ?? (overTabId as string);
 
         // Optimistic reorder so dnd-kit doesn't snap back
         setSpaces((prev) =>
@@ -838,6 +851,20 @@ export function OverlayApp() {
           url,
           overUrl,
         });
+
+        // Physically move the live tab when both sides are open favorites,
+        // so the actual Chrome tab strip reflects the new order. The
+        // background keeps it within the favorites zone (enforceTabOrder).
+        const activeOpen = activeTab && activeTab.kind !== "favorite" && activeTab.id >= 0;
+        const overOpen = overTab && overTab.kind !== "favorite" && overTab.id >= 0;
+        if (activeOpen && overOpen) {
+          await chrome.runtime.sendMessage({
+            type: "OVERLAY_REORDER_TABS",
+            tabId: activeTab!.id,
+            overTabId: overTab!.id,
+            sectionChange: null,
+          });
+        }
         fetchTabs();
         return;
       }
@@ -851,7 +878,7 @@ export function OverlayApp() {
       });
       fetchTabs();
     },
-    [fetchTabs, activeSpaceId],
+    [fetchTabs, activeSpaceId, favoriteAssociationsList],
   );
 
   const handleReorderSpaces = useCallback(

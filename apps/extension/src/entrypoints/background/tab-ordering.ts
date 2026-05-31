@@ -68,7 +68,11 @@ async function classifyWindowTabs(
   tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 
   const space = await storage.getSpaceByWindowId(windowId);
-  const favoriteUrls = new Set((space?.favorites ?? []).map((f) => f.url));
+  // A tab is a "favorite" iff it is the live tab currently adopted by a
+  // favorite (the association is the source of truth — Arc-style hostname
+  // adoption, see favorite-tabs.ts). We intentionally do NOT classify by
+  // raw URL match: only the *adopted* tab counts, so a second tab on the
+  // same favorite host stays "regular".
   const associatedIds = space ? getAssociatedTabIds(space.id) : new Set<number>();
 
   const classOf = new Map<number, TabClass>();
@@ -76,10 +80,7 @@ async function classifyWindowTabs(
     if (t.id == null) continue;
     if (t.pinned) {
       classOf.set(t.id, "pinned");
-    } else if (
-      (t.url != null && favoriteUrls.has(t.url)) ||
-      associatedIds.has(t.id)
-    ) {
+    } else if (associatedIds.has(t.id)) {
       classOf.set(t.id, "favorite");
     } else {
       classOf.set(t.id, "regular");
@@ -195,19 +196,17 @@ export async function positionFavoriteTab(
       const pinnedCount = tabs.filter((t) => t.pinned).length;
 
       const space = await storage.getSpaceByWindowId(windowId);
-      const favoriteUrls = new Set((space?.favorites ?? []).map((f) => f.url));
       const associatedIds = space
         ? getAssociatedTabIds(space.id)
         : new Set<number>();
 
-      // Count favorites excluding the one we're positioning.
+      // Count favorites (adopted tabs) excluding the one we're positioning.
       const favoriteCount = tabs.filter(
         (t) =>
           t.id != null &&
           t.id !== tabId &&
           !t.pinned &&
-          ((t.url != null && favoriteUrls.has(t.url)) ||
-            associatedIds.has(t.id)),
+          associatedIds.has(t.id),
       ).length;
 
       const target = pinnedCount + favoriteCount;

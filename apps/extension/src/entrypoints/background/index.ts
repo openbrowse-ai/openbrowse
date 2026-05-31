@@ -2154,17 +2154,50 @@ export default defineBackground({
       }
     });
 
-    import("./favorite-tabs").then(({ bootstrap }) => {
-      import("@/lib/storage").then(({ storage }) =>
-        storage.getSpaces().then((spaces) => bootstrap(spaces)),
-      );
+    import("./favorite-tabs").then(({ hydrate, bootstrap }) => {
+      // Hydrate persisted associations first so the ordering guard /
+      // classification see favorites even before bootstrap re-adopts.
+      hydrate().then(() => {
+        import("@/lib/storage").then(({ storage }) =>
+          storage.getSpaces().then((spaces) => bootstrap(spaces)),
+        );
+      });
     });
 
-    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (changeInfo.url || changeInfo.title || changeInfo.favIconUrl) {
-        import("./favorite-tabs").then(({ updateTabInfo }) => {
-          updateTabInfo(tab.id!, changeInfo.url, changeInfo.title, changeInfo.favIconUrl);
-        });
+        // Reconcile favorite adoption/retention on navigation: adopt the
+        // first prefix-subset tab, keep adopted across same-hostname
+        // navigation, and drop/re-adopt when a tab leaves the hostname.
+        if (tab.windowId != null && tab.url) {
+          (async () => {
+            const { storage } = await import("@/lib/storage");
+            const space = await storage.getSpaceByWindowId(tab.windowId);
+            const { reconcileTabUrl, updateTabInfo } = await import(
+              "./favorite-tabs"
+            );
+            if (space) {
+              await reconcileTabUrl(
+                space,
+                tabId,
+                tab.url!,
+                changeInfo.title ?? tab.title,
+                changeInfo.favIconUrl ?? tab.favIconUrl,
+              );
+            } else {
+              updateTabInfo(
+                tabId,
+                changeInfo.url,
+                changeInfo.title,
+                changeInfo.favIconUrl,
+              );
+            }
+          })().catch(() => {});
+        } else {
+          import("./favorite-tabs").then(({ updateTabInfo }) => {
+            updateTabInfo(tabId, changeInfo.url, changeInfo.title, changeInfo.favIconUrl);
+          });
+        }
       }
       if (changeInfo.status === "complete" && tab.id != null && tab.id === agentWorkingTabId) {
         import("@/lib/agent/agent-transport").then(({ injectIndicator }) => {
@@ -2174,9 +2207,12 @@ export default defineBackground({
     });
 
     chrome.tabs.onRemoved.addListener((tabId) => {
-      import("./favorite-tabs").then(({ disassociateByTab }) => {
-        disassociateByTab(tabId);
-      });
+      (async () => {
+        const { storage } = await import("@/lib/storage");
+        const spaces = await storage.getSpaces();
+        const { handleTabRemoved } = await import("./favorite-tabs");
+        await handleTabRemoved(spaces, tabId);
+      })().catch(() => {});
     });
 
     // Enforce the strip ordering invariant (pinned → favorites → regular)
