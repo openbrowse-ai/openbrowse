@@ -20,7 +20,12 @@
  */
 
 import { storage } from "@/lib/storage";
-import { ensureAdoptedForWindow, getAssociatedTabIds } from "./favorite-tabs";
+import {
+  ensureAdoptedForWindow,
+  getAssociatedTabIds,
+  getAssociations,
+} from "./favorite-tabs";
+import type { Space } from "@/lib/types";
 
 type TabClass = "pinned" | "favorite" | "regular";
 
@@ -44,6 +49,28 @@ const correctingWindows = new Set<number>();
  */
 const windowLocks = new Map<number, Promise<void>>();
 
+/**
+ * Debounce timers for persisting favorite order per window. `onMoved` fires
+ * once per index hop *during* a drag, so persisting on every event would
+ * write transient mid-drag orders (and corrupt the saved `position` values
+ * the bounce relies on). We instead wait until the drag settles — no further
+ * `onMoved` for `FAVORITE_PERSIST_DEBOUNCE_MS` — then persist the final order.
+ */
+const favoritePersistTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const FAVORITE_PERSIST_DEBOUNCE_MS = 300;
+
+function scheduleFavoriteOrderPersist(windowId: number): void {
+  const existing = favoritePersistTimers.get(windowId);
+  if (existing) clearTimeout(existing);
+  favoritePersistTimers.set(
+    windowId,
+    setTimeout(() => {
+      favoritePersistTimers.delete(windowId);
+      void persistFavoriteOrderForWindow(windowId);
+    }, FAVORITE_PERSIST_DEBOUNCE_MS),
+  );
+}
+
 function withWindowLock(
   windowId: number,
   fn: () => Promise<void>,
@@ -61,9 +88,13 @@ function withWindowLock(
   return next;
 }
 
-async function classifyWindowTabs(
-  windowId: number,
-): Promise<{ tabs: chrome.tabs.Tab[]; classOf: Map<number, TabClass> }> {
+async function classifyWindowTabs(windowId: number): Promise<{
+  tabs: chrome.tabs.Tab[];
+  classOf: Map<number, TabClass>;
+  space: Space | undefined;
+  /** Saved `position` of the favorite each adopted (favorite) tab represents. */
+  favoritePositionOf: Map<number, number>;
+}> {
   const tabs = await chrome.tabs.query({ windowId });
   tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 
@@ -74,6 +105,17 @@ async function classifyWindowTabs(
   // raw URL match: only the *adopted* tab counts, so a second tab on the
   // same favorite host stays "regular".
   const associatedIds = space ? getAssociatedTabIds(space.id) : new Set<number>();
+
+  // tabId -> saved favorite position, so a violating favorite can be
+  // bounced back to its rank-correct slot (not just the end of the block).
+  const favoritePositionOf = new Map<number, number>();
+  if (space) {
+    const positionByUrl = new Map(space.favorites.map((f) => [f.url, f.position]));
+    for (const a of getAssociations(space.id)) {
+      const pos = positionByUrl.get(a.favoriteUrl);
+      if (pos != null) favoritePositionOf.set(a.tabId, pos);
+    }
+  }
 
   const classOf = new Map<number, TabClass>();
   for (const t of tabs) {
@@ -86,7 +128,7 @@ async function classifyWindowTabs(
       classOf.set(t.id, "regular");
     }
   }
-  return { tabs, classOf };
+  return { tabs, classOf, space, favoritePositionOf };
 }
 
 const RANK: Record<TabClass, number> = { pinned: 0, favorite: 1, regular: 2 };
@@ -101,6 +143,7 @@ function computeCorrectIndex(
   tabs: chrome.tabs.Tab[],
   classOf: Map<number, TabClass>,
   movedTabId: number,
+  favoritePositionOf: Map<number, number>,
 ): number | null {
   const movedClass = classOf.get(movedTabId);
   if (movedClass == null || movedClass === "pinned") return null;
@@ -128,17 +171,22 @@ function computeCorrectIndex(
   }
   if (!violation) return null;
 
-  // Bounce target: the boundary index for the moved tab's class among
-  // non-pinned tabs. Favorites go right after the last pinned tab; regulars
-  // go right after the last favorite.
   const pinnedCount = tabs.filter((t) => t.id != null && classOf.get(t.id) === "pinned").length;
   const favoriteCount = tabs.filter((t) => t.id != null && classOf.get(t.id) === "favorite").length;
 
   if (movedClass === "favorite") {
-    // Place at the end of the favorites block (just before regulars).
-    // Index accounts for the moved tab being removed from its current slot.
-    const target = pinnedCount + favoriteCount - 1;
-    return Math.max(pinnedCount, target);
+    // Restore the favorite to its rank-correct slot within the favorites
+    // block, ordered by each favorite's saved `position` — so dragging a
+    // favorite out past others returns it to where it belongs, not the end.
+    const movedPos = favoritePositionOf.get(movedTabId) ?? Number.MAX_SAFE_INTEGER;
+    let rank = 0;
+    for (const t of tabs) {
+      if (t.id == null || t.id === movedTabId) continue;
+      if (classOf.get(t.id) !== "favorite") continue;
+      const pos = favoritePositionOf.get(t.id) ?? Number.MAX_SAFE_INTEGER;
+      if (pos < movedPos) rank++;
+    }
+    return pinnedCount + rank;
   }
   // regular: place at the start of the regulars block.
   return pinnedCount + favoriteCount;
@@ -165,18 +213,156 @@ export async function enforceTabOrder(
       // hydrated) before classifying — otherwise a not-yet-adopted favorite
       // would be seen as "regular" and the guard would miss it.
       await ensureAdoptedForWindow(windowId);
-      const { tabs, classOf } = await classifyWindowTabs(windowId);
-      const correctIndex = computeCorrectIndex(tabs, classOf, movedTabId);
-      if (correctIndex == null) return;
+      const { tabs, classOf, space, favoritePositionOf } =
+        await classifyWindowTabs(windowId);
+      const correctIndex = computeCorrectIndex(
+        tabs,
+        classOf,
+        movedTabId,
+        favoritePositionOf,
+      );
+      if (correctIndex == null) {
+        // Valid order. If the user reordered favorites *within* the zone,
+        // persist the new order so it sticks (and survives SW restart,
+        // since adoption reads the saved order). Debounced until the drag
+        // settles — onMoved fires per hop mid-drag, and persisting a
+        // transient order would corrupt the saved positions the bounce
+        // relies on.
+        if (space && classOf.get(movedTabId) === "favorite") {
+          scheduleFavoriteOrderPersist(windowId);
+        }
+        return;
+      }
+      // A violating drop is about to be bounced — cancel any pending
+      // settle-persist so it can't write the transient (violating) order.
+      const pending = favoritePersistTimers.get(windowId);
+      if (pending) {
+        clearTimeout(pending);
+        favoritePersistTimers.delete(windowId);
+      }
       correctingWindows.add(windowId);
       try {
-        await chrome.tabs.move(movedTabId, { index: correctIndex });
+        // chrome.tabs.move throws "Tabs cannot be edited right now (user
+        // may be dragging a tab)" while the drag is still in progress —
+        // and onMoved fires DURING the drag, so the bounce must wait for
+        // the drag to finish. Retry the corrective move until the strip is
+        // editable, re-validating each time.
+        await moveTabWhenEditable(windowId, movedTabId);
       } finally {
         correctingWindows.delete(windowId);
       }
     } catch {
       correctingWindows.delete(windowId);
       // Tab/window gone, or move raced; ignore.
+    }
+  });
+}
+
+/**
+ * Bounce `movedTabId` to its correct slot, retrying while the user is still
+ * dragging (Chrome rejects `chrome.tabs.move` mid-drag). Re-classifies on
+ * each attempt so the target stays correct as the strip settles. Gives up
+ * after a bounded number of attempts.
+ */
+async function moveTabWhenEditable(
+  windowId: number,
+  movedTabId: number,
+): Promise<void> {
+  const MAX_ATTEMPTS = 15;
+  const DELAY_MS = 120;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const { tabs, classOf, favoritePositionOf } =
+      await classifyWindowTabs(windowId);
+    const correctIndex = computeCorrectIndex(
+      tabs,
+      classOf,
+      movedTabId,
+      favoritePositionOf,
+    );
+    if (correctIndex == null) return; // already valid (drag settled in place)
+    try {
+      await chrome.tabs.move(movedTabId, { index: correctIndex });
+      return; // success
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      // Only retry the "user is dragging" case; rethrow anything else.
+      if (!/drag/i.test(msg) && !/cannot be edited/i.test(msg)) throw err;
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+    }
+  }
+}
+
+/**
+ * Rewrite `space.favorites` so the open (adopted) favorites follow the
+ * current physical strip order. Closed favorites (no live tab) keep their
+ * prior relative order and are appended after the open ones. Only writes
+ * when the order actually changed, to avoid redundant storage churn.
+ */
+async function persistFavoriteOrder(
+  space: Space,
+  tabs: chrome.tabs.Tab[],
+  classOf: Map<number, TabClass>,
+): Promise<void> {
+  // favorite tabId -> favoriteUrl (via associations)
+  const urlByTab = new Map<number, string>();
+  for (const a of getAssociations(space.id)) urlByTab.set(a.tabId, a.favoriteUrl);
+
+  // Open favorite URLs in physical strip order.
+  const openOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const t of tabs) {
+    if (t.id == null || classOf.get(t.id) !== "favorite") continue;
+    const url = urlByTab.get(t.id);
+    if (url && !seen.has(url)) {
+      openOrder.push(url);
+      seen.add(url);
+    }
+  }
+  if (openOrder.length === 0) return;
+
+  // Closed favorites (not currently open), preserving their prior order.
+  const closed = space.favorites.filter((f) => !seen.has(f.url));
+  const newFavs = [
+    ...openOrder.map((url) => space.favorites.find((f) => f.url === url)!),
+    ...closed,
+  ].filter(Boolean);
+
+  // No-op if order is unchanged.
+  const sameOrder =
+    newFavs.length === space.favorites.length &&
+    newFavs.every((f, i) => f.url === space.favorites[i].url);
+  if (sameOrder) return;
+
+  newFavs.forEach((f, i) => {
+    f.position = i;
+  });
+  await storage.updateSpace(space.id, { favorites: newFavs });
+}
+
+/**
+ * Debounced target: re-classify the window once the drag has settled and
+ * persist the final favorite order. Runs under the window lock so it can't
+ * race a concurrent enforce/position op, and skips persisting if the strip
+ * isn't in a valid order (shouldn't happen post-settle, but be safe).
+ */
+async function persistFavoriteOrderForWindow(windowId: number): Promise<void> {
+  return withWindowLock(windowId, async () => {
+    if (correctingWindows.has(windowId)) return;
+    try {
+      const { tabs, classOf, space, favoritePositionOf } =
+        await classifyWindowTabs(windowId);
+      if (!space) return;
+      // Don't persist a transient/violating order. Validate every favorite
+      // tab is in a non-violating position before writing.
+      for (const t of tabs) {
+        if (t.id == null || classOf.get(t.id) !== "favorite") continue;
+        if (computeCorrectIndex(tabs, classOf, t.id, favoritePositionOf) != null) {
+          return;
+        }
+      }
+      await persistFavoriteOrder(space, tabs, classOf);
+    } catch {
+      // window/tab gone; ignore.
     }
   });
 }
