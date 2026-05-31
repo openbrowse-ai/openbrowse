@@ -20,6 +20,7 @@ import {
   Circle,
   XCircle,
   Loader2,
+  ScrollText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadOpfsFile } from "@/lib/download";
@@ -33,6 +34,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { RegistryIcon } from "@/components/ui/registry-icon";
+import { getConnector } from "@openbrowse/connectors";
+
+interface DerivedConnector {
+  id: string;
+  name: string;
+}
 
 interface CoworkPanelProps {
   conversationId: string;
@@ -52,6 +60,7 @@ export function CoworkPanel({ conversationId, onSelectFile }: CoworkPanelProps) 
         conversationId={conversationId}
         onSelectFile={onSelectFile}
       />
+      <ContextCard conversationId={conversationId} onSelectFile={onSelectFile} />
     </div>
   );
 }
@@ -319,6 +328,265 @@ function FileTypeIcon({ filename }: { filename: string }) {
   return <File className={className} />;
 }
 
+// ─── Context Card ───────────────────────────────────────────────────────
+
+interface ContextTab {
+  id: number;
+  title: string;
+  favicon: string;
+}
+
+function ContextCard({
+  conversationId,
+  onSelectFile,
+}: {
+  conversationId: string;
+  onSelectFile: (file: string | null) => void;
+}) {
+  const uploadsRoot = useMemo(
+    () => `conversations/${conversationId}/workspace/${UPLOADS_DIR}`,
+    [conversationId],
+  );
+
+  const [tabs, setTabs] = useState<ContextTab[]>([]);
+  const [uploads, setUploads] = useState<string[]>([]);
+  const [connectors, setConnectors] = useState<DerivedConnector[]>([]);
+  const [skills, setSkills] = useState<string[]>([]);
+
+  // Poll: tabs (from ownedTabIds) + connectors/skills (from message parts).
+  useEffect(() => {
+    let isMounted = true;
+
+    async function refresh() {
+      const conv = await chatDb.getConversation(conversationId);
+      if (!isMounted) return;
+
+      // Tabs — fetch all owned tabs concurrently; drop any that fail
+      // (closed tab). `Promise.allSettled` preserves input order, so the
+      // resulting rows keep `ownedIds` order.
+      const ownedIds = conv?.ownedTabIds ?? [];
+      const results = await Promise.allSettled(
+        ownedIds.map((id) => chrome.tabs.get(id)),
+      );
+      if (!isMounted) return;
+      const hydrated: ContextTab[] = [];
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled") {
+          const tab = res.value;
+          hydrated.push({
+            id: ownedIds[i],
+            title: tab.title || tab.url || "Untitled tab",
+            favicon: tab.favIconUrl ?? "",
+          });
+        }
+      });
+      if (isMounted) setTabs(hydrated);
+
+      if (!isMounted) return;
+      // Connectors + skills are recorded live onto the conversation row at
+      // step-finish time (see recordToolUsageForStep in agent-transport), so
+      // we read them directly from `conv` rather than scanning message parts.
+      const connectorList: DerivedConnector[] = (conv?.usedConnectorIds ?? [])
+        .map((id) => {
+          const c = getConnector(id);
+          return c ? { id: c.id, name: c.name } : null;
+        })
+        .filter((c): c is DerivedConnector => c !== null);
+      setConnectors(connectorList);
+      setSkills(conv?.loadedSkillNames ?? []);
+    }
+
+    refresh();
+    const interval = setInterval(refresh, 1000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [conversationId]);
+
+  // Uploads: OPFS walk over `.uploads/`, refreshed on vfs:change.
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchUploads() {
+      const names: string[] = [];
+      try {
+        for await (const path of OPFS.walk(uploadsRoot)) {
+          const rel = path.startsWith(uploadsRoot + "/")
+            ? path.slice(uploadsRoot.length + 1)
+            : path;
+          if (rel) names.push(rel);
+        }
+      } catch {
+        // No uploads dir yet.
+      }
+      if (mounted) setUploads(names.sort());
+    }
+
+    fetchUploads();
+    const onVfsChange = (e: Event) => {
+      const { path } = (e as CustomEvent).detail ?? {};
+      if (typeof path === "string" && path.startsWith(uploadsRoot)) {
+        fetchUploads();
+      }
+    };
+    vfsEvents.addEventListener("vfs:change", onVfsChange);
+    return () => {
+      mounted = false;
+      vfsEvents.removeEventListener("vfs:change", onVfsChange);
+    };
+  }, [uploadsRoot]);
+
+  const isEmpty =
+    tabs.length === 0 &&
+    uploads.length === 0 &&
+    connectors.length === 0 &&
+    skills.length === 0;
+
+  return (
+    <CoworkCard title="Context">
+      {isEmpty ? (
+        <div className="flex flex-col items-start gap-3 px-3.5 py-3 text-left">
+          <ContextEmptyArt />
+          <p className="text-[13px] leading-snug text-muted-foreground">
+            Track tools and referenced files used in this task.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2 px-1.5 pb-1">
+          {tabs.length > 0 && (
+            <ContextSection label="Tabs">
+              {tabs.map((tab) => (
+                <ContextTabRow key={tab.id} tab={tab} />
+              ))}
+            </ContextSection>
+          )}
+          {uploads.length > 0 && (
+            <ContextSection label="Uploads">
+              {uploads.map((name) => (
+                <ContextRow
+                  key={name}
+                  icon={<FileTypeIcon filename={name} />}
+                  label={name}
+                  onClick={() => onSelectFile(`${UPLOADS_DIR}/${name}`)}
+                />
+              ))}
+            </ContextSection>
+          )}
+          {connectors.length > 0 && (
+            <ContextSection label="Connectors">
+              {connectors.map((c) => (
+                <ContextRow
+                  key={c.id}
+                  icon={<RegistryIcon id={c.id} className="size-3.5" />}
+                  label={c.name}
+                />
+              ))}
+            </ContextSection>
+          )}
+          {skills.length > 0 && (
+            <ContextSection label="Skills">
+              {skills.map((name) => (
+                <ContextRow
+                  key={name}
+                  icon={<ScrollText className="size-3.5" />}
+                  label={name}
+                />
+              ))}
+            </ContextSection>
+          )}
+        </div>
+      )}
+    </CoworkCard>
+  );
+}
+
+function ContextSection({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="px-2 pb-1 pt-1.5 text-xs text-muted-foreground">
+        {label}
+      </div>
+      <ul className="space-y-0.5">{children}</ul>
+    </div>
+  );
+}
+
+/** Generic display/clickable row: icon chip + truncating label. */
+function ContextRow({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick?: () => void;
+}) {
+  const inner = (
+    <>
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        {icon}
+      </span>
+      <span className="truncate">{label}</span>
+    </>
+  );
+  if (onClick) {
+    return (
+      <li>
+        <button
+          type="button"
+          onClick={onClick}
+          className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-muted/60 min-w-0"
+        >
+          {inner}
+        </button>
+      </li>
+    );
+  }
+  return (
+    <li>
+      <div className="flex items-center gap-2.5 rounded-md px-1.5 py-1.5 text-sm min-w-0">
+        {inner}
+      </div>
+    </li>
+  );
+}
+
+function ContextTabRow({ tab }: { tab: ContextTab }) {
+  const focusTab = () => {
+    void (async () => {
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        const t = await chrome.tabs.get(tab.id);
+        if (typeof t.windowId === "number") {
+          await chrome.windows.update(t.windowId, { focused: true });
+        }
+      } catch {
+        // Tab gone; next poll will drop it.
+      }
+    })();
+  };
+  return (
+    <ContextRow
+      icon={
+        tab.favicon ? (
+          <img src={tab.favicon} alt="" className="size-3.5 rounded-sm" />
+        ) : (
+          <span className="size-3.5 rounded-sm bg-muted-foreground/30" />
+        )
+      }
+      label={tab.title}
+      onClick={focusTab}
+    />
+  );
+}
+
 // ─── Empty State Artwork ────────────────────────────────────────────────
 
 function ProgressEmptyArt() {
@@ -452,6 +720,61 @@ function WorkingFolderEmptyArt() {
         strokeWidth="1.25"
         strokeLinecap="round"
         opacity="0.4"
+      />
+    </svg>
+  );
+}
+
+function ContextEmptyArt() {
+  // Three small staggered rounded cards, matching the empty-state style of
+  // ProgressEmptyArt / WorkingFolderEmptyArt.
+  return (
+    <svg
+      width="56"
+      height="48"
+      viewBox="0 0 56 48"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className="text-muted-foreground/40"
+      aria-hidden="true"
+    >
+      <rect
+        x="10"
+        y="10"
+        width="22"
+        height="22"
+        rx="5"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        fill="var(--background)"
+        opacity="0.55"
+      />
+      <rect
+        x="18"
+        y="15"
+        width="22"
+        height="22"
+        rx="5"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        fill="var(--background)"
+        opacity="0.75"
+      />
+      <rect
+        x="26"
+        y="20"
+        width="22"
+        height="22"
+        rx="5"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        fill="var(--background)"
+      />
+      <path
+        d="M37 28V34M34 31H40"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
       />
     </svg>
   );

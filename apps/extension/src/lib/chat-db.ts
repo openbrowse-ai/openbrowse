@@ -47,6 +47,12 @@ interface ChatDB extends DBSchema {
       // Optional: undefined for parent (root) conversations and for
       // child rows created before v12.
       parentToolCallId?: string | null;
+      // Live-recorded connector/skill usage for the Context card. Optional;
+      // undefined on rows created before this field existed. No migration
+      // needed (keyPath store stores whole objects). Mirrors `Conversation`
+      // in lib/types.ts.
+      usedConnectorIds?: string[];
+      loadedSkillNames?: string[];
     };
     indexes: {
       "by-updated": number;
