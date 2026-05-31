@@ -452,6 +452,12 @@ export async function cleanupCompletedAgentTabs(opts: {
  */
 export interface CloseTabsUndo {
   action: "reopen";
+  /**
+   * Stable unique id for this close, used to make the `OVERLAY_UNDO`
+   * `reopen` handler idempotent (the client may send the same undo twice —
+   * e.g. a click racing a ⌘Z). See `reopenTabsOnce`.
+   */
+  id: string;
   tabs: { url: string; windowId: number; pinned: boolean }[];
 }
 
@@ -467,7 +473,11 @@ export async function closeOwnedTabs(
   conversationId: string,
   tabIds: number[],
 ): Promise<CloseTabsUndo> {
-  const undo: CloseTabsUndo = { action: "reopen", tabs: [] };
+  const undo: CloseTabsUndo = {
+    action: "reopen",
+    id: crypto.randomUUID(),
+    tabs: [],
+  };
 
   for (const tabId of tabIds) {
     try {

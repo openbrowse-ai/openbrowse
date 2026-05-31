@@ -75,6 +75,12 @@ import type {
 } from "ai";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  buildUndoAction,
+  formatClosedToast,
+  performUndo,
+  type AgentTabsClosedUndo,
+} from "./agent-tabs-closed-toast";
 
 type AgentMessage = AgentUIMessage;
 
@@ -1160,6 +1166,67 @@ export function useAgentChat({
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, [isLoading, stop]);
+
+  const latestUndoRef = useRef<{ undo: AgentTabsClosedUndo; toastId: string | number } | null>(null);
+
+  useEffect(() => {
+    const listener = (message: { type: string; conversationId?: string; undo?: AgentTabsClosedUndo }) => {
+      if (
+        message.type === "AGENT_TABS_CLOSED" &&
+        message.conversationId === conversationId &&
+        message.undo &&
+        message.undo.tabs.length > 0
+      ) {
+        const undo = message.undo;
+        const builtAction = buildUndoAction(undo);
+        const toastId = toast(formatClosedToast(undo), {
+          action: {
+            label: builtAction.label,
+            onClick: () => {
+              builtAction.onClick();
+              // Clear synchronously so a fast ⌘Z before the dismiss
+              // callback fires can't trigger a second OVERLAY_UNDO.
+              latestUndoRef.current = null;
+            },
+          },
+          onDismiss: () => {
+            if (latestUndoRef.current?.toastId === toastId) latestUndoRef.current = null;
+          },
+          onAutoClose: () => {
+            if (latestUndoRef.current?.toastId === toastId) latestUndoRef.current = null;
+          },
+        });
+        latestUndoRef.current = { undo, toastId };
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey && !e.altKey)) return;
+      const current = latestUndoRef.current;
+      if (!current) return;
+      // Don't hijack undo while the user is editing text (e.g. the chat composer).
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      e.preventDefault();
+      performUndo(current.undo);
+      toast.dismiss(current.toastId);
+      latestUndoRef.current = null;
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(listener);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [conversationId]);
 
   // Detect context overflow errors and auto-trigger compaction.
   //

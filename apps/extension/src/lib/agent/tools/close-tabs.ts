@@ -30,6 +30,7 @@ const outputSchema = z.object({
   undo: z
     .object({
       action: z.literal("reopen"),
+      id: z.string(),
       tabs: z.array(
         z.object({ url: z.string(), windowId: z.number(), pinned: z.boolean() }),
       ),

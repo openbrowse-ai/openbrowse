@@ -6,6 +6,14 @@ import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { chatDb } from "@/lib/chat-db";
 import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
 
+/**
+ * Undo ids already applied by the `OVERLAY_UNDO` `reopen` handler. Makes
+ * reopen idempotent so a duplicate undo (e.g. a click racing a ⌘Z, or a
+ * message replay) can't reopen the same tabs twice. Lives at module scope
+ * so it persists for the service worker's lifetime.
+ */
+const consumedReopenUndoIds = new Set<string>();
+
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
   return (data[key] as TidyState) ?? {
     sections: [],
@@ -968,6 +976,11 @@ export default defineBackground({
             tabIds: number[];
           };
           const res = await handleCloseAgentTabs({ conversationId, tabIds });
+          if (res.ok && res.undo && res.undo.tabs.length > 0) {
+            chrome.runtime
+              .sendMessage({ type: "AGENT_TABS_CLOSED", conversationId, undo: res.undo })
+              .catch(() => {});
+          }
           sendResponse(res);
         })();
         return true;
@@ -1196,9 +1209,8 @@ export default defineBackground({
                 await chrome.tabs.create({ url, windowId: undoData.windowId });
               }
             } else if (undoData.action === "reopen") {
-              for (const t of undoData.tabs ?? []) {
-                await chrome.tabs.create({ url: t.url, windowId: t.windowId, pinned: t.pinned });
-              }
+              const { reopenTabsOnce } = await import("./reopen-tabs-once");
+              await reopenTabsOnce(undoData, consumedReopenUndoIds);
             }
 
             sendResponse({ ok: true });
