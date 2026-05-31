@@ -43,6 +43,7 @@ import { classifyFile } from "@/lib/vfs/file-classify";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
   ArrowUp,
   FileText,
   HelpCircle,
@@ -179,6 +180,7 @@ export function ChatView({
     handleNew,
     handleRegenerate,
     handleRetry,
+    handleContinue,
     confirmEdit,
     addToolApprovalResponse,
     setAgentModel,
@@ -657,6 +659,7 @@ export function ChatView({
               <ErrorMessage
                 error={error}
                 onRetry={handleRetry}
+                onContinue={handleContinue}
                 onDismiss={clearError}
               />
             )}
@@ -887,10 +890,12 @@ function ThinkingIndicator() {
 function ErrorMessage({
   error,
   onRetry,
+  onContinue,
   onDismiss,
 }: {
   error: Error;
   onRetry: () => void;
+  onContinue: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -923,6 +928,14 @@ function ErrorMessage({
               >
                 <RefreshCw className="size-3" />
                 Retry
+              </button>
+              <button
+                type="button"
+                onClick={onContinue}
+                className="flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ArrowRight className="size-3" />
+                Continue
               </button>
               <button
                 type="button"

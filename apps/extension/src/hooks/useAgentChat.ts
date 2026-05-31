@@ -1814,6 +1814,42 @@ export function useAgentChat({
     regenerate();
   }, [messages, conversationId, regenerate, clearError, setMessages]);
 
+  /**
+   * Continue after an error, *keeping* the partial assistant output
+   * already produced (unlike `handleRetry`, which discards the errored
+   * turn and re-runs from the user prompt). Used by the error banner's
+   * Continue button.
+   *
+   * There's no provider-agnostic "resume the exact stream" primitive
+   * once a request has errored out (`resumeStream` only resumes a still
+   * open server stream). So we resume the same way the auto-compaction
+   * flow does: heal any stranded tool calls, then send a synthetic
+   * "Continue where you left off" user message so the model picks up
+   * with the prior partial output already in context. The synthetic
+   * prompt is intentionally not persisted to chatDb.
+   */
+  const handleContinue = useCallback(async () => {
+    clearError();
+    const { healed, healedMessages } = healPendingTools(
+      messages,
+      "Superseded by continue",
+    );
+    if (healedMessages.length > 0) {
+      setMessages(healed);
+      await persistHealedMessages(conversationId, healedMessages);
+    }
+    sendMessage({
+      id: generateId(),
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "Continue where you left off, or ask for clarification if unsure how to proceed.",
+        },
+      ],
+    });
+  }, [messages, conversationId, sendMessage, clearError, setMessages]);
+
   const confirmEdit = useCallback(
     async (
       messageId: string,
@@ -1976,6 +2012,7 @@ export function useAgentChat({
     handleNew,
     handleRegenerate,
     handleRetry,
+    handleContinue,
     confirmEdit,
     addToolApprovalResponse,
     stop,
