@@ -25,6 +25,9 @@ export function deriveUsedConnectors(
   for (const part of parts) {
     if (!isToolPart(part)) continue;
     if (!part.toolName.startsWith("mcp_")) continue;
+    // Any invocation counts as "used" — we intentionally don't filter on
+    // part.state, so an errored or in-flight call still surfaces the
+    // connector as part of this conversation's context.
     const { mcpInfo } = resolveMcpToolDisplay(part.toolName);
     if (!mcpInfo) continue;
     const { id, name } = mcpInfo.connector;
@@ -46,6 +49,9 @@ export function deriveLoadedSkills(parts: SerializedUIPart[]): string[] {
   for (const part of parts) {
     if (!isToolPart(part)) continue;
     if (part.toolName !== "skill") continue;
+    // Any invocation counts as "loaded" — we intentionally don't filter on
+    // part.state, so an errored or in-flight call still surfaces the skill
+    // as part of this conversation's context.
     const input = part.input as { name?: unknown } | undefined;
     const name = input?.name;
     if (typeof name !== "string" || name.length === 0) continue;

@@ -14,12 +14,16 @@ import {
 } from "../context-derive";
 import type { SerializedUIPart } from "@/lib/agent/message-types";
 
-function toolPart(toolName: string, input?: unknown): SerializedUIPart {
+function toolPart(
+  toolName: string,
+  input?: unknown,
+  state = "output-available",
+): SerializedUIPart {
   return {
     type: "dynamic-tool",
     toolName,
     toolCallId: `id-${toolName}-${Math.random()}`,
-    state: "output-available",
+    state,
     input,
   };
 }
@@ -66,6 +70,18 @@ describe("deriveUsedConnectors", () => {
     ];
     expect(deriveUsedConnectors(parts)).toEqual([]);
   });
+
+  it("counts an errored mcp_ call (state-agnostic): output-error still surfaces the connector", () => {
+    resolveMcpToolDisplay.mockReturnValue({
+      mcpInfo: { connector: { id: "slack", name: "Slack" }, toolName: "x" },
+    });
+    const parts: SerializedUIPart[] = [
+      toolPart("mcp_slack_send_message", undefined, "output-error"),
+    ];
+    expect(deriveUsedConnectors(parts)).toEqual<DerivedConnector[]>([
+      { id: "slack", name: "Slack" },
+    ]);
+  });
 });
 
 describe("deriveLoadedSkills", () => {
@@ -90,5 +106,12 @@ describe("deriveLoadedSkills", () => {
 
   it("returns empty when there are no skill tool parts", () => {
     expect(deriveLoadedSkills([{ type: "text", text: "x" }])).toEqual([]);
+  });
+
+  it("counts an in-flight skill call (state-agnostic): input-streaming still surfaces the skill", () => {
+    const parts: SerializedUIPart[] = [
+      toolPart("skill", { name: "schedule" }, "input-streaming"),
+    ];
+    expect(deriveLoadedSkills(parts)).toEqual(["schedule"]);
   });
 });
