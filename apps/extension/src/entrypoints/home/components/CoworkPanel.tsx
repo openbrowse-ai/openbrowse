@@ -361,21 +361,25 @@ function ContextCard({
       const conv = await chatDb.getConversation(conversationId);
       if (!isMounted) return;
 
-      // Tabs
+      // Tabs — fetch all owned tabs concurrently; drop any that fail
+      // (closed tab). `Promise.allSettled` preserves input order, so the
+      // resulting rows keep `ownedIds` order.
       const ownedIds = conv?.ownedTabIds ?? [];
+      const results = await Promise.allSettled(
+        ownedIds.map((id) => chrome.tabs.get(id)),
+      );
+      if (!isMounted) return;
       const hydrated: ContextTab[] = [];
-      for (const id of ownedIds) {
-        try {
-          const tab = await chrome.tabs.get(id);
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled") {
+          const tab = res.value;
           hydrated.push({
-            id,
+            id: ownedIds[i],
             title: tab.title || tab.url || "Untitled tab",
             favicon: tab.favIconUrl ?? "",
           });
-        } catch {
-          // Tab closed — drop it.
         }
-      }
+      });
       if (isMounted) setTabs(hydrated);
 
       if (!isMounted) return;

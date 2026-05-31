@@ -797,16 +797,27 @@ export function resetAgentIndicator() {
 
 
 /**
+ * Per-conversation tail of in-flight usage writes. `recordToolUsageForStep`
+ * is fire-and-forget (`void`-ed at the call site), so the async bodies of
+ * consecutive `onStepFinish` callbacks can interleave on the
+ * getConversation → merge → updateConversation read-modify-write. Chaining
+ * each conversation's writes off the previous one guarantees every read sees
+ * the prior write's result, so concurrent additions to
+ * `usedConnectorIds`/`loadedSkillNames` can't clobber each other.
+ */
+const usageWriteQueues = new Map<string, Promise<void>>();
+
+/**
  * Record the connectors and skills invoked in a finished agent step onto the
  * conversation row, so the Context card can show them live (without waiting
  * for end-of-turn message persistence). Fire-and-forget; failures are
  * swallowed. Main agent only — subagent steps are not recorded here.
  *
- * Safe to call per step without locking: `onStepFinish` fires sequentially
- * within a single agent loop (steps never overlap), so the read-merge-write
- * below cannot race against itself. Concurrent writes to OTHER conversation
- * fields (e.g. todos) are preserved by `updateConversation`'s in-transaction
- * re-read + shallow merge.
+ * The read-merge-write is serialized per conversation via `usageWriteQueues`
+ * so overlapping step-finish calls can't read stale state and overwrite each
+ * other's additions. Concurrent writes to OTHER conversation fields (e.g.
+ * todos) are preserved by `updateConversation`'s in-transaction re-read +
+ * shallow merge.
  */
 async function recordToolUsageForStep(
   conversationId: string | null,
@@ -817,23 +828,44 @@ async function recordToolUsageForStep(
   const { connectorIds, skillNames } = scanToolUsage(toolCalls);
   if (connectorIds.length === 0 && skillNames.length === 0) return;
 
+  const cid = conversationId;
+  const persist = async (): Promise<void> => {
+    try {
+      const conv = await chatDb.getConversation(cid);
+      if (!conv) return;
+      const mergedConnectors = mergeDistinct(conv.usedConnectorIds, connectorIds);
+      const mergedSkills = mergeDistinct(conv.loadedSkillNames, skillNames);
+
+      // Note: we intentionally do NOT bump `updatedAt` here (unlike setTodos) —
+      // recording tool usage shouldn't reorder conversations or trigger sidebar
+      // churn on every step.
+      const updates: {
+        usedConnectorIds?: string[];
+        loadedSkillNames?: string[];
+      } = {};
+      if (mergedConnectors) updates.usedConnectorIds = mergedConnectors;
+      if (mergedSkills) updates.loadedSkillNames = mergedSkills;
+      if (Object.keys(updates).length === 0) return; // nothing new
+
+      await chatDb.updateConversation(cid, updates);
+    } catch {
+      // Best-effort; recording usage must never disrupt the agent loop.
+    }
+  };
+
+  // Chain after any in-flight write for this conversation so reads always see
+  // the latest persisted state.
+  const prev = usageWriteQueues.get(cid) ?? Promise.resolve();
+  const next = prev.then(persist);
+  usageWriteQueues.set(cid, next);
   try {
-    const conv = await chatDb.getConversation(conversationId);
-    if (!conv) return;
-    const mergedConnectors = mergeDistinct(conv.usedConnectorIds, connectorIds);
-    const mergedSkills = mergeDistinct(conv.loadedSkillNames, skillNames);
-
-    // Note: we intentionally do NOT bump `updatedAt` here (unlike setTodos) —
-    // recording tool usage shouldn't reorder conversations or trigger sidebar
-    // churn on every step.
-    const updates: { usedConnectorIds?: string[]; loadedSkillNames?: string[] } = {};
-    if (mergedConnectors) updates.usedConnectorIds = mergedConnectors;
-    if (mergedSkills) updates.loadedSkillNames = mergedSkills;
-    if (Object.keys(updates).length === 0) return; // nothing new
-
-    await chatDb.updateConversation(conversationId, updates);
-  } catch {
-    // Best-effort; recording usage must never disrupt the agent loop.
+    await next;
+  } finally {
+    // Drop the entry once this write is the queue tail (no later writes
+    // chained behind it) to keep the map from growing unbounded.
+    if (usageWriteQueues.get(cid) === next) {
+      usageWriteQueues.delete(cid);
+    }
   }
 }
 
