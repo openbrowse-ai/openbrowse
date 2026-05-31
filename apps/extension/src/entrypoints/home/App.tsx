@@ -103,6 +103,15 @@ export default function App() {
       const allSpaces = await storage.getSpaces();
       setSpaces(allSpaces);
 
+      // Prefer the durable ?space=<id> anchor (set on the home tab so a
+      // restored window resolves to its real space immediately), then fall
+      // back to windowId match, then the first space.
+      const spaceParam = new URLSearchParams(window.location.search).get("space");
+      if (spaceParam && allSpaces.some((s) => s.id === spaceParam)) {
+        setActiveSpaceId(spaceParam);
+        return;
+      }
+
       const currentWindow = await chrome.windows.getCurrent();
       if (currentWindow.id) {
         const space = allSpaces.find((s) => s.windowId === currentWindow.id);

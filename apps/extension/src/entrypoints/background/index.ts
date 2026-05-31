@@ -152,6 +152,18 @@ export default defineBackground({
       }
     });
 
+    // Re-bind spaces to their restored windows (window ids change across
+    // browser/dev relaunches). The main reconcile runs in the favorite-tabs
+    // bootstrap chain below (so favorites adopt against correct windows);
+    // here we only register the browser-startup hook.
+    if (chrome.runtime.onStartup) {
+      chrome.runtime.onStartup.addListener(() => {
+        import("./spaces").then(({ reconcileSpacesWithWindows }) => {
+          reconcileSpacesWithWindows().catch(() => {});
+        });
+      });
+    }
+
     chrome.tabs.onActivated.addListener((info) => {
       activeTabByWindow.set(info.windowId, info.tabId);
     });
@@ -159,6 +171,11 @@ export default defineBackground({
     chrome.tabs.onCreated.addListener((tab) => {
       if (tab.id != null && tab.windowId != null && tab.active) {
         activeTabByWindow.set(tab.windowId, tab.id);
+      }
+      if (tab.pinned && tab.windowId != null) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(tab.windowId!);
+        }).catch(() => {});
       }
     });
 
@@ -2157,14 +2174,28 @@ export default defineBackground({
     import("./favorite-tabs").then(({ hydrate, bootstrap }) => {
       // Hydrate persisted associations first so the ordering guard /
       // classification see favorites even before bootstrap re-adopts.
-      hydrate().then(() => {
-        import("@/lib/storage").then(({ storage }) =>
-          storage.getSpaces().then((spaces) => bootstrap(spaces)),
-        );
+      // Reconcile space↔window bindings before bootstrap so favorites adopt
+      // against the correctly-bound windows after a restart.
+      hydrate().then(async () => {
+        const { reconcileSpacesWithWindows } = await import("./spaces");
+        await reconcileSpacesWithWindows().catch(() => {});
+        const { storage } = await import("@/lib/storage");
+        const spaces = await storage.getSpaces();
+        await bootstrap(spaces);
       });
     });
 
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      // Keep the bound space's pinnedTabs snapshot in sync when a tab is
+      // pinned/unpinned or its URL changes.
+      if (
+        (changeInfo.pinned !== undefined || changeInfo.url) &&
+        tab.windowId != null
+      ) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(tab.windowId!);
+        }).catch(() => {});
+      }
       if (changeInfo.url || changeInfo.title || changeInfo.favIconUrl) {
         // Reconcile favorite adoption/retention on navigation: adopt the
         // first prefix-subset tab, keep adopted across same-hostname
@@ -2206,13 +2237,18 @@ export default defineBackground({
       }
     });
 
-    chrome.tabs.onRemoved.addListener((tabId) => {
+    chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
       (async () => {
         const { storage } = await import("@/lib/storage");
         const spaces = await storage.getSpaces();
         const { handleTabRemoved } = await import("./favorite-tabs");
         await handleTabRemoved(spaces, tabId);
       })().catch(() => {});
+      if (removeInfo.windowId != null && !removeInfo.isWindowClosing) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(removeInfo.windowId);
+        }).catch(() => {});
+      }
     });
 
     // Enforce the strip ordering invariant (pinned → favorites → regular)
@@ -2222,6 +2258,9 @@ export default defineBackground({
     chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
       import("./tab-ordering").then(({ enforceTabOrder }) => {
         enforceTabOrder(moveInfo.windowId, tabId);
+      }).catch(() => {});
+      import("./spaces").then(({ schedulePinnedSnapshot }) => {
+        schedulePinnedSnapshot(moveInfo.windowId);
       }).catch(() => {});
     });
 
