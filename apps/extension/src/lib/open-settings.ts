@@ -33,18 +33,23 @@ export async function openSettingsTab(subTab?: string): Promise<void> {
     // Switch the sub-tab when one was requested and it differs from the
     // currently-open one; otherwise just activate the existing tab.
     const needsNav = subTab != null && existing.url !== targetUrl;
-    await chrome.tabs.update(existing.id, {
-      active: true,
-      ...(needsNav ? { url: targetUrl } : {}),
-    });
-    if (existing.windowId != null) {
-      try {
-        await chrome.windows.update(existing.windowId, { focused: true });
-      } catch {
-        // Window may not be focusable (e.g. minimized externally); ignore.
+    try {
+      await chrome.tabs.update(existing.id, {
+        active: true,
+        ...(needsNav ? { url: targetUrl } : {}),
+      });
+      if (existing.windowId != null) {
+        try {
+          await chrome.windows.update(existing.windowId, { focused: true });
+        } catch {
+          // Window may not be focusable (e.g. minimized externally); ignore.
+        }
       }
+      return;
+    } catch {
+      // The tab was closed between the query and the update — fall through
+      // to create a fresh settings tab below.
     }
-    return;
   }
 
   await chrome.tabs.create({ url: targetUrl });

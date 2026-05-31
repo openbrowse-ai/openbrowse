@@ -336,6 +336,7 @@ export default function App() {
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
     const target = deleteTarget;
+    const prevActive = activeConversationId;
     setDeleteTarget(null);
     // Optimistically drop the row from the sidebar list immediately.
     window.dispatchEvent(
@@ -347,10 +348,15 @@ export default function App() {
     try {
       await chatDb.deleteConversation(target.id);
     } catch {
-      // Reconcile the optimistic removal if the delete actually failed.
+      // Reconcile the optimistic removal if the delete actually failed:
+      // restore the sidebar row and, if we cleared the active view for
+      // this conversation, restore that too.
       window.dispatchEvent(
         new CustomEvent("chat-deleted-failed", { detail: { id: target.id } }),
       );
+      if (target.id === prevActive) {
+        setActiveConversationId(prevActive);
+      }
     }
   }, [deleteTarget, activeConversationId]);
 

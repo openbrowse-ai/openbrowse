@@ -27,9 +27,39 @@ type TabClass = "pinned" | "favorite" | "regular";
 /**
  * Re-entrancy guard. Our corrective `chrome.tabs.move` re-fires
  * `onMoved`; we tag the windows we're actively correcting so the listener
- * ignores the echo instead of fighting itself.
+ * ignores the echo instead of fighting itself. This is a boolean flag
+ * scoped to the duration of our own move — distinct from `windowLocks`,
+ * which serializes whole operations.
  */
 const correctingWindows = new Set<number>();
+
+/**
+ * Per-window serialization. `enforceTabOrder` / `positionFavoriteTab`
+ * each do async reads (classify the strip) before issuing a
+ * `chrome.tabs.move`; two concurrent external moves in the same window
+ * could otherwise both pass the echo guard, read stale state, and issue
+ * conflicting moves. We chain all work for a given window onto a single
+ * promise so only one operation runs at a time per window (other windows
+ * stay parallel).
+ */
+const windowLocks = new Map<number, Promise<void>>();
+
+function withWindowLock(
+  windowId: number,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const prior = windowLocks.get(windowId) ?? Promise.resolve();
+  const next = prior.then(fn, fn);
+  // Keep the chain alive only while this op is the tail; clean up once
+  // settled so the map doesn't grow unbounded.
+  windowLocks.set(windowId, next);
+  void next.finally(() => {
+    if (windowLocks.get(windowId) === next) {
+      windowLocks.delete(windowId);
+    }
+  });
+  return next;
+}
 
 async function classifyWindowTabs(
   windowId: number,
@@ -123,21 +153,27 @@ export async function enforceTabOrder(
   windowId: number,
   movedTabId: number,
 ): Promise<void> {
+  // Skip the self-triggered echo of our own corrective move.
   if (correctingWindows.has(windowId)) return;
-  try {
-    const { tabs, classOf } = await classifyWindowTabs(windowId);
-    const correctIndex = computeCorrectIndex(tabs, classOf, movedTabId);
-    if (correctIndex == null) return;
-    correctingWindows.add(windowId);
+  return withWindowLock(windowId, async () => {
+    // Re-check inside the lock: a queued op may have started a correction
+    // (and set the echo flag) while we were waiting our turn.
+    if (correctingWindows.has(windowId)) return;
     try {
-      await chrome.tabs.move(movedTabId, { index: correctIndex });
-    } finally {
+      const { tabs, classOf } = await classifyWindowTabs(windowId);
+      const correctIndex = computeCorrectIndex(tabs, classOf, movedTabId);
+      if (correctIndex == null) return;
+      correctingWindows.add(windowId);
+      try {
+        await chrome.tabs.move(movedTabId, { index: correctIndex });
+      } finally {
+        correctingWindows.delete(windowId);
+      }
+    } catch {
       correctingWindows.delete(windowId);
+      // Tab/window gone, or move raced; ignore.
     }
-  } catch {
-    correctingWindows.delete(windowId);
-    // Tab/window gone, or move raced; ignore.
-  }
+  });
 }
 
 /**
@@ -151,34 +187,38 @@ export async function positionFavoriteTab(
   tabId: number,
 ): Promise<void> {
   if (correctingWindows.has(windowId)) return;
-  try {
-    const tabs = await chrome.tabs.query({ windowId });
-    tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-    const pinnedCount = tabs.filter((t) => t.pinned).length;
-
-    const space = await storage.getSpaceByWindowId(windowId);
-    const favoriteUrls = new Set((space?.favorites ?? []).map((f) => f.url));
-    const associatedIds = space
-      ? getAssociatedTabIds(space.id)
-      : new Set<number>();
-
-    // Count favorites excluding the one we're positioning.
-    const favoriteCount = tabs.filter(
-      (t) =>
-        t.id != null &&
-        t.id !== tabId &&
-        !t.pinned &&
-        ((t.url != null && favoriteUrls.has(t.url)) || associatedIds.has(t.id)),
-    ).length;
-
-    const target = pinnedCount + favoriteCount;
-    correctingWindows.add(windowId);
+  return withWindowLock(windowId, async () => {
+    if (correctingWindows.has(windowId)) return;
     try {
-      await chrome.tabs.move(tabId, { index: target });
-    } finally {
+      const tabs = await chrome.tabs.query({ windowId });
+      tabs.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      const pinnedCount = tabs.filter((t) => t.pinned).length;
+
+      const space = await storage.getSpaceByWindowId(windowId);
+      const favoriteUrls = new Set((space?.favorites ?? []).map((f) => f.url));
+      const associatedIds = space
+        ? getAssociatedTabIds(space.id)
+        : new Set<number>();
+
+      // Count favorites excluding the one we're positioning.
+      const favoriteCount = tabs.filter(
+        (t) =>
+          t.id != null &&
+          t.id !== tabId &&
+          !t.pinned &&
+          ((t.url != null && favoriteUrls.has(t.url)) ||
+            associatedIds.has(t.id)),
+      ).length;
+
+      const target = pinnedCount + favoriteCount;
+      correctingWindows.add(windowId);
+      try {
+        await chrome.tabs.move(tabId, { index: target });
+      } finally {
+        correctingWindows.delete(windowId);
+      }
+    } catch {
       correctingWindows.delete(windowId);
     }
-  } catch {
-    correctingWindows.delete(windowId);
-  }
+  });
 }

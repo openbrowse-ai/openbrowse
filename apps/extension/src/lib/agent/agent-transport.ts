@@ -301,6 +301,13 @@ export function notifyAgentStatus(
         return;
       }
       if (working) {
+        // If the agent moved to a different tab within the same run,
+        // clear the blocker from the previously-targeted tab so it
+        // doesn't linger as a stale overlay. removeIndicator swallows
+        // its own errors (e.g. tab gone / not injectable).
+        if (lastIndicatorTabId != null && lastIndicatorTabId !== targetTabId) {
+          await removeIndicator(lastIndicatorTabId);
+        }
         lastIndicatorTabId = targetTabId;
         await injectIndicator(targetTabId, color);
       } else {

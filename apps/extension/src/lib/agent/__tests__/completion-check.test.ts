@@ -1361,9 +1361,9 @@ describe("observeChunkForCompletionCheck", () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   // Tighten test isolation for the IndexedDB-using suites.
-  void completionCheckTelemetry._resetForTests();
+  await completionCheckTelemetry._resetForTests();
 });
 
 describe("buildCompletionCheckFeedbackMessage", () => {
