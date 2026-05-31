@@ -35,7 +35,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { RegistryIcon } from "@/components/ui/registry-icon";
-import { useSkillsState } from "@/hooks/useSkillsState";
 import {
   deriveUsedConnectors,
   deriveLoadedSkills,
@@ -333,7 +332,6 @@ function FileTypeIcon({ filename }: { filename: string }) {
 interface ContextTab {
   id: number;
   title: string;
-  url: string;
   favicon: string;
 }
 
@@ -354,8 +352,6 @@ function ContextCard({
   const [connectors, setConnectors] = useState<DerivedConnector[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
 
-  const skillsState = useSkillsState();
-
   // Poll: tabs (from ownedTabIds) + connectors/skills (from message parts).
   useEffect(() => {
     let isMounted = true;
@@ -373,7 +369,6 @@ function ContextCard({
           hydrated.push({
             id,
             title: tab.title || tab.url || "Untitled tab",
-            url: tab.url ?? "",
             favicon: tab.favIconUrl ?? "",
           });
         } catch {
@@ -484,7 +479,7 @@ function ContextCard({
                 <ContextRow
                   key={name}
                   icon={<ScrollText className="size-3.5" />}
-                  label={displaySkillName(name, skillsState.skills)}
+                  label={name}
                 />
               ))}
             </ContextSection>
@@ -493,15 +488,6 @@ function ContextCard({
       )}
     </CoworkCard>
   );
-}
-
-/** Prefer the registry's display name when the loaded skill is installed. */
-function displaySkillName(
-  name: string,
-  installed: { name: string }[],
-): string {
-  const match = installed.find((s) => s.name === name);
-  return match?.name ?? name;
 }
 
 function ContextSection({
@@ -563,16 +549,17 @@ function ContextRow({
 
 function ContextTabRow({ tab }: { tab: ContextTab }) {
   const focusTab = () => {
-    try {
-      void chrome.tabs.update(tab.id, { active: true });
-      void chrome.tabs.get(tab.id).then((t) => {
+    void (async () => {
+      try {
+        await chrome.tabs.update(tab.id, { active: true });
+        const t = await chrome.tabs.get(tab.id);
         if (typeof t.windowId === "number") {
-          void chrome.windows.update(t.windowId, { focused: true });
+          await chrome.windows.update(t.windowId, { focused: true });
         }
-      });
-    } catch {
-      // Tab gone; next poll will drop it.
-    }
+      } catch {
+        // Tab gone; next poll will drop it.
+      }
+    })();
   };
   return (
     <ContextRow
