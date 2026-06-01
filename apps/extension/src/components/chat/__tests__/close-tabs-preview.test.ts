@@ -15,6 +15,11 @@ describe("formatCloseTabsPreview", () => {
   it("describes a specific-tabs close", () => {
     expect(
       formatCloseTabsPreview({ target: "tabs", handles: ["t1", "t2"] }, 2),
-    ).toBe("Close these 2 tabs");
+    ).toBe("Close 2 tabs");
+  });
+  it("singularizes a one-tab close", () => {
+    expect(
+      formatCloseTabsPreview({ target: "tabs", handles: ["t1"] }, 1),
+    ).toBe("Close 1 tab");
   });
 });

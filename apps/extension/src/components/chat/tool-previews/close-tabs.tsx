@@ -12,7 +12,7 @@ export function formatCloseTabsPreview(
     const noun = count === 1 ? "tab" : "tabs";
     return `Close ${count} ${noun} in this conversation's group`;
   }
-  return `Close these ${count} ${count === 1 ? "tab" : "tabs"}`;
+  return `Close ${count} ${count === 1 ? "tab" : "tabs"}`;
 }
 
 registerToolPreview("closeTabs", (args) => {

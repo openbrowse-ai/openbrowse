@@ -47,7 +47,7 @@ import "@/components/chat/tool-previews";
  * `execute()`.
  */
 export function resolveToolPartState(
-  p: { state?: unknown; output?: unknown; errorText?: unknown },
+  p: { state?: unknown; output?: unknown; errorText?: unknown; approval?: unknown },
   opts: { isStreaming?: boolean } = {},
 ): { state: "call" | "result" | "denied" | "errored"; result?: unknown } {
   const state = p.state;
@@ -64,6 +64,27 @@ export function resolveToolPartState(
   }
   if (state === "output-denied") {
     return { state: "denied" };
+  }
+
+  // An APPROVED `approval-responded` call is a legitimate resume point: the
+  // SDK re-executes it from this state via the `tool-approval-response` it
+  // emits during convertToModelMessages. There is a brief window right after
+  // the user clicks Allow where the message is no longer streaming but the
+  // tool hasn't re-invoked `execute()` yet — treating it as an orphan here
+  // flashes "Interrupted" before it flips to the real result. Mirror the
+  // persistence-heal exception (see `needsHeal` in useAgentChat) and render
+  // it as pending. A DENIED or malformed approval-responded falls through to
+  // the orphan handling below.
+  if (state === "approval-responded") {
+    const ap = p.approval as { id?: unknown; approved?: unknown } | undefined;
+    if (
+      ap &&
+      typeof ap.id === "string" &&
+      ap.approved === true &&
+      p.output === undefined
+    ) {
+      return { state: "call" };
+    }
   }
 
   // Non-terminal state. If the message is still streaming this part is

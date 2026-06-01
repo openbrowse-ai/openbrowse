@@ -21,7 +21,7 @@ interface ExpandableTextProps {
  * chat at roughly this width with the current font/size — close enough
  * for a clamp threshold; we don't need pixel-perfect measurement.
  */
-const ESTIMATED_CHARS_PER_VISUAL_LINE = 80;
+export const ESTIMATED_CHARS_PER_VISUAL_LINE = 80;
 
 /**
  * Estimate how many visual lines `text` will occupy at the given column
