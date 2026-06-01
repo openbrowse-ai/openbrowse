@@ -11,7 +11,9 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = { updated: true; id: string } | { updated: false; reason: string };
+type Output =
+  | { updated: true; id: string; oldContent: string; newContent: string }
+  | { updated: false; reason: string };
 
 export const updateMemoryTool: BrowserTool<Input, Output> = {
   name: "updateMemory",
@@ -36,6 +38,11 @@ export const updateMemoryTool: BrowserTool<Input, Output> = {
     };
 
     await memoryDb.save(memory);
-    return { updated: true, id: memory.id };
+    return {
+      updated: true,
+      id: memory.id,
+      oldContent: existing.content,
+      newContent: content,
+    };
   },
 };

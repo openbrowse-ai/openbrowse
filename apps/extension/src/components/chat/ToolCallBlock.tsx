@@ -24,6 +24,7 @@ import { SkillResult } from "./tool-results/skill";
 import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
+import { MemoryResult } from "./tool-results/memory";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -50,6 +51,12 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     <CodeResult args={args} result={result} />
   ),
   executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
+  saveMemory: ({ args, result }) => (
+    <MemoryResult args={args} result={result} action="save" />
+  ),
+  updateMemory: ({ args, result }) => (
+    <MemoryResult args={args} result={result} action="update" />
+  ),
   Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
   Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
