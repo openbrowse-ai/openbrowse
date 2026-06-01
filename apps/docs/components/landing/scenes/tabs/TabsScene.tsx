@@ -32,10 +32,10 @@ export function TabsScene() {
         className="w-full aspect-[4/3] md:aspect-[16/10] shadow-sm border-muted/30"
       >
         <BrowserChrome>
-          <div className="relative w-full h-full p-4 md:p-8 flex justify-center bg-muted/20 overflow-hidden">
+          <div className="relative w-full h-full p-4 pb-10 md:p-8 flex justify-center bg-muted/20 overflow-hidden">
             
             {/* Progress Indicator */}
-            <div className="absolute bottom-4 right-4 flex items-center gap-1 bg-background/50 backdrop-blur-md border rounded-full px-2 py-1.5 shadow-sm z-20">
+            <div className="absolute bottom-3 right-3 flex items-center gap-1 bg-background/50 backdrop-blur-md border rounded-full px-2 py-1.5 shadow-sm z-20">
               {[0, 1, 2, 3].map((i) => (
                 <div key={i} className="h-1 w-6 bg-muted-foreground/20 rounded-full overflow-hidden">
                   {i === step ? (
@@ -59,7 +59,7 @@ export function TabsScene() {
             `}} />
 
             {/* The OverlayApp Replica */}
-            <div className="flex flex-col w-full max-w-[600px] h-fit max-h-full rounded-xl border shadow-2xl bg-popover overflow-hidden z-10 font-sans text-popover-foreground">
+            <div className="flex flex-col min-h-0 w-full max-w-[600px] h-fit max-h-full rounded-xl border shadow-2xl bg-popover overflow-hidden z-10 font-sans text-popover-foreground">
               
               {/* Header */}
               <div className="flex items-center gap-1.5 border-b px-2 py-1.5 shrink-0 bg-popover">
@@ -81,7 +81,7 @@ export function TabsScene() {
               </div>
 
               {/* List Area */}
-              <div className="flex flex-col overflow-y-auto styled-scrollbar pb-1 max-h-[300px] bg-popover">
+              <div className="flex flex-col min-h-0 overflow-y-auto styled-scrollbar pb-1 max-h-[300px] bg-popover">
                 <AnimatePresence mode="wait">
                   {isSearching ? (
                     <motion.div
