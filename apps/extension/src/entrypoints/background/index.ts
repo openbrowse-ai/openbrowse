@@ -1323,6 +1323,13 @@ export default defineBackground({
             favs.forEach((f, i) => { f.position = i; });
 
             await storage.updateSpace(space.id, { favorites: favs });
+            // Physically arrange the live favorite tabs to match the new
+            // saved order, so the Chrome tab strip reflects the reorder even
+            // when the drop target was a closed (not-open) favorite.
+            const { arrangeFavoriteTabsToSavedOrder } = await import(
+              "./tab-ordering"
+            );
+            await arrangeFavoriteTabsToSavedOrder(wId);
             sendResponse({ ok: true });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
@@ -2187,9 +2194,12 @@ export default defineBackground({
 
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       // Keep the bound space's pinnedTabs snapshot in sync when a tab is
-      // pinned/unpinned or its URL changes.
+      // pinned/unpinned, or when a *pinned* tab's URL changes. We don't
+      // snapshot on ordinary (non-pinned) navigations — pinnedTabs only
+      // tracks pinned tabs.
       if (
-        (changeInfo.pinned !== undefined || changeInfo.url) &&
+        (changeInfo.pinned !== undefined ||
+          (changeInfo.url && tab.pinned === true)) &&
         tab.windowId != null
       ) {
         import("./spaces").then(({ schedulePinnedSnapshot }) => {

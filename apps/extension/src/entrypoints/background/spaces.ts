@@ -1,7 +1,7 @@
 import { storage } from '@/lib/storage'
 import type { Space } from '@/lib/types'
 import { HOME_PAGE_URL } from '@/lib/constants'
-import { isPrefixSubset, sameHostname } from './favorite-tabs'
+import { isPrefixSubset } from './favorite-tabs'
 
 export function generateId(): string {
   return crypto.randomUUID()
@@ -125,12 +125,19 @@ async function ensureHomeTab(windowId: number, spaceId: string): Promise<void> {
 
 export async function focusOrCreateWindow(space: Space): Promise<void> {
   if (space.windowId !== null) {
+    let windowExists = true
     try {
       await chrome.windows.update(space.windowId, { focused: true })
-      await ensureHomeTab(space.windowId, space.id)
-      return
     } catch {
-      // window no longer exists, recreate
+      // Window no longer exists — fall through to recreate. Only a
+      // windows.update failure gates recreation.
+      windowExists = false
+    }
+    if (windowExists) {
+      // Window is live; ensure its home anchor best-effort. A tab-level
+      // error here must NOT trigger recreation / storage.updateSpace.
+      await ensureHomeTab(space.windowId, space.id).catch(() => {})
+      return
     }
   }
 
@@ -304,13 +311,12 @@ export async function reconcileSpacesWithWindows(): Promise<void> {
     for (const s of spaces) {
       if (claimedSpaceIds.has(s.id)) continue
       if (s.pinnedTabs.length === 0) continue
+      // Only exact or path-prefix matches count toward binding. A mere
+      // shared hostname is too weak — two unrelated spaces both pinning
+      // e.g. github.com would otherwise cross-bind to each other's windows.
       let score = 0
       for (const pu of winPinned) {
-        if (
-          s.pinnedTabs.some(
-            (su) => su === pu || isPrefixSubset(pu, su) || sameHostname(pu, su),
-          )
-        ) {
+        if (s.pinnedTabs.some((su) => su === pu || isPrefixSubset(pu, su))) {
           score++
         }
       }
@@ -328,15 +334,13 @@ export async function reconcileSpacesWithWindows(): Promise<void> {
     }
   }
 
-  // Apply bindings + Pass 3 (clear stale windowIds).
-  const liveWindowIds = new Set(wins.map((w) => w.id).filter((id): id is number => id != null))
+  // Apply bindings + clear stale windowIds.
   const updated = spaces.map((s) => {
     const bound = newBinding.get(s.id)
     if (bound != null) return { ...s, windowId: bound }
-    // Not claimed by any live window → clear stale id.
-    if (s.windowId != null && !liveWindowIds.has(s.windowId)) {
-      return { ...s, windowId: null }
-    }
+    // Not claimed by any window this pass → its stored windowId is stale
+    // (the id may now belong to a different live window), so clear it.
+    if (s.windowId != null) return { ...s, windowId: null }
     return s
   })
   await storage.setSpaces(updated)

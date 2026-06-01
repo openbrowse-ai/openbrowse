@@ -101,11 +101,12 @@ function serialize(): Record<string, FavoriteTabAssociation[]> {
 }
 
 function persist(): void {
-  try {
-    void chrome.storage.session.set({ [SESSION_KEY]: serialize() });
-  } catch {
-    // session storage unavailable; in-memory map still works for this SW life.
-  }
+  // Best-effort write-through. Handle async rejection (storage quota /
+  // session unavailable) so it doesn't surface as an unhandled rejection;
+  // the in-memory map still works for this service-worker's lifetime.
+  chrome.storage.session
+    .set({ [SESSION_KEY]: serialize() })
+    .catch(() => {});
 }
 
 let hydratePromise: Promise<void> | null = null;

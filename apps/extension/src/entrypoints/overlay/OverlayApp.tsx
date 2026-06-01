@@ -851,20 +851,10 @@ export function OverlayApp() {
           url,
           overUrl,
         });
-
-        // Physically move the live tab when both sides are open favorites,
-        // so the actual Chrome tab strip reflects the new order. The
-        // background keeps it within the favorites zone (enforceTabOrder).
-        const activeOpen = activeTab && activeTab.kind !== "favorite" && activeTab.id >= 0;
-        const overOpen = overTab && overTab.kind !== "favorite" && overTab.id >= 0;
-        if (activeOpen && overOpen) {
-          await chrome.runtime.sendMessage({
-            type: "OVERLAY_REORDER_TABS",
-            tabId: activeTab!.id,
-            overTabId: overTab!.id,
-            sectionChange: null,
-          });
-        }
+        // The background persists the new favorites order AND physically
+        // arranges the live favorite tabs to match it (handling open/open,
+        // open/closed, and closed/closed drags uniformly), so we don't need
+        // to issue a separate tab move here.
         fetchTabs();
         return;
       }

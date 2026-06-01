@@ -368,6 +368,59 @@ async function persistFavoriteOrderForWindow(windowId: number): Promise<void> {
 }
 
 /**
+ * The inverse of `persistFavoriteOrder`: physically arrange the window's
+ * OPEN favorite tabs so the strip matches the saved `space.favorites` order.
+ * Called after the overlay persists a favorites reorder (e.g. dragging an
+ * open favorite onto/near a closed favorite), so the live tab strip reflects
+ * the new saved order even when the drop target had no live tab to move
+ * relative to. No-op for closed favorites (no tab to move).
+ */
+export async function arrangeFavoriteTabsToSavedOrder(
+  windowId: number,
+): Promise<void> {
+  if (correctingWindows.has(windowId)) return;
+  return withWindowLock(windowId, async () => {
+    if (correctingWindows.has(windowId)) return;
+    try {
+      await ensureAdoptedForWindow(windowId);
+      const { tabs, classOf, space, favoritePositionOf } =
+        await classifyWindowTabs(windowId);
+      if (!space) return;
+
+      const pinnedCount = tabs.filter(
+        (t) => t.id != null && classOf.get(t.id) === "pinned",
+      ).length;
+
+      // Open favorite tabs, sorted by their saved favorite position.
+      const favTabs = tabs.filter(
+        (t) => t.id != null && classOf.get(t.id) === "favorite",
+      );
+      favTabs.sort((a, b) => {
+        const pa = favoritePositionOf.get(a.id!) ?? Number.MAX_SAFE_INTEGER;
+        const pb = favoritePositionOf.get(b.id!) ?? Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
+
+      correctingWindows.add(windowId);
+      try {
+        // Place each favorite at its target index (right after pinned), in
+        // saved order. Moving sequentially with a fixed base index yields
+        // the correct final arrangement.
+        for (let i = 0; i < favTabs.length; i++) {
+          const id = favTabs[i].id!;
+          await chrome.tabs.move(id, { index: pinnedCount + i });
+        }
+      } finally {
+        correctingWindows.delete(windowId);
+      }
+    } catch {
+      correctingWindows.delete(windowId);
+      // window/tab gone, or move raced mid-drag; ignore.
+    }
+  });
+}
+
+/**
  * Move a freshly-favorited tab into the favorites zone so the strip order
  * reflects its new status immediately (rather than only after a manual
  * drag). Places it at the end of the favorites block, just before the
