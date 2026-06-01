@@ -1,5 +1,10 @@
 import { ChevronDown, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
 interface QA {
   q: string;
@@ -40,15 +45,17 @@ export function FAQ() {
       </div>
       <div className="divide-y border-y">
         {faqs.map((item) => (
-          <details key={item.q} className="group py-4">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 text-left">
+          <Collapsible key={item.q} className="group py-4">
+            <CollapsibleTrigger className="flex w-full cursor-pointer list-none items-center justify-between gap-4 text-left">
               <span className="font-medium">{item.q}</span>
-              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              {item.a}
-            </p>
-          </details>
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                {item.a}
+              </p>
+            </CollapsibleContent>
+          </Collapsible>
         ))}
       </div>
     </section>
