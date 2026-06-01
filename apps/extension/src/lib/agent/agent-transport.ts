@@ -50,7 +50,6 @@ import {
   installSkillTool,
   listTabsTool,
   navigateTool,
-  readOpfsFileTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
@@ -1099,7 +1098,6 @@ export async function createAgentTransport(
     skill: toSDKTool(skillTool, "skill"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
     create_skill: toSDKTool(createSkillTool, "create_skill"),
-    read_opfs_file: toSDKTool(readOpfsFileTool, "read_opfs_file"),
     Read: toSDKTool(fsTools.readTool, "Read"),
     Write: toSDKTool(fsTools.writeTool, "Write"),
     Edit: toSDKTool(fsTools.editTool, "Edit"),
@@ -1133,7 +1131,6 @@ export async function createAgentTransport(
     Glob: browserTools.Glob,
     Grep: browserTools.Grep,
     LS: browserTools.LS,
-    read_opfs_file: browserTools.read_opfs_file,
   };
 
   const mcpTools = getMcpRegistry().toSDKTools();
@@ -1294,7 +1291,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
 
-    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use read_opfs_file({ path }).\nTo author and install a new skill you've drafted for the user, use create_skill.`;
+    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use Read({ file_path }) with the skill's path (e.g. "/skills/<name>/references/<file>").\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
   // Compose the parent's full tool set BEFORE constructing `runSubagentAgentLoop`,

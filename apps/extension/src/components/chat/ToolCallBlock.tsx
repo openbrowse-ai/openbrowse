@@ -123,10 +123,6 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   skill: { pending: "Loading skill...", done: "Loaded skill" },
   create_skill: { pending: "Creating skill...", done: "Created skill" },
   install_skill: { pending: "Installing skill...", done: "Installed skill" },
-  read_opfs_file: {
-    pending: "Reading bundled file...",
-    done: "Read bundled file",
-  },
 
   // (No `delegate` entry — `delegate` bypasses the outer ToolCallBlock
   // wrapper entirely; SubagentTrace renders the whole UI itself.)

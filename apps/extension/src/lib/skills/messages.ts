@@ -29,10 +29,6 @@ export function sendSkillMessage(message: {
   enabled: boolean;
 }): Promise<{ success: boolean }>;
 export function sendSkillMessage(message: {
-  type: "SKILL_READ_OPFS_FILE";
-  path: string;
-}): Promise<{ success: boolean; content?: string; error?: string }>;
-export function sendSkillMessage(message: {
   type: "SKILL_GET_BODY";
   name: string;
 }): Promise<{

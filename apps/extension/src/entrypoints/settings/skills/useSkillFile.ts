@@ -26,8 +26,7 @@ function basename(p: string): string {
  * depending on its classified extension. Re-fetches whenever `path` changes.
  *
  * Reads OPFS directly — settings is an extension page with the same OPFS
- * access as the home tab, so the previous `SKILL_READ_OPFS_FILE` background
- * relay was an unnecessary round-trip and is bypassed here.
+ * access as the home tab, so no background relay is needed.
  *
  * Pass a falsy `path` to keep the hook idle.
  */
