@@ -51,7 +51,7 @@ function getOrCreateToastHost() {
       }
       .sb-toast-undo { background: #18181b !important; color: #fafafa !important; }
       .sb-toast-undo:hover { opacity: 0.9 !important; }
-      .sb-toast-kbd { background: rgba(0,0,0,0.08) !important; color: #71717a !important; }
+      .sb-toast-kbd { background: rgba(255,255,255,0.15) !important; color: rgba(255,255,255,0.7) !important; }
     }
     .sb-toast.sb-toast-out {
       opacity: 0;
@@ -84,12 +84,12 @@ function getOrCreateToastHost() {
       min-width: 18px;
       padding: 0 5px;
       border-radius: 4px;
-      background: rgba(255,255,255,0.15);
+      background: rgba(0,0,0,0.08);
       font-size: 11px;
       font-weight: 500;
       font-family: inherit;
       line-height: 1;
-      color: rgba(255,255,255,0.6);
+      color: #52525b;
       border: none;
     }
     @keyframes sb-toast-in {

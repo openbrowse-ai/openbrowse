@@ -41,6 +41,13 @@ export interface ReorderEvent {
   overTabId: number | string;
   fromSection?: string;
   toSection?: string;
+  /**
+   * The dragged / drop-target tabs, so the handler can distinguish an
+   * open favorite (a live tab — `id >= 0`, needs a physical `chrome.tabs.move`)
+   * from a closed favorite (saved URL only — `kind === "favorite"`).
+   */
+  activeTab?: OverlayTab;
+  overTab?: OverlayTab;
 }
 
 interface OverlayTabListProps {
@@ -515,11 +522,13 @@ export function OverlayTabList({
 
   const tabToZone = new Map<string, DragZone>();
   const tabToSection = new Map<string, string | undefined>();
+  const idToTab = new Map<string, OverlayTab>();
   for (const section of sections) {
     for (const tab of section.tabs) {
       const id = sortableId(tab);
       tabToZone.set(id, section.zone);
       tabToSection.set(id, section.label ?? undefined);
+      idToTab.set(id, tab);
     }
   }
 
@@ -566,6 +575,8 @@ export function OverlayTabList({
       overTabId: parseId(overId),
       fromSection: tabToSection.get(activeId),
       toSection: tabToSection.get(overId),
+      activeTab: idToTab.get(activeId),
+      overTab: idToTab.get(overId),
     });
   }
 

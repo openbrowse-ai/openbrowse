@@ -64,8 +64,8 @@ export function TabsScene() {
               {/* Header */}
               <div className="flex items-center gap-1.5 border-b px-2 py-1.5 shrink-0 bg-popover">
                 <Search className="size-3.5 shrink-0 text-muted-foreground ml-1" />
-                <div className="relative flex-1 flex items-center">
-                  <div className="flex-1 bg-transparent text-sm text-foreground outline-none py-1">
+                <div className="relative flex-1 min-w-0 flex items-center">
+                  <div className="flex-1 min-w-0 truncate bg-transparent text-sm text-foreground outline-none py-1">
                     {isSearching ? "Tidy" : ""}
                     {!isSearching && <span className="text-muted-foreground">Search tabs...  / for commands</span>}
                   </div>

@@ -1,4 +1,5 @@
 import { formatMessageAsMarkdown } from "@/lib/format-markdown";
+import { openSettingsTab } from "@/lib/open-settings";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
@@ -498,7 +499,7 @@ export default function App() {
               <ExternalLink className="size-3.5" />
               Open in full view
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") })}>
+            <DropdownMenuItem onClick={() => void openSettingsTab()}>
               <Settings className="size-3.5" />
               Settings
             </DropdownMenuItem>

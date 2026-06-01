@@ -4,12 +4,11 @@ import type { Space } from "@/lib/types";
 import { ActionsPopover } from "./ActionsPopover";
 import { LogoMenu } from "./LogoMenu";
 import { Check, Sparkles } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 
 interface OverlayFooterProps {
   actionsOpen: boolean;
   onActionsOpenChange: (open: boolean) => void;
-  actionsButtonRef: React.RefObject<HTMLButtonElement | null>;
   focusedTab: OverlayTab | null;
   isFavorited: boolean;
   isActionMode: boolean;
@@ -24,7 +23,6 @@ interface OverlayFooterProps {
 export function OverlayFooter({
   actionsOpen,
   onActionsOpenChange,
-  actionsButtonRef,
   focusedTab,
   isFavorited,
   isActionMode,
@@ -36,20 +34,11 @@ export function OverlayFooter({
   onClose,
 }: OverlayFooterProps) {
   const [logoMenuOpen, setLogoMenuOpen] = useState(false);
-  const logoButtonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative flex items-center justify-between border-t border-border px-2 py-1.5">
       <div className="flex items-center gap-2">
-        <button
-          ref={logoButtonRef}
-          onClick={() => setLogoMenuOpen((o) => !o)}
-          className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          title="Menu"
-        >
-          <img src={chrome.runtime.getURL("/icon/32.png")} alt="OpenBrowse" className="size-4" />
-        </button>
-        <LogoMenu open={logoMenuOpen} onOpenChange={setLogoMenuOpen} anchorRef={logoButtonRef} />
+        <LogoMenu open={logoMenuOpen} onOpenChange={setLogoMenuOpen} />
         {tidyProgress === "done" ? (
           <span className="flex items-center gap-1 text-xs text-muted-foreground">
             <Check className="size-3" />
@@ -87,33 +76,18 @@ export function OverlayFooter({
               <Kbd>⏎</Kbd>
             </button>
             {!isActionMode && (
-              <button
-                ref={actionsButtonRef}
-                onPointerDown={(e) => {
-                  if (actionsOpen) {
-                    e.preventDefault();
-                    onActionsOpenChange(false);
-                  }
-                }}
-                onClick={() => { if (!actionsOpen) onActionsOpenChange(true); }}
-                className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted transition-colors"
-              >
-                Actions
-                <Kbd>⌘K</Kbd>
-              </button>
+              <ActionsPopover
+                open={actionsOpen}
+                onOpenChange={onActionsOpenChange}
+                tab={focusedTab}
+                isFavorited={isFavorited}
+                otherSpaces={otherSpaces}
+                onAction={onAction}
+              />
             )}
           </>
         )}
       </div>
-      <ActionsPopover
-        open={actionsOpen}
-        onOpenChange={onActionsOpenChange}
-        anchorRef={actionsButtonRef}
-        tab={focusedTab}
-        isFavorited={isFavorited}
-        otherSpaces={otherSpaces}
-        onAction={onAction}
-      />
     </div>
   );
 }

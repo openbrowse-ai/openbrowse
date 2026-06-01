@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { chatDb } from "@/lib/chat-db";
+import { openSettingsTab } from "@/lib/open-settings";
 import type { Space } from "@/lib/types";
 import {
   EllipsisVertical,
@@ -252,13 +253,31 @@ export function HomeSidebar({
         }
       }
     }
+    // Optimistic delete: remove the row from the list the instant the user
+    // confirms, instead of waiting for the DB delete + CONVERSATION_DELETED
+    // broadcast → refetch round-trip.
+    function onDeleted(e: Event) {
+      const id = (e as CustomEvent).detail?.id;
+      if (id) {
+        setConversations((prev) => prev.filter((c) => c.id !== id));
+      }
+    }
+    // If the DB delete failed after the optimistic removal, re-sync from
+    // the source of truth so the row reappears.
+    function onDeleteFailed() {
+      refresh();
+    }
     window.addEventListener("chat-title-generating", onGenerating);
     window.addEventListener("chat-title-updated", onUpdated);
+    window.addEventListener("chat-deleted", onDeleted);
+    window.addEventListener("chat-deleted-failed", onDeleteFailed);
     return () => {
       window.removeEventListener("chat-title-generating", onGenerating);
       window.removeEventListener("chat-title-updated", onUpdated);
+      window.removeEventListener("chat-deleted", onDeleted);
+      window.removeEventListener("chat-deleted-failed", onDeleteFailed);
     };
-  }, []);
+  }, [refresh]);
 
   // Cross-window conversation lifecycle: refetch when another extension
   // context (popup, side panel, etc.) creates, updates, or deletes a
@@ -311,7 +330,7 @@ export function HomeSidebar({
   }
 
   function openSettings() {
-    chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") });
+    void openSettingsTab();
   }
 
   const activeSpace = spaces.find((s) => s.id === activeSpaceId);

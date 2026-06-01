@@ -152,6 +152,18 @@ export default defineBackground({
       }
     });
 
+    // Re-bind spaces to their restored windows (window ids change across
+    // browser/dev relaunches). The main reconcile runs in the favorite-tabs
+    // bootstrap chain below (so favorites adopt against correct windows);
+    // here we only register the browser-startup hook.
+    if (chrome.runtime.onStartup) {
+      chrome.runtime.onStartup.addListener(() => {
+        import("./spaces").then(({ reconcileSpacesWithWindows }) => {
+          reconcileSpacesWithWindows().catch(() => {});
+        });
+      });
+    }
+
     chrome.tabs.onActivated.addListener((info) => {
       activeTabByWindow.set(info.windowId, info.tabId);
     });
@@ -159,6 +171,11 @@ export default defineBackground({
     chrome.tabs.onCreated.addListener((tab) => {
       if (tab.id != null && tab.windowId != null && tab.active) {
         activeTabByWindow.set(tab.windowId, tab.id);
+      }
+      if (tab.pinned && tab.windowId != null) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(tab.windowId!);
+        }).catch(() => {});
       }
     });
 
@@ -1010,6 +1027,11 @@ export default defineBackground({
                     favorites: [...space.favorites, newFav],
                   });
                   assocFav(space.id, url, tabId, tab.url ?? url, tab.title ?? url, tab.favIconUrl ?? "");
+                  // Move the tab into the favorites zone right away so the
+                  // strip order reflects its new status (pinned → favorites
+                  // → regular) without waiting for a manual drag.
+                  const { positionFavoriteTab } = await import("./tab-ordering");
+                  await positionFavoriteTab(windowId, tabId);
                   sendResponse({ ok: true, undo: { action: "favorite", spaceId: space.id, prevFavorites } });
                   return;
                 }
@@ -1237,6 +1259,12 @@ export default defineBackground({
             };
             const overTab = await chrome.tabs.get(overTabId);
             await chrome.tabs.move(tabId, { index: overTab.index });
+            // Keep the pinned → favorites → regular invariant even when the
+            // in-app reorder UI requests a cross-zone move.
+            if (overTab.windowId != null) {
+              const { enforceTabOrder } = await import("./tab-ordering");
+              await enforceTabOrder(overTab.windowId, tabId);
+            }
 
             if (sectionChange !== null && sectionChange !== undefined) {
               const { storage } = await import("@/lib/storage");
@@ -1295,6 +1323,13 @@ export default defineBackground({
             favs.forEach((f, i) => { f.position = i; });
 
             await storage.updateSpace(space.id, { favorites: favs });
+            // Physically arrange the live favorite tabs to match the new
+            // saved order, so the Chrome tab strip reflects the reorder even
+            // when the drop target was a closed (not-open) favorite.
+            const { arrangeFavoriteTabsToSavedOrder } = await import(
+              "./tab-ordering"
+            );
+            await arrangeFavoriteTabsToSavedOrder(wId);
             sendResponse({ ok: true });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
@@ -1522,10 +1557,8 @@ export default defineBackground({
                 if (tab.id) await chrome.tabs.move(tab.id, { index: 0 });
               }
             } else if (action === "settings") {
-              await chrome.tabs.create({
-                url: chrome.runtime.getURL("/settings.html"),
-                ...(windowId ? { windowId } : {}),
-              });
+              const { openSettingsTab } = await import("@/lib/open-settings");
+              await openSettingsTab();
             } else if (action === "history") {
               // Handled entirely in the frontend
             } else if (action === "tidy") {
@@ -2145,17 +2178,67 @@ export default defineBackground({
       }
     });
 
-    import("./favorite-tabs").then(({ bootstrap }) => {
-      import("@/lib/storage").then(({ storage }) =>
-        storage.getSpaces().then((spaces) => bootstrap(spaces)),
-      );
+    import("./favorite-tabs").then(({ hydrate, bootstrap }) => {
+      // Hydrate persisted associations first so the ordering guard /
+      // classification see favorites even before bootstrap re-adopts.
+      // Reconcile space↔window bindings before bootstrap so favorites adopt
+      // against the correctly-bound windows after a restart.
+      hydrate().then(async () => {
+        const { reconcileSpacesWithWindows } = await import("./spaces");
+        await reconcileSpacesWithWindows().catch(() => {});
+        const { storage } = await import("@/lib/storage");
+        const spaces = await storage.getSpaces();
+        await bootstrap(spaces);
+      });
     });
 
-    chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      // Keep the bound space's pinnedTabs snapshot in sync when a tab is
+      // pinned/unpinned, or when a *pinned* tab's URL changes. We don't
+      // snapshot on ordinary (non-pinned) navigations — pinnedTabs only
+      // tracks pinned tabs.
+      if (
+        (changeInfo.pinned !== undefined ||
+          (changeInfo.url && tab.pinned === true)) &&
+        tab.windowId != null
+      ) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(tab.windowId!);
+        }).catch(() => {});
+      }
       if (changeInfo.url || changeInfo.title || changeInfo.favIconUrl) {
-        import("./favorite-tabs").then(({ updateTabInfo }) => {
-          updateTabInfo(tab.id!, changeInfo.url, changeInfo.title, changeInfo.favIconUrl);
-        });
+        // Reconcile favorite adoption/retention on navigation: adopt the
+        // first prefix-subset tab, keep adopted across same-hostname
+        // navigation, and drop/re-adopt when a tab leaves the hostname.
+        if (tab.windowId != null && tab.url) {
+          (async () => {
+            const { storage } = await import("@/lib/storage");
+            const space = await storage.getSpaceByWindowId(tab.windowId);
+            const { reconcileTabUrl, updateTabInfo } = await import(
+              "./favorite-tabs"
+            );
+            if (space) {
+              await reconcileTabUrl(
+                space,
+                tabId,
+                tab.url!,
+                changeInfo.title ?? tab.title,
+                changeInfo.favIconUrl ?? tab.favIconUrl,
+              );
+            } else {
+              updateTabInfo(
+                tabId,
+                changeInfo.url,
+                changeInfo.title,
+                changeInfo.favIconUrl,
+              );
+            }
+          })().catch(() => {});
+        } else {
+          import("./favorite-tabs").then(({ updateTabInfo }) => {
+            updateTabInfo(tabId, changeInfo.url, changeInfo.title, changeInfo.favIconUrl);
+          });
+        }
       }
       if (changeInfo.status === "complete" && tab.id != null && tab.id === agentWorkingTabId) {
         import("@/lib/agent/agent-transport").then(({ injectIndicator }) => {
@@ -2164,10 +2247,31 @@ export default defineBackground({
       }
     });
 
-    chrome.tabs.onRemoved.addListener((tabId) => {
-      import("./favorite-tabs").then(({ disassociateByTab }) => {
-        disassociateByTab(tabId);
-      });
+    chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+      (async () => {
+        const { storage } = await import("@/lib/storage");
+        const spaces = await storage.getSpaces();
+        const { handleTabRemoved } = await import("./favorite-tabs");
+        await handleTabRemoved(spaces, tabId);
+      })().catch(() => {});
+      if (removeInfo.windowId != null && !removeInfo.isWindowClosing) {
+        import("./spaces").then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(removeInfo.windowId);
+        }).catch(() => {});
+      }
+    });
+
+    // Enforce the strip ordering invariant (pinned → favorites → regular)
+    // when a tab is moved — whether dragged manually in Chrome's tab strip
+    // or moved programmatically. Bounces a favorite back if it lands after
+    // a regular tab (or vice versa).
+    chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+      import("./tab-ordering").then(({ enforceTabOrder }) => {
+        enforceTabOrder(moveInfo.windowId, tabId);
+      }).catch(() => {});
+      import("./spaces").then(({ schedulePinnedSnapshot }) => {
+        schedulePinnedSnapshot(moveInfo.windowId);
+      }).catch(() => {});
     });
 
     import("./auto-tidy").then(({ startAutoTidy }) => {

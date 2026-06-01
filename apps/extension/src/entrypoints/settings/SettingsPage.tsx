@@ -87,20 +87,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     { enableOnFormTags: true },
     [dirty, handleSave],
   );
-  useHotkeys("escape", () => onBack(), { enableOnFormTags: true }, [onBack]);
 
   return (
     <div className="h-screen flex flex-col bg-background text-foreground overflow-hidden">
       {/* Header */}
       <div className="sticky top-0 z-50 flex items-center justify-between border-b border-border bg-muted px-4 py-2 shrink-0">
         <div className="flex items-center gap-2">
-          <a
-            href="/home.html"
-            className="flex items-center hover:opacity-80 transition-opacity"
-          >
+          <span className="flex items-center">
             <img src="/icon/logo.svg" alt="OpenBrowse" className="h-4 w-4 dark:hidden" />
             <img src="/icon/logo-dark.svg" alt="OpenBrowse" className="h-4 w-4 hidden dark:block" />
-          </a>
+          </span>
           <span className="text-muted-foreground text-sm">/</span>
           <h1 className="text-sm font-semibold">Settings</h1>
         </div>
@@ -185,17 +181,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           )}
 
           {activeTab === "skills" && (
-            <div className="p-4">
-              <SkillsTab
-                settings={settings}
-                onChange={async (patch) => {
-                  const updated = { ...settings, ...patch };
-                  setSettings(updated);
-                  setSavedSettings(updated);
-                  await storage.setSettings(updated);
-                }}
-              />
-            </div>
+            <SkillsTab
+              settings={settings}
+              onChange={async (patch) => {
+                const updated = { ...settings, ...patch };
+                setSettings(updated);
+                setSavedSettings(updated);
+                await storage.setSettings(updated);
+              }}
+            />
           )}
           {activeTab === "memory" && (
             <div className="p-4">

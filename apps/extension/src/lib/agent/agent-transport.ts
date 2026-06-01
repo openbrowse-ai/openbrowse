@@ -261,20 +261,39 @@ async function removeIndicator(tabId: number) {
   }
 }
 
-export function notifyAgentStatus(working: boolean, color?: string | null) {
+export function notifyAgentStatus(
+  working: boolean,
+  color?: string | null,
+  tabId?: number | null,
+) {
   indicatorQueue = indicatorQueue.then(async () => {
     try {
-      // Use chrome.tabs.query directly rather than getActiveUserTab(): the
-      // indicator only needs the user's currently-focused tab, and
-      // getActiveUserTab has a side effect of pinning targetTabId on
-      // bootstrap that would leak into the tab legend's [active] marker.
-      const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true,
-      });
-      if (!tab?.id) return;
+      // The blocking indicator must land on the tab the agent's tool is
+      // actually operating on — NOT whatever tab the user happens to be
+      // focused on. When the agent works inside its owned tab group, the
+      // user may be looking at a different (non-worked) tab in the same
+      // window; targeting the active tab would inject the blocker onto
+      // that innocent tab. So:
+      //  - When working, require an explicit target tabId from the tool
+      //    call. If none was resolved, skip injection entirely.
+      //  - When idle, remove from the last tab we injected onto.
+      const targetTabId = working
+        ? (tabId ?? null)
+        : (tabId ?? lastIndicatorTabId);
+      if (targetTabId == null) {
+        if (!working) lastIndicatorTabId = null;
+        return;
+      }
+      let url = "";
+      try {
+        const tab = await chrome.tabs.get(targetTabId);
+        url = tab.url ?? "";
+      } catch {
+        // Tab gone; nothing to inject/remove.
+        if (!working) lastIndicatorTabId = null;
+        return;
+      }
       // Skip injection on internal pages (extension/chrome/devtools UI).
-      const url = tab.url ?? "";
       if (
         url.startsWith("chrome://") ||
         url.startsWith("chrome-extension://") ||
@@ -283,19 +302,28 @@ export function notifyAgentStatus(working: boolean, color?: string | null) {
         return;
       }
       if (working) {
-        await injectIndicator(tab.id, color);
+        // If the agent moved to a different tab within the same run,
+        // clear the blocker from the previously-targeted tab so it
+        // doesn't linger as a stale overlay. removeIndicator swallows
+        // its own errors (e.g. tab gone / not injectable).
+        if (lastIndicatorTabId != null && lastIndicatorTabId !== targetTabId) {
+          await removeIndicator(lastIndicatorTabId);
+        }
+        lastIndicatorTabId = targetTabId;
+        await injectIndicator(targetTabId, color);
       } else {
-        await removeIndicator(tab.id);
+        lastIndicatorTabId = null;
+        await removeIndicator(targetTabId);
       }
       chrome.runtime
         .sendMessage({
           type: working ? "AGENT_TAB_WORKING" : "AGENT_TAB_IDLE",
-          tabId: tab.id,
+          tabId: targetTabId,
           color,
         })
         .catch(() => {});
     } catch {
-      // no active tab
+      // no resolvable tab
     }
   });
 }
@@ -316,6 +344,12 @@ const TAB_INTERACTING_TOOLS = new Set([
 let agentActive = false;
 let currentSpaceColor: string | null = null;
 let indicatorQueue: Promise<void> = Promise.resolve();
+/**
+ * The tab the blocking indicator was last injected onto, so an idle
+ * notification (which may not carry a tabId) can remove it from the
+ * correct tab rather than the user's currently-focused one.
+ */
+let lastIndicatorTabId: number | null = null;
 
 let agentConversationId: string | null = null;
 
@@ -630,16 +664,16 @@ export function toSDKTool<TInput, TOutput>(
     // switches conversations mid-tool-await, the in-flight call still
     // writes to the conversation that originated it.
     const cid = agentConversationId;
-    if (isTabTool) {
-      agentActive = true;
-      notifyAgentStatus(true, currentSpaceColor);
-    }
     capturedToolOrigins.delete(options.toolCallId);
 
     if (isTabTool) {
-      // Capture the resolved tab info for the indicator UI / "tab badge"
-      // shown alongside the tool call. Pulled from the explicit `tab` arg
-      // when available — same source the tool's own execute() will use.
+      agentActive = true;
+      // Resolve the tab this tool will operate on FIRST, then show the
+      // blocking indicator on that specific tab. Resolving before
+      // notifying ensures the indicator targets the agent's actual
+      // working tab — not whatever tab the user is currently focused on
+      // (which may be a different, non-worked tab in the same window when
+      // the agent works inside its owned tab group).
       const resolved = await resolveTabFromInput(cid, input);
       if (resolved) {
         toolTabInfoStore.set(options.toolCallId, {
@@ -648,6 +682,7 @@ export function toSDKTool<TInput, TOutput>(
           favIconUrl: resolved.tab.favIconUrl,
         });
       }
+      notifyAgentStatus(true, currentSpaceColor, resolved?.tabId ?? null);
     }
     try {
       // Threaded ToolContext from the SDK's experimental_context channel.

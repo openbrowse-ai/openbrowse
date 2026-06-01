@@ -25,6 +25,13 @@ export interface Space {
   windowId: number | null;
   position: number;
   favorites: FavoriteTab[];
+  /**
+   * URLs of the space's pinned tabs (Chrome native `tab.pinned`), in strip
+   * order, excluding the home tab. Persisted so a space's window can be
+   * recreated with its pinned tabs and re-matched to its restored window
+   * across browser restarts (window ids are not stable).
+   */
+  pinnedTabs: string[];
   colors: string[] | null;
   colorMode: "auto" | "light" | "dark" | null;
 }

@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Tooltip,
   TooltipContent,
@@ -101,6 +102,15 @@ export default function App() {
     async function init() {
       const allSpaces = await storage.getSpaces();
       setSpaces(allSpaces);
+
+      // Prefer the durable ?space=<id> anchor (set on the home tab so a
+      // restored window resolves to its real space immediately), then fall
+      // back to windowId match, then the first space.
+      const spaceParam = new URLSearchParams(window.location.search).get("space");
+      if (spaceParam && allSpaces.some((s) => s.id === spaceParam)) {
+        setActiveSpaceId(spaceParam);
+        return;
+      }
 
       const currentWindow = await chrome.windows.getCurrent();
       if (currentWindow.id) {
@@ -334,11 +344,29 @@ export default function App() {
 
   const confirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
-    await chatDb.deleteConversation(deleteTarget.id);
-    if (deleteTarget.id === activeConversationId) {
+    const target = deleteTarget;
+    const prevActive = activeConversationId;
+    setDeleteTarget(null);
+    // Optimistically drop the row from the sidebar list immediately.
+    window.dispatchEvent(
+      new CustomEvent("chat-deleted", { detail: { id: target.id } }),
+    );
+    if (target.id === activeConversationId) {
       setActiveConversationId(null);
     }
-    setDeleteTarget(null);
+    try {
+      await chatDb.deleteConversation(target.id);
+    } catch {
+      // Reconcile the optimistic removal if the delete actually failed:
+      // restore the sidebar row and, if we cleared the active view for
+      // this conversation, restore that too.
+      window.dispatchEvent(
+        new CustomEvent("chat-deleted-failed", { detail: { id: target.id } }),
+      );
+      if (target.id === prevActive) {
+        setActiveConversationId(prevActive);
+      }
+    }
   }, [deleteTarget, activeConversationId]);
 
   const handleNewConversation = useCallback((id: string) => {
@@ -530,12 +558,12 @@ export default function App() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={!renameValue.trim()}>
+              <Button type="submit" disabled={!renameValue.trim()} data-action="">
                 Save
-                <kbd className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] opacity-60">
+                <Kbd className="ml-1.5">
                   <span>⌘</span>
                   <span>↵</span>
-                </kbd>
+                </Kbd>
               </Button>
             </DialogFooter>
           </form>
@@ -568,10 +596,10 @@ export default function App() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={confirmDelete}>
               Delete
-              <kbd className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] opacity-60">
+              <Kbd className="ml-1.5">
                 <span>⌘</span>
                 <span>↵</span>
-              </kbd>
+              </Kbd>
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

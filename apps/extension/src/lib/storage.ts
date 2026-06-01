@@ -36,7 +36,12 @@ export const storage = {
   async getSpaces(): Promise<Space[]> {
     const raw = (await get<any[]>(STORAGE_KEYS.SPACES)) ?? [];
     return raw.map((s) => {
-      if (s.favorites) return s as Space;
+      // Default the pinnedTabs field for spaces stored before it existed.
+      const withPinned = (sp: any): Space => ({
+        ...sp,
+        pinnedTabs: sp.pinnedTabs ?? [],
+      });
+      if (s.favorites) return withPinned(s);
       const urls: string[] = s.favoriteTabUrls ?? [];
       const titles: Record<string, string> = s.favoriteTabTitles ?? {};
       const favorites = urls.map((url: string, i: number) => ({
@@ -46,7 +51,7 @@ export const storage = {
         position: i,
       }));
       const { favoriteTabUrls: _, favoriteTabTitles: _t, ...rest } = s;
-      return { ...rest, favorites } as Space;
+      return withPinned({ ...rest, favorites });
     });
   },
 

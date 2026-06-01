@@ -28,15 +28,23 @@ import {
   QueueSectionTrigger,
 } from "@/components/ai-elements/queue";
 import { Logo } from "@/components/ui/logo";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useProviders } from "@/hooks/useProviders";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
+import { openSettingsTab } from "@/lib/open-settings";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowRight,
+  ArrowUp,
   FileText,
   HelpCircle,
   Link,
@@ -172,6 +180,7 @@ export function ChatView({
     handleNew,
     handleRegenerate,
     handleRetry,
+    handleContinue,
     confirmEdit,
     addToolApprovalResponse,
     setAgentModel,
@@ -459,7 +468,7 @@ export function ChatView({
   );
 
   function openSettings() {
-    chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") });
+    void openSettingsTab();
   }
 
   const showThinking =
@@ -650,6 +659,7 @@ export function ChatView({
               <ErrorMessage
                 error={error}
                 onRetry={handleRetry}
+                onContinue={handleContinue}
                 onDismiss={clearError}
               />
             )}
@@ -784,6 +794,23 @@ export function ChatView({
                             </span>
                           ) : (
                             <>
+                              {isLoading &&
+                                !editing &&
+                                queue[0]?.id === item.id && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <QueueItemAction
+                                        onClick={() => stop()}
+                                        aria-label="Send now"
+                                      >
+                                        <ArrowUp className="size-3" />
+                                      </QueueItemAction>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="bottom">
+                                      Send now
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
                               <QueueItemAction
                                 onClick={() => startEditQueued(item.id)}
                                 title="Edit"
@@ -863,10 +890,12 @@ function ThinkingIndicator() {
 function ErrorMessage({
   error,
   onRetry,
+  onContinue,
   onDismiss,
 }: {
   error: Error;
   onRetry: () => void;
+  onContinue: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -899,6 +928,14 @@ function ErrorMessage({
               >
                 <RefreshCw className="size-3" />
                 Retry
+              </button>
+              <button
+                type="button"
+                onClick={onContinue}
+                className="flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ArrowRight className="size-3" />
+                Continue
               </button>
               <button
                 type="button"

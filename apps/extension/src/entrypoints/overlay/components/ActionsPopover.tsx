@@ -1,5 +1,6 @@
 import type { OverlayTab } from "../OverlayApp";
 import type { Space } from "@/lib/types";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Combobox,
   ComboboxCollection,
@@ -15,7 +16,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 interface ActionsPopoverProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
   tab: OverlayTab | null;
   isFavorited: boolean;
   otherSpaces: Space[];
@@ -36,7 +36,6 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
 export function ActionsPopover({
   open,
   onOpenChange,
-  anchorRef,
   tab,
   isFavorited,
   otherSpaces,
@@ -155,11 +154,18 @@ export function ActionsPopover({
           }
         }}
       >
+        {/* Trigger lives inside the Combobox so base-ui owns the
+            toggle-vs-outside-press behavior — clicking it while open closes
+            cleanly instead of close-then-reopen flashing (same as the model
+            picker). Rendered chevron-free via the base-ui primitive. */}
+        <ComboboxPrimitive.Trigger className="flex items-center gap-1 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-muted transition-colors">
+          Actions
+          <Kbd>⌘K</Kbd>
+        </ComboboxPrimitive.Trigger>
         <ComboboxContent
           side="top"
           align="end"
           sideOffset={8}
-          anchor={anchorRef}
           className="w-auto min-w-44"
           onKeyDownCapture={handleKeyDownCapture}
         >

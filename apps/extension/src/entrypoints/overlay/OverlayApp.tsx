@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTidyProgress } from "./hooks/useTidyProgress";
 import type { AutoTidyNotification, FavoriteTabAssociation, Space, TidyState } from "@/lib/types";
 import { storage } from "@/lib/storage";
+import { openSettingsTab } from "@/lib/open-settings";
 import { useTheme } from "@/hooks/useTheme";
 import { OverlayHeader } from "./components/OverlayHeader";
 import { OverlayTabList, type ReorderEvent } from "./components/OverlayTabList";
@@ -101,7 +102,6 @@ export function OverlayApp() {
   const tidyProgress = useTidyProgress();
   const isTidying = tidyProgress !== "";
   const inputRef = useRef<HTMLInputElement>(null);
-  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const createSpaceSubmitRef = useRef<(() => void) | null>(null);
   const [recentlyClosed, setRecentlyClosed] = useState<OverlayTab[]>([]);
   const [historySearchResults, setHistorySearchResults] = useState<OverlayTab[]>([]);
@@ -811,11 +811,24 @@ export function OverlayApp() {
 
   const handleReorder = useCallback(
     async (event: ReorderEvent) => {
-      const { zone, tabId, overTabId, fromSection, toSection } = event;
+      const { zone, tabId, overTabId, fromSection, toSection, activeTab, overTab } = event;
 
       if (zone === "favorites") {
-        const url = tabId as string;
-        const overUrl = overTabId as string;
+        // The favorites section mixes closed favorites (saved URL only,
+        // `kind === "favorite"`) and open favorites (live tabs adopted by a
+        // favorite). Resolve each side to its underlying *favorite URL* so
+        // we can reorder the persisted `favorites` array, and — for open
+        // favorites — also physically move the live Chrome tab.
+        const assocByTab = new Map(
+          favoriteAssociationsList.map((a) => [a.tabId, a.favoriteUrl]),
+        );
+        const favoriteUrlOf = (t?: OverlayTab): string | undefined => {
+          if (!t) return undefined;
+          if (t.kind === "favorite") return t.url; // closed favorite
+          return assocByTab.get(t.id) ?? t.url; // open favorite → its fav url
+        };
+        const url = favoriteUrlOf(activeTab) ?? (tabId as string);
+        const overUrl = favoriteUrlOf(overTab) ?? (overTabId as string);
 
         // Optimistic reorder so dnd-kit doesn't snap back
         setSpaces((prev) =>
@@ -838,6 +851,10 @@ export function OverlayApp() {
           url,
           overUrl,
         });
+        // The background persists the new favorites order AND physically
+        // arranges the live favorite tabs to match it (handling open/open,
+        // open/closed, and closed/closed drags uniformly), so we don't need
+        // to issue a separate tab move here.
         fetchTabs();
         return;
       }
@@ -851,7 +868,7 @@ export function OverlayApp() {
       });
       fetchTabs();
     },
-    [fetchTabs, activeSpaceId],
+    [fetchTabs, activeSpaceId, favoriteAssociationsList],
   );
 
   const handleReorderSpaces = useCallback(
@@ -956,7 +973,7 @@ export function OverlayApp() {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         if (e.code === "Comma") {
           e.preventDefault();
-          chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html") });
+          void openSettingsTab();
           closeOverlay();
           return;
         }
@@ -1206,7 +1223,6 @@ export function OverlayApp() {
           <OverlayFooter
             actionsOpen={actionsOpen}
             onActionsOpenChange={setActionsOpen}
-            actionsButtonRef={actionsButtonRef}
             focusedTab={focusedTab}
             isFavorited={isFavorited}
             isActionMode={isActionMode}

@@ -222,7 +222,7 @@ export function SkillsTab({
 
   return (
     <TooltipProvider>
-      <div className="flex h-full -m-4">
+      <div className="flex h-full">
         {/* Left panel — skills list & file tree */}
         <div className="w-64 shrink-0 border-r border-border flex flex-col">
           {/* Header */}

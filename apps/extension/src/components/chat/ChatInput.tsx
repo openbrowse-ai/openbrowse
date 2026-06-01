@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getImageSizeLimit } from "@/lib/agent/vision-limits";
+import { openSettingsTab } from "@/lib/open-settings";
 import {
   countLines,
   formatBytes,
@@ -663,7 +664,7 @@ export function ChatInput({
       if (modelSelectorOpen && e.altKey && e.shiftKey && (e.key === "c" || e.code === "KeyC" || e.key === "Ç")) {
         e.preventDefault();
         setModelSelectorOpen(false);
-        chrome.tabs.create({ url: chrome.runtime.getURL("/settings.html?tab=models") });
+        void openSettingsTab("models");
       }
     }
     document.addEventListener("keydown", handleHotkeys, true);
@@ -819,9 +820,7 @@ export function ChatInput({
                     type="button"
                     onClick={() => {
                       setModelSelectorOpen(false);
-                      chrome.tabs.create({
-                        url: chrome.runtime.getURL("/settings.html?tab=models"),
-                      });
+                      void openSettingsTab("models");
                     }}
                     className="w-full flex items-center justify-center gap-2 rounded-sm px-2 py-1 text-xs outline-hidden select-none hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                   >
