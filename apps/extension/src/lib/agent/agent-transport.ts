@@ -32,6 +32,7 @@ import {
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
+import { persistCompletionMarker } from "./persist-completion-marker";
 import {
   buildTabLegendEntries,
   renderTabLegend,
@@ -1662,6 +1663,9 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         // non-empty; the system prompt branches accordingly.
         evaluatorTools: evaluatorReadOnlyTools as unknown as import("ai").ToolSet,
       };
+    },
+    onCompletionCheckApproved: (cid, now) => {
+      void persistCompletionMarker(cid, "approved", now);
     },
   });
 }
