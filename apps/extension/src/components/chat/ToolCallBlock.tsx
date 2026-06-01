@@ -25,6 +25,7 @@ import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
 import { MemoryResult } from "./tool-results/memory";
+import { SelectTabResult } from "./tool-results/select-tab";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -51,6 +52,9 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     <CodeResult args={args} result={result} />
   ),
   executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
+  selectTab: ({ result, toolCallId }) => (
+    <SelectTabResult result={result} toolCallId={toolCallId} />
+  ),
   saveMemory: ({ args, result }) => (
     <MemoryResult args={args} result={result} action="save" />
   ),
