@@ -978,10 +978,25 @@ export function runWithRejectionLoop(args: {
           if (outcome.kind !== "rejected") {
             // Persist the tab-cleanup completion marker (no-op unless approved).
             if (outcome.kind === "approved") {
-              void onCompletionCheckApproved?.(
-                input.conversationId,
-                Date.now(),
-              );
+              try {
+                const res = onCompletionCheckApproved?.(
+                  input.conversationId,
+                  Date.now(),
+                );
+                if (res instanceof Promise) {
+                  res.catch((err) =>
+                    console.warn(
+                      "[completion-check] persistence callback rejected:",
+                      err,
+                    ),
+                  );
+                }
+              } catch (err) {
+                console.warn(
+                  "[completion-check] persistence callback threw:",
+                  err,
+                );
+              }
             }
             // approved | skipped | force-emitted — done.
             // For force-emitted, surface a final rejection-comment so

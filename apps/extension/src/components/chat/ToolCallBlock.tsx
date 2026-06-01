@@ -81,6 +81,7 @@ interface ToolCallBlockProps {
 const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   readPage: { pending: "Reading page...", done: "Read page" },
   screenshot: { pending: "Taking screenshot...", done: "Took screenshot" },
+  snapshot: { pending: "Taking snapshot...", done: "Took snapshot" },
   listTabs: { pending: "Listing tabs...", done: "Listed tabs" },
   navigate: { pending: "Navigating...", done: "Navigated" },
   selectTab: { pending: "Switching tab...", done: "Switched tab" },
@@ -100,6 +101,12 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
+
+  // Memory tools
+  saveMemory: { pending: "Saving memory...", done: "Saved memory" },
+  updateMemory: { pending: "Updating memory...", done: "Updated memory" },
+  deleteMemory: { pending: "Deleting memory...", done: "Deleted memory" },
+  recallMemory: { pending: "Searching memory...", done: "Searched memory" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },
