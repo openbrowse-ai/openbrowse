@@ -2,26 +2,20 @@ import { z } from "zod";
 import { chatDb } from "../../chat-db";
 import type { BrowserTool } from "../types";
 
-const parameters = z
-  .discriminatedUnion("target", [
-    z
-      .object({
-        target: z.literal("group"),
-      })
-      .strict(),
-    z
-      .object({
-        target: z.literal("tabs"),
-        handles: z
-          .array(z.string())
-          .min(1)
-          .describe("Tab handles to close (e.g. ['t1','t3']). From the tab legend or listTabs."),
-      })
-      .strict(),
-  ])
-  .describe(
-    "What to close: the whole conversation's tab group, or a specific set of tab handles.",
-  );
+const parameters = z.object({
+  target: z
+    .enum(["group", "tabs"])
+    .describe(
+      "What to close: 'group' closes the whole conversation's tab group (use when the task is fully complete); 'tabs' closes a specific set of tab handles.",
+    ),
+  handles: z
+    .array(z.string())
+    .min(1)
+    .optional()
+    .describe(
+      "Required when target is 'tabs'. Tab handles to close (e.g. ['t1','t3']) from the tab legend or listTabs. Ignored when target is 'group'.",
+    ),
+});
 
 type Input = z.infer<typeof parameters>;
 
@@ -59,6 +53,13 @@ export const closeTabsTool: BrowserTool<Input, Output> = {
       const conv = await chatDb.getConversation(cid);
       tabIds = conv?.ownedTabIds ?? [];
     } else {
+      // input.target === "tabs"
+      if (!input.handles || input.handles.length === 0) {
+        return {
+          closed: 0,
+          error: "target 'tabs' requires a non-empty 'handles' array.",
+        };
+      }
       tabIds = [];
       for (const handle of input.handles) {
         const id = ctx.session?.resolveHandle?.(handle);
