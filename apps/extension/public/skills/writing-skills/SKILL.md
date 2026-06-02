@@ -92,7 +92,7 @@ A skill written for OpenBrowse runs inside a browser-based agent. Reference real
 
 If your skill body would exceed ~200 lines, split long material into reference files and reference them by path. The agent reads them on demand:
 
-```
+```text
 my-skill/
 ├── SKILL.md
 └── references/
@@ -156,7 +156,7 @@ User: "Save this as a skill — whenever I paste a CSV, convert it to a markdown
 
 Draft you'd present:
 
-```md
+````md
 ---
 name: csv-to-markdown
 description: Use whenever the user pastes CSV data and asks for it as a markdown table, or asks to "convert this CSV", "render this as a table", or "tabulate this data".
@@ -177,6 +177,6 @@ description: Use whenever the user pastes CSV data and asks for it as a markdown
 Edge cases:
 - If the CSV has no header row, ask the user before parsing.
 - If parsing fails, show the error and the first 10 lines so the user can correct it.
-```
+````
 
 Then call `create_skill` with that name, description, and body.
