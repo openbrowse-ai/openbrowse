@@ -121,6 +121,19 @@ export function getConversationForTab(tabId: number): string | null {
   return tabOwnership.get(tabId) ?? null;
 }
 
+/**
+ * Reverse lookup: all tabIds currently owned by a conversation. Used to
+ * resolve which browser window a conversation lives in (e.g. routing a
+ * notification click to the correct space's side panel).
+ */
+export function getTabsForConversation(conversationId: string): number[] {
+  const tabIds: number[] = [];
+  for (const [tabId, cid] of tabOwnership) {
+    if (cid === conversationId) tabIds.push(tabId);
+  }
+  return tabIds;
+}
+
 export function getConversationForGroup(groupId: number): string | null {
   return groupOwnership.get(groupId) ?? null;
 }
