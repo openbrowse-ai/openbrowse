@@ -18,12 +18,14 @@ OpenBrowse implements the open [**agentskills.io**](https://agentskills.io) stan
 
 ## Bundled skills
 
-OpenBrowse ships with two skills out of the box:
+OpenBrowse ships with three skills out of the box:
 
 | Skill | What it does |
 | --- | --- |
 | `python-env` | Pyodide runtime reference for `executePython` — pre-built package list, browser-env substitutions (e.g. `pdftoppm` → `get_pixmap`, no `subprocess`), `pyfetch` idioms, common pitfalls (top-level `return`, latin-1 PDF unicode errors). The agent loads this whenever it's about to write non-trivial Python. |
 | `find-skills` | Search the [skills.sh](https://skills.sh) registry for additional skills and install them via `install_skill`. |
+| `writing-skills` | Author a new skill for the user. Activates whenever the user asks to "make a skill", "turn this into a skill", or "save this workflow as a skill" — drafts a well-formed `SKILL.md` and installs it via `create_skill`. |
+
 ## Invoking skills in chat
 
 Type `/` in the side panel input to open the slash-command picker. It lists every enabled skill with its trigger description; selecting one prepends a hint that nudges the agent to load that skill via the `skill` tool before continuing.
@@ -92,3 +94,5 @@ description: Use whenever the user asks to convert a CSV to a markdown table.
 ```
 
 Larger skills can include supporting files alongside `SKILL.md` — reference docs, scripts, templates. The agent can read any of them with the `Read` tool using the skill's path (e.g. `Read({ file_path: "/skills/<name>/references/<file>" })`).
+
+You don't have to write skills by hand. Ask the agent to author one for you — _"make a skill that converts CSVs to markdown tables"_ — and the bundled `writing-skills` skill will draft a well-formed `SKILL.md`, walk you through the trigger and scope, and install it via `create_skill` once you approve.

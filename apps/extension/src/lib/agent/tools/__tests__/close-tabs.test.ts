@@ -107,4 +107,18 @@ describe("closeTabs tool", () => {
   it("declares approval required", () => {
     expect(closeTabsTool.approval?.required).toBe(true);
   });
+
+  it("target:'tabs' with no handles returns an error and sends nothing", async () => {
+    const res = await closeTabsTool.execute({ target: "tabs" }, ctx());
+    expect(res.closed).toBe(0);
+    expect(res.error).toMatch(/non-empty 'handles'/);
+    expect(sent.length).toBe(0);
+  });
+
+  it("target:'tabs' with empty handles array returns an error and sends nothing", async () => {
+    const res = await closeTabsTool.execute({ target: "tabs", handles: [] }, ctx());
+    expect(res.closed).toBe(0);
+    expect(res.error).toMatch(/non-empty 'handles'/);
+    expect(sent.length).toBe(0);
+  });
 });
