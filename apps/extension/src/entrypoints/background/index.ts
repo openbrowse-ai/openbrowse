@@ -96,7 +96,19 @@ export default defineBackground({
     // Serializes Option+Space toggles so rapid presses can't race and spawn
     // orphan popups (or attempt to remove a window twice).
     let globalChatToggleInFlight: Promise<void> | null = null;
-    const pendingNotifications = new Map<string, { conversationId: string; origin: "sidepanel" | "home" }>();
+    const pendingNotifications = new Map<
+      string,
+      {
+        conversationId: string;
+        origin: "sidepanel" | "home";
+        // The tab/window the agent actually ran in (captured from the
+        // AGENT_NOTIFY message sender). This is the authoritative routing
+        // target — far more reliable than re-deriving it from the
+        // conversation's spaceId, which can be unanchored or stale.
+        senderTabId: number | null;
+        senderWindowId: number | null;
+      }
+    >();
 
     // windowId → active tabId. Maintained synchronously off chrome.tabs events
     // so chrome.sidePanel.open({tabId}) can be called inline from a user
@@ -814,7 +826,12 @@ export default defineBackground({
               console.log("[BG] notification created:", id);
             }
           });
-          pendingNotifications.set(notificationId, { conversationId, origin });
+          pendingNotifications.set(notificationId, {
+            conversationId,
+            origin,
+            senderTabId: sender.tab?.id ?? null,
+            senderWindowId: sender.tab?.windowId ?? null,
+          });
           import("./tab-scoping").then(({ clearToastDismissalForConversation }) => {
             clearToastDismissalForConversation(conversationId).catch(() => {});
           });
@@ -2182,20 +2199,128 @@ export default defineBackground({
       if (!info) return;
       pendingNotifications.delete(notificationId);
       chrome.notifications.clear(notificationId);
+      const { conversationId, senderTabId, senderWindowId } = info;
+
+      const { chatDb } = await import("@/lib/chat-db");
+      const { storage } = await import("@/lib/storage");
+      const conv = await chatDb.getConversation(conversationId).catch(() => null);
+      const spaceId = conv?.spaceId ?? null;
+
+      // Is the originating tab still live? That tab/window is the
+      // authoritative routing target — the agent literally ran in it.
+      const senderTab =
+        senderTabId != null
+          ? await chrome.tabs.get(senderTabId).catch(() => null)
+          : null;
+
+      // Resolve the *live* window for the conversation's space, used only as a
+      // fallback when the originating tab is gone. Finds the live window by
+      // its `home.html?space=<id>` anchor first (authoritative; survives stale
+      // windowId caches and avoids spuriously recreating a window), then
+      // owned-tab window, then last-focused. Only when the space's window is
+      // genuinely closed do we recreate it.
+      async function resolveFallbackWindowId(): Promise<number | undefined> {
+        if (spaceId) {
+          const { spaceIdFromUrl } = await import("./spaces");
+          const wins = await chrome.windows
+            .getAll({ populate: true, windowTypes: ["normal"] })
+            .catch(() => [] as chrome.windows.Window[]);
+          for (const w of wins) {
+            if (w.id == null) continue;
+            if (w.tabs?.some((t) => spaceIdFromUrl(t.url) === spaceId)) {
+              return w.id;
+            }
+          }
+          // No live anchored window — recreate the space's window.
+          const space = (await storage.getSpaces()).find(
+            (s) => s.id === spaceId,
+          );
+          if (space) {
+            const { focusOrCreateWindow } = await import("./spaces");
+            await focusOrCreateWindow(space).catch(() => {});
+            const live = (await storage.getSpaces()).find(
+              (s) => s.id === spaceId,
+            );
+            if (live?.windowId != null) return live.windowId;
+          }
+        }
+        try {
+          const { getTabsForConversation } = await import("./tab-scoping");
+          for (const tabId of getTabsForConversation(conversationId)) {
+            const tab = await chrome.tabs.get(tabId).catch(() => null);
+            if (tab?.windowId != null) return tab.windowId;
+          }
+        } catch {}
+        return (
+          lastFocusedWindowId ??
+          (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id ??
+          undefined
+        );
+      }
+
       if (info.origin === "sidepanel") {
-        const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
-        if (windowId) {
+        const windowId =
+          senderTab?.windowId ?? senderWindowId ?? (await resolveFallbackWindowId());
+        if (windowId != null) {
           const tabId = activeTabByWindow.get(windowId);
           if (tabId != null) openSidePanelOnTab(tabId);
+          chrome.windows.update(windowId, { focused: true }).catch(() => {});
+          // The side panel matches on windowId; deliver immediately and again
+          // after a beat so a freshly-mounted panel still receives it.
+          const focusMsg = {
+            type: "FOCUS_CONVERSATION",
+            windowId,
+            conversationId,
+          };
+          chrome.runtime.sendMessage(focusMsg).catch(() => {});
+          setTimeout(() => {
+            chrome.runtime.sendMessage(focusMsg).catch(() => {});
+          }, 400);
         }
       } else {
-        const homeUrl = chrome.runtime.getURL("/home.html");
-        const [existing] = await chrome.tabs.query({ url: homeUrl + "*" });
-        if (existing?.id) {
-          chrome.tabs.update(existing.id, { active: true });
-          if (existing.windowId) chrome.windows.update(existing.windowId, { focused: true });
+        const homeBase = chrome.runtime.getURL("/home.html");
+
+        // Prefer the exact home tab the agent ran in (still live). This is
+        // the most reliable target — no anchor/space guessing, no new window.
+        let target: chrome.tabs.Tab | null = senderTab ?? null;
+
+        if (!target) {
+          // Originating tab is gone. Fall back to space-based resolution,
+          // which finds the live anchored window (recreating only if closed).
+          const { spaceIdFromUrl } = await import("./spaces");
+          const fallbackWindowId = await resolveFallbackWindowId();
+          const matches = await chrome.tabs.query({ url: homeBase + "*" });
+          target =
+            (spaceId
+              ? matches.find((t) => spaceIdFromUrl(t.url) === spaceId)
+              : undefined) ??
+            matches.find((t) => t.windowId === fallbackWindowId) ??
+            matches[0] ??
+            null;
+        }
+
+        if (target?.id != null) {
+          // Rewrite only the hash to the target conversation, preserving the
+          // existing query (e.g. ?space=<id>). The home tab listens for
+          // hashchange and switches conversations accordingly.
+          let nextUrl = homeBase + `#${conversationId}`;
+          if (target.url) {
+            try {
+              const u = new URL(target.url);
+              u.hash = `#${conversationId}`;
+              nextUrl = u.toString();
+            } catch {}
+          }
+          chrome.tabs.update(target.id, { active: true, url: nextUrl });
+          if (target.windowId)
+            chrome.windows.update(target.windowId, { focused: true });
         } else {
-          chrome.tabs.create({ url: homeUrl });
+          // No home tab exists anywhere — open one anchored to the space.
+          const url =
+            (spaceId
+              ? `${homeBase}?space=${encodeURIComponent(spaceId)}`
+              : homeBase) + `#${conversationId}`;
+          chrome.tabs.create({ url });
         }
       }
     });
