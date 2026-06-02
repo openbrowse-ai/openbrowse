@@ -33,7 +33,13 @@ export function SelectTabResult({ result, toolCallId }: Props) {
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          chrome.tabs.update(info.tabId, { active: true });
+          chrome.tabs.update(info.tabId, { active: true }).catch((err) => {
+            // Tab was likely closed since the result was captured. Drop the
+            // stale entry so the UI stops binding to a dead tab, and avoid an
+            // unhandled rejection.
+            console.warn("[selectTab] failed to focus tab:", err);
+            toolTabInfoStore.delete(toolCallId);
+          });
         }}
         title={info.title}
         className="flex w-full items-center gap-2 px-3 py-2 bg-background/50 text-left hover:bg-muted/60 transition-colors min-w-0"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMemoryDiff, buildAdditionDiff } from "../tool-results/memory";
+import { buildMemoryDiff, buildAdditionDiff } from "@/lib/agent/tools/memory-diff";
 
 describe("buildAdditionDiff", () => {
   it("prefixes every line with +", () => {
