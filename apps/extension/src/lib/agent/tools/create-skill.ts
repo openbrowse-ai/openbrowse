@@ -21,7 +21,7 @@ type Output =
 
 export const createSkillTool: BrowserTool<Input, Output> = {
   name: "create_skill",
-  description: "Creates and installs a new skill directly into the browser's local skill registry. Use this when the user asks you to author a new skill for them, or after you have drafted a new skill using the skill-creator.",
+  description: "Creates and installs a new skill directly into the browser's local skill registry. Use this when the user asks you to author a new skill for them, or after you have drafted a new skill using the writing-skills skill.",
   parameters,
   approval: { required: true },
   execute: async ({ name, description, body, references }) => {
