@@ -62,12 +62,6 @@ export async function handleSkillMessage(
         sendResponse({ success: true });
         break;
       }
-      case "SKILL_READ_OPFS_FILE": {
-        const { path } = message;
-        const content = await OPFS.readFile(path);
-        sendResponse({ success: true, content });
-        break;
-      }
       case "SKILL_GET_BODY": {
         const { name } = message;
         const state = backgroundSkillRegistry.getStates();

@@ -91,9 +91,9 @@ describe("resolveToolPartState", () => {
   // ── Non-terminal states once streaming has finished (orphans) ───────
 
   it("approval-responded + isStreaming:false → 'errored' with skipped-after-approval message", () => {
-    // This is the exact bug from the user's session: type="dynamic-tool",
-    // state="approval-responded", user had approved but the agent loop
-    // never picked the call back up to run execute().
+    // A malformed approval-responded (no `approval` payload) once streaming
+    // has finished is a genuine orphan — the agent loop never picked the
+    // call back up to run execute().
     const r = resolveToolPartState(
       { state: "approval-responded" },
       { isStreaming: false },
@@ -101,6 +101,45 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("errored");
     const err = (r.result as { error: string }).error;
     expect(err).toMatch(/skipped after approval/i);
+  });
+
+  // ── APPROVED approval-responded is a resume point, not an orphan ─────
+  // Regression guard for the "Interrupted" flash: right after the user
+  // clicks Allow, the message is briefly not streaming but the tool hasn't
+  // re-invoked execute() yet. An APPROVED, output-less approval-responded
+  // must render as pending ('call'), not 'errored', mirroring needsHeal.
+
+  it("approved approval-responded (output-less) + isStreaming:false → 'call' (pending, not errored)", () => {
+    const r = resolveToolPartState(
+      { state: "approval-responded", approval: { id: "ap1", approved: true } },
+      { isStreaming: false },
+    );
+    expect(r.state).toBe("call");
+    expect(r.result).toBeUndefined();
+  });
+
+  it("approved approval-responded that already has output → 'result' (output wins)", () => {
+    const r = resolveToolPartState(
+      {
+        state: "approval-responded",
+        approval: { id: "ap1", approved: true },
+        output: { ok: true },
+      },
+      { isStreaming: false },
+    );
+    // output-available is not the state here, but the approved-pending
+    // short-circuit must NOT apply once output exists; it falls through to
+    // the orphan path. (In practice the SDK moves to output-available; this
+    // guards the output-present guard in the short-circuit.)
+    expect(r.state).toBe("errored");
+  });
+
+  it("DENIED approval-responded + isStreaming:false → 'errored' (not treated as pending)", () => {
+    const r = resolveToolPartState(
+      { state: "approval-responded", approval: { id: "ap1", approved: false } },
+      { isStreaming: false },
+    );
+    expect(r.state).toBe("errored");
   });
 
   it.each([

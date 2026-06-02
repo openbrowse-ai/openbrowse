@@ -1,5 +1,6 @@
 import { Terminal } from "lucide-react";
 import { ExpandableText } from "./expandable-text";
+import { HighlightedCode } from "./highlighted-code";
 
 interface Props {
   args: Record<string, unknown>;
@@ -17,7 +18,7 @@ export function CodeResult({ args, result }: Props) {
         <span>Code</span>
       </div>
       <div className="px-3 py-2 bg-background/50 overflow-x-auto">
-        <ExpandableText text={code} className="text-foreground/80" maxLines={10} />
+        <HighlightedCode code={code} lang="javascript" className="text-foreground/80" maxLines={10} />
       </div>
       {resultObj && (
         <div className="border-t border-border px-3 py-2 bg-muted/30">

@@ -6,6 +6,14 @@ import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { chatDb } from "@/lib/chat-db";
 import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
 
+/**
+ * Undo ids already applied by the `OVERLAY_UNDO` `reopen` handler. Makes
+ * reopen idempotent so a duplicate undo (e.g. a click racing a ⌘Z, or a
+ * message replay) can't reopen the same tabs twice. Lives at module scope
+ * so it persists for the service worker's lifetime.
+ */
+const consumedReopenUndoIds = new Set<string>();
+
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
   return (data[key] as TidyState) ?? {
     sections: [],
@@ -959,6 +967,25 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === "CLOSE_AGENT_TABS") {
+        (async () => {
+          const { handleCloseAgentTabs } = await import("./close-agent-tabs");
+          const { conversationId, tabIds } = message as {
+            type: string;
+            conversationId: string;
+            tabIds: number[];
+          };
+          const res = await handleCloseAgentTabs({ conversationId, tabIds });
+          if (res.ok && res.undo && res.undo.tabs.length > 0) {
+            chrome.runtime
+              .sendMessage({ type: "AGENT_TABS_CLOSED", conversationId, undo: res.undo })
+              .catch(() => {});
+          }
+          sendResponse(res);
+        })();
+        return true;
+      }
+
       if (message.type === "OVERLAY_TAB_ACTION") {
         (async () => {
           try {
@@ -1181,6 +1208,9 @@ export default defineBackground({
               for (const url of undoData.closedUrls ?? []) {
                 await chrome.tabs.create({ url, windowId: undoData.windowId });
               }
+            } else if (undoData.action === "reopen") {
+              const { reopenTabsOnce } = await import("./reopen-tabs-once");
+              await reopenTabsOnce(undoData, consumedReopenUndoIds);
             }
 
             sendResponse({ ok: true });

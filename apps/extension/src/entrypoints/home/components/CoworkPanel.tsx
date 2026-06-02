@@ -21,6 +21,7 @@ import {
   XCircle,
   Loader2,
   ScrollText,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadOpfsFile } from "@/lib/download";
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/tooltip";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { getConnector } from "@openbrowse/connectors";
+import { requestCloseAgentTabs } from "./request-close-agent-tabs";
 
 interface DerivedConnector {
   id: string;
@@ -443,6 +445,24 @@ function ContextCard({
     connectors.length === 0 &&
     skills.length === 0;
 
+  const [isCleaningTabs, setIsCleaningTabs] = useState(false);
+
+  const handleCleanupTabs = async () => {
+    if (isCleaningTabs || tabs.length === 0) return;
+    setIsCleaningTabs(true);
+    try {
+      // Background closes the tabs, clears ownership, and broadcasts
+      // AGENT_TABS_CLOSED → Undo toast (handled in useAgentChat). The poll
+      // loop will refresh `tabs` to [] on the next tick.
+      await requestCloseAgentTabs(
+        conversationId,
+        tabs.map((t) => t.id),
+      );
+    } finally {
+      setIsCleaningTabs(false);
+    }
+  };
+
   return (
     <CoworkCard title="Context">
       {isEmpty ? (
@@ -455,7 +475,27 @@ function ContextCard({
       ) : (
         <div className="flex flex-col gap-2 px-1.5 pb-1">
           {tabs.length > 0 && (
-            <ContextSection label="Tabs">
+            <ContextSection
+              label="Tabs"
+              action={
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={handleCleanupTabs}
+                      disabled={isCleaningTabs}
+                      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground disabled:opacity-50 disabled:pointer-events-none"
+                      aria-label={`Clean up ${tabs.length} ${tabs.length === 1 ? "tab" : "tabs"}`}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    Close {tabs.length} {tabs.length === 1 ? "tab" : "tabs"}
+                  </TooltipContent>
+                </Tooltip>
+              }
+            >
               {tabs.map((tab) => (
                 <ContextTabRow key={tab.id} tab={tab} />
               ))}
@@ -503,15 +543,18 @@ function ContextCard({
 
 function ContextSection({
   label,
+  action,
   children,
 }: {
   label: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="px-2 pb-1 pt-1.5 text-xs text-muted-foreground">
-        {label}
+      <div className="flex items-center justify-between px-2 pb-1 pt-1.5">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        {action}
       </div>
       <ul className="space-y-0.5">{children}</ul>
     </div>

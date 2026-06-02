@@ -392,36 +392,123 @@ export function initTabScoping() {
   void rebuildIndexesFromStorage();
 }
 
-export async function cleanupIdleOwnedGroups(
-  idleHours: number,
-): Promise<number> {
+/**
+ * Auto-delete the agent-owned tabs of conversations whose task is complete
+ * and that have gone idle. Replaces the previous "ungroup idle groups"
+ * behavior entirely (ungrouping is removed). Closing is reversible: an
+ * AGENT_TABS_CLOSED message carrying the undo payload is broadcast so the
+ * side panel can show an Undo toast.
+ *
+ * Eligibility (all required):
+ *  - the auto-close setting is ON (`enabled`)
+ *  - a positive, finite `timeoutMinutes`
+ *  - the conversation has `lastCompletionApproved === true`
+ *  - `taskCompletedAt` is set and `now - taskCompletedAt > timeoutMinutes * 60_000`
+ *
+ * Returns the number of conversations whose tabs were closed.
+ */
+export async function cleanupCompletedAgentTabs(opts: {
+  enabled: boolean;
+  timeoutMinutes: number;
+}): Promise<number> {
+  if (!opts.enabled) return 0;
+  if (!Number.isFinite(opts.timeoutMinutes) || opts.timeoutMinutes <= 0) return 0;
+
   const convs = await chatDb.listConversations();
   const now = Date.now();
-  const thresholdMs = idleHours * 60 * 60 * 1000;
+  const thresholdMs = opts.timeoutMinutes * 60_000;
 
   let cleaned = 0;
   for (const conv of convs) {
     if (conv.ownedGroupId == null) continue;
-    if (now - conv.updatedAt <= thresholdMs) continue;
+    if (!conv.lastCompletionApproved) continue;
+    if (conv.taskCompletedAt == null) continue;
+    if (now - conv.taskCompletedAt <= thresholdMs) continue;
+    if (conv.ownedTabIds.length === 0) continue;
 
     try {
-      const tabs = await chrome.tabs.query({ groupId: conv.ownedGroupId });
-      const tabIds = tabs.map((t) => t.id!).filter((id) => id != null);
-      if (tabIds.length > 0) {
-        await chrome.tabs.ungroup(tabIds as [number, ...number[]]);
+      const undo = await closeOwnedTabs(conv.id, conv.ownedTabIds);
+      cleaned++;
+      try {
+        await chrome.runtime.sendMessage({
+          type: "AGENT_TABS_CLOSED",
+          conversationId: conv.id,
+          undo,
+        });
+      } catch {
+        // No listener (panel closed); the close already happened.
       }
     } catch {
-      // Group already dissolved; onRemoved handlers will have cleared ownership.
+      // Best-effort; a failed conversation shouldn't block the sweep.
     }
-
-    // Clear ownership explicitly — ungroup fires onUpdated per tab which
-    // clears tabOwnership, but we also need to null out the DB fields.
-    await chatDb.updateConversation(conv.id, {
-      ownedGroupId: null,
-      ownedTabIds: [],
-    });
-    groupOwnership.delete(conv.ownedGroupId);
-    cleaned++;
   }
   return cleaned;
+}
+
+/**
+ * Undo payload for a close operation. Shaped to match the `OVERLAY_UNDO`
+ * `action: "reopen"` consumer in background/index.ts (it iterates `tabs`
+ * and recreates each via chrome.tabs.create).
+ */
+export interface CloseTabsUndo {
+  action: "reopen";
+  /**
+   * Stable unique id for this close, used to make the `OVERLAY_UNDO`
+   * `reopen` handler idempotent (the client may send the same undo twice —
+   * e.g. a click racing a ⌘Z). See `reopenTabsOnce`.
+   */
+  id: string;
+  tabs: { url: string; windowId: number; pinned: boolean }[];
+}
+
+/**
+ * Close a set of agent-owned tabs for a conversation. Captures an undo
+ * payload BEFORE removal, removes the tabs (tolerating already-closed
+ * ones), then clears ownership: removes the closed ids from
+ * `ownedTabIds`, and if no owned tabs remain, nulls `ownedGroupId`.
+ * In-memory ownership maps are also cleared (onRemoved listeners do this
+ * too, but we do it eagerly so callers see consistent state immediately).
+ */
+export async function closeOwnedTabs(
+  conversationId: string,
+  tabIds: number[],
+): Promise<CloseTabsUndo> {
+  const undo: CloseTabsUndo = {
+    action: "reopen",
+    id: crypto.randomUUID(),
+    tabs: [],
+  };
+
+  for (const tabId of tabIds) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.url) {
+        undo.tabs.push({
+          url: tab.url,
+          windowId: tab.windowId,
+          pinned: !!tab.pinned,
+        });
+      }
+      await chrome.tabs.remove(tabId);
+    } catch {
+      // Tab already gone; skip from undo and continue.
+    }
+    tabOwnership.delete(tabId);
+  }
+
+  const conv = await chatDb.getConversation(conversationId);
+  if (conv) {
+    const closed = new Set(tabIds);
+    const remaining = conv.ownedTabIds.filter((id) => !closed.has(id));
+    const updates: { ownedTabIds: number[]; ownedGroupId?: number | null } = {
+      ownedTabIds: remaining,
+    };
+    if (remaining.length === 0) {
+      updates.ownedGroupId = null;
+      if (conv.ownedGroupId != null) groupOwnership.delete(conv.ownedGroupId);
+    }
+    await chatDb.updateConversation(conversationId, updates);
+  }
+
+  return undo;
 }

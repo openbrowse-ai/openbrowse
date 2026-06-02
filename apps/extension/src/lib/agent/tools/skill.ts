@@ -22,7 +22,7 @@ export const skillTool: BrowserTool<Input, Output> = {
       let content = res.body || "";
       
       if (res.hasScripts) {
-        content += "\n\n> **Note:** This skill includes scripts that cannot be executed in OpenBrowse. Read their contents via `read_opfs_file` if needed and accomplish the goal using available browser tools instead.";
+        content += "\n\n> **Note:** This skill includes scripts that cannot be executed in OpenBrowse. Read their contents via `Read` (e.g. `Read({ file_path: \"/skills/<name>/<file>\" })`) if needed and accomplish the goal using available browser tools instead.";
       }
       
       return { success: true, content };

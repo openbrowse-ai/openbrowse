@@ -313,6 +313,16 @@ export function HomeSidebar({
         e.preventDefault();
         setPinned((prev) => !prev);
       }
+      if (e.altKey && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        const digitMatch = e.code.match(/^Digit([1-9])$/);
+        if (digitMatch) {
+          e.preventDefault();
+          chrome.runtime.sendMessage({
+            type: "SWITCH_SPACE_BY_POSITION",
+            position: parseInt(digitMatch[1], 10),
+          });
+        }
+      }
     }
     document.addEventListener("keydown", handleKeydown, true);
     return () => document.removeEventListener("keydown", handleKeydown, true);

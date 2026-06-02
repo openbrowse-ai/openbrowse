@@ -17,6 +17,6 @@ export { createPythonTool, warmupPython } from "./execute-python";
 export { extractTool } from "./extract";
 export { todoWriteTool } from "./todowrite";
 export { skillTool } from "./skill";
-export { readOpfsFileTool } from "./read-opfs-file";
 export { installSkillTool } from "./install-skill";
 export { createSkillTool } from "./create-skill";
+export { closeTabsTool } from "./close-tabs";

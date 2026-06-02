@@ -54,7 +54,12 @@ export interface Settings {
   // General
   themeMode: ThemeMode;
   autoTidyAfterMinutes: number;
-  agentGroupIdleHours: number;
+  /** When on, auto-close a conversation's agent-owned tabs after the task
+   * completes (CompletionCheck approved) and the conversation goes idle. */
+  autoCloseCompletedAgentTabs: boolean;
+  /** Minutes after `taskCompletedAt` before the idle sweep closes the
+   * conversation's owned tabs. Only used when the toggle is on. */
+  autoCloseCompletedAgentTabsAfterMinutes: number;
   archiveAggressiveness: "low" | "medium" | "high";
   tidyModel: string; // "providerId:modelId"
   notificationsEnabled: boolean;
@@ -137,6 +142,14 @@ export interface Conversation {
    * conversation. Written live at step-finish time. Deduped; first-seen order.
    */
   loadedSkillNames?: string[];
+
+  // v13 — agent tab-cleanup completion marker. Set when a turn's
+  // CompletionCheck resolves to `approved`. Read by the idle sweep to
+  // decide which conversations' owned tabs are eligible for auto-close.
+  /** True once a turn's CompletionCheck approved the task as complete. */
+  lastCompletionApproved?: boolean;
+  /** Timestamp (ms) of the most recent `approved` CompletionCheck verdict. */
+  taskCompletedAt?: number;
 }
 
 export interface TodoItem {

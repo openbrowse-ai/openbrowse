@@ -14,6 +14,7 @@ import {
   buildEvaluatorUserPrompt,
 } from "../completion-check/prompt";
 import { completionCheckTelemetry } from "../completion-check/telemetry";
+import { chatDb } from "../../chat-db";
 import {
   MAX_REJECTION_ROUNDS,
   type EvaluatorVerdict,
@@ -1450,6 +1451,11 @@ describe("runWithRejectionLoop (transport integration)", () => {
   beforeEach(async () => {
     indexedDB = new IDBFactory();
     await completionCheckTelemetry._resetForTests();
+    // The transport's approved/force-emit path now persists a completion
+    // marker via chatDb. Reset its cached connection so it re-opens
+    // against the freshly-swapped IDBFactory (otherwise a stale handle
+    // leaks across test files and intermittently corrupts reads).
+    chatDb._resetForTests();
     setCurrentAgentModel(null);
   });
 

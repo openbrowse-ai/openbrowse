@@ -57,14 +57,13 @@ The Skills tab's "Try in chat" button on each skill prefills the side panel chat
 
 ## Tools the agent uses
 
-The skill subsystem is exposed to the agent through four tools:
+The skill subsystem is exposed to the agent through three tools:
 
 | Tool | Description |
 | --- | --- |
 | `skill` | Load a specific skill's `SKILL.md` into the conversation. |
 | `install_skill` | Install a skill from a GitHub repository or URL. |
 | `create_skill` | Author and persist a new skill directly into the local registry. |
-| `read_opfs_file` | Read any file under a skill's folder (used to pull supporting docs/scripts on demand). |
 
 See the [Tools Reference](/docs/tools#skills) for full signatures.
 
@@ -92,4 +91,4 @@ description: Use whenever the user asks to convert a CSV to a markdown table.
 3. Return the table inline.
 ```
 
-Larger skills can include supporting files alongside `SKILL.md` — reference docs, scripts, templates. The agent can read any of them via `read_opfs_file`.
+Larger skills can include supporting files alongside `SKILL.md` — reference docs, scripts, templates. The agent can read any of them with the `Read` tool using the skill's path (e.g. `Read({ file_path: "/skills/<name>/references/<file>" })`).

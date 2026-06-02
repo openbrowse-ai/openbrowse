@@ -104,6 +104,39 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
         />
       </div>
 
+      <div className="flex items-center justify-between gap-4">
+        <div className="space-y-0.5">
+          <Label>Auto-close completed agent tabs</Label>
+          <p className="text-xs text-muted-foreground">
+            When a task completes and the conversation goes idle, automatically
+            close the tabs the agent opened. Closing is reversible via an Undo
+            toast.
+          </p>
+        </div>
+        <Switch
+          checked={settings.autoCloseCompletedAgentTabs}
+          onCheckedChange={(checked) =>
+            onChange({ autoCloseCompletedAgentTabs: checked })
+          }
+        />
+      </div>
+
+      {settings.autoCloseCompletedAgentTabs && (
+        <div className="space-y-2">
+          <Label>Auto-close delay (minutes)</Label>
+          <Input
+            type="number"
+            min={1}
+            value={settings.autoCloseCompletedAgentTabsAfterMinutes}
+            onChange={(e) =>
+              onChange({
+                autoCloseCompletedAgentTabsAfterMinutes: Number(e.target.value),
+              })
+            }
+          />
+        </div>
+      )}
+
       <div className="space-y-2">
         <Label>Tidy model</Label>
         {hasConfiguredModels ? (

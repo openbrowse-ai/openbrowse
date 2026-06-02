@@ -24,6 +24,8 @@ import { SkillResult } from "./tool-results/skill";
 import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
+import { MemoryResult } from "./tool-results/memory";
+import { SelectTabResult } from "./tool-results/select-tab";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -50,6 +52,15 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     <CodeResult args={args} result={result} />
   ),
   executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
+  selectTab: ({ result, toolCallId }) => (
+    <SelectTabResult result={result} toolCallId={toolCallId} />
+  ),
+  saveMemory: ({ args, result }) => (
+    <MemoryResult args={args} result={result} action="save" />
+  ),
+  updateMemory: ({ args, result }) => (
+    <MemoryResult args={args} result={result} action="update" />
+  ),
   Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
   Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
   Grep: ({ args, result }) => <GrepResult args={args} result={result} />,
@@ -81,6 +92,7 @@ interface ToolCallBlockProps {
 const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   readPage: { pending: "Reading page...", done: "Read page" },
   screenshot: { pending: "Taking screenshot...", done: "Took screenshot" },
+  snapshot: { pending: "Taking snapshot...", done: "Took snapshot" },
   listTabs: { pending: "Listing tabs...", done: "Listed tabs" },
   navigate: { pending: "Navigating...", done: "Navigated" },
   selectTab: { pending: "Switching tab...", done: "Switched tab" },
@@ -99,15 +111,18 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
+  closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
+
+  // Memory tools
+  saveMemory: { pending: "Saving memory...", done: "Saved memory" },
+  updateMemory: { pending: "Updating memory...", done: "Updated memory" },
+  deleteMemory: { pending: "Deleting memory...", done: "Deleted memory" },
+  recallMemory: { pending: "Searching memory...", done: "Searched memory" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },
   create_skill: { pending: "Creating skill...", done: "Created skill" },
   install_skill: { pending: "Installing skill...", done: "Installed skill" },
-  read_opfs_file: {
-    pending: "Reading bundled file...",
-    done: "Read bundled file",
-  },
 
   // (No `delegate` entry — `delegate` bypasses the outer ToolCallBlock
   // wrapper entirely; SubagentTrace renders the whole UI itself.)
@@ -183,6 +198,28 @@ function webFetchLabels(
   };
 }
 
+/**
+ * Refine the closeTabs collapsed-row label from its args so the user sees
+ * what's being closed (e.g. "Closing 2 tabs..." / "Closed 2 tabs", or
+ * "Closing tab group...") instead of the generic "Closing tabs...".
+ */
+export function closeTabsLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  if (args.target === "group") {
+    return { pending: "Closing tab group...", done: "Closed tab group" };
+  }
+  if (args.target === "tabs") {
+    const n = Array.isArray(args.handles) ? args.handles.length : 0;
+    if (n > 0) {
+      const noun = n === 1 ? "tab" : "tabs";
+      return { pending: `Closing ${n} ${noun}...`, done: `Closed ${n} ${noun}` };
+    }
+  }
+  return fallback;
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -210,7 +247,11 @@ export function ToolCallBlock({
   // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
   // rather than a generic "Fetching URL...".
   const dynamicLabels =
-    toolName === "webFetch" ? webFetchLabels(args, labels) : labels;
+    toolName === "webFetch"
+      ? webFetchLabels(args, labels)
+      : toolName === "closeTabs"
+        ? closeTabsLabels(args, labels)
+        : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

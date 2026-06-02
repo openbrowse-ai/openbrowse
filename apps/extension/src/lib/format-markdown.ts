@@ -83,13 +83,6 @@ export function formatPartAsMarkdown(part: any): string | null {
       return `**Tool: skill**\n${inputStr}[Skill '${skillName}' loaded into context]`;
     }
 
-    if (toolName === "read_opfs_file") {
-      const filePath =
-        typeof input?.path === "string" ? input.path : "file";
-      const inputStr = input ? "```json\n" + JSON.stringify(input, null, 2) + "\n```\n" : "";
-      return `**Tool: read_opfs_file**\n${inputStr}[File '${filePath}' read]`;
-    }
-
     if (toolName === "create_skill") {
       const skillName =
         typeof input?.name === "string" ? input.name : "skill";

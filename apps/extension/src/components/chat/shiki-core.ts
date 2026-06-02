@@ -39,6 +39,7 @@ export const LANG_LOADERS: Record<string, () => Promise<{ default: LanguageRegis
   sql: () => import("shiki/langs/sql.mjs"),
   markdown: () => import("shiki/langs/markdown.mjs"),
   mdx: () => import("shiki/langs/mdx.mjs"),
+  diff: () => import("shiki/langs/diff.mjs"),
 };
 
 /**

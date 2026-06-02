@@ -1,4 +1,5 @@
 import { Terminal } from "lucide-react";
+import { HighlightedCode } from "../tool-results/highlighted-code";
 
 interface CodePreviewProps {
   code: string;
@@ -13,7 +14,7 @@ export function CodePreview({ code, label }: CodePreviewProps) {
         <span>{label}</span>
       </div>
       <div className="px-3 py-2 bg-background/50 overflow-x-auto max-h-64 overflow-y-auto styled-scrollbar">
-        <pre className="whitespace-pre-wrap text-foreground/80">{code}</pre>
+        <HighlightedCode code={code} lang="javascript" className="text-foreground/80" maxLines={50} />
       </div>
     </>
   );

@@ -26,7 +26,7 @@ function MemoryItem({
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="border border-border rounded-md p-3 space-y-2">
+    <div className="border border-border rounded-md p-3 flex flex-col gap-2">
       <div className="flex items-start justify-between gap-2">
         <button
           className="flex items-start gap-2 text-left flex-1 min-w-0"
@@ -74,7 +74,7 @@ function MemoryItem({
       </div>
 
       {expanded && (
-        <div className="ml-6 p-2 bg-muted rounded text-xs whitespace-pre-wrap font-mono">
+        <div className="ml-6 p-2 bg-muted rounded text-xs whitespace-pre-wrap break-words font-mono">
           {memory.content}
         </div>
       )}
@@ -138,7 +138,7 @@ export function MemoryTab() {
           <p className="text-sm text-muted-foreground">No memories saved yet</p>
         ) : (
           <ScrollArea className="max-h-[300px]">
-            <div className="space-y-2 pr-2">
+            <div className="flex flex-col gap-2 pr-2">
               {userMemories.map((m) => (
                 <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
               ))}
@@ -155,7 +155,7 @@ export function MemoryTab() {
             <p className="text-sm text-muted-foreground">No memories saved yet</p>
           ) : (
             <ScrollArea className="max-h-[300px]">
-              <div className="space-y-2 pr-2">
+              <div className="flex flex-col gap-2 pr-2">
                 {spaceMemories.map((m) => (
                   <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
                 ))}

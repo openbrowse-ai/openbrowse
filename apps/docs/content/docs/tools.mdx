@@ -66,7 +66,7 @@ These tools operate on the conversation's per-conversation virtual [Workspace](/
 
 | Tool | Description |
 | --- | --- |
-| `Read` | Read a file. Returns lines prefixed with line numbers; supports `offset` + `limit`. |
+| `Read` | Read a file. Returns lines prefixed with line numbers; supports `offset` + `limit`. Can also read skill bundle files via a `/skills/<name>/…` path. |
 | `Write` | Create or overwrite a file. Auto-creates parent directories. |
 | `Edit` | Exact string replacement in an existing file. |
 | `Glob` | Find files matching a glob pattern (e.g. `src/**/*.ts`). |
@@ -82,7 +82,8 @@ Skills let the agent load curated, on-demand instructions instead of carrying ev
 | `skill` | Load a specific skill's `SKILL.md` into the conversation. |
 | `install_skill` | Install a skill from a GitHub repository or URL. |
 | `create_skill` | Author and persist a new skill into the local registry. |
-| `read_opfs_file` | Read any file under a skill's folder (for supporting docs/scripts). |
+
+To read a supporting file bundled with a skill (reference docs, scripts), the agent uses the `Read` tool with the skill's path, e.g. `Read({ file_path: "/skills/<name>/references/<file>" })`.
 
 ## Task Planning
 

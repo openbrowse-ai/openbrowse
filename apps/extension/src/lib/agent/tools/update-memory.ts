@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { memoryDb, type Memory } from "../../memory-db";
 import type { BrowserTool } from "../types";
+import { buildMemoryDiff } from "./memory-diff";
 
 const parameters = z.object({
   title: z.string().describe("The title of the existing memory to update"),
@@ -11,7 +12,9 @@ const parameters = z.object({
 });
 
 type Input = z.infer<typeof parameters>;
-type Output = { updated: true; id: string } | { updated: false; reason: string };
+type Output =
+  | { updated: true; id: string; diffPreview: string }
+  | { updated: false; reason: string };
 
 export const updateMemoryTool: BrowserTool<Input, Output> = {
   name: "updateMemory",
@@ -27,6 +30,10 @@ export const updateMemoryTool: BrowserTool<Input, Output> = {
       return { updated: false, reason: "No memory found with that title. Use saveMemory to create a new one." };
     }
 
+    // Compute the diff here so the result stays lightweight — we avoid echoing
+    // the full old + new memory bodies back into the conversation transcript.
+    const diffPreview = buildMemoryDiff(existing.content, content);
+
     const memory: Memory = {
       ...existing,
       content,
@@ -36,6 +43,10 @@ export const updateMemoryTool: BrowserTool<Input, Output> = {
     };
 
     await memoryDb.save(memory);
-    return { updated: true, id: memory.id };
+    return {
+      updated: true,
+      id: memory.id,
+      diffPreview,
+    };
   },
 };

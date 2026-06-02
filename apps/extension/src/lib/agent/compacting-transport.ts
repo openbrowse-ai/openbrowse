@@ -101,6 +101,17 @@ interface Options<TOOLS extends ToolSet> {
     | Promise<RunCompletionCheckInput | undefined>
     | RunCompletionCheckInput
     | undefined;
+
+  /**
+   * Callback fired when the CompletionCheck evaluator approves a final
+   * response. Allows the host environment (e.g. the Chrome extension)
+   * to persist completion state without coupling this module to platform-
+   * specific storage APIs.
+   */
+  onCompletionCheckApproved?: (
+    conversationId: string,
+    now: number,
+  ) => void | Promise<void>;
 }
 
 /**
@@ -152,6 +163,7 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
   private readonly screenshotToolNames?: Set<string>;
   private readonly getActiveConversationId?: () => string | null;
   private readonly buildCompletionCheckInput?: Options<TOOLS>["buildCompletionCheckInput"];
+  private readonly onCompletionCheckApproved?: Options<TOOLS>["onCompletionCheckApproved"];
 
   constructor({
     agent,
@@ -160,6 +172,7 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
     screenshotToolNames,
     getActiveConversationId,
     buildCompletionCheckInput,
+    onCompletionCheckApproved,
   }: Options<TOOLS>) {
     this.agent = agent;
     this.onSendStart = onSendStart;
@@ -169,18 +182,19 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
       : undefined;
     this.getActiveConversationId = getActiveConversationId;
     this.buildCompletionCheckInput = buildCompletionCheckInput;
+    this.onCompletionCheckApproved = onCompletionCheckApproved;
   }
 
   async sendMessages({
     messages,
     abortSignal,
-  }: Parameters<ChatTransport<AgentUIMessage>["sendMessages"]>[0]): Promise<
-    ReadableStream<UIMessageChunk>
-  > {
+  }: {
+    messages: AgentUIMessage[];
+    abortSignal?: AbortSignal;
+  }): Promise<ReadableStream<UIMessageChunk>> {
     this.onSendStart?.();
-    // Pin cid synchronously, before any await. Every chatDb read driven
-    // by the gate inside this loop targets this cid even if
-    // `setAgentContext(...)` is called by the UI mid-stream.
+    const buildCompletionCheckInput = this.buildCompletionCheckInput;
+    const onCompletionCheckApproved = this.onCompletionCheckApproved;
     const pinnedConversationId = this.getActiveConversationId?.() ?? null;
     let rewritten = rewriteForLLM(messages);
     if (this.keepOnlyLatestImage) {
@@ -239,16 +253,14 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
     return runWithRejectionLoop({
       // The SDK's full `Agent` returns a `PromiseLike` from `stream()`
       // (specifically `StreamTextResult`), which is structurally
-      // assignable to `Promise<{ toUIMessageStream() }>` at runtime but
-      // TS is strict about `PromiseLike` vs `Promise`. The
-      // `RejectionLoopAgent` interface deliberately uses `Promise` to
-      // keep the test stub simple; cast through the structural shape.
+      // compatible with `RejectionLoopAgent` when we cast.
       agent: this.agent as unknown as RejectionLoopAgent,
-      validatedMessages: validatedMessages as AgentUIMessage[],
+      validatedMessages,
       sendMessagesAtCall: messages,
       abortSignal,
       pinnedConversationId,
-      buildCompletionCheckInput: this.buildCompletionCheckInput,
+      buildCompletionCheckInput: buildCompletionCheckInput!,
+      onCompletionCheckApproved,
     });
   }
 
@@ -794,8 +806,9 @@ export function runWithRejectionLoop(args: {
     | Promise<RunCompletionCheckInput | undefined>
     | RunCompletionCheckInput
     | undefined;
+  onCompletionCheckApproved?: (conversationId: string, now: number) => void | Promise<void>;
 }): ReadableStream<UIMessageChunk> {
-  const { agent, abortSignal, buildCompletionCheckInput, pinnedConversationId } = args;
+  const { agent, abortSignal, buildCompletionCheckInput, pinnedConversationId, onCompletionCheckApproved } = args;
 
   return new ReadableStream<UIMessageChunk>({
     start: async (controller) => {
@@ -963,6 +976,28 @@ export function runWithRejectionLoop(args: {
           }
 
           if (outcome.kind !== "rejected") {
+            // Persist the tab-cleanup completion marker (no-op unless approved).
+            if (outcome.kind === "approved") {
+              try {
+                const res = onCompletionCheckApproved?.(
+                  input.conversationId,
+                  Date.now(),
+                );
+                if (res instanceof Promise) {
+                  res.catch((err) =>
+                    console.warn(
+                      "[completion-check] persistence callback rejected:",
+                      err,
+                    ),
+                  );
+                }
+              } catch (err) {
+                console.warn(
+                  "[completion-check] persistence callback threw:",
+                  err,
+                );
+              }
+            }
             // approved | skipped | force-emitted — done.
             // For force-emitted, surface a final rejection-comment so
             // the user can see what concerns the agent ended on.
