@@ -620,6 +620,45 @@ describe("buildEvaluatorSystemPrompt", () => {
     expect(p).toMatch(/should/);
     expect(p).toMatch(/needs to/);
   });
+
+  it("instructs not to reject reasonable interpretations of ambiguous requests", () => {
+    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    // Dedicated guidance section exists.
+    expect(p).toContain("## Ambiguous requests");
+    // Establishes that a best-effort reading of a vague request is
+    // acceptable and must not be rejected for completeness/handoff.
+    expect(p.toLowerCase()).toContain("unclear referent");
+    expect(p).toMatch(/do NOT reject/i);
+    expect(p).toContain("`completeness`");
+    expect(p).toContain("`noPrematureHandoff`");
+    // Reinforces the "verify what was claimed, don't litigate
+    // interpretation" framing.
+    expect(p.toLowerCase()).toContain("interpretation");
+  });
+
+  it("forbids rejecting on the evaluator's own world knowledge / hallucinated facts", () => {
+    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    // Dedicated time-sensitive section exists.
+    expect(p).toContain("## Current and time-sensitive facts");
+    // Names the failure mode explicitly so the model can't rationalize it.
+    expect(p.toLowerCase()).toContain("knowledge cutoff");
+    expect(p.toLowerCase()).toContain("in the future");
+    expect(p.toLowerCase()).toContain(`doesn't exist`);
+    // The trace/page outranks the evaluator's memory.
+    expect(p.toLowerCase()).toContain("source of truth");
+    expect(p.toLowerCase()).toContain("the observation wins");
+    // Unfamiliarity is not fabrication.
+    expect(p.toLowerCase()).toContain("unfamiliarity is not evidence of fabrication");
+  });
+
+  it("frames evidenceGrounding as contradicted-or-absent, not 'unverifiable by the evaluator'", () => {
+    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    // The dimension description now keys off the trace, not belief.
+    expect(p).toMatch(/CONTRADICTED by the tool-call trace/);
+    // Both the no-tools guidance and the dimension forbid belief-based rejects.
+    const noTools = buildEvaluatorSystemPrompt({ hasTools: false });
+    expect(noTools.toLowerCase()).toContain("never reject a claim on the basis of your own knowledge");
+  });
 });
 
 describe("buildEvaluatorUserPrompt", () => {

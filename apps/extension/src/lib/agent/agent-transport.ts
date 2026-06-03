@@ -1106,32 +1106,23 @@ export async function createAgentTransport(
     LS: toSDKTool(fsTools.lsTool, "LS"),
   };
 
-  // Read-only subset for the completion-check evaluator. The evaluator
-  // may call these to ground factual claims (e.g. verify a price the
-  // executor cited actually appears on the page) before deciding the
-  // verdict. Excluded:
-  //  - clickElement, typeInElement, navigate, scrollPage, selectTab —
-  //    page-state mutations.
-  //  - executeOnPage, executeCode — arbitrary side effects.
-  //  - todoWrite — plan ownership belongs to the executor.
-  //  - saveMemory/updateMemory/deleteMemory — write-mode memory ops.
-  //  - install_skill/create_skill — config mutation.
-  //  - Write, Edit — filesystem mutations.
-  //  - MCP tools — out of scope for Phase 5; many are write-mode.
-  // The evaluator's system prompt explicitly tells it the tools are
-  // read-only and that it should call them sparingly.
-  const evaluatorReadOnlyTools: Record<string, ToolSet[string]> = {
-    snapshot: browserTools.snapshot,
-    readPage: browserTools.readPage,
-    screenshot: browserTools.screenshot,
-    listTabs: browserTools.listTabs,
-    extract: browserTools.extract,
-    recallMemory: browserTools.recallMemory,
-    Read: browserTools.Read,
-    Glob: browserTools.Glob,
-    Grep: browserTools.Grep,
-    LS: browserTools.LS,
-  };
+  // The completion-check evaluator runs WITHOUT tools by default.
+  //
+  // Earlier we handed it a read-only browser/filesystem subset so it
+  // could make its own verification calls to ground factual claims.
+  // In practice that turned every gate into a multi-step agentic loop
+  // (`generateText` + `stepCountIs`, plus an occasional second-stage
+  // commit), which dominated end-of-turn latency. The tool-call trace
+  // already includes the captured output of every tool the executor
+  // ran this turn, so the evaluator can ground the vast majority of
+  // claims from context alone. Dropping tools routes the evaluator
+  // down its single-shot `generateObject` path (one round-trip) and
+  // cuts the perceived "Refining answer" delay dramatically.
+  //
+  // The evaluator still SUPPORTS tools (see completion-check/evaluator.ts);
+  // we simply don't wire any here. To re-enable grounded verification,
+  // pass a read-only tool subset as `evaluatorTools` in
+  // `buildCompletionCheckInput` below.
 
   const mcpTools = getMcpRegistry().toSDKTools();
 
@@ -1655,10 +1646,11 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         // Threaded once at transport build; null means "fall back to
         // the executor's current model" inside the evaluator.
         evaluatorModel: evaluatorLanguageModel,
-        // Read-only tool subset for grounded verification. The
-        // evaluator's `allowTools` flips on automatically when this is
-        // non-empty; the system prompt branches accordingly.
-        evaluatorTools: evaluatorReadOnlyTools as unknown as import("ai").ToolSet,
+        // Intentionally no `evaluatorTools`: the evaluator runs as a
+        // single-shot `generateObject` against the conversation context
+        // and tool-call trace. See the comment at the
+        // `evaluatorReadOnlyTools` removal above for the latency
+        // rationale and how to re-enable grounded verification.
       };
     },
     onCompletionCheckApproved: (cid, now) => {
