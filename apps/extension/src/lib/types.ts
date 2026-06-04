@@ -150,6 +150,46 @@ export interface Conversation {
   lastCompletionApproved?: boolean;
   /** Timestamp (ms) of the most recent `approved` CompletionCheck verdict. */
   taskCompletedAt?: number;
+  /**
+   * Token/cost usage snapshot for the conversation, written live at
+   * step-finish time by the agent transport. Drives the header Context
+   * popover. Optional; undefined on rows created before this field existed
+   * and on conversations that have never run a step.
+   */
+  usage?: ConversationUsage;
+}
+
+/**
+ * Token/cost usage snapshot persisted on a conversation row.
+ *
+ * `totalTokens` is the CURRENT context occupancy (latest step's
+ * input + output, overwritten each step) — it shrinks after compaction.
+ * `costUsd` is CUMULATIVE spend across every step in the conversation.
+ * The two intentionally differ in scope.
+ */
+export interface ConversationUsage {
+  /** Latest step's input tokens (current context input). */
+  inputTokens: number;
+  /** Latest step's output tokens. */
+  outputTokens: number;
+  /** inputTokens + outputTokens — the current context size. */
+  totalTokens: number;
+  /** Cumulative USD spent across all steps in this conversation. */
+  costUsd: number;
+  /** Snapshot of the model's context window at write time. */
+  contextWindow: number;
+  /** Model id used for the latest step (e.g. "anthropic:claude-..."). */
+  modelId: string;
+  /**
+   * All distinct model ids used across the conversation, in first-seen
+   * order (qualified "provider:model" keys). Lets the UI surface that
+   * multiple models contributed to the cumulative cost. Always includes
+   * the latest `modelId`. Optional for snapshots written before this field
+   * existed.
+   */
+  modelIds?: string[];
+  /** ms timestamp of the most recent usage write. */
+  updatedAt: number;
 }
 
 export interface TodoItem {
