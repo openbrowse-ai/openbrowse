@@ -3,9 +3,7 @@ import {
   type TabMentionAttrs,
   type Attachment,
 } from "./ChatInput";
-import { ChatMessage } from "./ChatMessage";
-import { CompactionDivider } from "./CompactionDivider";
-import { ExpandableText } from "./tool-results/expandable-text";
+import { MessageList } from "./MessageList";
 import {
   Conversation,
   ConversationContent,
@@ -41,16 +39,13 @@ import { openSettingsTab } from "@/lib/open-settings";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import {
-  AlertCircle,
   ArrowLeft,
-  ArrowRight,
   ArrowUp,
   FileText,
   HelpCircle,
   Link,
   MessageSquarePlus,
   Pencil,
-  RefreshCw,
   Settings2,
   Sparkles,
   X,
@@ -307,6 +302,15 @@ export function ChatView({
   >(null);
   const [preEditInput, setPreEditInput] = useState("");
 
+  // Mirror the latest input/messages into refs so the per-message
+  // callbacks (startEdit) can read them without listing them as deps.
+  // Keeping startEdit's identity stable across keystrokes is what lets
+  // the memoized <MessageList> skip re-rendering while the user types.
+  const inputRef = useRef(input);
+  inputRef.current = input;
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   useEffect(() => {
     if (!isPopupMode) return;
     if (originUrl == null || originWindowId == null) return;
@@ -411,18 +415,18 @@ export function ChatView({
 
   const startEdit = useCallback(
     (messageId: string) => {
-      const msg = messages.find((m) => m.id === messageId);
+      const msg = messagesRef.current.find((m) => m.id === messageId);
       if (!msg) return;
       const text = msg.parts
         .filter((p) => p.type === "text")
         .map((p) => (p as { text: string }).text)
         .join("")
         .split("\n\n-----\n\n<Mentioned tabs>")[0];
-      setPreEditInput(input);
+      setPreEditInput(inputRef.current);
       setEditing({ kind: "sent", id: messageId });
       setInput(text);
     },
-    [messages, input, setInput],
+    [setInput],
   );
 
   const startEditQueued = useCallback(
@@ -586,81 +590,21 @@ export function ChatView({
                 </div>
               </div>
             )}
-            {messages.map((message, i) => {
-              // Compaction-user message: replace the bubble with a
-              // CompactionDivider. The next assistant message in the
-              // stream is the summary; we render its text inside the
-              // divider's expand panel.
-              const compactionPart = message.parts.find(
-                (p) => p.type === "data-compaction",
-              );
-              if (message.role === "user" && compactionPart) {
-                const next = messages[i + 1];
-                const summaryText =
-                  next?.role === "assistant"
-                    ? next.parts
-                        .filter((p) => p.type === "text")
-                        .map((p) => p.text)
-                        .join("\n")
-                        .trim()
-                    : "";
-                return (
-                  <CompactionDivider
-                    key={message.id}
-                    summary={summaryText}
-                    hiddenCount={i}
-                    auto={compactionPart.data.auto}
-                    overflow={compactionPart.data.overflow}
-                  />
-                );
-              }
-
-              // Assistant summary message: hide from the main chat. Its
-              // content is shown via the divider's expand toggle. We
-              // detect it structurally — the previous message is a
-              // compaction-user.
-              const prev = messages[i - 1];
-              const prevIsCompactionUser =
-                prev?.role === "user" &&
-                prev.parts.some((p) => p.type === "data-compaction");
-              if (message.role === "assistant" && prevIsCompactionUser) {
-                return null;
-              }
-
-              const isLastAssistant =
-                message.role === "assistant" &&
-                isStreaming &&
-                !messages.slice(i + 1).some((m) => m.role === "assistant");
-              const isDimmed = editingIndex !== -1 && i >= editingIndex;
-              return (
-                 <ChatMessage
-                  key={message.id}
-                  message={message}
-                  isStreaming={isLastAssistant}
-                  dimmed={isDimmed}
-                  onRegenerate={
-                    message.role === "assistant" &&
-                    !isLoading &&
-                    !isEditing
-                      ? () => handleRegenerate(message.id)
-                      : undefined
-                  }
-                  onToolApproval={addToolApprovalResponse}
-                  onEdit={
-                    message.role === "user" && !isLoading && !isEditing
-                      ? () => startEdit(message.id)
-                      : undefined
-                  }
-                />
-              );
-            })}
-            {showThinking && <ThinkingIndicator />}
-            {error && (
-              <ErrorMessage
+            {(messages.length > 0 || showThinking || error) && (
+              <MessageList
+                messages={messages}
+                isStreaming={isStreaming}
+                isLoading={isLoading}
+                isEditing={isEditing}
+                editingIndex={editingIndex}
+                showThinking={showThinking}
                 error={error}
+                onRegenerate={handleRegenerate}
+                onEdit={startEdit}
+                onToolApproval={addToolApprovalResponse}
                 onRetry={handleRetry}
                 onContinue={handleContinue}
-                onDismiss={clearError}
+                onDismissError={clearError}
               />
             )}
           </div>
@@ -873,81 +817,3 @@ export function ChatView({
   );
 }
 
-function ThinkingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="rounded-lg px-3 py-2 bg-muted">
-        <div className="flex items-center gap-1">
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse" />
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse [animation-delay:150ms]" />
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse [animation-delay:300ms]" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ErrorMessage({
-  error,
-  onRetry,
-  onContinue,
-  onDismiss,
-}: {
-  error: Error;
-  onRetry: () => void;
-  onContinue: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm border border-destructive/30 bg-destructive/5">
-        <div className="flex items-start gap-2">
-          <AlertCircle className="size-3.5 text-destructive shrink-0 mt-0.5" />
-          <div className="min-w-0">
-            <p className="text-xs text-destructive font-medium">
-              Something went wrong
-            </p>
-            {/*
-              * Provider SDK errors can carry full request payloads,
-              * stack traces, or upstream HTML responses — easily
-              * dozens of visual lines. Clamp to ~10 visual lines with
-              * an inline expand toggle. `font-sans` overrides
-              * ExpandableText's <pre> default so the banner keeps the
-              * surrounding chat font; `text-muted-foreground` and
-              * `break-words` reproduce the previous styling.
-              */}
-            <ExpandableText
-              text={error.message}
-              className="text-xs text-muted-foreground mt-0.5 break-words font-sans"
-            />
-            <div className="flex items-center gap-2 mt-1.5">
-              <button
-                type="button"
-                onClick={onRetry}
-                className="flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <RefreshCw className="size-3" />
-                Retry
-              </button>
-              <button
-                type="button"
-                onClick={onContinue}
-                className="flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <ArrowRight className="size-3" />
-                Continue
-              </button>
-              <button
-                type="button"
-                onClick={onDismiss}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}

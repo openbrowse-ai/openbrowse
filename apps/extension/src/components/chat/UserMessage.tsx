@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/tooltip";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { Check, Copy, Pencil } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, memo } from "react";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import { getTypeBadge } from "@/lib/chat/attachment-meta";
@@ -19,7 +19,7 @@ interface UserMessageProps {
   dimmed?: boolean;
 }
 
-export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
+function UserMessageImpl({ message, onEdit, dimmed }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const onSelectFile = useFileSelection();
@@ -173,3 +173,5 @@ export function UserMessage({ message, onEdit, dimmed }: UserMessageProps) {
     </div>
   );
 }
+
+export const UserMessage = memo(UserMessageImpl);

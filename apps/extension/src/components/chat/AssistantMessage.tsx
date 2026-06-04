@@ -12,6 +12,7 @@ import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolApprovalBlock } from "./ToolApprovalBlock";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
+import { memo } from "react";
 import "@/components/chat/tool-previews";
 
 /**
@@ -111,7 +112,7 @@ interface AssistantMessageProps {
   dimmed?: boolean;
 }
 
-export function AssistantMessage({ message, isStreaming = false, onRegenerate, onToolApproval, dimmed }: AssistantMessageProps) {
+function AssistantMessageImpl({ message, isStreaming = false, onRegenerate, onToolApproval, dimmed }: AssistantMessageProps) {
   return (
     <div className={`group/message flex flex-col items-start gap-1 ${dimmed ? "opacity-40" : ""}`}>
       <div className="w-full text-sm text-foreground">
@@ -266,3 +267,5 @@ export function AssistantMessage({ message, isStreaming = false, onRegenerate, o
     </div>
   );
 }
+
+export const AssistantMessage = memo(AssistantMessageImpl);
