@@ -14,7 +14,7 @@ export const definition: ConnectorDefinition = {
   icon: { light: "stripe.svg" },
   description: "Payments, subscriptions, and billing",
   category: "developer-tools",
-  url: "https://mcp.stripe.com/mcp",
+  url: "https://mcp.stripe.com",
   auth: { type: "oauth" },
   docsUrl: "https://docs.stripe.com/mcp",
   formatLabel(toolName, result): ToolResultLabel | null {

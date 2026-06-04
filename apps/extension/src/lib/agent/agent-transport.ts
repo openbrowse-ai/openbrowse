@@ -10,6 +10,7 @@ import type {
 import { ToolLoopAgent, readUIMessageStream, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
+import { storage } from "../storage";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
 import { memoryDb } from "../memory-db";
@@ -612,6 +613,39 @@ export function buildExtensionToolContext(
           todos,
           updatedAt: Date.now(),
         });
+      },
+      resolveNewTabWindowId: async () => {
+        if (!pinnedConversationId) return undefined;
+        const conv = await chatDb.getConversation(pinnedConversationId);
+        if (!conv) return undefined;
+        // 1) Prefer the window of an existing owned tab so new tabs join
+        //    the conversation's tab group rather than splitting across
+        //    windows. Probe in order and take the first live tab.
+        for (const tabId of conv.ownedTabIds ?? []) {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            if (typeof tab.windowId === "number") return tab.windowId;
+          } catch {
+            // Tab gone; try the next owned id.
+          }
+        }
+        // 2) Otherwise fall back to the conversation's space window (the
+        //    window the chat is bound to), as long as it still exists.
+        if (conv.spaceId) {
+          const spaces = await storage.getSpaces();
+          const space = spaces.find((s) => s.id === conv.spaceId);
+          const windowId = space?.windowId;
+          if (typeof windowId === "number") {
+            try {
+              await chrome.windows.get(windowId);
+              return windowId;
+            } catch {
+              // Space's window was closed; fall through.
+            }
+          }
+        }
+        // 3) No resolvable window — caller omits windowId (focused window).
+        return undefined;
       },
     },
   };

@@ -59,11 +59,23 @@ export const navigateTool: BrowserTool<Input, Output> = {
       }
     } else {
       // No handle → create a new background tab. This is the bootstrap
-      // path used on the first action of a conversation. For subagents
-      // running with `incognito` isolation, `session.targetWindowId`
-      // is set so the new tab lands in the subagent's own incognito
-      // window rather than the user's currently focused window.
-      const targetWindowId = ctx.session?.targetWindowId;
+      // path used on the first action of a conversation. The new tab
+      // should land in the conversation's own window — where the chat
+      // and the agent's existing tabs live — not whatever window Chrome
+      // happens to have focused. For incognito subagents the runner sets
+      // a static `session.targetWindowId` (their fresh incognito window);
+      // for the root agent we resolve it dynamically via
+      // `resolveNewTabWindowId` (owned-tab window → space window). When
+      // neither yields a window, `windowId` is omitted and Chrome falls
+      // back to the focused window (legacy behavior). The resolver runs
+      // best-effort: a rejection is swallowed to `undefined` so a transient
+      // lookup failure degrades to the focused window rather than aborting
+      // the navigation.
+      const targetWindowId =
+        ctx.session?.targetWindowId ??
+        (await Promise.resolve(ctx.session?.resolveNewTabWindowId?.()).catch(
+          () => undefined,
+        ));
       tabId = await ctx.driver.createTab(url, {
         active: false,
         ...(targetWindowId !== undefined && { windowId: targetWindowId }),
