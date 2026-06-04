@@ -99,6 +99,26 @@ describe("navigate — new tab windowId precedence", () => {
     );
     expect("windowId" in created[0].opts).toBe(false);
   });
+
+  it("swallows resolver rejection and still creates the tab", async () => {
+    const { driver, created } = makeDriver();
+    await navigateTool.execute(
+      { url: "https://example.com" },
+      {
+        driver,
+        session: {
+          conversationId: "c1",
+          resolveNewTabWindowId: async () => {
+            throw new Error("transient lookup failure");
+          },
+          getOrCreateHandle: () => "t1",
+          bindTabsToConversation: async () => {},
+        },
+      },
+    );
+    expect(created).toHaveLength(1);
+    expect("windowId" in created[0].opts).toBe(false);
+  });
 });
 
 // ─── buildExtensionToolContext.resolveNewTabWindowId ─────────────────────

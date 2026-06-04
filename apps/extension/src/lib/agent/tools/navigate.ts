@@ -67,10 +67,15 @@ export const navigateTool: BrowserTool<Input, Output> = {
       // for the root agent we resolve it dynamically via
       // `resolveNewTabWindowId` (owned-tab window → space window). When
       // neither yields a window, `windowId` is omitted and Chrome falls
-      // back to the focused window (legacy behavior).
+      // back to the focused window (legacy behavior). The resolver runs
+      // best-effort: a rejection is swallowed to `undefined` so a transient
+      // lookup failure degrades to the focused window rather than aborting
+      // the navigation.
       const targetWindowId =
         ctx.session?.targetWindowId ??
-        (await ctx.session?.resolveNewTabWindowId?.());
+        (await Promise.resolve(ctx.session?.resolveNewTabWindowId?.()).catch(
+          () => undefined,
+        ));
       tabId = await ctx.driver.createTab(url, {
         active: false,
         ...(targetWindowId !== undefined && { windowId: targetWindowId }),
