@@ -73,6 +73,7 @@ export function CreateScheduledTaskDialog({
   const [onceAt, setOnceAt] = useState(""); // datetime-local string
   const [autoApprove, setAutoApprove] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const providerModels = useConfiguredModels(settings);
   const formRef = useRef<HTMLDivElement>(null);
@@ -84,6 +85,7 @@ export function CreateScheduledTaskDialog({
 
   useEffect(() => {
     if (!open) return;
+    setError(null);
     if (editing) {
       setName(editing.name);
       setDescription(editing.description);
@@ -123,19 +125,36 @@ export function CreateScheduledTaskDialog({
         return { kind: "weekdays", hour, minute };
       case "weekly":
         return { kind: "weekly", weekday, hour, minute };
-      case "once":
-        return {
-          kind: "once",
-          at: onceAt ? new Date(onceAt).getTime() : Date.now(),
-        };
+      case "once": {
+        // Require an explicit future datetime — never fall back to Date.now(),
+        // which would fire the run immediately on save.
+        if (!onceAt) {
+          throw new Error("Pick a date and time for the one-time run.");
+        }
+        const at = new Date(onceAt).getTime();
+        if (Number.isNaN(at)) {
+          throw new Error("That date and time isn't valid.");
+        }
+        if (at <= Date.now()) {
+          throw new Error("Pick a date and time in the future.");
+        }
+        return { kind: "once", at };
+      }
     }
   }
 
   async function handleSave() {
     if (!name.trim() || !prompt.trim() || !agentModel) return;
+    setError(null);
+    let schedule: Schedule;
+    try {
+      schedule = buildSchedule();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
+    }
     setSaving(true);
     try {
-      const schedule = buildSchedule();
       if (editing) {
         await taskDb.update(editing.id, {
           name: name.trim(),
@@ -307,6 +326,11 @@ export function CreateScheduledTaskDialog({
         </div>
 
         <DialogFooter>
+          {error && (
+            <p className="mr-auto self-center text-xs text-destructive">
+              {error}
+            </p>
+          )}
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>

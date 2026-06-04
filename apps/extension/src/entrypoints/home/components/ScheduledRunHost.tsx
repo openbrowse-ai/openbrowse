@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { taskDb } from "@/lib/schedule/task-db";
+import { clearHeadlessRunPolicy } from "@/lib/agent/agent-transport";
 import {
   extractTextContent,
   serializeParts,
@@ -56,18 +57,40 @@ async function claimRun(childConversationId: string): Promise<boolean> {
   }
 }
 
+// Serialize all mutations of PENDING_RUNS_KEY through a single promise chain.
+// releaseRunRecord does a read-modify-write on session storage; two runs
+// finishing near-simultaneously could otherwise interleave and reinsert a
+// just-removed run. Chaining makes each read-modify-write atomic within the
+// page.
+let pendingRunsLock: Promise<void> = Promise.resolve();
+
+function serializePendingRunsOp(op: () => Promise<void>): Promise<void> {
+  const run = pendingRunsLock.then(op, op);
+  pendingRunsLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
 async function releaseRunRecord(childConversationId: string): Promise<void> {
+  const key = `${CLAIM_KEY_PREFIX}${childConversationId}`;
   try {
-    const key = `${CLAIM_KEY_PREFIX}${childConversationId}`;
     await chrome.storage.session.remove(key);
-    const pending = await readPendingRuns();
-    const next = pending.filter(
-      (p) => p.childConversationId !== childConversationId,
-    );
-    await chrome.storage.session.set({ [PENDING_RUNS_KEY]: next });
   } catch {
     // ignore
   }
+  await serializePendingRunsOp(async () => {
+    try {
+      const pending = await readPendingRuns();
+      const next = pending.filter(
+        (p) => p.childConversationId !== childConversationId,
+      );
+      await chrome.storage.session.set({ [PENDING_RUNS_KEY]: next });
+    } catch {
+      // ignore
+    }
+  });
 }
 
 export function ScheduledRunHost() {
@@ -116,6 +139,10 @@ export function ScheduledRunHost() {
 
   const handleFinished = useCallback((childConversationId: string) => {
     void releaseRunRecord(childConversationId);
+    // Drop the per-conversation headless policy registered by the transport
+    // so the (module-global, home-realm) policy map doesn't grow unbounded
+    // across runs. Safe: sched-run conversation ids are single-use.
+    clearHeadlessRunPolicy(childConversationId);
     hostedIdsRef.current.delete(childConversationId);
     setHosted((prev) =>
       prev.filter((r) => r.childConversationId !== childConversationId),
@@ -159,18 +186,32 @@ function ScheduledRunInstance({
 
   useEffect(() => {
     let cancelled = false;
-    void taskDb.get(taskId).then((task) => {
-      if (cancelled) return;
-      if (!task) {
-        reportDone(childConversationId, "error", "", "Task not found.");
+    void taskDb
+      .get(taskId)
+      .then((task) => {
+        if (cancelled) return;
+        if (!task) {
+          reportDone(childConversationId, "error", "", "Task not found.");
+          onFinished(childConversationId);
+          return;
+        }
+        setPrompt(task.prompt);
+        setAutoApprove(task.autoApprove ?? false);
+        setModel(task.agentModel);
+        setLoaded(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // taskDb.get rejected (e.g. IDB unavailable). Don't leave the run
+        // claimed and silently stuck — report failure and release it.
+        reportDone(
+          childConversationId,
+          "error",
+          "",
+          `Task retrieval failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
         onFinished(childConversationId);
-        return;
-      }
-      setPrompt(task.prompt);
-      setAutoApprove(task.autoApprove ?? false);
-      setModel(task.agentModel);
-      setLoaded(true);
-    });
+      });
     return () => {
       cancelled = true;
     };

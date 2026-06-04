@@ -56,6 +56,11 @@ export function resolveScheduleInput(
   now: number = Date.now(),
 ): Schedule {
   if (input.kind === "once") {
+    if (typeof input.inMinutes === "number" && input.at) {
+      throw new Error(
+        "once schedule requires exactly one of 'at' or 'inMinutes', not both",
+      );
+    }
     let at: number;
     if (typeof input.inMinutes === "number") {
       at = now + input.inMinutes * 60_000;

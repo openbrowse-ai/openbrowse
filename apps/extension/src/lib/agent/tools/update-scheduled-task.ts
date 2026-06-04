@@ -35,8 +35,12 @@ export const updateScheduledTaskTool: BrowserTool<Input, Output> = {
     "Modify an existing scheduled task: change its prompt or schedule, rename it, or pause/resume it (set enabled). Use list_scheduled_tasks first to get the task id.",
   parameters,
   execute: async (input) => {
+    const parsed = parameters.safeParse(input);
+    if (!parsed.success) {
+      return { updated: false, reason: parsed.error.message };
+    }
     const { id, name, description, prompt, schedule, enabled, autoApprove } =
-      parameters.parse(input);
+      parsed.data;
     try {
       const existing = await taskDb.get(id);
       if (!existing) {

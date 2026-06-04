@@ -48,6 +48,16 @@ describe("resolveScheduleInput", () => {
       resolveScheduleInput({ kind: "once", at: "not-a-date" }),
     ).toThrow();
   });
+
+  it("once: rejects ambiguous input (both at and inMinutes)", () => {
+    expect(() =>
+      resolveScheduleInput({
+        kind: "once",
+        at: "2030-01-01T00:00:00Z",
+        inMinutes: 20,
+      }),
+    ).toThrow(/exactly one of 'at' or 'inMinutes'/);
+  });
 });
 
 describe("create_scheduled_task", () => {

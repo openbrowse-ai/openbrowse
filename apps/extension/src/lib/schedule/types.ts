@@ -22,7 +22,11 @@ export interface ScheduledTask {
   agentModel: string;
   schedule: Schedule;
   enabled: boolean;
-  /** When true, the run opens a dedicated browser window. Default true. */
+  /**
+   * Reserved flag for tasks that require browser/DOM access during the run.
+   * Runs always execute in the background in a pinned home.html tab (via
+   * ScheduledRunHost); no separate browser window is opened. Default true.
+   */
   needsBrowser: boolean;
   /**
    * When true, the headless run auto-approves tool actions that normally

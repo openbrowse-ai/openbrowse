@@ -70,10 +70,7 @@ export const taskDb = {
    * is recomputed from the new schedule (unless the caller explicitly set
    * `nextRunAt` in the same patch).
    */
-  async update(
-    id: string,
-    patch: Partial<ScheduledTaskRow>,
-  ): Promise<void> {
+  async update(id: string, patch: Partial<ScheduledTaskRow>): Promise<void> {
     const db = await getChatDbConnection();
     const existing = await db.get("scheduledTasks", id);
     if (!existing) return;
@@ -87,6 +84,32 @@ export const taskDb = {
     }
     await db.put("scheduledTasks", merged);
     emit();
+  },
+
+  /**
+   * Atomically claim a task for a run: within a single IDB transaction, set
+   * `lastRunStatus = "running"` only if it isn't already "running". Returns
+   * true if this caller won the claim (and should proceed with the run),
+   * false if the task is missing or already running. This closes the
+   * check-then-update (TOCTOU) gap between a `get` and a later `update` when
+   * an alarm tick and a "run now" request race for the same task.
+   */
+  async claimRun(id: string): Promise<boolean> {
+    const db = await getChatDbConnection();
+    const tx = db.transaction("scheduledTasks", "readwrite");
+    const existing = await tx.store.get(id);
+    if (!existing || existing.lastRunStatus === "running") {
+      await tx.done;
+      return false;
+    }
+    await tx.store.put({
+      ...existing,
+      lastRunStatus: "running",
+      updatedAt: Date.now(),
+    });
+    await tx.done;
+    emit();
+    return true;
   },
 
   async remove(id: string): Promise<void> {

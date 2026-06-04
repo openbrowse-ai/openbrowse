@@ -806,11 +806,10 @@ export default defineBackground({
               sendResponse({ ok: true, skipped: true });
               return;
             }
-            const { runScheduledTask, createHomeHostDeps } =
+            const { runScheduledTask, getHomeHostDeps } =
               await import("@/lib/agent/scheduled-run");
-            const hostDeps = createHomeHostDeps();
             await runScheduledTask(message.taskId, {
-              ...hostDeps,
+              ...getHomeHostDeps(),
               notify: (payload) =>
                 chrome.runtime
                   ?.sendMessage?.({ type: "AGENT_NOTIFY", payload })

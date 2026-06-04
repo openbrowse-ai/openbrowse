@@ -52,12 +52,11 @@ export async function rescheduleAll(now: number): Promise<void> {
 
 /** Default production run: host the run in a home page and await its result. */
 async function runOneProduction(taskId: string): Promise<void> {
-  const { runScheduledTask, createHomeHostDeps } = await import(
+  const { runScheduledTask, getHomeHostDeps } = await import(
     "@/lib/agent/scheduled-run"
   );
-  const hostDeps = createHomeHostDeps();
   await runScheduledTask(taskId, {
-    ...hostDeps,
+    ...getHomeHostDeps(),
     notify: (payload) => {
       chrome.runtime
         ?.sendMessage?.({ type: "AGENT_NOTIFY", payload })

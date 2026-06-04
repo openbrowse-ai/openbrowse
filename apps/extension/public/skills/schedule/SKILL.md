@@ -6,9 +6,9 @@ description: Create, list, and manage scheduled tasks that run automatically on 
 # Schedule Skill
 
 Set up and manage **scheduled tasks**: a saved prompt that OpenBrowse runs
-automatically at a time you choose, in a dedicated browser window, while
-Chrome is open. Each run lands as a conversation in your history and you get
-a notification when it finishes.
+automatically at a time you choose. Runs execute in the background in a pinned
+home.html tab (hosted by ScheduledRunHost) while Chrome is open. Each run lands
+as a conversation in your history and you get a notification when it finishes.
 
 You have three tools:
 
@@ -56,7 +56,8 @@ You have three tools:
 
 - Scheduled tasks only run while Chrome is open. If Chrome is closed when a
   task is due, that run is skipped and the next occurrence is scheduled.
-- Each run opens its own browser window and closes it when done.
+- Each run executes in the background in a pinned home.html tab (via
+  ScheduledRunHost); it does not open a separate browser window.
 - A running scheduled task cannot itself create or modify scheduled tasks.
 - The user can also create and manage tasks visually from the **Scheduled**
   page in the sidebar.

@@ -52,50 +52,71 @@ export async function runScheduledTask(
   deps: RunScheduledTaskDeps,
 ): Promise<RunScheduledTaskResult> {
   const now = deps.now ?? Date.now;
+
+  // Atomically claim the task: sets lastRunStatus="running" only if it isn't
+  // already running, in one IDB transaction. This closes the TOCTOU gap where
+  // an alarm tick and a "run now" request both pass a separate get() guard and
+  // then double-fire the same task.
+  const claimed = await taskDb.claimRun(taskId);
+  if (!claimed) return { status: "skipped" };
+
   const task = await taskDb.get(taskId);
+  // Defensive: claimRun returned true, so the row existed a moment ago.
   if (!task) return { status: "skipped" };
 
-  // Guard against starting a second concurrent run of the same task.
-  if (task.lastRunStatus === "running") return { status: "skipped" };
+  // Pre-host setup: create the parent + per-run conversations. If any of this
+  // throws, the task would otherwise stay stuck as "running" until the next
+  // SW startup reschedule — so mark it failed here and bail.
+  let childConversationId: string;
+  try {
+    // Ensure a parent "task" conversation exists to own this run's transcript.
+    let taskConversationId = task.taskConversationId;
+    if (!taskConversationId) {
+      taskConversationId = `task-conv-${taskId}`;
+      await chatDb.createConversation({
+        id: taskConversationId,
+        title: task.name,
+        spaceId: null,
+        parentConversationId: null,
+        subagentSlug: "scheduled",
+        subagentStatus: null,
+        createdAt: now(),
+        updatedAt: now(),
+      });
+      await taskDb.update(taskId, { taskConversationId });
+    }
 
-  // Mark running so a concurrent tick won't double-fire this task.
-  await taskDb.update(taskId, { lastRunStatus: "running" });
-
-  // Ensure a parent "task" conversation exists to own this run's transcript.
-  let taskConversationId = task.taskConversationId;
-  if (!taskConversationId) {
-    taskConversationId = `task-conv-${taskId}`;
+    // Create the child (per-run) conversation.
+    childConversationId = `sched-run-${taskId}-${now()}`;
     await chatDb.createConversation({
-      id: taskConversationId,
-      title: task.name,
+      id: childConversationId,
+      title: `${task.name} — ${new Date(now()).toLocaleString()}`,
       spaceId: null,
-      parentConversationId: null,
+      parentConversationId: taskConversationId,
       subagentSlug: "scheduled",
-      subagentStatus: null,
+      subagentStatus: "running",
       createdAt: now(),
       updatedAt: now(),
     });
-    await taskDb.update(taskId, { taskConversationId });
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    await taskDb.update(taskId, {
+      lastRunStatus: "error",
+      lastRunError: errorMessage,
+      lastRunAt: now(),
+      nextRunAt: computeNextRun(task.schedule, now()),
+    });
+    return { status: "error" };
   }
-
-  // Create the child (per-run) conversation.
-  const childConversationId = `sched-run-${taskId}-${now()}`;
-  await chatDb.createConversation({
-    id: childConversationId,
-    title: `${task.name} — ${new Date(now()).toLocaleString()}`,
-    spaceId: null,
-    parentConversationId: taskConversationId,
-    subagentSlug: "scheduled",
-    subagentStatus: "running",
-    createdAt: now(),
-    updatedAt: now(),
-  });
 
   let result: ScheduledLoopResult;
   try {
-    // Hand the run to a home page (ensure one exists), then await its result.
+    // Register the result waiter BEFORE broadcasting the host request, so a
+    // home page that runs and posts SCHEDULED_RUN_DONE immediately can't beat
+    // the waiter registration (which would strand the run until timeout).
+    const resultPromise = deps.awaitResult({ taskId, childConversationId });
     await deps.hostRun({ taskId, childConversationId });
-    result = await deps.awaitResult({ taskId, childConversationId });
+    result = await resultPromise;
   } catch (err) {
     result = {
       finalText: "",
@@ -226,6 +247,27 @@ export function createHomeHostDeps(
       });
     },
   };
+}
+
+/**
+ * Lazily-initialized singleton of the production host deps. `createHomeHostDeps`
+ * attaches a `chrome.runtime.onMessage` listener (on first `hostRun`) that lives
+ * for the SW's lifetime; creating a fresh deps object per tick / per "run now"
+ * would accumulate one listener per invocation. Callers must reuse this single
+ * instance so exactly one listener exists.
+ */
+let homeHostDepsSingleton:
+  | Pick<RunScheduledTaskDeps, "hostRun" | "awaitResult">
+  | null = null;
+
+export function getHomeHostDeps(): Pick<
+  RunScheduledTaskDeps,
+  "hostRun" | "awaitResult"
+> {
+  if (!homeHostDepsSingleton) {
+    homeHostDepsSingleton = createHomeHostDeps();
+  }
+  return homeHostDepsSingleton;
 }
 
 /**

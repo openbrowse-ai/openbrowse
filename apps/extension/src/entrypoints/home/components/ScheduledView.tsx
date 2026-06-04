@@ -265,6 +265,7 @@ export function ScheduledView({
                         <Switch
                           checked={task.enabled}
                           onCheckedChange={(v) => toggle(task, v)}
+                          aria-label={`${task.enabled ? "Pause" : "Resume"} ${task.name}`}
                         />
                       </span>
                     </TooltipTrigger>
@@ -275,7 +276,11 @@ export function ScheduledView({
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`Open actions for ${task.name}`}
+                      >
                         <MoreVertical className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
