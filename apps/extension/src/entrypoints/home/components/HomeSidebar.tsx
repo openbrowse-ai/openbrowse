@@ -18,6 +18,7 @@ import {
   Search,
   Settings,
   Trash2,
+  Clock,
 } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -35,6 +36,10 @@ interface HomeSidebarProps {
   onConfigureSpace: () => void;
   onRenameConversation: (conv: { id: string; title: string }) => void;
   onDeleteConversation: (conv: { id: string; title: string }) => void;
+  onOpenScheduled: () => void;
+  onScheduleConversation: (conv: { id: string; title: string }) => void;
+  /** True when the Scheduled view is the active main pane. */
+  scheduledActive?: boolean;
 }
 
 interface ConversationItem {
@@ -214,6 +219,9 @@ export function HomeSidebar({
   onConfigureSpace,
   onRenameConversation,
   onDeleteConversation,
+  onOpenScheduled,
+  onScheduleConversation,
+  scheduledActive,
 }: HomeSidebarProps) {
   const [pinned, setPinned] = useState(() => {
     const stored = localStorage.getItem("openbrowse-sidebar-pinned");
@@ -231,8 +239,22 @@ export function HomeSidebar({
   }, [pinned]);
 
   const refresh = useCallback(async () => {
-    const convs = await chatDb.listRootConversations(activeSpaceId);
-    setConversations(convs);
+    // Normal chats: space-scoped roots (subagent children excluded upstream).
+    const roots = await chatDb.listRootConversations(activeSpaceId);
+    // Scheduled-task runs are global (spaceId null) and have a
+    // parentConversationId, so listRootConversations omits them. Fetch the
+    // full list and surface the per-run conversations regardless of space.
+    const all = await chatDb.listConversations();
+    const scheduledRuns = all.filter(
+      (c) => c.subagentSlug === "scheduled" && !!c.parentConversationId,
+    );
+    const seen = new Set(roots.map((c) => c.id));
+    const merged = [...roots];
+    for (const run of scheduledRuns) {
+      if (!seen.has(run.id)) merged.push(run);
+    }
+    merged.sort((a, b) => b.createdAt - a.createdAt);
+    setConversations(merged);
   }, [activeSpaceId]);
 
   useEffect(() => {
@@ -430,6 +452,18 @@ export function HomeSidebar({
             <span className="flex-1 text-left">Search tabs</span>
             <Kbd>⌥K</Kbd>
           </button>
+          <button
+            type="button"
+            onClick={onOpenScheduled}
+            className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+              scheduledActive
+                ? "bg-sidebar-accent text-sidebar-foreground"
+                : "hover:bg-sidebar-accent"
+            }`}
+          >
+            <Clock className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Scheduled</span>
+          </button>
         </div>
 
         {/* Chats */}
@@ -470,6 +504,15 @@ export function HomeSidebar({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="right" align="start" sideOffset={4}>
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onScheduleConversation(conv);
+                    }}
+                  >
+                    <Clock className="size-3.5" />
+                    Schedule
+                  </DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={(e) => {
                       e.stopPropagation();

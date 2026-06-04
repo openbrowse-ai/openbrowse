@@ -32,6 +32,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { useProviders } from "@/hooks/useProviders";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
@@ -160,12 +161,15 @@ export function ChatView({
     [],
   );
 
+  const activeAgents = useActiveAgents();
+  const isAgentActiveGlobally = conversationId ? activeAgents.has(conversationId) : false;
+
   const {
     messages,
     input,
     setInput,
-    isLoading,
-    isStreaming,
+    isLoading: hookIsLoading,
+    isStreaming: hookIsStreaming,
     isCompacting,
     isConfigured,
     settings,
@@ -190,53 +194,34 @@ export function ChatView({
     clearQueue,
     setQueueEditing,
   } = useAgentChat({
-    conversationId,
-    spaceId,
+    conversationId: conversationId ?? null,
+    spaceId: spaceId ?? null,
     onNewConversation,
     initialInput,
     getSharedTabId,
   });
 
-  // Global Option+Space popup: persist unsent draft text across dismiss/reopen
-  // cycles using chrome.storage.session. Hydrate once on mount; debounce-write
-  // on subsequent changes. Storage is cleared automatically when the input is
-  // emptied (e.g. after a successful send).
-  const draftHydratedRef = useRef(false);
+  // Seed the composer from an external "seed-chat-input" event (e.g. the
+  // per-chat "Schedule" action inserting "/schedule "). Scoped to the active
+  // conversation so only the visible chat responds. Bumps a focus nonce so
+  // ChatInput refocuses on the seeded text.
+  const [seedNonce, setSeedNonce] = useState(0);
   useEffect(() => {
-    if (!isGlobalChat) return;
-    if (draftHydratedRef.current) return;
-    chrome.storage.session
-      .get("globalChatDraft")
-      .then((stored) => {
-        const v = stored.globalChatDraft;
-        if (typeof v === "string" && v.length > 0) setInput(v);
-      })
-      .catch((err) => {
-        console.warn("[global-chat] failed to hydrate draft:", err);
-      })
-      .finally(() => {
-        draftHydratedRef.current = true;
-      });
-  }, [isGlobalChat, setInput]);
+    function onSeed(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { conversationId: string | null; text: string }
+        | undefined;
+      if (!detail) return;
+      if ((detail.conversationId ?? null) !== (conversationId ?? null)) return;
+      setInput(detail.text);
+      setSeedNonce((n) => n + 1);
+    }
+    window.addEventListener("seed-chat-input", onSeed);
+    return () => window.removeEventListener("seed-chat-input", onSeed);
+  }, [conversationId, setInput]);
 
-  useEffect(() => {
-    if (!isGlobalChat) return;
-    if (!draftHydratedRef.current) return; // skip until hydration ran
-    const timer = setTimeout(() => {
-      if (input && input.length > 0) {
-        chrome.storage.session
-          .set({ globalChatDraft: input })
-          .catch((err) => {
-            console.warn("[global-chat] failed to persist draft:", err);
-          });
-      } else {
-        chrome.storage.session.remove("globalChatDraft").catch((err) => {
-          console.warn("[global-chat] failed to clear draft:", err);
-        });
-      }
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [isGlobalChat, input]);
+  const isLoading = hookIsLoading || isAgentActiveGlobally;
+  const isStreaming = hookIsStreaming || isAgentActiveGlobally;
 
   const { providers } = useProviders();
 
@@ -810,7 +795,7 @@ export function ChatView({
               })?.capabilities
           }
           autoFocus
-          focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}`}
+          focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}-${seedNonce}`}
         />
       </div>
     </div>

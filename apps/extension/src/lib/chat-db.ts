@@ -84,7 +84,35 @@ interface ChatDB extends DBSchema {
       "by-conversation": string;
     };
   };
+  scheduledTasks: {
+    key: string;
+    value: {
+      id: string;
+      name: string;
+      description: string;
+      prompt: string;
+      agentModel: string;
+      schedule: import("./schedule/types").Schedule;
+      enabled: boolean;
+      needsBrowser: boolean;
+      autoApprove: boolean;
+      sourceConversationId?: string;
+      taskConversationId?: string;
+      createdAt: number;
+      updatedAt: number;
+      lastRunAt?: number;
+      lastRunStatus?: import("./schedule/types").ScheduledRunStatus;
+      lastRunConversationId?: string;
+      lastRunError?: string;
+      nextRunAt?: number | null;
+    };
+    indexes: {
+      "by-next-run": number;
+    };
+  };
 }
+
+export type ScheduledTaskRow = ChatDB["scheduledTasks"]["value"];
 
 let dbPromise: Promise<IDBPDatabase<ChatDB>> | null = null;
 
@@ -155,7 +183,8 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      blanket "running" sweep).
     // v13: adds `lastCompletionApproved` + `taskCompletedAt` on
     //      conversations for agent tab-cleanup. Optional; no backfill.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 13, {
+    // v14: adds the scheduledTasks object store.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 14, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -338,6 +367,17 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
         if (oldVersion < 13) {
           // Completion marker fields are optional and default to undefined;
           // no backfill needed. New writes set them via updateConversation.
+        }
+
+        if (oldVersion < 14) {
+          // New store for scheduled tasks. Fresh store; no data backfill.
+          const taskStore = db.createObjectStore("scheduledTasks", {
+            keyPath: "id",
+          });
+          // Index on nextRunAt is informational; the scheduler reads all
+          // enabled tasks each tick and filters in memory (task counts are
+          // small). The index is kept for future range queries.
+          taskStore.createIndex("by-next-run", "nextRunAt");
         }
       },
     });
@@ -639,3 +679,12 @@ export const chatDb = {
     dbPromise = null;
   },
 };
+
+/**
+ * Shared accessor for the `openbrowse-chat` IndexedDB connection. Exposed so
+ * sibling stores (e.g. scheduled tasks) reuse the same versioned connection
+ * instead of opening a second DB. Returns the typed idb database.
+ */
+export function getChatDbConnection() {
+  return getDb();
+}

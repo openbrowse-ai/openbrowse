@@ -3,6 +3,7 @@ import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
 import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
+import { registerScheduler } from "./scheduler";
 import { chatDb } from "@/lib/chat-db";
 import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
 
@@ -26,6 +27,7 @@ function getTidyState(data: Record<string, unknown>, key: string): TidyState {
 export default defineBackground({
   main() {
     registerModelsDevRefresh();
+    registerScheduler();
 
     // Defensive cleanup for orphaned subagent runs that survived an
     // MV3 service-worker death. Any conversation row with
@@ -789,6 +791,35 @@ export default defineBackground({
           const { storage } = await import("@/lib/storage");
           await storage.clearAutoTidyNotification();
           sendResponse({ ok: true });
+        })();
+        return true;
+      }
+
+      if (message.type === "SCHEDULER_RUN_NOW") {
+        (async () => {
+          try {
+            const { taskDb } = await import("@/lib/schedule/task-db");
+            // Respect the running guard: don't start a second concurrent run
+            // of the same task (e.g. double-click, or a tick already running it).
+            const existing = await taskDb.get(message.taskId);
+            if (!existing || existing.lastRunStatus === "running") {
+              sendResponse({ ok: true, skipped: true });
+              return;
+            }
+            const { runScheduledTask, createHomeHostDeps } =
+              await import("@/lib/agent/scheduled-run");
+            const hostDeps = createHomeHostDeps();
+            await runScheduledTask(message.taskId, {
+              ...hostDeps,
+              notify: (payload) =>
+                chrome.runtime
+                  ?.sendMessage?.({ type: "AGENT_NOTIFY", payload })
+                  ?.catch?.(() => {}),
+            });
+            sendResponse({ ok: true });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
         })();
         return true;
       }

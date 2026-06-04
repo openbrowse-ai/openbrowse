@@ -50,6 +50,21 @@ export function LandingPage({
 }: LandingPageProps) {
   const recentTabs = useRecentTabs(space?.windowId ?? null);
   const [input, setInput] = useState(initialInput ?? "");
+
+  // Seed the composer from a "seed-chat-input" event targeting a new chat
+  // (conversationId === null) — used by the Scheduled view's "Create with
+  // agent" action to insert "/schedule ".
+  useEffect(() => {
+    function onSeed(e: Event) {
+      const detail = (e as CustomEvent).detail as
+        | { conversationId: string | null; text: string }
+        | undefined;
+      if (!detail || detail.conversationId != null) return;
+      setInput(detail.text);
+    }
+    window.addEventListener("seed-chat-input", onSeed);
+    return () => window.removeEventListener("seed-chat-input", onSeed);
+  }, []);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
 

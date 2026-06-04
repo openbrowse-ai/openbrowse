@@ -102,6 +102,21 @@ interface UseAgentChatOptions {
    * null when the user has dismissed the pill or no eligible tab is active.
    */
   getSharedTabId?: () => number | null;
+  /**
+   * When set, this chat is a headless scheduled run: the transport is built
+   * with the headless policy (auto-approve / approval-tool filtering) so the
+   * run completes with no human present.
+   */
+  headless?: { autoApprove: boolean };
+  /**
+   * Forces the agent model for this chat instance only, WITHOUT persisting to
+   * the global agent settings. Used by background scheduled runs so a task's
+   * configured model doesn't overwrite the user's globally-selected model (and
+   * doesn't get broadcast to other open chat instances via the agent-settings
+   * storage listener). When set, this value also survives the async
+   * getAgentSettings() hydration.
+   */
+  modelOverride?: string | null;
 }
 
 function generateId() {
@@ -664,6 +679,8 @@ export function useAgentChat({
   onNewConversation,
   initialInput,
   getSharedTabId,
+  headless,
+  modelOverride,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
@@ -712,7 +729,11 @@ export function useAgentChat({
 
   useEffect(() => {
     storage.getSettings().then(setSettings);
-    storage.getAgentSettings().then(setAgentSettings);
+    storage.getAgentSettings().then((loaded) =>
+      setAgentSettings(
+        modelOverride ? { ...loaded, agentModel: modelOverride } : loaded,
+      ),
+    );
     const listener = (
       changes: Record<string, chrome.storage.StorageChange>,
       area: string,
@@ -720,12 +741,18 @@ export function useAgentChat({
       if (area === "local") {
         if (changes.settings) storage.getSettings().then(setSettings);
         if (changes["agent-settings"])
-          storage.getAgentSettings().then(setAgentSettings);
+          storage.getAgentSettings().then((loaded) =>
+            setAgentSettings(
+              modelOverride
+                ? { ...loaded, agentModel: modelOverride }
+                : loaded,
+            ),
+          );
       }
     };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
-  }, []);
+  }, [modelOverride]);
 
   /**
    * Hydrate the per-conversation queue and keep it in sync with both
@@ -882,11 +909,12 @@ export function useAgentChat({
         agentSettings.thinkingEnabled
           ? { enabled: true, config: agentSettings.thinkingConfig }
           : undefined,
+        headless,
       );
       if (!cancelled) setTransport(t);
     })();
     return () => { cancelled = true; };
-  }, [settings, agentSettings.agentModel, agentSettings.thinkingEnabled, agentSettings.thinkingConfig, spaceId, mcpVersion]);
+  }, [settings, agentSettings.agentModel, agentSettings.thinkingEnabled, agentSettings.thinkingConfig, spaceId, mcpVersion, headless?.autoApprove]);
 
   // Get or create a Chat instance for the current conversation
   const origin: "sidepanel" | "home" = window.location.pathname.includes("home")
@@ -2069,6 +2097,13 @@ export function useAgentChat({
     isStreaming,
     isCompacting,
     isConfigured,
+    // True once the chat transport has finished building. The transport is
+    // constructed asynchronously (createAgentTransport), so on first render it
+    // is null and the underlying Chat has no transport — sending then would
+    // fall through to the AI SDK's default `api/chat` endpoint (ERR_FILE_NOT_FOUND
+    // in the extension). Headless/background runs auto-send and must wait for
+    // this before calling handleSubmit.
+    isReady: transport !== null,
     hasVisionSupport,
     settings,
     updateSettings,

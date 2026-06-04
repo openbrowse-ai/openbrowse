@@ -21,7 +21,7 @@ export const listTabsTool: BrowserTool<Input, Output> = {
   parameters,
   outputSchema,
   execute: async (_input, ctx) => {
-    const tabs = await ctx.driver.listTabs();
+    const tabs = await ctx.driver.listTabs(ctx.session?.targetWindowId);
     return tabs.map((t) => ({
       tab: handleForTab(ctx, t.id),
       url: t.url,

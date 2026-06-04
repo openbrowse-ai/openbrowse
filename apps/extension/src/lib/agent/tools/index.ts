@@ -20,3 +20,6 @@ export { skillTool } from "./skill";
 export { installSkillTool } from "./install-skill";
 export { createSkillTool } from "./create-skill";
 export { closeTabsTool } from "./close-tabs";
+export { createScheduledTaskTool } from "./create-scheduled-task";
+export { listScheduledTasksTool } from "./list-scheduled-tasks";
+export { updateScheduledTaskTool } from "./update-scheduled-task";

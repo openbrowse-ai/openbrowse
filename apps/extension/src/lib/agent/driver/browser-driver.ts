@@ -75,7 +75,7 @@ export interface BrowserDriver {
    * (chrome://, chrome-extension://, devtools://) so the agent never
    * accidentally targets its own UI.
    */
-  listTabs(): Promise<BrowserTabInfo[]>;
+  listTabs(targetWindowId?: number): Promise<BrowserTabInfo[]>;
 
   /**
    * Navigate an existing tab to a new URL. Returns once the navigation has

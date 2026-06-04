@@ -75,10 +75,11 @@ export class ExtensionDriver implements BrowserDriver {
     return getTargetTabId();
   }
 
-  async listTabs(): Promise<BrowserTabInfo[]> {
-    const window = await chrome.windows.getCurrent();
-    if (!window.id) return [];
-    const tabs = await chrome.tabs.query({ windowId: window.id });
+  async listTabs(targetWindowId?: number): Promise<BrowserTabInfo[]> {
+    const windowId =
+      targetWindowId ?? (await chrome.windows.getCurrent()).id;
+    if (windowId == null) return [];
+    const tabs = await chrome.tabs.query({ windowId });
     return tabs
       .filter((t) => !isInternalUrl(t.url))
       .map(toBrowserTabInfo);

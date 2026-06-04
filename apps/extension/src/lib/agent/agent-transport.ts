@@ -43,12 +43,14 @@ import {
 import {
   clickElementTool,
   closeTabsTool,
+  createScheduledTaskTool,
   createSkillTool,
   deleteMemoryTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
   installSkillTool,
+  listScheduledTasksTool,
   listTabsTool,
   navigateTool,
   readPageTool,
@@ -62,6 +64,7 @@ import {
   todoWriteTool,
   typeInElementTool,
   updateMemoryTool,
+  updateScheduledTaskTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
 import { createFsTools } from "./tools/fs";
@@ -355,6 +358,28 @@ let lastIndicatorTabId: number | null = null;
 
 let agentConversationId: string | null = null;
 
+/**
+ * Per-conversation policy for HEADLESS runs (scheduled tasks). When a policy
+ * is present for the active conversation, `toSDKTool`'s approval gate honors
+ * `autoApprove` instead of prompting a (non-existent) human. Set by the
+ * offscreen scheduled-run host around a run; cleared in its `finally`.
+ */
+interface HeadlessRunPolicy {
+  autoApprove: boolean;
+}
+const headlessRunPolicies = new Map<string, HeadlessRunPolicy>();
+
+export function setHeadlessRunPolicy(
+  conversationId: string,
+  policy: HeadlessRunPolicy,
+): void {
+  headlessRunPolicies.set(conversationId, policy);
+}
+
+export function clearHeadlessRunPolicy(conversationId: string): void {
+  headlessRunPolicies.delete(conversationId);
+}
+
 let lastTotalTokens = 0;
 let currentModelDef: ModelDefinition | undefined;
 
@@ -551,6 +576,64 @@ const extensionDriver = new ExtensionDriver();
  * The bench harness builds its own minimal context with `session` left
  * undefined.
  */
+/**
+ * Build the browser tool set for a conversation. Extracted from
+ * `createAgentTransport` so the headless scheduled-run loop can reuse the
+ * exact same tool wrappers. `fsTools`/`pythonTool` are conversation-scoped,
+ * so they are created here from `conversationId`. The tools resolve their
+ * `ToolContext` at call time from the SDK's `experimental_context` (or the
+ * module-level `agentConversationId` fallback), so this function does not
+ * take a context argument.
+ */
+export function createBrowserToolSet(
+  conversationId: string | null,
+): Record<string, ToolSet[string]> {
+  const fsTools = createFsTools(conversationId);
+  const pythonTool = createPythonTool(conversationId);
+  return {
+    snapshot: toSDKTool(snapshotTool, "snapshot"),
+    readPage: toSDKTool(readPageTool, "readPage"),
+    screenshot: toSDKTool(screenshotTool, "screenshot"),
+    listTabs: toSDKTool(listTabsTool, "listTabs"),
+    navigate: toSDKTool(navigateTool, "navigate"),
+    clickElement: toSDKTool(clickElementTool, "clickElement"),
+    typeInElement: toSDKTool(typeInElementTool, "typeInElement"),
+    scrollPage: toSDKTool(scrollPageTool, "scrollPage"),
+    selectTab: toSDKTool(selectTabTool, "selectTab"),
+    closeTabs: toSDKTool(closeTabsTool, "closeTabs"),
+    saveMemory: toSDKTool(saveMemoryTool, "saveMemory"),
+    updateMemory: toSDKTool(updateMemoryTool, "updateMemory"),
+    recallMemory: toSDKTool(recallMemoryTool, "recallMemory"),
+    deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
+    executeCode: toSDKTool(executeCodeTool, "executeCode"),
+    executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    executePython: toSDKTool(pythonTool, "executePython"),
+    extract: toSDKTool(extractTool, "extract"),
+    todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
+    skill: toSDKTool(skillTool, "skill"),
+    install_skill: toSDKTool(installSkillTool, "install_skill"),
+    create_skill: toSDKTool(createSkillTool, "create_skill"),
+    create_scheduled_task: toSDKTool(
+      createScheduledTaskTool,
+      "create_scheduled_task",
+    ),
+    list_scheduled_tasks: toSDKTool(
+      listScheduledTasksTool,
+      "list_scheduled_tasks",
+    ),
+    update_scheduled_task: toSDKTool(
+      updateScheduledTaskTool,
+      "update_scheduled_task",
+    ),
+    Read: toSDKTool(fsTools.readTool, "Read"),
+    Write: toSDKTool(fsTools.writeTool, "Write"),
+    Edit: toSDKTool(fsTools.editTool, "Edit"),
+    Glob: toSDKTool(fsTools.globTool, "Glob"),
+    Grep: toSDKTool(fsTools.grepTool, "Grep"),
+    LS: toSDKTool(fsTools.lsTool, "LS"),
+  };
+}
+
 export function buildExtensionToolContext(
   pinnedConversationId: string | null,
 ): ToolContext {
@@ -747,6 +830,33 @@ export function toSDKTool<TInput, TOutput>(
           }
         : approvalRequired;
 
+  /**
+   * Wrap the resolved `needsApproval` so that during a HEADLESS scheduled
+   * run with `autoApprove`, approval-gated tools execute without prompting
+   * (there's no human to approve). When the policy is absent or
+   * `autoApprove` is false, the original behavior applies. (Approval-gated
+   * tools are omitted entirely from non-auto-approve headless runs at the
+   * tool-set level, so this branch only matters for auto-approve.)
+   */
+  const needsApprovalWithHeadless =
+    approvalRequired && typeof needsApproval !== "boolean"
+      ? async (input: unknown, opts: unknown) => {
+          const cid = agentConversationId;
+          const policy = cid ? headlessRunPolicies.get(cid) : undefined;
+          if (policy?.autoApprove) return false;
+          return (
+            needsApproval as (i: unknown, o: unknown) => Promise<boolean>
+          )(input, opts);
+        }
+      : approvalRequired
+        ? async () => {
+            const cid = agentConversationId;
+            const policy = cid ? headlessRunPolicies.get(cid) : undefined;
+            if (policy?.autoApprove) return false;
+            return true;
+          }
+        : needsApproval;
+
   const execute = async (
     input: TInput,
     options: {
@@ -925,7 +1035,7 @@ export function toSDKTool<TInput, TOutput>(
       : undefined,
     strict: true,
     execute,
-    needsApproval,
+    needsApproval: needsApprovalWithHeadless,
     ...(onInputAvailable && { onInputAvailable }),
     ...(toModelOutput && { toModelOutput }),
   } as ToolSet[string];
@@ -1023,6 +1133,10 @@ export async function createAgentTransport(
     enabled: boolean;
     config?: import("../types").ThinkingConfig;
   },
+  headless?: {
+    /** Auto-approve approval-gated tools (no human present). */
+    autoApprove: boolean;
+  },
 ): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
 
@@ -1058,6 +1172,16 @@ export async function createAgentTransport(
   // (1M window) or Claude Sonnet 4.5 (200K window).
   const modelDef = provider.models.find((m) => m.id === actualModelId);
   setCurrentModelDef(modelDef);
+
+  // Headless (scheduled) run: register the per-conversation policy so the
+  // tool wrapper's approval gate auto-approves (or the tool set excludes
+  // approval-gated tools) for this conversation. Keyed by conversationId so
+  // it doesn't affect interactive chats in the same realm.
+  if (headless && conversationId) {
+    setHeadlessRunPolicy(conversationId, {
+      autoApprove: headless.autoApprove,
+    });
+  }
 
   // Resolve the evaluator model once at transport build time. When
   // settings.completionCheck.evaluatorModel is unset (the recommended
@@ -1106,39 +1230,7 @@ export async function createAgentTransport(
     }
   }
 
-  const fsTools = createFsTools(conversationId);
-  const pythonTool = createPythonTool(conversationId);
-
-  const browserTools: Record<string, ToolSet[string]> = {
-    snapshot: toSDKTool(snapshotTool, "snapshot"),
-    readPage: toSDKTool(readPageTool, "readPage"),
-    screenshot: toSDKTool(screenshotTool, "screenshot"),
-    listTabs: toSDKTool(listTabsTool, "listTabs"),
-    navigate: toSDKTool(navigateTool, "navigate"),
-    clickElement: toSDKTool(clickElementTool, "clickElement"),
-    typeInElement: toSDKTool(typeInElementTool, "typeInElement"),
-    scrollPage: toSDKTool(scrollPageTool, "scrollPage"),
-    selectTab: toSDKTool(selectTabTool, "selectTab"),
-    closeTabs: toSDKTool(closeTabsTool, "closeTabs"),
-    saveMemory: toSDKTool(saveMemoryTool, "saveMemory"),
-    updateMemory: toSDKTool(updateMemoryTool, "updateMemory"),
-    recallMemory: toSDKTool(recallMemoryTool, "recallMemory"),
-    deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
-    executeCode: toSDKTool(executeCodeTool, "executeCode"),
-    executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
-    executePython: toSDKTool(pythonTool, "executePython"),
-    extract: toSDKTool(extractTool, "extract"),
-    todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
-    skill: toSDKTool(skillTool, "skill"),
-    install_skill: toSDKTool(installSkillTool, "install_skill"),
-    create_skill: toSDKTool(createSkillTool, "create_skill"),
-    Read: toSDKTool(fsTools.readTool, "Read"),
-    Write: toSDKTool(fsTools.writeTool, "Write"),
-    Edit: toSDKTool(fsTools.editTool, "Edit"),
-    Glob: toSDKTool(fsTools.globTool, "Glob"),
-    Grep: toSDKTool(fsTools.grepTool, "Grep"),
-    LS: toSDKTool(fsTools.lsTool, "LS"),
-  };
+  const browserTools = createBrowserToolSet(conversationId);
 
   // The completion-check evaluator runs WITHOUT tools by default.
   //
@@ -1498,7 +1590,38 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     runAgentLoop: runSubagentAgentLoop,
   });
 
-  const tools = { ...parentTools, delegate: toSDKTool(delegateTool, "delegate") };
+  const tools = (() => {
+    const base = {
+      ...parentTools,
+      delegate: toSDKTool(delegateTool, "delegate"),
+    };
+    if (!headless) return base;
+    // Headless (scheduled) run: never spawn subagents. When not
+    // auto-approving, also drop approval-gated tools (no human to approve).
+    const HEADLESS_DROP = new Set<string>(["delegate"]);
+    if (!headless.autoApprove) {
+      for (const k of [
+        "closeTabs",
+        "executeOnPage",
+        "executePython",
+        "updateMemory",
+        "install_skill",
+        "create_skill",
+      ]) {
+        HEADLESS_DROP.add(k);
+      }
+    }
+    // Scheduled runs must never create/modify scheduled tasks (no recursion).
+    HEADLESS_DROP.add("create_scheduled_task");
+    HEADLESS_DROP.add("list_scheduled_tasks");
+    HEADLESS_DROP.add("update_scheduled_task");
+    const filtered: Record<string, ToolSet[string]> = {};
+    for (const [name, sdkTool] of Object.entries(base)) {
+      if (HEADLESS_DROP.has(name)) continue;
+      filtered[name] = sdkTool;
+    }
+    return filtered;
+  })();
 
   // Per-stream "needs mid-stream compaction" signal. Set by `onStepFinish`
   // when token usage crosses the threshold; read by `stopWhen` to break
