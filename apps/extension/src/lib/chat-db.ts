@@ -360,6 +360,19 @@ export const chatDb = {
   },
 
   /**
+   * Like listConversations, but excludes subagent child conversations
+   * (those with a `parentConversationId`). Subagent runs are auto-spawned
+   * and reachable from within their parent's tool block, so they should
+   * not appear as top-level chats in pickers/sidebars.
+   */
+  async listRootConversations(
+    spaceId?: string | null,
+  ): Promise<ChatDB["conversations"]["value"][]> {
+    const all = await chatDb.listConversations(spaceId);
+    return all.filter((c) => !c.parentConversationId);
+  },
+
+  /**
    * Return the immediate children of a parent conversation, ordered by
    * creation time ascending (oldest subagent run first). Used by the
    * side panel to render nested subagent runs under the parent.
