@@ -1,5 +1,22 @@
 # openbrowse
 
+## 0.6.0
+
+### Minor Changes
+
+- 4630aed: Add a context-usage indicator to the chat header: a circular progress ring that shows tokens, usage %, and cost on hover, and a detailed breakdown (provider/model, context limit, token split, total cost, timestamps) on click.
+- 67c8be2: Add scheduled tasks: recurring, cron-like agent runs that execute as full
+  background agent sessions (DOM + chrome.debugger, system prompt, compaction).
+  Driven by a bundled `/schedule` skill and `create/list/update_scheduled_task`
+  tools, with a Scheduled dashboard, create/edit dialog, status badges, and a
+  per-task auto-approve toggle.
+
+### Patch Changes
+
+- 2965aed: Fix chat input lag in long conversations. The message list is now memoized and
+  extracted from the input's render path, so typing no longer re-renders every
+  message (markdown + syntax highlighting) on each keystroke.
+
 ## 0.5.3
 
 ### Patch Changes
