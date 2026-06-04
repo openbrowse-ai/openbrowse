@@ -231,7 +231,7 @@ export function HomeSidebar({
   }, [pinned]);
 
   const refresh = useCallback(async () => {
-    const convs = await chatDb.listConversations(activeSpaceId);
+    const convs = await chatDb.listRootConversations(activeSpaceId);
     setConversations(convs);
   }, [activeSpaceId]);
 

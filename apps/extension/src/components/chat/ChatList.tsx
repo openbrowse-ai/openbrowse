@@ -39,7 +39,7 @@ export function ChatList({
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const convs = await chatDb.listConversations(spaceId);
+    const convs = await chatDb.listRootConversations(spaceId);
     setConversations(convs);
   }, [spaceId]);
 
