@@ -22,6 +22,7 @@ import {
   Loader2,
   ScrollText,
   Trash2,
+  Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { downloadOpfsFile } from "@/lib/download";
@@ -336,6 +337,20 @@ interface ContextTab {
   id: number;
   title: string;
   favicon: string;
+  /**
+   * Conversation that owns this tab in `tab-scoping` (whose `ownedTabIds`
+   * the tab id lives in). For tabs created by the parent agent this is
+   * the parent's id; for tabs created by a subagent this is the child
+   * conversation's id. Cleanup must close tabs against their owner so
+   * the owner's `ownedTabIds` gets cleared (see `closeOwnedTabs`).
+   */
+  owningConversationId: string;
+  /**
+   * Set when this tab is owned by a subagent (i.e. owningConversationId
+   * != parent conversationId). Used to render an indicator badge in the
+   * Context card's Tabs section.
+   */
+  subagent?: { label: string };
 }
 
 function ContextCard({
@@ -363,22 +378,55 @@ function ContextCard({
       const conv = await chatDb.getConversation(conversationId);
       if (!isMounted) return;
 
-      // Tabs — fetch all owned tabs concurrently; drop any that fail
-      // (closed tab). `Promise.allSettled` preserves input order, so the
-      // resulting rows keep `ownedIds` order.
-      const ownedIds = conv?.ownedTabIds ?? [];
+      // Tabs — collect parent-owned tabs first, then any tabs owned by
+      // subagent children (peer subagents bind their tabs to the *child*
+      // conversation row in tab-scoping; incognito subagents normally
+      // auto-close their ephemeral window, but if any child tabs are
+      // still alive we surface them too). Each id is hydrated via
+      // chrome.tabs.get; closed tabs (rejected promises) drop out.
+      const children = await chatDb.listChildren(conversationId);
+      if (!isMounted) return;
+
+      type OwnedRef = {
+        tabId: number;
+        owningConversationId: string;
+        subagent?: { label: string };
+      };
+      const ownedRefs: OwnedRef[] = [];
+      for (const id of conv?.ownedTabIds ?? []) {
+        ownedRefs.push({ tabId: id, owningConversationId: conversationId });
+      }
+      for (const child of children) {
+        const label =
+          child.subagentTraceTitle ??
+          child.subagentSlug ??
+          "Subagent";
+        for (const id of child.ownedTabIds ?? []) {
+          ownedRefs.push({
+            tabId: id,
+            owningConversationId: child.id,
+            subagent: { label },
+          });
+        }
+      }
+
+      // `Promise.allSettled` preserves input order, so the resulting rows
+      // keep ownedRefs order (parent tabs first, then subagent tabs).
       const results = await Promise.allSettled(
-        ownedIds.map((id) => chrome.tabs.get(id)),
+        ownedRefs.map((r) => chrome.tabs.get(r.tabId)),
       );
       if (!isMounted) return;
       const hydrated: ContextTab[] = [];
       results.forEach((res, i) => {
         if (res.status === "fulfilled") {
           const tab = res.value;
+          const ref = ownedRefs[i];
           hydrated.push({
-            id: ownedIds[i],
+            id: ref.tabId,
             title: tab.title || tab.url || "Untitled tab",
             favicon: tab.favIconUrl ?? "",
+            owningConversationId: ref.owningConversationId,
+            subagent: ref.subagent,
           });
         }
       });
@@ -451,12 +499,23 @@ function ContextCard({
     if (isCleaningTabs || tabs.length === 0) return;
     setIsCleaningTabs(true);
     try {
-      // Background closes the tabs, clears ownership, and broadcasts
-      // AGENT_TABS_CLOSED → Undo toast (handled in useAgentChat). The poll
-      // loop will refresh `tabs` to [] on the next tick.
-      await requestCloseAgentTabs(
-        conversationId,
-        tabs.map((t) => t.id),
+      // Tabs owned by a subagent live in the *child* conversation's
+      // `ownedTabIds`; closing them against the parent id wouldn't
+      // clear the child row. Group by owning conversation id so each
+      // owner's list is cleaned up correctly. `closeOwnedTabs`
+      // (background) closes the tabs, clears ownership, and broadcasts
+      // AGENT_TABS_CLOSED → Undo toast (handled in useAgentChat). The
+      // poll loop refreshes `tabs` to [] on the next tick.
+      const byOwner = new Map<string, number[]>();
+      for (const t of tabs) {
+        const ids = byOwner.get(t.owningConversationId) ?? [];
+        ids.push(t.id);
+        byOwner.set(t.owningConversationId, ids);
+      }
+      await Promise.all(
+        Array.from(byOwner.entries()).map(([ownerId, ids]) =>
+          requestCloseAgentTabs(ownerId, ids),
+        ),
       );
     } finally {
       setIsCleaningTabs(false);
@@ -616,17 +675,37 @@ function ContextTabRow({ tab }: { tab: ContextTab }) {
     })();
   };
   return (
-    <ContextRow
-      icon={
-        tab.favicon ? (
-          <img src={tab.favicon} alt="" className="size-3.5 rounded-sm" />
-        ) : (
-          <span className="size-3.5 rounded-sm bg-muted-foreground/30" />
-        )
-      }
-      label={tab.title}
-      onClick={focusTab}
-    />
+    <li>
+      <button
+        type="button"
+        onClick={focusTab}
+        className="flex w-full items-center gap-2.5 rounded-md px-1.5 py-1.5 text-left text-sm hover:bg-muted/60 min-w-0"
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          {tab.favicon ? (
+            <img src={tab.favicon} alt="" className="size-3.5 rounded-sm" />
+          ) : (
+            <span className="size-3.5 rounded-sm bg-muted-foreground/30" />
+          )}
+        </span>
+        <span className="truncate flex-1">{tab.title}</span>
+        {tab.subagent && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span
+                className="flex size-5 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+                aria-label={`Used by subagent: ${tab.subagent.label}`}
+              >
+                <Bot className="size-3" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              Used by subagent: {tab.subagent.label}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </button>
+    </li>
   );
 }
 

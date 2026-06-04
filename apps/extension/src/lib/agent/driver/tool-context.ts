@@ -78,9 +78,25 @@ export interface ToolSession {
    * tabs land in its own window rather than the user's active window.
    *
    * Absent on `inline` and `peer` runs (and on the root agent), in which
-   * case tabs are created in the user's currently focused window.
+   * case tabs are resolved via `resolveNewTabWindowId` (root agent) or
+   * fall back to the user's currently focused window.
    */
   targetWindowId?: number;
+  /**
+   * Resolve the window new agent-created tabs should open in for the root
+   * agent. Tools that create tabs (e.g. `navigate`) call this when no
+   * static `targetWindowId` is set, so a new tab lands in the same window
+   * as the conversation (where the chat and the agent's existing tabs
+   * live) rather than whatever window Chrome happens to have focused.
+   *
+   * Returns `undefined` when no window can be resolved (no owned tabs and
+   * no live space window), in which case the caller omits `windowId` and
+   * Chrome falls back to the focused window (legacy behavior).
+   *
+   * No-op / absent in the bench harness and on subagent sessions (which
+   * use the static `targetWindowId` instead).
+   */
+  resolveNewTabWindowId?: () => Promise<number | undefined>;
 }
 
 export interface ToolContext {

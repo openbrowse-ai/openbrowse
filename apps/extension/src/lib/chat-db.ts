@@ -356,7 +356,7 @@ export const chatDb = {
     } else {
       all = await db.getAll("conversations");
     }
-    return all.sort((a, b) => b.updatedAt - a.updatedAt);
+    return all.sort((a, b) => b.createdAt - a.createdAt);
   },
 
   /**
