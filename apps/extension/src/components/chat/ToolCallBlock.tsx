@@ -26,6 +26,11 @@ import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
 import { MemoryResult } from "./tool-results/memory";
 import { SelectTabResult } from "./tool-results/select-tab";
+import {
+  CreateScheduledTaskResult,
+  ListScheduledTasksResult,
+  UpdateScheduledTaskResult,
+} from "./tool-results/scheduled-task";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -77,6 +82,15 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     />
   ),
   webFetch: ({ args, result }) => <WebFetchResult args={args} result={result} />,
+  create_scheduled_task: ({ args, result }) => (
+    <CreateScheduledTaskResult args={args} result={result} />
+  ),
+  list_scheduled_tasks: ({ args, result }) => (
+    <ListScheduledTasksResult args={args} result={result} />
+  ),
+  update_scheduled_task: ({ args, result }) => (
+    <UpdateScheduledTaskResult args={args} result={result} />
+  ),
 };
 
 interface ToolCallBlockProps {
@@ -123,6 +137,20 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   skill: { pending: "Loading skill...", done: "Loaded skill" },
   create_skill: { pending: "Creating skill...", done: "Created skill" },
   install_skill: { pending: "Installing skill...", done: "Installed skill" },
+
+  // Scheduled task tools
+  create_scheduled_task: {
+    pending: "Scheduling task...",
+    done: "Scheduled task",
+  },
+  list_scheduled_tasks: {
+    pending: "Listing scheduled tasks...",
+    done: "Listed scheduled tasks",
+  },
+  update_scheduled_task: {
+    pending: "Updating scheduled task...",
+    done: "Updated scheduled task",
+  },
 
   // (No `delegate` entry — `delegate` bypasses the outer ToolCallBlock
   // wrapper entirely; SubagentTrace renders the whole UI itself.)
@@ -220,6 +248,49 @@ export function closeTabsLabels(
   return fallback;
 }
 
+/**
+ * Refine the create/update scheduled-task labels with the task name so the
+ * collapsed row shows what's being scheduled (e.g. "Scheduling
+ * 'daily-briefing'..." / "Scheduled 'daily-briefing'") instead of the
+ * generic label.
+ */
+export function scheduledTaskLabels(
+  toolName: string,
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (toolName === "create_scheduled_task") {
+    if (name) {
+      return {
+        pending: `Scheduling “${name}”...`,
+        done: `Scheduled “${name}”`,
+      };
+    }
+    return fallback;
+  }
+  if (toolName === "update_scheduled_task") {
+    // Distinguish pause/resume from a general edit when possible.
+    if (typeof args.enabled === "boolean") {
+      const verbing = args.enabled ? "Resuming" : "Pausing";
+      const verbed = args.enabled ? "Resumed" : "Paused";
+      const label = name ? `“${name}”` : "scheduled task";
+      return {
+        pending: `${verbing} ${label}...`,
+        done: `${verbed} ${label}`,
+      };
+    }
+    if (name) {
+      return {
+        pending: `Updating “${name}”...`,
+        done: `Updated “${name}”`,
+      };
+    }
+    return fallback;
+  }
+  return fallback;
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -251,7 +322,10 @@ export function ToolCallBlock({
       ? webFetchLabels(args, labels)
       : toolName === "closeTabs"
         ? closeTabsLabels(args, labels)
-        : labels;
+        : toolName === "create_scheduled_task" ||
+            toolName === "update_scheduled_task"
+          ? scheduledTaskLabels(toolName, args, labels)
+          : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

@@ -15,7 +15,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Star } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode, type RefObject } from "react";
 
 export interface ModelOption {
   id: string;
@@ -85,6 +85,15 @@ interface ModelPickerProps {
   /** Controlled open state (e.g. driven by a keyboard shortcut). */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+
+  /**
+   * Container for the combobox popup's portal. Defaults to document.body.
+   * Pass the enclosing dialog's content element when rendering inside a
+   * modal Radix Dialog so the popup mounts within the dialog's focus trap
+   * (otherwise the Dialog treats combobox clicks as "outside" and dismisses
+   * the popup / steals focus from its search input).
+   */
+  portalContainer?: HTMLElement | RefObject<HTMLElement | null> | null;
 
   disabled?: boolean;
 }
@@ -166,6 +175,7 @@ export function ModelPicker({
   footerExtra,
   open: controlledOpen,
   onOpenChange,
+  portalContainer,
   disabled = false,
 }: ModelPickerProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -426,6 +436,7 @@ export function ModelPicker({
       <ComboboxContent
         side={trigger === "chat" ? "top" : "bottom"}
         sideOffset={4}
+        container={portalContainer}
         className="w-[320px] border border-border shadow-lg"
       >
           <ComboboxInput placeholder="Select a model..." showTrigger={false} />

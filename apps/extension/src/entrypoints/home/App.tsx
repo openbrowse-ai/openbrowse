@@ -45,11 +45,14 @@ import {
   PanelRight,
   Pencil,
   Trash2,
+  Clock,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
 import { RightRail } from "./components/RightRail";
+import { ScheduledView } from "./components/ScheduledView";
+import { ScheduledRunHost } from "./components/ScheduledRunHost";
 
 export default function App() {
   useTheme();
@@ -82,6 +85,9 @@ export default function App() {
   const [showOverlay, setShowOverlay] = useState(false);
   const [overlayAction, setOverlayAction] = useState<string | null>(null);
   const overlayIframeRef = useRef<HTMLIFrameElement>(null);
+
+  const [view, setView] = useState<"chat" | "scheduled">("chat");
+  const scheduleModels = useScheduleModels();
 
   const [conversationTitle, setConversationTitle] = useState<string | null>(
     null,
@@ -371,6 +377,7 @@ export default function App() {
   }, [deleteTarget, activeConversationId]);
 
   const handleNewConversation = useCallback((id: string) => {
+    setView("chat");
     if (id) {
       setActiveConversationId(id);
     } else {
@@ -379,7 +386,43 @@ export default function App() {
   }, []);
 
   const handleSelectConversation = useCallback((id: string) => {
+    setView("chat");
     setActiveConversationId(id);
+  }, []);
+
+  const handleOpenScheduled = useCallback(() => setView("scheduled"), []);
+
+  // Per-chat "Schedule": open the conversation (if not already active) and
+  // seed its composer with "/schedule " so the schedule skill is invoked.
+  // The slash token auto-forms a skill mention at start-of-line.
+  const handleScheduleConversation = useCallback(
+    (conv: { id: string; title: string }) => {
+      setView("chat");
+      setActiveConversationId(conv.id);
+      // Defer so ChatView for this conversation is mounted/listening.
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent("seed-chat-input", {
+            detail: { conversationId: conv.id, text: "/schedule " },
+          }),
+        );
+      }, 50);
+    },
+    [],
+  );
+
+  // "Create with agent" from the Scheduled view: open a fresh chat and seed
+  // it with "/schedule " so the user can describe the task conversationally.
+  const handleCreateScheduleWithAgent = useCallback(() => {
+    setView("chat");
+    setActiveConversationId(null);
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("seed-chat-input", {
+          detail: { conversationId: null, text: "/schedule " },
+        }),
+      );
+    }, 50);
   }, []);
 
   const handleSelectFile = useCallback((file: string | null) => {
@@ -396,13 +439,18 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[var(--background)]">
+      <ScheduledRunHost />
       <HomeSidebar
         spaces={spaces}
         activeSpaceId={activeSpaceId}
-        activeConversationId={activeConversationId}
+        activeConversationId={view === "scheduled" ? null : activeConversationId}
+        scheduledActive={view === "scheduled"}
         onSelectConversation={handleSelectConversation}
         onNewConversation={() => handleNewConversation("")}
-        onGoHome={() => setActiveConversationId(null)}
+        onGoHome={() => {
+          setView("chat");
+          setActiveConversationId(null);
+        }}
         onOpenOverlay={() => setShowOverlay(true)}
         onNewSpace={() => {
           setOverlayAction("new-space");
@@ -414,9 +462,20 @@ export default function App() {
         }}
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
+        onOpenScheduled={handleOpenScheduled}
+        onScheduleConversation={handleScheduleConversation}
       />
 
-      {activeConversationId ? (
+      {view === "scheduled" ? (
+        <ScheduledView
+          models={scheduleModels}
+          onOpenConversation={(id) => {
+            setView("chat");
+            handleSelectConversation(id);
+          }}
+          onCreateWithAgent={handleCreateScheduleWithAgent}
+        />
+      ) : activeConversationId ? (
         <FileSelectionContext.Provider value={handleSelectFile}>
         <RightRail
           conversationId={activeConversationId}
@@ -445,6 +504,18 @@ export default function App() {
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => {
+                          if (!activeConversationId) return;
+                          void handleScheduleConversation({
+                            id: activeConversationId,
+                            title: conversationTitle ?? "New conversation",
+                          });
+                        }}
+                      >
+                        <Clock className="size-3.5" />
+                        Schedule
+                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={handleRenameChat}>
                         <Pencil className="size-3.5" />
                         Rename
@@ -608,4 +679,22 @@ export default function App() {
       </AlertDialog>
     </div>
   );
+}
+
+/**
+ * Available model strings ("<provider>:<model>") for the schedule dialog:
+ * the user's favorite models plus the currently-selected agent model.
+ */
+function useScheduleModels(): string[] {
+  const [models, setModels] = useState<string[]>([]);
+  useEffect(() => {
+    void (async () => {
+      const s = await storage.getSettings();
+      const a = await storage.getAgentSettings();
+      const list = new Set<string>(s.favoriteModels ?? []);
+      if (a.agentModel) list.add(a.agentModel);
+      setModels([...list]);
+    })();
+  }, []);
+  return models;
 }
