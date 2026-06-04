@@ -18,6 +18,7 @@ import type { AgentUIMessage, Settings } from "../types";
 import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
 import { scanToolUsage, mergeDistinct } from "./tool-usage";
+import { nextUsageSnapshot, type StepUsage } from "./usage-snapshot";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
 import type {
@@ -1012,6 +1013,65 @@ async function recordToolUsageForStep(
   }
 }
 
+/**
+ * Persist a token/cost usage snapshot onto the conversation row at
+ * step-finish time, so the header Context popover can read it live.
+ *
+ * Serialized through the same per-conversation `usageWriteQueues` chain as
+ * `recordToolUsageForStep` so the read-modify-write (needed to accumulate
+ * `costUsd`) can't race other usage writes for the same conversation.
+ * Best-effort; failures are swallowed and never disrupt the agent loop.
+ *
+ * `modelId` is the fully-qualified user-facing model key (provider:model,
+ * e.g. "anthropic:claude-x") and `model` is its `ModelDefinition` (for
+ * contextWindow + pricing). Both are passed by the caller from the
+ * transport's closure — NOT read from the module-global `currentModelDef`,
+ * which races across concurrent transports (e.g. a side-panel run and a
+ * popup run on different models), mirroring the evaluator-model pinning
+ * below.
+ */
+async function recordUsageForStep(
+  conversationId: string | null,
+  step: StepUsage,
+  model: ModelDefinition | undefined,
+  modelId: string,
+): Promise<void> {
+  if (!conversationId) return;
+  // Nothing to record if the provider reported no tokens this step.
+  if (step.inputTokens == null && step.outputTokens == null) return;
+
+  const cid = conversationId;
+  const persist = async (): Promise<void> => {
+    try {
+      const conv = await chatDb.getConversation(cid);
+      if (!conv) return;
+      const usage = nextUsageSnapshot(
+        conv.usage,
+        step,
+        model,
+        modelId,
+        Date.now(),
+      );
+      // Like recordToolUsageForStep, we intentionally do NOT bump
+      // `updatedAt` on the row — usage churn shouldn't reorder the sidebar.
+      await chatDb.updateConversation(cid, { usage });
+    } catch {
+      // Best-effort; recording usage must never disrupt the agent loop.
+    }
+  };
+
+  const prev = usageWriteQueues.get(cid) ?? Promise.resolve();
+  const next = prev.then(persist);
+  usageWriteQueues.set(cid, next);
+  try {
+    await next;
+  } finally {
+    if (usageWriteQueues.get(cid) === next) {
+      usageWriteQueues.delete(cid);
+    }
+  }
+}
+
 
 export async function createAgentTransport(
   settings: Settings,
@@ -1605,6 +1665,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // the Context card surfaces them live (mirrors how todoWrite persists
       // todos mid-turn, instead of waiting for end-of-turn message persistence).
       void recordToolUsageForStep(agentConversationId, stepResult.toolCalls);
+      // Persist the token/cost usage snapshot for the header Context popover.
+      // Fire-and-forget; serialized per-conversation alongside tool usage.
+      void recordUsageForStep(agentConversationId, {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      }, modelDef, agentModel);
     },
     stopWhen: () => needsMidStreamCompaction,
   });

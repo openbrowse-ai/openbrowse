@@ -1,5 +1,6 @@
 import { formatMessageAsMarkdown } from "@/lib/format-markdown";
 import { ChatView } from "@/components/chat/ChatView";
+import { ContextUsage } from "@/components/chat/ContextUsage";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,7 +41,7 @@ import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
 import {
   Download,
-  MoreVertical,
+  Ellipsis,
   PanelRight,
   Pencil,
   Trash2,
@@ -433,13 +434,14 @@ export default function App() {
                   {conversationTitle ?? "New conversation"}
                 </span>
                 <div className="flex items-center gap-1">
+                  <ContextUsage conversationId={activeConversationId} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
                         className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                       >
-                        <MoreVertical className="size-4" />
+                        <Ellipsis className="size-4" />
                       </button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">

@@ -1,7 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { queueDb } from "./queue-db";
 import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
-import type { SerializedUIPart, TodoItem } from "./types";
+import type { ConversationUsage, SerializedUIPart, TodoItem } from "./types";
 import { OPFS } from "./vfs/opfs";
 
 /**
@@ -57,6 +57,11 @@ interface ChatDB extends DBSchema {
       // on rows created before v13 and on conversations never completed.
       lastCompletionApproved?: boolean;
       taskCompletedAt?: number;
+      // Token/cost usage snapshot for the header Context popover. Optional;
+      // undefined on rows created before this field existed. No migration
+      // needed (keyPath store stores whole objects). Mirrors `Conversation`
+      // in lib/types.ts.
+      usage?: ConversationUsage;
     };
     indexes: {
       "by-updated": number;
