@@ -188,22 +188,29 @@ export function ContextUsage({ conversationId }: { conversationId: string }) {
   useEffect(() => {
     let mounted = true;
     async function refresh() {
-      const [conv, messages] = await Promise.all([
-        chatDb.getConversation(conversationId),
-        chatDb.getMessages(conversationId),
-      ]);
-      if (!mounted) return;
-      if (!conv?.usage) {
-        setSnapshot(null);
-        return;
+      try {
+        const [conv, messageCount] = await Promise.all([
+          chatDb.getConversation(conversationId),
+          chatDb.getMessageCount(conversationId),
+        ]);
+        if (!mounted) return;
+        if (!conv?.usage) {
+          setSnapshot(null);
+          return;
+        }
+        setSnapshot({
+          usage: conv.usage,
+          title: conv.title,
+          createdAt: conv.createdAt,
+          updatedAt: conv.updatedAt,
+          messageCount,
+        });
+      } catch (err) {
+        // Transient DB error: keep the last-good snapshot rather than
+        // blanking the indicator, and don't let the rejection bubble out
+        // of the interval. The next tick retries.
+        console.error("[context-usage] failed to read usage:", err);
       }
-      setSnapshot({
-        usage: conv.usage,
-        title: conv.title,
-        createdAt: conv.createdAt,
-        updatedAt: conv.updatedAt,
-        messageCount: messages.length,
-      });
     }
     refresh();
     const interval = setInterval(refresh, 1000);

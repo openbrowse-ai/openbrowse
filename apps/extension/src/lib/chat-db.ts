@@ -554,6 +554,16 @@ export const chatDb = {
     return msgs.sort((a, b) => a.createdAt - b.createdAt);
   },
 
+  /**
+   * Cheap message count for a conversation via the `by-conversation` index,
+   * without deserializing every message row (unlike `getMessages`). Used by
+   * the header Context indicator's poll.
+   */
+  async getMessageCount(conversationId: string): Promise<number> {
+    const db = await getDb();
+    return db.countFromIndex("messages", "by-conversation", conversationId);
+  },
+
   async saveMessage(msg: ChatDB["messages"]["value"]): Promise<void> {
     const db = await getDb();
     await db.put("messages", msg);

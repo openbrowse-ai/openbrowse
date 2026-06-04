@@ -147,4 +147,37 @@ describe("nextUsageSnapshot", () => {
     );
     expect(next.modelIds).toEqual([]);
   });
+
+  it("carries a legacy prev.modelId into modelIds when the list is absent", () => {
+    // Simulate a snapshot written before `modelIds` existed: it has a
+    // single `modelId` but no `modelIds` array.
+    const legacy = {
+      inputTokens: 10,
+      outputTokens: 10,
+      totalTokens: 20,
+      costUsd: 1,
+      contextWindow: 200_000,
+      modelId: "anthropic:claude-x",
+      updatedAt: 1,
+    };
+    const next = nextUsageSnapshot(
+      legacy,
+      { inputTokens: 10, outputTokens: 10 },
+      model,
+      "openai:gpt-x",
+      2,
+    );
+    // The legacy model is preserved first, then the new one appended.
+    expect(next.modelIds).toEqual(["anthropic:claude-x", "openai:gpt-x"]);
+
+    // When the legacy model matches the current one, no duplicate.
+    const same = nextUsageSnapshot(
+      legacy,
+      { inputTokens: 10, outputTokens: 10 },
+      model,
+      "anthropic:claude-x",
+      3,
+    );
+    expect(same.modelIds).toEqual(["anthropic:claude-x"]);
+  });
 });

@@ -1102,6 +1102,11 @@ export async function createAgentTransport(
 
   if (!provider) return null;
 
+  // Normalized "<providerId>:<modelId>" key. `agentModel` may be a legacy
+  // flat id (no provider segment); this always yields a qualified key so the
+  // persisted ConversationUsage.modelId is consistent and resolvable.
+  const qualifiedModelId = `${provider.id}:${actualModelId}`;
+
   const config = settings.providerConfigs[provider.id] ?? {};
   const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
   if (!requiredFields.every((f) => !!config[f.key])) return null;
@@ -1670,7 +1675,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       void recordUsageForStep(agentConversationId, {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
-      }, modelDef, agentModel);
+      }, modelDef, qualifiedModelId);
     },
     stopWhen: () => needsMidStreamCompaction,
   });

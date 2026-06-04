@@ -45,9 +45,14 @@ export function nextUsageSnapshot(
       (outputTokens / 1_000_000) * pricing.outputPer1M
     : 0;
 
-  // Append this step's model to the distinct first-seen list. Skip empty
-  // ids so a missing key never pollutes the list.
+  // Build the distinct first-seen model list. Seed from a prior list, then
+  // fold in `prev.modelId` so a legacy snapshot (written before `modelIds`
+  // existed) doesn't lose its single attributed model, then append this
+  // step's model. Skip empty ids and dedupe throughout.
   const modelIds = [...(prev?.modelIds ?? [])];
+  if (prev?.modelId && !modelIds.includes(prev.modelId)) {
+    modelIds.push(prev.modelId);
+  }
   if (modelId && !modelIds.includes(modelId)) modelIds.push(modelId);
 
   return {

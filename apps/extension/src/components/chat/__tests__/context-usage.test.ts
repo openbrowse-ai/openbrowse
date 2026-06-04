@@ -10,11 +10,20 @@ import {
   usagePercentValue,
 } from "../ContextUsage";
 
+// Compute expected strings with the SAME runtime locale formatters the
+// component uses, so number/currency assertions are stable regardless of the
+// CI locale.
+const numFmt = new Intl.NumberFormat(undefined);
+const usdFmt = new Intl.NumberFormat(undefined, {
+  style: "currency",
+  currency: "USD",
+});
+
 describe("ContextUsage formatters", () => {
   it("formats token counts with grouping", () => {
-    expect(formatTokens(53_731)).toBe("53,731");
-    expect(formatTokens(0)).toBe("0");
-    expect(formatTokens(842)).toBe("842");
+    expect(formatTokens(53_731)).toBe(numFmt.format(53_731));
+    expect(formatTokens(0)).toBe(numFmt.format(0));
+    expect(formatTokens(842)).toBe(numFmt.format(842));
   });
 
   it("formats usage percent, guarding divide-by-zero", () => {
@@ -38,19 +47,19 @@ describe("ContextUsage formatters", () => {
   });
 
   it("formats counts with grouping", () => {
-    expect(formatCount(2)).toBe("2");
-    expect(formatCount(1_234)).toBe("1,234");
+    expect(formatCount(2)).toBe(numFmt.format(2));
+    expect(formatCount(1_234)).toBe(numFmt.format(1_234));
   });
 
   it("formats cost as USD currency", () => {
-    expect(formatCost(73.48)).toBe("$73.48");
-    expect(formatCost(0)).toBe("$0.00");
-    expect(formatCost(1.5)).toBe("$1.50");
-    // A positive sub-cent cost never reads as free.
+    expect(formatCost(73.48)).toBe(usdFmt.format(73.48));
+    expect(formatCost(0)).toBe(usdFmt.format(0));
+    expect(formatCost(1.5)).toBe(usdFmt.format(1.5));
+    // A positive sub-cent cost never reads as free (our own sentinel string).
     expect(formatCost(0.0003)).toBe("<$0.01");
     expect(formatCost(0.004)).toBe("<$0.01");
     // At/above half a cent it rounds normally.
-    expect(formatCost(0.005)).toBe("$0.01");
+    expect(formatCost(0.005)).toBe(usdFmt.format(0.005));
   });
 
   it("formats a date+time, returning empty string for falsy input", () => {
