@@ -16,6 +16,18 @@ import { memo } from "react";
 import "@/components/chat/tool-previews";
 
 /**
+ * The exact errorText that `healPendingTools` (useAgentChat) and
+ * `repairToolPart` (compacting-transport) stamp onto a tool part that was
+ * orphaned by an interrupted turn and folded to `output-error`. Such a part
+ * is an INTERRUPTION, not a genuine tool failure, so we surface it with the
+ * muted "Interrupted" badge rather than the red "Failed" one. Kept in sync
+ * with the source-of-truth constant in those two modules (the same literal
+ * is also matched in `tool-results/delegate.tsx`).
+ */
+const TOOL_HEAL_INTERRUPT_TEXT =
+  "Tool execution was interrupted before it returned a result";
+
+/**
  * Map a tool UIPart's terminal/non-terminal `state` to the visual state
  * the chat row should render in, plus the `result` payload to hand to
  * the row's body.
@@ -34,9 +46,10 @@ import "@/components/chat/tool-previews";
  *  - Surface a synthetic `{ error: errorText }` object so existing
  *    custom renderers (e.g. `<CodeResult>`) light up their red error
  *    path automatically.
- *  - Tell `ToolCallBlock` to use the new `"errored"` row variant so
- *    the collapsed row label shows a red AlertCircle + "Failed" suffix
- *    instead of pretending the tool succeeded.
+ *  - Tell `ToolCallBlock` to use the `"errored"` row variant. The
+ *    `errorKind` discriminator picks the badge: a genuine failure shows
+ *    a red "Failed" suffix; a heal-injected interruption (matched by
+ *    `TOOL_HEAL_INTERRUPT_TEXT`) keeps the muted "Interrupted" suffix.
  *
  * `isStreaming` guards against false positives: while the assistant
  * message is still streaming, a non-terminal tool part is genuinely
@@ -50,7 +63,11 @@ import "@/components/chat/tool-previews";
 export function resolveToolPartState(
   p: { state?: unknown; output?: unknown; errorText?: unknown; approval?: unknown },
   opts: { isStreaming?: boolean } = {},
-): { state: "call" | "result" | "denied" | "errored"; result?: unknown } {
+): {
+  state: "call" | "result" | "denied" | "errored";
+  result?: unknown;
+  errorKind?: "failed" | "interrupted";
+} {
   const state = p.state;
 
   if (state === "output-available") {
@@ -61,7 +78,16 @@ export function resolveToolPartState(
       typeof p.errorText === "string" && p.errorText.length > 0
         ? p.errorText
         : "Tool execution failed";
-    return { state: "errored", result: { error: errText } };
+    // Distinguish a real tool failure from a heal-injected interruption.
+    // `healPendingTools` / `repairToolPart` fold an orphaned (turn ended
+    // before it returned) tool part to `output-error` with the exact
+    // `TOOL_HEAL_INTERRUPT_TEXT`. Those are interruptions → muted
+    // "Interrupted" badge. Any other `output-error` is a genuine failure
+    // (the tool ran and threw / returned an error, e.g. an MCP connector
+    // tool that got bad JSON) → red "Failed" badge.
+    const errorKind =
+      errText === TOOL_HEAL_INTERRUPT_TEXT ? "interrupted" : "failed";
+    return { state: "errored", result: { error: errText }, errorKind };
   }
   if (state === "output-denied") {
     return { state: "denied" };
@@ -74,10 +100,16 @@ export function resolveToolPartState(
   // tool hasn't re-invoked `execute()` yet — treating it as an orphan here
   // flashes "Interrupted" before it flips to the real result. Mirror the
   // persistence-heal exception (see `needsHeal` in useAgentChat) and render
-  // it as pending. A DENIED or malformed approval-responded falls through to
-  // the orphan handling below.
+  // it as pending. A DENIED approval-responded is terminal — render it as
+  // "denied" immediately (regardless of streaming), matching the eventual
+  // healed `output-denied`; otherwise a denied call (e.g. a declined
+  // executePython) wrongly shows the pending "running" row while the stream
+  // is still live.
   if (state === "approval-responded") {
     const ap = p.approval as { id?: unknown; approved?: unknown } | undefined;
+    if (ap && ap.approved === false) {
+      return { state: "denied" };
+    }
     if (
       ap &&
       typeof ap.id === "string" &&
@@ -96,12 +128,18 @@ export function resolveToolPartState(
   }
 
   // Orphan: produce a human-readable error distinguishing the two main
-  // cases so the user understands what happened.
+  // cases so the user understands what happened. These are interruptions
+  // (the turn ended before the tool resolved), not genuine failures, so
+  // `errorKind: "interrupted"` keeps the muted "Interrupted" badge.
   const orphanMessage =
     state === "approval-responded"
       ? "Tool execution was skipped after approval."
       : "Tool did not return a result before the turn ended.";
-  return { state: "errored", result: { error: orphanMessage } };
+  return {
+    state: "errored",
+    result: { error: orphanMessage },
+    errorKind: "interrupted",
+  };
 }
 
 interface AssistantMessageProps {
@@ -174,6 +212,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onRegenerate, onTo
                 args={(part.input as Record<string, unknown>) ?? {}}
                 result={toolState.result}
                 state={toolState.state}
+                {...(toolState.errorKind && { errorKind: toolState.errorKind })}
                 {...(errorText !== undefined && { errorText })}
               />
             );
@@ -255,6 +294,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onRegenerate, onTo
                   args={(p.input as Record<string, unknown>) ?? {}}
                   result={toolState.result}
                   state={toolState.state}
+                  {...(toolState.errorKind && { errorKind: toolState.errorKind })}
                   {...(errorText !== undefined && { errorText })}
                 />
               );

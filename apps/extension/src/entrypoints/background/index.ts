@@ -186,6 +186,23 @@ export default defineBackground({
       });
     }
 
+    // On extension update/install, Chrome destroys every extension page,
+    // including each window's pinned `home.html?space=<id>` tab — but the
+    // windows (and their ids) survive and `Space.windowId` is still valid.
+    // Recreate the anchored home tabs without touching the bindings, so a
+    // window doesn't lose its space (and fall back to the first space) after
+    // an upgrade. Binding preservation itself is guaranteed by the live-id
+    // guard in reconcileSpacesWithWindows (Pass 3); this restores the tabs.
+    if (chrome.runtime.onInstalled) {
+      chrome.runtime.onInstalled.addListener((details) => {
+        if (details.reason === "update" || details.reason === "install") {
+          import("./spaces").then(({ restoreHomeTabsAfterUpdate }) => {
+            restoreHomeTabsAfterUpdate().catch(() => {});
+          });
+        }
+      });
+    }
+
     chrome.tabs.onActivated.addListener((info) => {
       activeTabByWindow.set(info.windowId, info.tabId);
     });

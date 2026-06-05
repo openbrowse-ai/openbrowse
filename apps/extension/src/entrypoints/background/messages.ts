@@ -24,20 +24,29 @@ export async function ensureOffscreenDocument(): Promise<void> {
 }
 
 export async function openHomePage(windowId: number): Promise<void> {
-  const homeUrl = chrome.runtime.getURL(HOME_PAGE_URL)
+  const homeBase = chrome.runtime.getURL(HOME_PAGE_URL)
 
+  // Resolve (or create) this window's space so the home tab carries the
+  // durable `?space=<id>` anchor. Without the anchor, a reopened home tab
+  // can't identify its space if the windowId binding is ever missing, and
+  // the home page falls back to the first space — the "every window shows
+  // S1 after an update" bug.
+  const { getOrCreateSpaceForWindow, ensureHomeTab, spaceIdFromUrl } =
+    await import('./spaces')
+  const space = await getOrCreateSpaceForWindow(windowId)
+
+  // Ensure a correctly-anchored, pinned home tab exists (creates it, or
+  // repairs the anchor on an existing/un-anchored home tab).
+  await ensureHomeTab(windowId, space.id)
+
+  // Activate the (now guaranteed) home tab.
   const tabs = await chrome.tabs.query({ windowId })
-  const existingHome = tabs.find((t) => t.url?.startsWith(homeUrl))
-
-  if (existingHome && existingHome.id) {
-    await chrome.tabs.update(existingHome.id, { active: true })
-    return
+  const home = tabs.find(
+    (t) =>
+      t.url?.startsWith(homeBase) &&
+      (spaceIdFromUrl(t.url) === space.id || spaceIdFromUrl(t.url) === null),
+  )
+  if (home?.id != null) {
+    await chrome.tabs.update(home.id, { active: true })
   }
-
-  await chrome.tabs.create({
-    windowId,
-    url: homeUrl,
-    pinned: true,
-    active: true,
-  })
 }

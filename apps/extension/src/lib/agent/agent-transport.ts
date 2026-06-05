@@ -788,7 +788,15 @@ export function toSDKTool<TInput, TOutput>(
   };
 
   const needsApproval =
-    approvalRequired && toolKey === "closeTabs"
+    approvalRequired && toolKey === "executePython"
+      ? // Python only needs human approval when it requests outbound network
+        // access. Sandboxed runs (no `allow_network`, the default) touch only
+        // the conversation's OPFS workspace + read-only /skills — as safe as
+        // the always-available fs tools — so they execute without a prompt.
+        // The SDK passes the parsed tool input as the first positional arg.
+        (input: unknown) =>
+          (input as { allow_network?: unknown })?.allow_network === true
+      : approvalRequired && toolKey === "closeTabs"
       ? async (input: unknown) => {
           const cid = agentConversationId;
           if (!cid) return true;
@@ -885,6 +893,22 @@ export function toSDKTool<TInput, TOutput>(
     const cid = agentConversationId;
     capturedToolOrigins.delete(options.toolCallId);
 
+    // Non-auto-approve headless runs have no human to approve a network
+    // request, so force `executePython` to run sandboxed regardless of what
+    // the model passed. This pairs with keeping the tool available headless
+    // (it's no longer in HEADLESS_DROP): sandboxed Python is safe, networked
+    // Python in an unattended run is not.
+    let effectiveInput = input;
+    if (toolKey === "executePython") {
+      const policy = cid ? headlessRunPolicies.get(cid) : undefined;
+      if (policy && !policy.autoApprove) {
+        effectiveInput = {
+          ...(input as Record<string, unknown>),
+          allow_network: false,
+        } as TInput;
+      }
+    }
+
     if (isTabTool) {
       agentActive = true;
       // Resolve the tab this tool will operate on FIRST, then show the
@@ -925,7 +949,7 @@ export function toSDKTool<TInput, TOutput>(
         toolCallId: options.toolCallId,
         ...(options.abortSignal && { signal: options.abortSignal }),
       };
-      const result = await t.execute(input, ctx);
+      const result = await t.execute(effectiveInput, ctx);
       toolResultStore.set(options.toolCallId, result);
       if (isTabTool) {
         // Refresh the tab info post-execute so the UI shows the landed
@@ -1663,12 +1687,18 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     if (!headless) return base;
     // Headless (scheduled) run: never spawn subagents. When not
     // auto-approving, also drop approval-gated tools (no human to approve).
+    //
+    // `executePython` is intentionally NOT in this drop list: its approval
+    // is network-conditional (see the `needsApproval` branch above), so a
+    // sandboxed run needs no approval and is safe to keep available. We
+    // instead force `allow_network: false` for it in the execute wrapper
+    // during non-auto-approve headless runs, so the model can't reach the
+    // network without a human in the loop.
     const HEADLESS_DROP = new Set<string>(["delegate"]);
     if (!headless.autoApprove) {
       for (const k of [
         "closeTabs",
         "executeOnPage",
-        "executePython",
         "updateMemory",
         "install_skill",
         "create_skill",

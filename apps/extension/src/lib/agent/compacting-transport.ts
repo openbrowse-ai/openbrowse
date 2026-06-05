@@ -500,14 +500,18 @@ function repairToolPart(
   const raw = part as Record<string, unknown>;
   const state = typeof raw.state === "string" ? raw.state : undefined;
 
-  // Ensure `input` is always defined for any tool part. Even
-  // `output-error` parts go through convertToModelMessages's
-  // tool-call/tool-result pair generation, and the assistant tool-call
-  // entry it produces requires `input`.
-  let input: unknown = raw.input;
-  if (input === undefined || input === null) {
-    input = {};
-  }
+  // Preserve a real `input`; otherwise set it to `undefined` (key present,
+  // value undefined) — never `{}`. The structural UIMessage schema requires
+  // the `input` key to be present on tool parts, but validateUIMessages
+  // schema-checks an output-error part's input only when it is !== undefined.
+  // Substituting `{}` makes it validate against the tool's (possibly strict,
+  // e.g. MCP) schema and fail required fields; `undefined` is skipped, and
+  // convertToModelMessages tolerates undefined input on errored/denied calls.
+  const hasInput = raw.input !== undefined && raw.input !== null;
+  const input: unknown = hasInput ? raw.input : undefined;
+  // The structural schema rejects a tool part missing the `input` key, so a
+  // terminal part that lacks it must still be rewritten to add it.
+  const inputKeyMissing = !("input" in raw);
 
   // `approval-responded` is NOT a terminal state, but it is a
   // legitimate intermediate the SDK resumes from — DON'T heal it away.
@@ -533,7 +537,11 @@ function repairToolPart(
       | undefined;
     if (approval && typeof approval.id === "string") {
       if (approval.approved === true) {
-        // Awaiting execution — preserve verbatim (only default `input`).
+        // Awaiting execution — preserve verbatim. This path serves the
+        // legitimate auto-resume: when the approved call is still the last
+        // message, the SDK re-executes it. (The client-side healPendingTools
+        // terminalizes approved calls instead, because by the time IT runs a
+        // user message has been appended and resume is impossible.)
         if (raw.input !== input) {
           return { ...raw, input } as typeof part;
         }
@@ -595,7 +603,7 @@ function repairToolPart(
       typeof raw.errorText === "string" && raw.errorText.length > 0
         ? raw.errorText
         : TRANSPORT_HEAL_TEXT;
-    if (raw.input !== input || raw.errorText !== errorText) {
+    if (raw.input !== input || inputKeyMissing || raw.errorText !== errorText) {
       return {
         ...raw,
         input,
@@ -626,7 +634,7 @@ function repairToolPart(
         output: undefined,
       } as typeof part;
     }
-    if (raw.input !== input) {
+    if (raw.input !== input || inputKeyMissing) {
       return { ...raw, input } as typeof part;
     }
     return part;

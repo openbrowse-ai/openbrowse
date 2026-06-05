@@ -13,6 +13,18 @@ export interface McpServerConfig {
 export interface McpAuthConfig {
   type: "bearer" | "oauth";
   token?: string;
+  /**
+   * OAuth refresh token. When present, an expired/401'd access token is
+   * refreshed automatically (silently) instead of forcing a full re-auth.
+   * Captured from the token response at exchange time.
+   */
+  refreshToken?: string;
+  /** Epoch ms when the access token expires (from `expires_in`), if known. */
+  expiresAt?: number;
+  /** Cached token endpoint so refresh doesn't re-run OAuth discovery. */
+  tokenEndpoint?: string;
+  /** Granted/requested scope, replayed on refresh. */
+  scope?: string;
   clientId?: string;
   clientSecret?: string;
 }
