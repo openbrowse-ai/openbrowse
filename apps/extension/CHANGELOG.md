@@ -1,5 +1,11 @@
 # openbrowse
 
+## 0.7.1
+
+### Patch Changes
+
+- 2e0bd8a: Fix extension update resilience (spaces and MCP refresh), tool state UI, and tool healing validation
+
 ## 0.7.0
 
 ### Minor Changes
