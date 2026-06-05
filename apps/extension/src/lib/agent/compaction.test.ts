@@ -24,8 +24,12 @@ import { describe, expect, it } from "vitest";
 import {
   keepOnlyLatestScreenshot,
   PAGE_SCREENSHOT_TOOLS,
+  selectTailForManual,
+  resolveCompactionModel,
+  type PrunableMessage,
 } from "./compaction";
 import type { AgentUIMessage } from "./message-types";
+import type { ProviderDefinition } from "../../registry/providers/types";
 
 /** Build an assistant message wrapping a single tool-result part. */
 function toolResultMsg(
@@ -180,5 +184,150 @@ describe("keepOnlyLatestScreenshot — custom allowlist", () => {
     // viewPage pruning still works around it.
     expect(isStripped(out[0])).toBe(true);
     expect(out[1]).toEqual(img("vp2"));
+  });
+});
+
+/**
+ * `selectTailForManual` powers the user-typed `/compact` command. Unlike
+ * `selectTail` (auto-compaction, which keeps the last 1-2 turns verbatim
+ * so the agent can continue mid-task), a manual `/compact` means "continue
+ * from the summary only" — so it summarizes the ENTIRE conversation and
+ * keeps NO verbatim tail (`tailStartId === undefined`). The UI still shows
+ * every original message; only the model view is replaced by the summary.
+ *
+ * It returns an empty head (→ caller toasts "too short") only when there
+ * are fewer than two user turns, since there's nothing worth summarizing.
+ */
+describe("selectTailForManual", () => {
+  function msg(
+    id: string,
+    role: PrunableMessage["role"],
+    text: string,
+  ): PrunableMessage {
+    return { id, role, parts: [{ type: "text", text }], createdAt: 0 };
+  }
+
+  it("summarizes the whole conversation with no verbatim tail", () => {
+    const messages: PrunableMessage[] = [
+      msg("1", "user", "first question"),
+      msg("2", "assistant", "first answer"),
+      msg("3", "user", "second question"),
+      msg("4", "assistant", "second answer"),
+    ];
+    const { headMessages, tailStartId } = selectTailForManual(messages);
+    // Empty tail → the model sees only the summary; the entire chat is
+    // the head to summarize.
+    expect(tailStartId).toBeUndefined();
+    expect(headMessages.map((m) => m.id)).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("ignores the token budget (small messages still compact fully)", () => {
+    const messages: PrunableMessage[] = [
+      msg("1", "user", "q1"),
+      msg("2", "assistant", "a1"),
+      msg("3", "user", "q2"),
+      msg("4", "assistant", "a2"),
+      msg("5", "user", "q3"),
+      msg("6", "assistant", "a3"),
+    ];
+    const { headMessages, tailStartId } = selectTailForManual(messages);
+    expect(tailStartId).toBeUndefined();
+    expect(headMessages.map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+    ]);
+  });
+
+  it("summarizes a trailing unanswered user message too (summary-only)", () => {
+    const messages: PrunableMessage[] = [
+      msg("1", "user", "q1"),
+      msg("2", "assistant", "a1"),
+      msg("3", "user", "q2 just sent"),
+    ];
+    const { headMessages, tailStartId } = selectTailForManual(messages);
+    // Everything (including the trailing question) folds into the summary;
+    // no verbatim tail.
+    expect(tailStartId).toBeUndefined();
+    expect(headMessages.map((m) => m.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("returns an empty head when there is only one user turn", () => {
+    const messages: PrunableMessage[] = [
+      msg("1", "user", "only question"),
+      msg("2", "assistant", "only answer"),
+    ];
+    const { headMessages } = selectTailForManual(messages);
+    // Nothing worth summarizing → caller toasts "too short to compact".
+    expect(headMessages.length).toBe(0);
+  });
+
+  it("returns an empty head for an empty conversation", () => {
+    const { headMessages, tailStartId } = selectTailForManual([]);
+    expect(headMessages.length).toBe(0);
+    expect(tailStartId).toBeUndefined();
+  });
+});
+
+/**
+ * `resolveCompactionModel` maps a stored model key to a provider + bare
+ * model id. Model keys are stored as composite "providerId:modelId"
+ * strings (the format ModelPicker writes for both agentModel and
+ * compactionModel), but `ProviderDefinition.createLanguageModel` and the
+ * registry's model lists key off the BARE model id. Compaction previously
+ * compared the composite key directly against bare ids, so the lookup
+ * always failed → "no provider for compaction model" and silent
+ * auto-compaction failures. These tests lock in the split + fallback.
+ */
+describe("resolveCompactionModel", () => {
+  function provider(id: string, modelIds: string[]): ProviderDefinition {
+    return {
+      id,
+      name: id,
+      models: modelIds.map((mid) => ({ id: mid })),
+    } as unknown as ProviderDefinition;
+  }
+
+  const providers = [
+    provider("anthropic", ["claude-sonnet-4", "claude-opus-4"]),
+    provider("openai", ["gpt-5"]),
+    provider("openrouter", ["vendor:model"]),
+  ];
+
+  it("resolves a composite providerId:modelId key", () => {
+    const r = resolveCompactionModel("anthropic:claude-sonnet-4", providers);
+    expect(r?.provider.id).toBe("anthropic");
+    expect(r?.modelId).toBe("claude-sonnet-4");
+  });
+
+  it("resolves a bare model id via fallback search", () => {
+    const r = resolveCompactionModel("gpt-5", providers);
+    expect(r?.provider.id).toBe("openai");
+    expect(r?.modelId).toBe("gpt-5");
+  });
+
+  it("preserves colons in the model id portion", () => {
+    // "openrouter:vendor:model" → provider openrouter, modelId "vendor:model"
+    const r = resolveCompactionModel("openrouter:vendor:model", providers);
+    expect(r?.provider.id).toBe("openrouter");
+    expect(r?.modelId).toBe("vendor:model");
+  });
+
+  it("resolves the provider by prefix even if the model id is stale", () => {
+    // Matches the canonical agentModel resolution: when a provider prefix
+    // is present, the provider is selected by id alone.
+    const r = resolveCompactionModel("anthropic:claude-removed", providers);
+    expect(r?.provider.id).toBe("anthropic");
+    expect(r?.modelId).toBe("claude-removed");
+  });
+
+  it("returns undefined when nothing matches", () => {
+    expect(resolveCompactionModel("ghost-model", providers)).toBeUndefined();
+    expect(
+      resolveCompactionModel("unknown-provider:some-model", providers),
+    ).toBeUndefined();
   });
 });

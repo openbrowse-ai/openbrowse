@@ -1,5 +1,9 @@
 import { NoAutoLink } from "@/components/tiptap/link-extension";
 import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
+import {
+  extractSlashCommands,
+  stripSlashCommandNodes,
+} from "@/components/tiptap/slash-command-extract";
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
 import { Kbd } from "@/components/ui/kbd";
 import { Slider } from "@/components/ui/slider";
@@ -50,6 +54,15 @@ import {
 // once they're gone we can delete the alias and the re-export.
 type ImagePreview = Extract<Attachment, { kind: "image" }>;
 
+/**
+ * Composer placeholder shown when an AI model is configured. Defined once
+ * and used in BOTH the Placeholder extension config and the `disabled`
+ * toggle effect, so the two never drift (the toggle effect previously
+ * reset it to a stale string, dropping the "/ for skills & commands" hint).
+ */
+const COMPOSER_PLACEHOLDER =
+  "Ask anything... Type @ to mention a tab, / for skills & commands";
+
 interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
@@ -64,6 +77,26 @@ interface ChatInputProps {
    */
   onQueue?: (mentions: TabMentionAttrs[], attachments: Attachment[]) => void;
   onStop?: () => void;
+  /**
+   * Optional handler for built-in slash commands (e.g. `/compact`).
+   *
+   * When the submitted message contains a built-in command node, the
+   * command is stripped from the editor, `onChange` is called with the
+   * remaining text, and this handler runs *instead of* `onSubmit`. The
+   * host decides what to do — for `/compact` that means running a manual
+   * compaction and, when `hasRemaining` is true, sending the leftover
+   * text to the agent afterwards (compact-then-send).
+   *
+   * `hasRemaining` is true when, after removing the command node(s),
+   * there is still sendable content (non-whitespace text, a tab mention,
+   * or a non-command skill slash).
+   */
+  onCommand?: (payload: {
+    command: string;
+    hasRemaining: boolean;
+    mentions: TabMentionAttrs[];
+    attachments: Attachment[];
+  }) => void;
   /**
    * When true, the input is being used to edit an existing message
    * (either a sent message or a queued one). The primary button is
@@ -256,6 +289,7 @@ export function ChatInput({
   onSubmit,
   onQueue,
   onStop,
+  onCommand,
   editMode = false,
   isLoading,
   disabled,
@@ -277,6 +311,8 @@ export function ChatInput({
   onQueueRef.current = onQueue;
   const onStopRef = useRef(onStop);
   onStopRef.current = onStop;
+  const onCommandRef = useRef(onCommand);
+  onCommandRef.current = onCommand;
   const isLoadingRef = useRef(isLoading);
   isLoadingRef.current = isLoading;
   const editModeRef = useRef(editMode);
@@ -438,9 +474,44 @@ export function ChatInput({
     if (!ed) return;
     const json = ed.getJSON();
     const mentions = extractTabMentions(json);
+
+    // Built-in slash commands (e.g. `/compact`) are intercepted here:
+    // they run a local action via `onCommand` instead of being sent to
+    // the agent as message text. We strip the command node from the
+    // editor first so any leftover text is what the host sends (the
+    // "compact-then-send" flow), and so re-submitting can't resurrect
+    // the command.
+    const commands = extractSlashCommands(json);
+    const handler = onCommandRef.current;
+    if (commands.length > 0 && handler) {
+      const { json: stripped, hasRemaining } = stripSlashCommandNodes(json);
+      // Capture the attachments before we clear them — the host may want
+      // to send them along with any remaining text.
+      const attachments = attachmentsRef.current;
+
+      if (hasRemaining) {
+        // Replace the editor content with the command-free doc. This
+        // fires onUpdate → onChange, keeping the host's `value`/`input`
+        // state in sync so a follow-up submit sends the leftover text.
+        ed.commands.setContent(stripped);
+      } else {
+        ed.commands.clearContent();
+        onChange("");
+        lastExternalValue.current = "";
+      }
+      setAttachments([]);
+
+      // Fire once per command in document order (only `compact` exists
+      // today, but keep the loop general).
+      for (const command of commands) {
+        handler({ command, hasRemaining, mentions, attachments });
+      }
+      return;
+    }
+
     onSubmitRef.current(mentions, attachmentsRef.current);
     setAttachments([]);
-  }, []);
+  }, [onChange]);
 
   const queueWithMentions = useCallback(() => {
     const handler = onQueueRef.current;
@@ -475,7 +546,7 @@ export function ChatInput({
       }),
       NoAutoLink,
       Placeholder.configure({
-        placeholder: "Ask anything... Type @ to mention a tab, / for skills",
+        placeholder: COMPOSER_PLACEHOLDER,
         showOnlyWhenEditable: false,
       }),
       Markdown,
@@ -693,7 +764,7 @@ export function ChatInput({
       if (ext.name === "placeholder") {
         (ext.options as { placeholder: string }).placeholder = disabled
           ? "Configure an AI model in settings..."
-          : "Ask anything... Type @ to mention a tab";
+          : COMPOSER_PLACEHOLDER;
       }
     });
     editor.view.dispatch(editor.state.tr);

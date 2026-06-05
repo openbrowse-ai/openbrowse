@@ -325,6 +325,14 @@ export function LandingPage({
             value={input}
             onChange={setInput}
             onSubmit={handleSubmit}
+            onCommand={({ command }) => {
+              // The landing page has no active conversation, so there's
+              // nothing to compact. Acknowledge the command instead of
+              // silently sending it as text.
+              if (command === "compact") {
+                toast.info("Nothing to compact yet");
+              }
+            }}
             isLoading={false}
             disabled={!isConfigured}
             autoFocus
