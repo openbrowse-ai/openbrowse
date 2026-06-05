@@ -39,6 +39,20 @@ describe("resolveToolPartState", () => {
     });
     expect(r.state).toBe("errored");
     expect(r.result).toEqual({ error: 'Unknown tab handle "t1"' });
+    // A real failure → "failed" so the row shows the red "Failed" badge.
+    expect(r.errorKind).toBe("failed");
+  });
+
+  it("output-error carrying the heal-interrupt text → 'errored' with errorKind 'interrupted'", () => {
+    // healPendingTools / repairToolPart fold an orphaned tool part to
+    // output-error with this exact text. It's an interruption, not a
+    // genuine failure, so it must keep the muted "Interrupted" badge.
+    const r = resolveToolPartState({
+      state: "output-error",
+      errorText: "Tool execution was interrupted before it returned a result",
+    });
+    expect(r.state).toBe("errored");
+    expect(r.errorKind).toBe("interrupted");
   });
 
   it("output-error with missing errorText → 'errored' with a generic fallback message", () => {
@@ -101,6 +115,8 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("errored");
     const err = (r.result as { error: string }).error;
     expect(err).toMatch(/skipped after approval/i);
+    // Orphan, not a real failure → "interrupted".
+    expect(r.errorKind).toBe("interrupted");
   });
 
   // ── APPROVED approval-responded is a resume point, not an orphan ─────
@@ -134,12 +150,24 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("errored");
   });
 
-  it("DENIED approval-responded + isStreaming:false → 'errored' (not treated as pending)", () => {
+  it("DENIED approval-responded + isStreaming:false → 'denied' (terminal, matches healed output-denied)", () => {
     const r = resolveToolPartState(
       { state: "approval-responded", approval: { id: "ap1", approved: false } },
       { isStreaming: false },
     );
-    expect(r.state).toBe("errored");
+    expect(r.state).toBe("denied");
+    expect(r.result).toBeUndefined();
+  });
+
+  it("DENIED approval-responded + isStreaming:true → 'denied' (not the pending 'running' row)", () => {
+    // Regression guard: a declined tool (e.g. executePython) must NOT show
+    // the blue pulsing "running" row while the stream is still live. It is
+    // terminal the instant the user clicks Deny.
+    const r = resolveToolPartState(
+      { state: "approval-responded", approval: { id: "ap1", approved: false } },
+      { isStreaming: true },
+    );
+    expect(r.state).toBe("denied");
   });
 
   it.each([
@@ -150,6 +178,8 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("errored");
     const err = (r.result as { error: string }).error;
     expect(err).toMatch(/did not return a result/i);
+    // Turn ended before the tool resolved → interruption, not failure.
+    expect(r.errorKind).toBe("interrupted");
   });
 
   it("unknown future state + isStreaming:false → 'errored' (defensive default)", () => {

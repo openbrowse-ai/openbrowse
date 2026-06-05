@@ -101,6 +101,13 @@ interface ToolCallBlockProps {
   state: "call" | "result" | "denied" | "errored";
   /** Surfaced when `state === "errored"` (e.g. heal-time errorText). */
   errorText?: string;
+  /**
+   * Distinguishes a genuine tool failure (`"failed"` → red "Failed" badge)
+   * from a turn-interruption / orphaned call (`"interrupted"` → muted
+   * "Interrupted" badge). Only meaningful when `state === "errored"`.
+   * Defaults to `"interrupted"` when omitted (the historical behavior).
+   */
+  errorKind?: "failed" | "interrupted";
 }
 
 const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
@@ -298,6 +305,7 @@ export function ToolCallBlock({
   result,
   state,
   errorText,
+  errorKind,
 }: ToolCallBlockProps) {
   const [expanded, setExpanded] = useState(false);
   const pending = state === "call";
@@ -345,25 +353,40 @@ export function ToolCallBlock({
     );
   }
 
-  // Errored: tool call was healed because its result never arrived
-  // (parent stream interrupted). Compact non-expandable row showing
-  // the heal errorText. The `delegate` tool bypasses this branch
-  // because its custom renderer (DelegateResult) handles errored
-  // state itself — falling through here would render the raw
-  // `delegate` label instead of the SubagentTrace.
+  // Errored: compact non-expandable row. Two flavors:
+  //  - "failed" (a real `output-error`: the tool ran and threw / returned
+  //    an error, e.g. an MCP connector tool that got bad JSON) → red X +
+  //    red "Failed" badge.
+  //  - "interrupted" (the result never arrived because the turn ended /
+  //    the call was orphaned, healed via errorText) → muted X + muted
+  //    "Interrupted" badge. This is the default when `errorKind` is absent.
+  // The `delegate` tool bypasses this branch because its custom renderer
+  // (DelegateResult) handles errored state itself — falling through here
+  // would render the raw `delegate` label instead of the SubagentTrace.
   if (errored && toolName !== "delegate") {
+    const isFailed = errorKind === "failed";
     return (
       <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
-        <X className="size-3 shrink-0 text-destructive/70" />
+        <X
+          className={cn(
+            "size-3 shrink-0",
+            isFailed ? "text-destructive" : "text-destructive/70",
+          )}
+        />
         <span className="text-muted-foreground/70 line-through">
           {dynamicLabels.done}
         </span>
         {showTabBadge && <TabBadge toolCallId={toolCallId} />}
         <span
-          className="text-[11px] text-muted-foreground/60 ml-1"
+          className={cn(
+            "text-[11px] ml-1",
+            isFailed
+              ? "text-red-600/70 dark:text-red-400/70"
+              : "text-muted-foreground/60",
+          )}
           title={errorText}
         >
-          Interrupted
+          {isFailed ? "Failed" : "Interrupted"}
         </span>
       </div>
     );

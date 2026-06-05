@@ -248,6 +248,18 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
     const state = generateCodeVerifier();
     oauthStates.set(serverId, state);
 
+    // Build the requested scope. Append `offline_access` ONLY when the
+    // provider advertises it in its metadata — that RFC scope is what makes
+    // many providers issue a refresh_token (so we can silently refresh later),
+    // but strict providers reject unknown scopes, so we don't add it blindly.
+    const supportedScopes = metadata.scopes_supported ?? [];
+    const scopeSet = new Set<string>(supportedScopes);
+    if (supportedScopes.includes("offline_access")) {
+      scopeSet.add("offline_access");
+    }
+    const requestedScope =
+      scopeSet.size > 0 ? Array.from(scopeSet).join(" ") : undefined;
+
     // Build authorization URL
     const params = new URLSearchParams({
       client_id: clientId,
@@ -258,8 +270,8 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
       state,
     });
 
-    if (metadata.scopes_supported?.length) {
-      params.set("scope", metadata.scopes_supported.join(" "));
+    if (requestedScope) {
+      params.set("scope", requestedScope);
     }
 
     const authUrl = `${metadata.authorization_endpoint}?${params.toString()}`;
@@ -328,13 +340,29 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
     }
 
     const tokenData = await tokenRes.json();
-    const token = tokenData.access_token;
 
-    // Store token and reconnect
+    // Store token (+ refresh token, expiry, scope, token endpoint) and
+    // reconnect. Capturing the refresh material is what lets a later
+    // service-worker restart (e.g. an extension update) silently refresh an
+    // expired access token instead of forcing a full re-authorization.
+    const { authPatchFromTokenResponse } = await import("./mcp-oauth");
+    const authPatch = authPatchFromTokenResponse(tokenData, {
+      tokenEndpoint: metadata.token_endpoint,
+      scope: requestedScope,
+    });
     const currentSettings = await storage.getSettings();
     const updatedServers = currentSettings.mcpServers.map((s) =>
       s.id === serverId
-        ? { ...s, auth: { ...s.auth, type: "oauth" as const, token, clientId, clientSecret } }
+        ? {
+            ...s,
+            auth: {
+              type: "oauth" as const,
+              ...s.auth,
+              ...authPatch,
+              clientId,
+              clientSecret,
+            },
+          }
         : s,
     );
     await storage.setSettings({ ...currentSettings, mcpServers: updatedServers });

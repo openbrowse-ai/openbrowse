@@ -20,7 +20,7 @@ export function generateId(): string {
 
 const HOME_BASE = chrome.runtime.getURL(HOME_PAGE_URL)
 
-function homeUrlForSpace(spaceId: string): string {
+export function homeUrlForSpace(spaceId: string): string {
   return `${HOME_BASE}?space=${encodeURIComponent(spaceId)}`
 }
 
@@ -98,7 +98,7 @@ export async function getOrCreateSpaceForWindow(windowId: number): Promise<Space
  * home tab already exists, make sure its URL has the right `?space=<id>`
  * (stamps the anchor for windows opened before this existed).
  */
-async function ensureHomeTab(windowId: number, spaceId: string): Promise<void> {
+export async function ensureHomeTab(windowId: number, spaceId: string): Promise<void> {
   const tabs = await chrome.tabs.query({ windowId })
   const home = tabs.find((t) => isHomeUrl(t.url))
   const targetUrl = homeUrlForSpace(spaceId)
@@ -269,7 +269,10 @@ async function snapshotPinnedTabs(windowId: number): Promise<void> {
  *  - Pass 2: for unclaimed windows, match by pinned-tab overlap against
  *    unclaimed spaces' saved `pinnedTabs` (greedy, ≥1 non-home overlap);
  *    stamp the anchor on success so future restarts use Pass 1.
- *  - Pass 3: clear `windowId` for any space not claimed by a live window.
+ *  - Pass 3: clear `windowId` only for spaces whose stored window is no
+ *    longer live (genuine browser restart). A space bound to a still-live
+ *    window that wasn't re-matched this pass (e.g. its anchor tab was
+ *    destroyed by an extension update) keeps its binding.
  */
 export async function reconcileSpacesWithWindows(): Promise<void> {
   let wins: chrome.windows.Window[]
@@ -335,13 +338,62 @@ export async function reconcileSpacesWithWindows(): Promise<void> {
   }
 
   // Apply bindings + clear stale windowIds.
+  //
+  // A window id is only "stale" if the window is genuinely GONE. On a
+  // browser restart Chrome assigns brand-new window ids, so a stored
+  // windowId that isn't among the live windows is stale and must be
+  // cleared (re-derived via anchor next time). But on an EXTENSION UPDATE
+  // / service-worker restart the window ids are unchanged — only the
+  // pinned home `?space=<id>` anchor tabs were destroyed by Chrome. In
+  // that case a space can be live but unmatched by Pass 1/2 (no anchor,
+  // no distinctive pinned tabs); its stored windowId is still correct and
+  // must be PRESERVED. Clearing it here was the root cause of windows
+  // losing their space after an update (every window then fell back to
+  // the first space). So only clear when the id is not a live window.
+  const liveWindowIds = new Set(
+    wins.map((w) => w.id).filter((id): id is number => id != null),
+  )
   const updated = spaces.map((s) => {
     const bound = newBinding.get(s.id)
     if (bound != null) return { ...s, windowId: bound }
-    // Not claimed by any window this pass → its stored windowId is stale
-    // (the id may now belong to a different live window), so clear it.
-    if (s.windowId != null) return { ...s, windowId: null }
+    if (s.windowId != null && !liveWindowIds.has(s.windowId)) {
+      return { ...s, windowId: null }
+    }
     return s
   })
   await storage.setSpaces(updated)
+}
+
+/**
+ * Recreate the pinned, anchored home tab for each live window after an
+ * extension update/install.
+ *
+ * On update Chrome tears down all extension pages, so every window's pinned
+ * `home.html?space=<id>` tab is destroyed — but the windows themselves (and
+ * their ids) survive, and `Space.windowId` is still correct. This walks the
+ * live windows, looks up each one's bound space by its still-valid window id,
+ * and re-stamps the anchored home tab via `ensureHomeTab`. It NEVER mutates
+ * `windowId` bindings — it only restores the missing tabs.
+ *
+ * Idempotent: `ensureHomeTab` repairs an existing home tab's anchor or
+ * creates a fresh one, so running this alongside the bootstrap reconcile is
+ * safe (both converge on the same anchored state).
+ */
+export async function restoreHomeTabsAfterUpdate(): Promise<void> {
+  let wins: chrome.windows.Window[]
+  try {
+    wins = await chrome.windows.getAll({ windowTypes: ['normal'] })
+  } catch {
+    return
+  }
+  for (const w of wins) {
+    if (w.id == null) continue
+    try {
+      const space = await storage.getSpaceByWindowId(w.id)
+      if (!space) continue
+      await ensureHomeTab(w.id, space.id)
+    } catch {
+      // Window/tab gone or transient error — best effort, keep going.
+    }
+  }
 }

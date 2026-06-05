@@ -218,7 +218,7 @@ describe("rewriteForLLM tool-state heal", () => {
     });
   });
 
-  it("defaults missing input on an approved approval-responded part to {}", () => {
+  it("leaves missing input undefined on an approved approval-responded part (no {} synthesis)", () => {
     const part = {
       type: "dynamic-tool",
       toolCallId: "install-no-input",
@@ -234,7 +234,10 @@ describe("rewriteForLLM tool-state heal", () => {
     const out = rewriteForLLM(msgs);
     const healed = out[1].parts[0] as { state: string; input: unknown };
     expect(healed.state).toBe("approval-responded");
-    expect(healed.input).toEqual({});
+    // Synthesizing {} here would make validateUIMessages run the tool's
+    // (possibly strict) schema against an empty object and fail. Absent
+    // input must stay absent.
+    expect(healed.input).toBeUndefined();
   });
 
   it("heals an approval-responded part with malformed approval to output-error", () => {
@@ -304,7 +307,7 @@ describe("rewriteForLLM tool-state heal", () => {
 
   // ── Strict-shape repair: input/output/errorText must be present ──
 
-  it("fills in missing input on a non-terminal part with {}", () => {
+  it("leaves missing input undefined on a non-terminal part (no {} synthesis)", () => {
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
       assistantWithPart({
@@ -317,10 +320,10 @@ describe("rewriteForLLM tool-state heal", () => {
     const out = rewriteForLLM(msgs);
     const part = out[1].parts[0] as { state: string; input: unknown };
     expect(part.state).toBe("output-error");
-    expect(part.input).toEqual({});
+    expect(part.input).toBeUndefined();
   });
 
-  it("fills in missing input on a terminal output-error part", () => {
+  it("leaves missing input undefined on a terminal output-error part (no {} synthesis)", () => {
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
       assistantWithPart({
@@ -328,13 +331,14 @@ describe("rewriteForLLM tool-state heal", () => {
         toolCallId: "err-no-input",
         state: "output-error",
         errorText: "boom",
-        // input missing — convertToModelMessages still emits a
-        // tool-call assistant entry that requires it.
+        // input missing — convertToModelMessages tolerates undefined input
+        // on errored tool-calls, and validateUIMessages skips schema
+        // validation when output-error input is undefined.
       } as unknown as AgentUIMessage["parts"][number]),
     ];
     const out = rewriteForLLM(msgs);
     const part = out[1].parts[0] as { input: unknown; errorText: string };
-    expect(part.input).toEqual({});
+    expect(part.input).toBeUndefined();
     expect(part.errorText).toBe("boom");
   });
 

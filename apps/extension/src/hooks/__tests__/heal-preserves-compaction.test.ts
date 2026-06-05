@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { healPendingTools } from "../useAgentChat";
+import { healPendingTools } from "@/lib/agent/heal-pending-tools";
 import type { AgentUIMessage } from "@/lib/types";
 
 /**

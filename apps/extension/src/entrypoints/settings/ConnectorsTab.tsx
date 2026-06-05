@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { useMcpState } from "@/hooks/useMcpState";
-import type { McpServerConfig, McpToolPermission } from "@/lib/mcp/types";
+import type { McpServerConfig, McpToolPermission, McpConnectionStatus } from "@/lib/mcp/types";
 import type { Settings } from "@/lib/types";
 import { connectors } from "@openbrowse/connectors";
 import type { ConnectorDefinition } from "@openbrowse/connectors";
@@ -269,6 +269,9 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
               </div>
               {inactiveServers.map((server) => {
                 const registry = getRegistryEntry(server.url);
+                const status = mcpStates.find(
+                  (st) => st.config.id === server.id,
+                )?.status;
                 return (
                   <ServerListItem
                     key={server.id}
@@ -276,6 +279,7 @@ export function ConnectorsTab({ settings, onChange }: ConnectorsTabProps) {
                     registry={registry}
                     isSelected={selectedId === server.id}
                     isCustom={isCustomServer(server)}
+                    status={status}
                     onClick={() => setSelectedId(server.id)}
                   />
                 );
@@ -817,14 +821,29 @@ function ServerListItem({
   registry,
   isSelected,
   isCustom,
+  status,
   onClick,
 }: {
   server: McpServerConfig;
   registry?: ConnectorDefinition;
   isSelected: boolean;
   isCustom: boolean;
+  status?: McpConnectionStatus;
   onClick: () => void;
 }) {
+  // The "Not connected" bucket lumps together genuinely-needs-auth and
+  // transiently-reconnecting servers. Surface a distinct "Connecting…" hint
+  // for the latter so a post-update reconnect window doesn't read as an auth
+  // failure (the connector heals itself once the token refresh + connect
+  // completes).
+  const statusLabel =
+    status === "connecting"
+      ? "Connecting…"
+      : status === "auth_required"
+        ? "Sign in"
+        : status === "error"
+          ? "Error"
+          : null;
   return (
     <button
       onClick={onClick}
@@ -840,6 +859,19 @@ function ServerListItem({
         )}
       </span>
       <span className="truncate flex-1">{server.name}</span>
+      {statusLabel && (
+        <span
+          className={`text-[10px] uppercase tracking-wide ${
+            status === "connecting"
+              ? "text-muted-foreground animate-pulse"
+              : status === "error"
+                ? "text-destructive/80"
+                : "text-muted-foreground"
+          }`}
+        >
+          {statusLabel}
+        </span>
+      )}
       {isCustom && (
         <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
           Custom
