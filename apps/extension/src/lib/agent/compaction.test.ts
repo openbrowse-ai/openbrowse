@@ -29,7 +29,7 @@ import {
   type PrunableMessage,
 } from "./compaction";
 import type { AgentUIMessage } from "./message-types";
-import type { ProviderDefinition } from "@/registry/providers/types";
+import type { ProviderDefinition } from "../../registry/providers/types";
 
 /** Build an assistant message wrapping a single tool-result part. */
 function toolResultMsg(

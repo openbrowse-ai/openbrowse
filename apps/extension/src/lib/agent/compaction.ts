@@ -5,7 +5,7 @@ import type {
   CompactionPart,
   SerializedUIPart,
 } from "../types";
-import type { ProviderDefinition } from "@/registry/providers/types";
+import type { ProviderDefinition } from "../../registry/providers/types";
 export interface TokenLimits {
   contextWindow?: number;
   maxOutputTokens?: number;

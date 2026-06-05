@@ -54,6 +54,15 @@ import {
 // once they're gone we can delete the alias and the re-export.
 type ImagePreview = Extract<Attachment, { kind: "image" }>;
 
+/**
+ * Composer placeholder shown when an AI model is configured. Defined once
+ * and used in BOTH the Placeholder extension config and the `disabled`
+ * toggle effect, so the two never drift (the toggle effect previously
+ * reset it to a stale string, dropping the "/ for skills & commands" hint).
+ */
+const COMPOSER_PLACEHOLDER =
+  "Ask anything... Type @ to mention a tab, / for skills & commands";
+
 interface ChatInputProps {
   value: string;
   onChange: (value: string) => void;
@@ -537,7 +546,7 @@ export function ChatInput({
       }),
       NoAutoLink,
       Placeholder.configure({
-        placeholder: "Ask anything... Type @ to mention a tab, / for skills & commands",
+        placeholder: COMPOSER_PLACEHOLDER,
         showOnlyWhenEditable: false,
       }),
       Markdown,
@@ -755,7 +764,7 @@ export function ChatInput({
       if (ext.name === "placeholder") {
         (ext.options as { placeholder: string }).placeholder = disabled
           ? "Configure an AI model in settings..."
-          : "Ask anything... Type @ to mention a tab";
+          : COMPOSER_PLACEHOLDER;
       }
     });
     editor.view.dispatch(editor.state.tr);
