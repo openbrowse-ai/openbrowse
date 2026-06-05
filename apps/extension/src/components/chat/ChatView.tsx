@@ -176,6 +176,7 @@ export function ChatView({
     updateSettings,
     agentSettings,
     handleSubmit,
+    compactNow,
     handleNew,
     handleRegenerate,
     handleRetry,
@@ -768,6 +769,23 @@ export function ChatView({
           onChange={setInput}
           onSubmit={isEditing ? handleEditSubmit : handleSubmit}
           onQueue={isEditing ? undefined : queueMessage}
+          onCommand={
+            isEditing
+              ? undefined
+              : async ({ command, hasRemaining, mentions, attachments }) => {
+                  if (command !== "compact") return;
+                  // Compact first; the transport prunes against the
+                  // fresh compaction state on the next send.
+                  await compactNow();
+                  // Compact-then-send: if the user typed text alongside
+                  // `/compact`, send it now. ChatInput already stripped
+                  // the command node and synced `input` to the leftover
+                  // text, so handleSubmit picks it up.
+                  if (hasRemaining) {
+                    await handleSubmit(mentions, attachments);
+                  }
+                }
+          }
           editMode={isEditing}
           onStop={stop}
           isLoading={isLoading}

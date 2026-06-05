@@ -2,18 +2,25 @@ import { ReactRenderer } from "@tiptap/react";
 import type { SuggestionOptions } from "@tiptap/suggestion";
 import { computePosition, flip, shift, offset } from "@floating-ui/dom";
 import { getSkillsRegistry } from "@/lib/skills/registry";
+import { matchBuiltinCommands } from "./slash-commands";
 import {
   SkillSlashList,
   type SkillSlashListRef,
   type SkillSuggestionItem,
 } from "./SkillSlashList";
 
-function querySkills(query: string): SkillSuggestionItem[] {
-  const state = getSkillsRegistry().getState();
+function querySlashItems(query: string): SkillSuggestionItem[] {
   const q = query.toLowerCase();
+
+  // Built-in commands surface first, in their own "Commands" group.
+  const commands: SkillSuggestionItem[] = matchBuiltinCommands(query).map(
+    (c) => ({ name: c.name, description: c.description, kind: "command" }),
+  );
+
+  const state = getSkillsRegistry().getState();
   // Only enabled skills are surfaced as slash-command targets — disabled
   // skills won't be picked up by the agent anyway.
-  return state.skills
+  const skills: SkillSuggestionItem[] = state.skills
     .filter((s) => s.enabled !== false)
     .filter((s) => {
       if (!q) return true;
@@ -22,7 +29,9 @@ function querySkills(query: string): SkillSuggestionItem[] {
         s.description.toLowerCase().includes(q)
       );
     })
-    .map((s) => ({ name: s.name, description: s.description }));
+    .map((s) => ({ name: s.name, description: s.description, kind: "skill" }));
+
+  return [...commands, ...skills];
 }
 
 export const skillSlashSuggestion: Partial<SuggestionOptions<SkillSuggestionItem>> = {
@@ -33,7 +42,7 @@ export const skillSlashSuggestion: Partial<SuggestionOptions<SkillSuggestionItem
   allowSpaces: false,
 
   items: ({ query }) => {
-    return querySkills(query);
+    return querySlashItems(query);
   },
 
   render: () => {

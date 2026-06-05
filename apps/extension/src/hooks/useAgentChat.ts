@@ -16,6 +16,8 @@ import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import {
   pruneMessages as pruneMessageParts,
   selectTail,
+  selectTailForManual,
+  resolveCompactionModel,
   buildCompactionPrompt,
   getCompactionSystemPrompt,
   prepareMessagesForSummarization,
@@ -178,7 +180,7 @@ const TERMINAL_TOOL_STATES = new Set([
   "output-denied",
 ]);
 
-function healPendingTools(
+export function healPendingTools(
   messages: AgentMessage[],
   denyReason: string,
 ): { healed: AgentMessage[]; healedMessages: AgentMessage[] } {
@@ -687,6 +689,15 @@ export function useAgentChat({
     DEFAULT_AGENT_SETTINGS,
   );
   const [input, setInput] = useState(initialInput ?? "");
+  // Mirror of `input` for callers that run after an `await` boundary,
+  // where the `input` captured in a useCallback closure may be stale
+  // (e.g. the `/compact` compact-then-send flow: ChatInput strips the
+  // command and syncs the leftover text via onChange/setInput, then the
+  // host awaits compaction before calling handleSubmit — by which point
+  // the closure's `input` predates the strip). Reading the ref inside
+  // handleSubmit guarantees we send the latest editor text.
+  const inputRef = useRef(input);
+  inputRef.current = input;
 
   const [isCompacting, setIsCompacting] = useState(false);
   // AbortController for the in-flight compaction summary call. The chat's
@@ -938,6 +949,19 @@ export function useAgentChat({
     addToolApprovalResponse,
   } = useChat<AgentMessage>({ chat });
 
+  // Mirror of `messages` for callbacks that run after an `await` boundary,
+  // where the `messages` captured in a useCallback closure may be stale.
+  // Specifically: the compact-then-send flow awaits `compactNow()` (which
+  // appends the compaction marker + summary via `setMessages`) before
+  // invoking `handleSubmit`. The `handleSubmit` instance captured in
+  // ChatView's `onCommand` closure predates that update, so its closed-over
+  // `messages` lacks the marker. Reading the ref in `handleSubmit`'s heal
+  // pass ensures we heal/append against the CURRENT chat state — otherwise
+  // a stranded-tool heal would `setMessages` a marker-less array and the
+  // transport would ship the full (un-compacted) history to the model.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   // Wrap the chat's stop() so it also aborts any in-flight compaction
   // summarization call. Without this, clicking Stop while a summary is
   // generating would silently let the LLM call continue and write a
@@ -956,18 +980,26 @@ export function useAgentChat({
     async (
       convId: string,
       msgs: AgentMessage[],
-      opts?: { auto?: boolean; overflow?: boolean },
+      opts?: { auto?: boolean; overflow?: boolean; manual?: boolean },
     ) => {
-      if (msgs.length < MIN_MESSAGES_FOR_COMPACTION) return;
+      const manual = opts?.manual ?? false;
+      if (msgs.length < MIN_MESSAGES_FOR_COMPACTION) {
+        if (manual) toast.info("Conversation is too short to compact yet");
+        return;
+      }
 
       // Time-based debounce thrash detection. If we just compacted within
       // COMPACTION_DEBOUNCE_MS, don't compact again — covers the case
       // where the produced summary itself overflows and would otherwise
       // loop. Reads directly from the visible message list, so the UI
       // and the runtime agree on what counts.
+      //
+      // Manual `/compact` is user-initiated and can't loop, so it skips
+      // the debounce — otherwise a user who just auto-compacted would
+      // click `/compact` and see nothing happen.
       const dbMessages = await chatDb.getMessages(convId);
       const events = findCompactionEvents(dbMessages);
-      if (shouldDebounceCompaction(events)) return;
+      if (!manual && shouldDebounceCompaction(events)) return;
 
       const auto = opts?.auto ?? true;
       const overflow = opts?.overflow ?? false;
@@ -992,8 +1024,18 @@ export function useAgentChat({
         // Compute the tail boundary. The CompactionPart will anchor here so
         // the transport's filterCompactedMessages knows where to keep the
         // verbatim tail and where to drop the head.
-        const { headMessages, tailStartId } = selectTail(pruned, modelDef);
-        if (!tailStartId || headMessages.length === 0) return;
+        //
+        // Manual `/compact` summarizes the whole conversation and keeps
+        // no verbatim tail (`tailStartId === undefined`), so it gates only
+        // on having a non-empty head. Auto-compaction still requires a
+        // tail anchor (it preserves recent turns verbatim to continue).
+        const { headMessages, tailStartId } = manual
+          ? selectTailForManual(pruned)
+          : selectTail(pruned, modelDef);
+        if (manual ? headMessages.length === 0 : !tailStartId || headMessages.length === 0) {
+          if (manual) toast.info("Conversation is too short to compact yet");
+          return;
+        }
 
         // Always run summarization. We previously had a "prune-only fast
         // path" that skipped the LLM call when pruning would free enough
@@ -1023,16 +1065,24 @@ export function useAgentChat({
           agentSettingsForCompaction.agentModel;
 
         const { providers } = await import("@/registry/providers");
-        const provider = providers.find((p) =>
-          p.models.some((m) => m.id === compactionModelId),
-        );
-        if (!provider) return;
+        // Model keys are stored composite ("providerId:modelId"); resolve
+        // to a provider + bare model id. Comparing the composite key
+        // directly against the registry's bare model ids was the bug
+        // behind "no provider for compaction model" (and silent
+        // auto-compaction failures).
+        const resolved = resolveCompactionModel(compactionModelId, providers);
+        if (!resolved) {
+          if (manual) {
+            toast.error("Can't compact: no provider for the compaction model");
+          }
+          return;
+        }
 
         const config =
-          settingsForCompaction.providerConfigs[provider.id] ?? {};
-        const compactionModel = await provider.createLanguageModel(
+          settingsForCompaction.providerConfigs[resolved.provider.id] ?? {};
+        const compactionModel = await resolved.provider.createLanguageModel(
           config,
-          compactionModelId,
+          resolved.modelId,
         );
 
         const result = await generateText({
@@ -1055,6 +1105,9 @@ export function useAgentChat({
           console.warn(
             "[compaction] summary model returned empty text; skipping event",
           );
+          if (manual) {
+            toast.error("Compaction failed: the model returned no summary");
+          }
           return;
         }
 
@@ -1109,6 +1162,13 @@ export function useAgentChat({
         };
         setMessages([...msgs, compactionUiMsg, summaryUiMsg]);
 
+        // Manual `/compact` has no auto-continue, so the only signal that
+        // it worked is the new divider in the stream — confirm with a
+        // toast so the action feels acknowledged.
+        if (manual) {
+          toast.success("Conversation compacted");
+        }
+
         // Auto-continue: send a synthetic user message asking the agent
         // to resume. Manual /compact (follow-up) would skip this. The
         // wording matches OpenCode's continue prompt.
@@ -1154,6 +1214,11 @@ export function useAgentChat({
           return;
         }
         console.error("[compaction] failed:", err);
+        if (manual) {
+          toast.error(
+            `Compaction failed: ${(err as Error)?.message ?? String(err)}`,
+          );
+        }
       } finally {
         if (compactionAbortRef.current === abortController) {
           compactionAbortRef.current = null;
@@ -1163,6 +1228,41 @@ export function useAgentChat({
     },
     [sendMessage, setMessages],
   );
+
+  /**
+   * Manually compact the current conversation (the `/compact` slash
+   * command). Passes `manual: true` so `runCompaction`:
+   *   - uses `selectTailForManual` (preserve only the last user turn,
+   *     ignore the token budget) so small conversations still compact,
+   *   - skips the thrash debounce,
+   *   - surfaces user-visible toasts for every outcome (success, too
+   *     short, provider/model failure) instead of silently no-op'ing,
+   *   - does NOT auto-continue (no synthetic "Continue…" turn) — the
+   *     user controls what happens next (the composer's compact-then-send
+   *     flow may send leftover text afterwards).
+   *
+   * Resolves once compaction has finished (or was skipped), so callers
+   * can `await` it before sending a follow-up message and rely on the
+   * transport pruning against the fresh compaction state.
+   */
+  const compactNow = useCallback(async (): Promise<void> => {
+    const convId = conversationIdRef.current;
+    if (!convId) {
+      toast.info("Nothing to compact yet");
+      return;
+    }
+    if (isCompacting) {
+      toast.info("Already compacting…");
+      return;
+    }
+    if (isLoading) {
+      toast.info("Can't compact while the agent is responding");
+      return;
+    }
+    // `runCompaction({ manual: true })` owns the remaining feedback:
+    // it toasts "too short to compact" / failure / success itself.
+    await runCompaction(convId, messages, { auto: false, manual: true });
+  }, [isCompacting, isLoading, messages, runCompaction]);
 
   useEffect(() => {
     if (status === "streaming" || status === "submitted") {
@@ -1517,6 +1617,11 @@ export function useAgentChat({
       mentions: TabMentionAttrs[] = [],
       attachments: Attachment[] = [],
     ) => {
+      // Read the latest editor text via the ref, not the closure's
+      // `input` — see `inputRef` for why (compact-then-send runs this
+      // after an await boundary). Shadowing keeps the rest of the body
+      // unchanged.
+      const input = inputRef.current;
       if (!input.trim() && attachments.length === 0) return;
       if (!isConfigured) return;
 
@@ -1553,8 +1658,15 @@ export function useAgentChat({
       //   has a public API that writes them client-side, so
       //   `healPendingTools` mutates via `setMessages` and we persist
       //   the change to chatDb to survive reloads.
+      //
+      // Read `messagesRef.current` (not the closure `messages`): in the
+      // compact-then-send flow this runs after `compactNow()` appended the
+      // compaction marker + summary, and the `handleSubmit` instance held
+      // by ChatView's onCommand closure predates that. Healing against the
+      // stale closure would `setMessages` a marker-less array and drop the
+      // just-created compaction event. See `messagesRef`.
       const { healed, healedMessages } = healPendingTools(
-        messages,
+        messagesRef.current,
         "Superseded by new user message",
       );
       if (healedMessages.length > 0) {
@@ -2111,6 +2223,7 @@ export function useAgentChat({
     setAgentModel,
     setThinkingSettings,
     handleSubmit,
+    compactNow,
     handleNew,
     handleRegenerate,
     handleRetry,

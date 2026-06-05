@@ -5,6 +5,7 @@ import type {
   CompactionPart,
   SerializedUIPart,
 } from "../types";
+import type { ProviderDefinition } from "@/registry/providers/types";
 export interface TokenLimits {
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -496,6 +497,82 @@ export function selectTail(
     tailStartIndex < messages.length ? messages[tailStartIndex].id : undefined;
 
   return { headMessages, tailStartId };
+}
+
+/**
+ * Tail selection for the user-typed `/compact` command.
+ *
+ * Auto-compaction (`selectTail`) deliberately preserves the last
+ * `TAIL_TURNS` (2) user turns and up to `MAX_PRESERVE_RECENT_TOKENS` of
+ * recent context verbatim, only summarizing what spills past that budget —
+ * it fires mid-task, so the agent needs recent context to continue.
+ *
+ * A user typing `/compact` is instead saying "continue from the summary
+ * only". So this variant summarizes the ENTIRE conversation and keeps NO
+ * verbatim tail: `headMessages` is every message and `tailStartId` is
+ * `undefined`. With no tail anchor, `filterCompactedMessages` /
+ * `rewriteForLLM` fall back to dropping everything before the compaction
+ * marker, so the model sees only the marker + summary (plus any turns that
+ * come *after* the compaction). The UI still shows every original message;
+ * only the model view is replaced.
+ *
+ * Returns an empty head when the conversation has fewer than two user
+ * turns — there's nothing worth summarizing — so the caller can surface a
+ * "conversation too short to compact" message instead of producing a
+ * trivial summary.
+ */
+export function selectTailForManual(
+  messages: PrunableMessage[]
+): { headMessages: PrunableMessage[]; tailStartId: string | undefined } {
+  const userTurns = messages.reduce(
+    (n, m) => (m.role === "user" ? n + 1 : n),
+    0
+  );
+
+  // Need at least two user turns for a meaningful manual compaction.
+  if (userTurns < 2) {
+    return { headMessages: [], tailStartId: undefined };
+  }
+
+  // Summary-only: the whole conversation is the head, no verbatim tail.
+  return { headMessages: messages, tailStartId: undefined };
+}
+
+export interface ResolvedModelSelection {
+  provider: ProviderDefinition;
+  /** Bare model id (ModelDefinition.id), suitable for createLanguageModel. */
+  modelId: string;
+}
+
+/**
+ * Resolve a stored model key against the provider registry.
+ *
+ * Model keys are persisted as composite "providerId:modelId" strings (the
+ * format `ModelPicker` writes for both `agentModel` and `compactionModel`),
+ * but the registry's model lists and `createLanguageModel` key off the
+ * BARE model id. This splits the composite key and resolves the provider,
+ * mirroring the canonical agentModel resolution in `useAgentChat`:
+ *   - when a provider prefix is present, select the provider by id;
+ *   - otherwise (or as a fallback), find the provider whose model list
+ *     contains the bare id.
+ *
+ * Returns `undefined` when no provider matches. The returned `modelId` is
+ * always the bare id, ready to hand to `provider.createLanguageModel`.
+ */
+export function resolveCompactionModel(
+  rawModelKey: string,
+  providers: ProviderDefinition[]
+): ResolvedModelSelection | undefined {
+  const [providerId, ...modelIdParts] = rawModelKey.split(":");
+  const hasPrefix = modelIdParts.length > 0;
+  const modelId = hasPrefix ? modelIdParts.join(":") : rawModelKey;
+
+  const provider =
+    (hasPrefix ? providers.find((p) => p.id === providerId) : undefined) ??
+    providers.find((p) => p.models.some((m) => m.id === modelId));
+
+  if (!provider) return undefined;
+  return { provider, modelId };
 }
 
 // Summarization Prompt Builders
