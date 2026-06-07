@@ -14,6 +14,24 @@ import { setTargetTabId } from "@/lib/agent/active-tab";
 import { healPendingTools } from "@/lib/agent/heal-pending-tools";
 import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
+import { runOwnership, HEARTBEAT_MS, STALE_OWNER_MS } from "@/lib/agent/run-ownership";
+import {
+  markPendingFirstTurn,
+  hasPendingFirstTurn,
+  clearPendingFirstTurn,
+} from "@/lib/agent/pending-first-turn";
+import {
+  broadcastStreamParts,
+  broadcastStreamDone,
+  isStreamPartsMessage,
+  isStreamDoneMessage,
+  applyStreamSnapshot,
+  SeqGuard,
+} from "@/lib/agent/stream-mirror";
+import {
+  RUNTIME_MESSAGES,
+  STREAM_MIRROR_THROTTLE_MS,
+} from "@/lib/constants";
 import {
   pruneMessages as pruneMessageParts,
   selectTail,
@@ -495,6 +513,33 @@ export function useAgentChat({
   const compactionAbortRef = useRef<AbortController | null>(null);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
+
+  /**
+   * Stable per-mount identity for the run-ownership lock. Exactly one
+   * context may own (drive) a conversation's agent loop at a time; this
+   * token is how `run-ownership` distinguishes "me" from sibling tabs.
+   * Minted once per hook mount and never changes.
+   */
+  const ownerTokenRef = useRef<string>(generateId());
+
+  /**
+   * True when a *different* live context currently owns this
+   * conversation's run — i.e. this context is a read-only "viewer" that
+   * mirrors the host's stream and routes actions (send/approve/stop) to
+   * the owner rather than driving the loop locally.
+   */
+  const [isViewer, setIsViewer] = useState(false);
+  const isViewerRef = useRef(false);
+  isViewerRef.current = isViewer;
+
+  // Monotonic sequence for outgoing stream snapshots (host side) and a
+  // guard that drops stale/out-of-order frames (viewer side).
+  const streamSeqRef = useRef(0);
+  const seqGuardRef = useRef(new SeqGuard());
+  // Wall-clock of the last mirror signal (frame or done) this context
+  // received as a viewer. Used by the viewer watchdog to detect a host
+  // that died mid-stream (no STREAM_DONE will ever arrive).
+  const lastMirrorActivityRef = useRef(0);
 
   /**
    * Per-conversation FIFO queue of un-sent user messages. Items here
@@ -1056,11 +1101,49 @@ export function useAgentChat({
   useEffect(() => {
     if (status === "streaming" || status === "submitted") {
       wasStreamingRef.current = true;
-      if (conversationId) setAgentActive(conversationId);
+      if (conversationId) {
+        setAgentActive(conversationId);
+        // Claim ownership the moment this context starts driving a run.
+        // If a different live context already owns it, we lost the race:
+        // stop our local loop and fall back to viewer mode (mirror the
+        // owner's stream instead of duplicating the work).
+        const cid = conversationId;
+        const token = ownerTokenRef.current;
+        void runOwnership.claimOwnership(cid, token).then((won) => {
+          if (conversationIdRef.current !== cid) return;
+          if (won) {
+            setIsViewer(false);
+          } else {
+            setIsViewer(true);
+            stop();
+          }
+        });
+      }
     } else if (wasStreamingRef.current) {
       wasStreamingRef.current = false;
       resetAgentIndicator();
-      if (conversationId) setAgentInactive(conversationId);
+      if (conversationId) {
+        setAgentInactive(conversationId);
+        // Terminal state for this context's run: emit one final snapshot
+        // (the throttled broadcaster may have skipped the last partial
+        // when status flipped out of "streaming"), then release ownership
+        // and tell viewers to re-read the authoritative transcript.
+        const cid = conversationId;
+        if (!isViewer) {
+          const lastMsg = messages[messages.length - 1];
+          if (lastMsg && lastMsg.role === "assistant") {
+            streamSeqRef.current += 1;
+            broadcastStreamParts({
+              conversationId: cid,
+              messageId: lastMsg.id,
+              parts: serializeParts(lastMsg.parts),
+              seq: streamSeqRef.current,
+            });
+          }
+        }
+        void runOwnership.releaseOwnership(cid, ownerTokenRef.current);
+        broadcastStreamDone(cid);
+      }
 
       // Check if compaction is needed after response completes. This
       // covers both true inter-turn compaction and mid-stream compaction
@@ -1072,7 +1155,174 @@ export function useAgentChat({
         runCompaction(conversationId, messages, { auto: true });
       }
     }
-  }, [status, conversationId, messages, runCompaction]);
+  }, [status, conversationId, messages, runCompaction, stop, isViewer]);
+
+  // Heartbeat: while this context owns a streaming run, renew the
+  // ownership claim periodically so sibling tabs don't reap it as stale.
+  // If renewal fails (we lost ownership, e.g. after a stale reap), stop
+  // the local loop and become a viewer.
+  useEffect(() => {
+    if (!conversationId) return;
+    if (status !== "streaming" && status !== "submitted") return;
+    if (isViewer) return;
+    const cid = conversationId;
+    const token = ownerTokenRef.current;
+    const interval = setInterval(() => {
+      void runOwnership.renewOwnership(cid, token).then((stillMine) => {
+        if (conversationIdRef.current !== cid) return;
+        if (!stillMine) {
+          setIsViewer(true);
+          stop();
+        }
+      });
+    }, HEARTBEAT_MS);
+    return () => clearInterval(interval);
+  }, [status, conversationId, isViewer, stop]);
+
+  // Host broadcaster: while this context owns a streaming run, broadcast
+  // throttled full-message snapshots of the in-flight assistant message
+  // so viewer tabs can mirror progress live. Full snapshots (not deltas)
+  // self-heal dropped frames and instantly catch up late joiners.
+  const lastBroadcastRef = useRef(0);
+  useEffect(() => {
+    if (!conversationId) return;
+    if (isViewer) return;
+    if (status !== "streaming") return;
+    const lastMsg = messages[messages.length - 1];
+    if (!lastMsg || lastMsg.role !== "assistant") return;
+
+    const now = Date.now();
+    const elapsed = now - lastBroadcastRef.current;
+    const cid = conversationId;
+    const emit = () => {
+      lastBroadcastRef.current = Date.now();
+      streamSeqRef.current += 1;
+      broadcastStreamParts({
+        conversationId: cid,
+        messageId: lastMsg.id,
+        parts: serializeParts(lastMsg.parts),
+        seq: streamSeqRef.current,
+      });
+    };
+    if (elapsed >= STREAM_MIRROR_THROTTLE_MS) {
+      emit();
+      return;
+    }
+    // Trailing edge: ensure the final partial state for this render
+    // lands even if updates stop arriving before the next interval.
+    const t = setTimeout(emit, STREAM_MIRROR_THROTTLE_MS - elapsed);
+    return () => clearTimeout(t);
+  }, [messages, status, isViewer, conversationId]);
+
+  // Viewer receiver: in a non-owner context, apply mirrored snapshots
+  // from the host into the local message list and converge on the
+  // authoritative transcript when the turn finishes.
+  useEffect(() => {
+    if (!conversationId) return;
+    const cid = conversationId;
+    const guard = seqGuardRef.current;
+
+    const onMessage = (msg: unknown) => {
+      if (isStreamPartsMessage(msg) && msg.conversationId === cid) {
+        // Receiving a frame means another context is the host: we're a
+        // viewer for the duration of this run.
+        lastMirrorActivityRef.current = Date.now();
+        if (!isViewerRef.current) setIsViewer(true);
+        if (!guard.shouldApply(msg.messageId, msg.seq)) return;
+        const snapshot = dbMessageToUIMessage({
+          id: msg.messageId,
+          role: "assistant",
+          parts: msg.parts,
+        });
+        setMessages((prev) => applyStreamSnapshot(prev, snapshot));
+        return;
+      }
+      if (isStreamDoneMessage(msg) && msg.conversationId === cid) {
+        // Host finished the turn. Re-read the persisted transcript so we
+        // converge on the authoritative state (covers any dropped frame)
+        // and drop viewer mode.
+        lastMirrorActivityRef.current = Date.now();
+        guard.reset();
+        void chatDb.getMessages(cid).then((dbMsgs) => {
+          if (conversationIdRef.current !== cid) return;
+          // Only adopt the DB transcript if it actually has content. An
+          // errored/empty turn may not have persisted the in-flight
+          // assistant message (onFinish skips empty turns), and the host's
+          // self-heal can delete a trailing empty assistant row — in
+          // either case we must NOT blow away what the viewer already
+          // mirrored down to an empty list. Keep the mirrored messages if
+          // the DB has nothing.
+          if (dbMsgs.length > 0) {
+            setMessages(dbMsgs.map(dbMessageToUIMessage));
+          }
+          setIsViewer(false);
+        });
+      }
+    };
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [conversationId, setMessages]);
+
+  // Viewer watchdog: if this context is mirroring a host (isViewer) but
+  // the host dies mid-stream, no STREAM_DONE will ever arrive and the
+  // viewer would stay stuck read-only forever. Periodically check: if no
+  // mirror activity for a while AND the ownership claim is gone/stale,
+  // exit viewer mode and converge on whatever the host last persisted.
+  // This realizes the "host death -> run stops; user manually continues"
+  // behavior on the viewer side (auto-resume stays disabled).
+  useEffect(() => {
+    if (!conversationId) return;
+    if (!isViewer) return;
+    const cid = conversationId;
+    const interval = setInterval(() => {
+      const idle = Date.now() - lastMirrorActivityRef.current;
+      if (idle < STALE_OWNER_MS) return;
+      void runOwnership.getOwner(cid).then((owner) => {
+        if (conversationIdRef.current !== cid) return;
+        // getOwner returns null for both "no owner" and "stale owner".
+        if (owner === null) {
+          void chatDb.getMessages(cid).then((dbMsgs) => {
+            if (conversationIdRef.current !== cid) return;
+            if (dbMsgs.length > 0) {
+              setMessages(dbMsgs.map(dbMessageToUIMessage));
+            }
+            seqGuardRef.current.reset();
+            setIsViewer(false);
+          });
+        }
+      });
+    }, HEARTBEAT_MS);
+    return () => clearInterval(interval);
+  }, [conversationId, isViewer, setMessages]);
+
+  // Host-side approval forwarding: a viewer tab can't resolve the live
+  // `approval-requested` tool part (it lives in the host's in-memory
+  // chat). The viewer broadcasts AGENT_APPROVE; the host (owner) applies
+  // it to its own chat here.
+  useEffect(() => {
+    if (!conversationId) return;
+    if (isViewer) return;
+    const cid = conversationId;
+    const onMessage = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as {
+        type?: string;
+        conversationId?: string;
+        toolCallId?: string;
+        approved?: boolean;
+      };
+      if (
+        m.type === RUNTIME_MESSAGES.AGENT_APPROVE &&
+        m.conversationId === cid &&
+        typeof m.toolCallId === "string" &&
+        typeof m.approved === "boolean"
+      ) {
+        void addToolApprovalResponse({ id: m.toolCallId, approved: m.approved });
+      }
+    };
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [conversationId, isViewer, addToolApprovalResponse]);
 
   useEffect(() => {
     const listener = (message: { type: string }) => {
@@ -1367,8 +1617,8 @@ export function useAgentChat({
       // `hasMeaningfulContent` gate above. Without this, the user sees
       // a bare regenerate-icon bubble after refreshing a chat that
       // errored. After the delete, the conversation reads as if the
-      // user's last message is unanswered, so the auto-resume branch
-      // below (or a manual retry) takes over.
+      // user's last message is unanswered, so a manual retry / continue
+      // (or the host's queue-flush, once a run is started) takes over.
       let msgs = initialMsgs;
       const lastDb = msgs[msgs.length - 1];
       if (
@@ -1385,17 +1635,37 @@ export function useAgentChat({
         setMessages(uiMsgs);
         // Hydrate the agent context (and tab handle map) for any
         // subsequent action — retry, regenerate, approve a pending tool
-        // call, or auto-resume below. Doing it unconditionally on
-        // conversation load means resolveTabHandle has live state regardless
-        // of which path the user takes after opening the conversation.
+        // call. Doing it unconditionally on conversation load means
+        // resolveTabHandle has live state regardless of which path the
+        // user takes after opening the conversation.
         setAgentContext(conversationId);
+
+        // First-turn dispatch for a freshly-created conversation.
+        //
+        // The side panel / ChatView `handleSubmit` (and the home
+        // LandingPage) create a conversation, persist the first user
+        // message, and switch here via `onNewConversation` WITHOUT
+        // calling sendMessage directly — they rely on this effect to
+        // dispatch the first turn once the new chat instance mounts.
+        //
+        // We gate that dispatch on the `pending-first-turn` marker so it
+        // fires ONLY for a just-created conversation, never as an
+        // unconditional auto-resume of a trailing unanswered user message.
+        // Auto-resuming on load caused every open context (home tab, side
+        // panel, popup, duplicate home tabs) to independently restart the
+        // same task. A stale tab reopening an existing conversation has no
+        // marker, so it won't auto-start; the user resumes manually via
+        // the composer (or the error banner's Continue/Retry). If two
+        // contexts somehow both observe the marker, the ownership claim in
+        // the status effect ensures only one actually drives the run.
         const lastMsg = uiMsgs[uiMsgs.length - 1];
         if (lastMsg.role === "user" && transport) {
-          // Auto-resume: an unanswered user message at the tail of the
-          // conversation. Compaction-aware message assembly lives in the
-          // transport, so we no longer prefilter the message list here —
-          // the wrapper reads chatDb compaction state at send-time.
-          sendMessage();
+          const cid = conversationId;
+          const pending = await hasPendingFirstTurn(cid);
+          if (pending && conversationIdRef.current === cid) {
+            await clearPendingFirstTurn(cid);
+            sendMessage();
+          }
         }
       }
     });
@@ -1599,8 +1869,14 @@ export function useAgentChat({
       setAgentContext(convId);
 
       if (isNew) {
-        // Set conversation ID first — the effect will load the user message
-        // from DB and call sendMessage on the correct chat instance.
+        // Mark the conversation as needing its first turn dispatched, then
+        // switch to it. The message-load effect picks up the persisted user
+        // message and dispatches sendMessage() for the new chat instance —
+        // gated on this marker so only freshly-created conversations
+        // auto-start (a stale tab reopening an existing conversation must
+        // NOT). Cross-tab double-dispatch is prevented by the ownership
+        // claim, not this marker.
+        await markPendingFirstTurn(convId);
         onNewConversation(convId);
       } else {
         // Construct a full `UIMessage` (id + role + parts) instead of
@@ -1990,12 +2266,39 @@ export function useAgentChat({
     storage.setSettings(next);
   }, [settings]);
 
+  // Viewer-aware tool approval. When this context is a viewer (another
+  // tab owns the live run), the local `addToolApprovalResponse` would
+  // operate on a stale, non-driving chat. Instead forward the decision
+  // to the host via AGENT_APPROVE, which applies it to the live part.
+  const approveToolCall = useCallback(
+    (opts: { id: string; approved: boolean }) => {
+      if (isViewerRef.current && conversationIdRef.current) {
+        try {
+          chrome.runtime
+            ?.sendMessage?.({
+              type: RUNTIME_MESSAGES.AGENT_APPROVE,
+              conversationId: conversationIdRef.current,
+              toolCallId: opts.id,
+              approved: opts.approved,
+            })
+            ?.catch?.(() => {});
+        } catch {
+          /* non-extension context; ignore */
+        }
+        return;
+      }
+      return addToolApprovalResponse(opts);
+    },
+    [addToolApprovalResponse],
+  );
+
   return {
     messages,
     input,
     setInput,
     isLoading,
     isStreaming,
+    isViewer,
     isCompacting,
     isConfigured,
     // True once the chat transport has finished building. The transport is
@@ -2019,6 +2322,7 @@ export function useAgentChat({
     handleContinue,
     confirmEdit,
     addToolApprovalResponse,
+    approveToolCall,
     stop,
     error,
     clearError,
