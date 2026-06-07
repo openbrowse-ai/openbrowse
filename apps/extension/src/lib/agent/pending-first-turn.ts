@@ -24,6 +24,27 @@
 
 const KEY_PREFIX = "pending-first-turn:";
 
+/**
+ * Whether `conversationId` is safe to embed in a storage key.
+ *
+ * Conversation ids are minted by `crypto.randomUUID()`, but the active
+ * conversation id can also originate from attacker-influenceable sources
+ * (e.g. `window.location.hash` / URL params). Restricting to an
+ * allowlist of url-safe characters with a length cap means a crafted id
+ * (e.g. `__proto__`) can never become the computed property name written
+ * to storage — closing the remote-property-injection vector flagged by
+ * CodeQL. (The `KEY_PREFIX` already neutralizes prototype pollution, but
+ * this makes the key provably sanitized.)
+ */
+function isSafeConversationId(conversationId: string): boolean {
+  return (
+    typeof conversationId === "string" &&
+    conversationId.length > 0 &&
+    conversationId.length <= 128 &&
+    /^[A-Za-z0-9_-]+$/.test(conversationId)
+  );
+}
+
 function key(conversationId: string): string {
   return `${KEY_PREFIX}${conversationId}`;
 }
@@ -32,6 +53,7 @@ function key(conversationId: string): string {
 export async function markPendingFirstTurn(
   conversationId: string,
 ): Promise<void> {
+  if (!isSafeConversationId(conversationId)) return;
   try {
     await chrome.storage?.session?.set?.({ [key(conversationId)]: Date.now() });
   } catch {
@@ -43,6 +65,7 @@ export async function markPendingFirstTurn(
 export async function hasPendingFirstTurn(
   conversationId: string,
 ): Promise<boolean> {
+  if (!isSafeConversationId(conversationId)) return false;
   try {
     const k = key(conversationId);
     const r = await chrome.storage?.session?.get?.(k);
@@ -56,6 +79,7 @@ export async function hasPendingFirstTurn(
 export async function clearPendingFirstTurn(
   conversationId: string,
 ): Promise<void> {
+  if (!isSafeConversationId(conversationId)) return;
   try {
     await chrome.storage?.session?.remove?.(key(conversationId));
   } catch {

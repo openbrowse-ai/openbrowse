@@ -58,4 +58,30 @@ describe("pending-first-turn", () => {
     await expect(hasPendingFirstTurn("conv-1")).resolves.toBe(false);
     await expect(clearPendingFirstTurn("conv-1")).resolves.toBeUndefined();
   });
+
+  it("ignores ids with unsafe characters or bad length (no storage write, reads false)", async () => {
+    const setSpy = chrome.storage.session.set as ReturnType<typeof vi.fn>;
+    for (const bad of ["a/b", "a b", "a.b", "x".repeat(200), "", "a:b"]) {
+      await markPendingFirstTurn(bad);
+      expect(await hasPendingFirstTurn(bad)).toBe(false);
+      await clearPendingFirstTurn(bad);
+    }
+    // No write ever reached storage for unsafe ids.
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
+  it("treats a prefixed __proto__ id as a harmless namespaced key (no pollution)", async () => {
+    // `__proto__` matches the url-safe allowlist, but the KEY_PREFIX means
+    // the stored key is `pending-first-turn:__proto__`, which cannot pollute
+    // Object.prototype. The marker still round-trips like any other id.
+    await markPendingFirstTurn("__proto__");
+    expect(await hasPendingFirstTurn("__proto__")).toBe(true);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it("accepts uuid-shaped ids", async () => {
+    const id = "123e4567-e89b-12d3-a456-426614174000";
+    await markPendingFirstTurn(id);
+    expect(await hasPendingFirstTurn(id)).toBe(true);
+  });
 });
