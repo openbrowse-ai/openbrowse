@@ -71,3 +71,24 @@ export const STORAGE_KEYS = {
 export const HOME_PAGE_URL = "/home.html";
 
 export const AUTO_TIDY_CHECK_INTERVAL_MS = 60_000;
+
+/**
+ * Cross-context runtime message types for the single-host run model.
+ *
+ *  - STREAM_PARTS: the host broadcasts a throttled full-message snapshot
+ *    of the in-flight assistant message so viewer tabs can mirror it.
+ *  - STREAM_DONE: the host signals a turn reached a terminal state;
+ *    viewers re-read the authoritative transcript from chat-db.
+ *  - AGENT_APPROVE: a viewer forwards a tool approval/denial to the host,
+ *    which applies it to its live `approval-requested` part.
+ *
+ * `AGENT_STOP` (defined inline elsewhere) is reused for viewer→host stop.
+ */
+export const RUNTIME_MESSAGES = {
+  STREAM_PARTS: "STREAM_PARTS",
+  STREAM_DONE: "STREAM_DONE",
+  AGENT_APPROVE: "AGENT_APPROVE",
+} as const;
+
+/** Throttle interval for host→viewer streaming snapshots. */
+export const STREAM_MIRROR_THROTTLE_MS = 100;

@@ -182,7 +182,8 @@ export function ChatView({
     handleRetry,
     handleContinue,
     confirmEdit,
-    addToolApprovalResponse,
+    approveToolCall,
+    isViewer,
     setAgentModel,
     setThinkingSettings,
     stop,
@@ -223,6 +224,24 @@ export function ChatView({
 
   const isLoading = hookIsLoading || isAgentActiveGlobally;
   const isStreaming = hookIsStreaming || isAgentActiveGlobally;
+
+  // Viewer-aware stop. In a viewer tab there is no live local loop to
+  // abort — the run is driven by the host. Forward a stop request via
+  // the existing AGENT_STOP broadcast, which the host's listener honors.
+  // (New messages typed in a viewer already route to the queue because
+  // `isLoading` is true, so ChatInput queues instead of submitting; the
+  // host drains the queue. So only stop needs special handling here.)
+  const handleStop = useCallback(() => {
+    if (isViewer) {
+      try {
+        chrome.runtime?.sendMessage?.({ type: "AGENT_STOP" })?.catch?.(() => {});
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    stop();
+  }, [isViewer, stop]);
 
   const { providers } = useProviders();
 
@@ -587,7 +606,7 @@ export function ChatView({
                 error={error}
                 onRegenerate={handleRegenerate}
                 onEdit={startEdit}
-                onToolApproval={addToolApprovalResponse}
+                onToolApproval={approveToolCall}
                 onRetry={handleRetry}
                 onContinue={handleContinue}
                 onDismissError={clearError}
@@ -787,7 +806,7 @@ export function ChatView({
                 }
           }
           editMode={isEditing}
-          onStop={stop}
+          onStop={handleStop}
           isLoading={isLoading}
           disabled={!isConfigured}
           providerModels={providerModels}

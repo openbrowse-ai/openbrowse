@@ -14,6 +14,7 @@ import { SpaceHeader } from "./SpaceHeader";
 import { TabCard } from "./TabCard";
 import { useRecentTabs } from "@/hooks/useRecentTabs";
 import { chatDb } from "@/lib/chat-db";
+import { markPendingFirstTurn } from "@/lib/agent/pending-first-turn";
 import { storage } from "@/lib/storage";
 import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
 import { useProviders } from "@/hooks/useProviders";
@@ -284,6 +285,12 @@ export function LandingPage({
       }
 
       setInput("");
+      // Mark the new conversation as needing its first turn dispatched.
+      // LandingPage doesn't sendMessage directly — the side panel / chat
+      // view mounts on `onNewConversation`, reloads from chatDb, and the
+      // message-load effect dispatches the first turn, gated on this
+      // marker (so it's a scoped first-turn dispatch, not auto-resume).
+      await markPendingFirstTurn(convId);
       onNewConversation(convId);
     },
     [
