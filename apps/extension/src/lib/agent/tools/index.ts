@@ -7,6 +7,7 @@ export { screenshotTool } from "./screenshot";
 export { scrollPageTool } from "./scroll-page";
 export { selectTabTool } from "./select-tab";
 export { typeInElementTool } from "./type-in-element";
+export { pressKeyTool } from "./press-key";
 export { saveMemoryTool } from "./save-memory";
 export { updateMemoryTool } from "./update-memory";
 export { deleteMemoryTool } from "./delete-memory";

@@ -2,8 +2,16 @@ import { z } from "zod";
 import { isDetachError } from "../cdp-errors";
 import type { BrowserDriver, TabId } from "../driver";
 import { resolveTabOrThrow } from "../driver";
-import { getRef, getPreviousSnapshot, invalidateRefs } from "../ref-store";
-import { captureSnapshot, diffSnapshots } from "../snapshot-capture";
+import {
+  getRef,
+  getPreviousSnapshot,
+  getPreviousSignals,
+} from "../ref-store";
+import {
+  captureSnapshot,
+  diffSnapshots,
+  findNodeByRoleNameNth,
+} from "../snapshot-capture";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
@@ -54,6 +62,7 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     const tabId = tab.id;
 
     const previousSnapshot = getPreviousSnapshot(tabId);
+    const previousSignals = getPreviousSignals(tabId);
 
     // Back-compat: trailing newline was the old form-submit hack.
     const legacyNewlineSubmit = text.endsWith("\n");
@@ -97,7 +106,8 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
       await ctx.driver.waitForLoad(tabId, 8000).catch(() => {});
     }
 
-    invalidateRefs(tabId);
+    // Refs are refreshed (not invalidated) by the post-action snapshot's
+    // merge — see click-element.ts and ref-store.setRefs.
 
     const baseResult = {
       tab: handle,
@@ -107,7 +117,7 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
       ...(shouldPressEnter && { submitted: true as const }),
     };
 
-    if (!previousSnapshot) {
+    if (!previousSnapshot || !previousSignals) {
       try {
         await captureSnapshot(ctx.driver, tabId);
       } catch {}
@@ -115,13 +125,20 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
     }
 
     try {
-      const { snapshotText } = await captureSnapshot(ctx.driver, tabId);
-      const diff = diffSnapshots(previousSnapshot, snapshotText);
+      const { snapshotText, signals } = await captureSnapshot(ctx.driver, tabId);
+      const diff = diffSnapshots(
+        { text: previousSnapshot, signals: previousSignals },
+        { text: snapshotText, signals },
+      );
       if (diff === null) {
         return {
           ...baseResult,
           diff: null,
-          note: "No visible page change detected after typing. The element may not have accepted input.",
+          note:
+            "Accessibility tree and element state unchanged. This may still " +
+            "have succeeded (some changes aren't reflected here). Do NOT " +
+            "blindly retry — verify with a screenshot or by reading " +
+            "element state before retrying.",
         };
       }
       return { ...baseResult, diff };
@@ -150,7 +167,25 @@ async function typeByRef(
     );
   }
 
-  await driver.sendCommand(tabId, "DOM.focus", { backendNodeId: entry.backendNodeId });
+  // Focus the element. On a re-rendered page the cached backendNodeId may be
+  // detached; recover by re-finding the same logical element via its identity
+  // tuple (role, name, nth) from a fresh AX tree before failing.
+  let backendNodeId = entry.backendNodeId;
+  try {
+    await driver.sendCommand(tabId, "DOM.focus", { backendNodeId });
+  } catch (err) {
+    const freshId = await findNodeByRoleNameNth(
+      driver,
+      tabId,
+      entry.role,
+      entry.name,
+      entry.nth,
+      entry.frameId,
+    );
+    if (freshId == null || freshId === backendNodeId) throw err;
+    backendNodeId = freshId;
+    await driver.sendCommand(tabId, "DOM.focus", { backendNodeId });
+  }
 
   if (clearFirst) {
     await driver.sendCommand(tabId, "Input.dispatchKeyEvent", {

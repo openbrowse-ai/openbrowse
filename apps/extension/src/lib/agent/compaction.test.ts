@@ -23,6 +23,7 @@
 import { describe, expect, it } from "vitest";
 import {
   keepOnlyLatestScreenshot,
+  keepOnlyLatestSnapshotPerTab,
   PAGE_SCREENSHOT_TOOLS,
   selectTailForManual,
   resolveCompactionModel,
@@ -329,5 +330,97 @@ describe("resolveCompactionModel", () => {
     expect(
       resolveCompactionModel("unknown-provider:some-model", providers),
     ).toBeUndefined();
+  });
+});
+
+describe("keepOnlyLatestSnapshotPerTab", () => {
+  const snap = (tab: string, text: string, refCount = 3) => ({
+    tab,
+    snapshot: text,
+    refCount,
+    url: `https://x/${tab}`,
+  });
+  const clickDiff = (tab: string, diff: string) => ({
+    tab,
+    clicked: true,
+    target: "@eabc",
+    diff,
+  });
+
+  function isSnapshotStub(output: unknown): boolean {
+    return (
+      !!output &&
+      typeof output === "object" &&
+      (output as Record<string, unknown>).superseded === true &&
+      !("snapshot" in (output as Record<string, unknown>)) &&
+      !("diff" in (output as Record<string, unknown>))
+    );
+  }
+
+  it("keeps only the latest snapshot for a single tab; stubs earlier ones", () => {
+    const msgs = [
+      toolResultMsg("snapshot", snap("t1", "TREE-1")),
+      toolResultMsg("snapshot", snap("t1", "TREE-2")),
+      toolResultMsg("snapshot", snap("t1", "TREE-3")),
+    ];
+    const out = outputs(keepOnlyLatestSnapshotPerTab(msgs));
+    expect(isSnapshotStub(out[0])).toBe(true);
+    expect(isSnapshotStub(out[1])).toBe(true);
+    // Latest intact.
+    expect((out[2] as any).snapshot).toBe("TREE-3");
+    // Stub preserves orientation metadata.
+    expect((out[0] as any).tab).toBe("t1");
+    expect((out[0] as any).url).toBe("https://x/t1");
+    expect((out[0] as any).refCount).toBe(3);
+  });
+
+  it("keeps the latest snapshot of EACH tab independently", () => {
+    const msgs = [
+      toolResultMsg("snapshot", snap("t1", "A1")),
+      toolResultMsg("snapshot", snap("t2", "B1")),
+      toolResultMsg("snapshot", snap("t1", "A2")),
+    ];
+    const out = outputs(keepOnlyLatestSnapshotPerTab(msgs));
+    expect(isSnapshotStub(out[0])).toBe(true); // t1 superseded
+    expect((out[1] as any).snapshot).toBe("B1"); // t2 latest, intact
+    expect((out[2] as any).snapshot).toBe("A2"); // t1 latest, intact
+  });
+
+  it("treats clickElement/navigate diffs as snapshots and supersedes them", () => {
+    const msgs = [
+      toolResultMsg("snapshot", snap("t1", "TREE-1")),
+      toolResultMsg("clickElement", clickDiff("t1", "DIFF-1")),
+      toolResultMsg("snapshot", snap("t1", "TREE-2")),
+    ];
+    const out = outputs(keepOnlyLatestSnapshotPerTab(msgs));
+    expect(isSnapshotStub(out[0])).toBe(true); // earlier snapshot
+    expect(isSnapshotStub(out[1])).toBe(true); // earlier click diff
+    expect((out[2] as any).snapshot).toBe("TREE-2"); // latest survives
+  });
+
+  it("is idempotent and returns the same reference when nothing to strip", () => {
+    const single = [toolResultMsg("snapshot", snap("t1", "ONLY"))];
+    expect(keepOnlyLatestSnapshotPerTab(single)).toBe(single);
+
+    const msgs = [
+      toolResultMsg("snapshot", snap("t1", "TREE-1")),
+      toolResultMsg("snapshot", snap("t1", "TREE-2")),
+    ];
+    const once = keepOnlyLatestSnapshotPerTab(msgs);
+    const twice = keepOnlyLatestSnapshotPerTab(once);
+    expect(twice).toBe(once); // no live snapshot left to strip on 2nd pass
+    expect(outputs(twice).filter(isSnapshotStub)).toHaveLength(1);
+  });
+
+  it("ignores non-snapshot tool outputs", () => {
+    const msgs = [
+      toolResultMsg("executeCode", { result: "42" }),
+      toolResultMsg("snapshot", snap("t1", "TREE-1")),
+      toolResultMsg("executeCode", { result: "43" }),
+    ];
+    const out = outputs(keepOnlyLatestSnapshotPerTab(msgs));
+    expect((out[0] as any).result).toBe("42");
+    expect((out[1] as any).snapshot).toBe("TREE-1"); // only snapshot, intact
+    expect((out[2] as any).result).toBe("43");
   });
 });

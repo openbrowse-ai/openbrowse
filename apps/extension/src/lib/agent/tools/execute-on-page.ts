@@ -74,7 +74,10 @@ export const executeOnPageTool: BrowserTool<Input, Output> = {
       return { tab: handle, error: msg };
     }
 
-    // Assume successful execution may have modified the DOM
+    // Arbitrary JS may have mutated/replaced DOM nodes, and (unlike
+    // click/type) we take no post-action snapshot to refresh the map. Clear
+    // refs so the agent re-snapshots before acting; stable ids will be
+    // recomputed from the new tree.
     invalidateRefs(tab.id);
     return { tab: handle, result: evalResult.result?.value ?? null };
   },

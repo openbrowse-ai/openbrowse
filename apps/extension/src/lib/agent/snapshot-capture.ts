@@ -10,7 +10,12 @@
  */
 
 import type { BrowserDriver, TabId } from "./driver";
-import { setRefs, getPreviousSnapshot, type RefEntry } from "./ref-store";
+import {
+  setRefs,
+  getPreviousSnapshot,
+  getPreviousSignals,
+  type RefEntry,
+} from "./ref-store";
 
 const INTERACTIVE_ROLES = new Set([
   "button",
@@ -43,19 +48,35 @@ interface AXNode {
   parentId?: string;
   childIds?: string[];
   backendDOMNodeId?: number;
+  /** Present on nodes that belong to a child frame (CDP getFullAXTree). */
+  frameId?: string;
 }
 
 interface TreeNode {
   axNode: AXNode;
   children: TreeNode[];
   ref: string | null;
+  /** True when this node is an interactive element that should receive a ref. */
+  interactive: boolean;
+  /**
+   * Occurrence index among nodes sharing this node's (frameId, role, name),
+   * in document order. Stored on the ref entry so re-resolution can re-find
+   * the element by (role, name, nth) from a fresh AX tree. Set by
+   * `assignStableRefs`; only meaningful when `ref` is non-null.
+   */
+  nth: number;
   visible: boolean;
 }
 
 export interface CaptureResult {
   snapshotText: string;
   refs: Map<string, RefEntry>;
+  /** A11y text from the previous snapshot, or null on first capture. */
   previous: string | null;
+  /** Signals captured at this snapshot. */
+  signals: PageStateSignals;
+  /** Signals from the previous snapshot, or null on first capture. */
+  previousSignals: PageStateSignals | null;
   /**
    * Count of interactive elements that exist on the page but are below the
    * viewport fold (i.e. would become visible if the agent scrolled down).
@@ -63,6 +84,78 @@ export interface CaptureResult {
    * whether there's more to see.
    */
   belowFoldCount: number;
+}
+
+export interface PageStateSignals {
+  focusedBackendNodeId: number | null;
+  focusedName: string | null;
+  focusedRole: string | null;
+  expandedCount: number;
+  pressedCount: number;
+  checkedCount: number;
+  dialogCount: number;
+  url: string;
+  interactiveCount: number;
+}
+
+/**
+ * Derive multi-signal page state from an already-fetched AX tree, the
+ * collected refs map, and the current URL. Pure function — no I/O — so
+ * it's cheap and unit-testable.
+ *
+ * Signals are intentionally counts rather than node lists: they're robust
+ * (a count won't change without a real state shift) and small (no risk of
+ * blowing up the diff payload on large pages).
+ */
+export function derivePageStateSignals(
+  axNodes: AXNode[],
+  refs: Map<string, RefEntry>,
+  url: string,
+): PageStateSignals {
+  let focusedBackendNodeId: number | null = null;
+  let focusedName: string | null = null;
+  let focusedRole: string | null = null;
+  let expandedCount = 0;
+  let pressedCount = 0;
+  let checkedCount = 0;
+  let dialogCount = 0;
+
+  for (const node of axNodes) {
+    const role = node.role?.value ?? "";
+    if (role === "dialog" || role === "alertdialog") dialogCount++;
+
+    const props = node.properties ?? [];
+    let isFocused = false;
+    for (const p of props) {
+      const v = p.value?.value;
+      if (p.name === "focused" && v === true) isFocused = true;
+      if (p.name === "expanded" && v === true) expandedCount++;
+      if (p.name === "pressed" && v === true) pressedCount++;
+      if (p.name === "checked" && v === true) checkedCount++;
+    }
+
+    if (
+      focusedBackendNodeId == null &&
+      isFocused &&
+      node.backendDOMNodeId != null
+    ) {
+      focusedBackendNodeId = node.backendDOMNodeId;
+      focusedName = node.name?.value ?? null;
+      focusedRole = role || null;
+    }
+  }
+
+  return {
+    focusedBackendNodeId,
+    focusedName,
+    focusedRole,
+    expandedCount,
+    pressedCount,
+    checkedCount,
+    dialogCount,
+    url,
+    interactiveCount: refs.size,
+  };
 }
 
 /**
@@ -80,6 +173,7 @@ export async function captureSnapshot(
 ): Promise<CaptureResult> {
   const mode = opts.mode ?? "interactive";
   const previous = getPreviousSnapshot(tabId);
+  const previousSignals = getPreviousSignals(tabId);
 
   let rootBackendNodeId: number | undefined;
   if (opts.selector) {
@@ -127,9 +221,10 @@ export async function captureSnapshot(
     cursorInteractive,
     rootBackendNodeId,
   );
-  if (rootBackendNodeId != null) {
-    reassignRefs(tree);
-  }
+  // Assign content-stable refs over the built hierarchy. Runs for every
+  // capture (scoped or not) so the same logical element keeps the same @ref
+  // across snapshots, surviving re-renders on virtualized pages.
+  assignStableRefs(tree);
 
   const isInteractive = mode === "interactive";
   let snapshotText = renderTree(tree, isInteractive);
@@ -149,12 +244,27 @@ export async function captureSnapshot(
       retryCursor,
       rootBackendNodeId,
     );
-    if (rootBackendNodeId != null) reassignRefs(tree);
+    assignStableRefs(tree);
     snapshotText = renderTree(tree, isInteractive);
     refs = collectRefs(tree);
+    axTree = retry; // keep axTree in sync for downstream signal + belowFoldCount derivation.
   }
 
-  setRefs(tabId, refs, snapshotText);
+  // Fetch current URL for the URL signal. Cheap CDP call.
+  let url = "";
+  try {
+    const targetInfo = await driver.sendCommand<{
+      targetInfo?: { url?: string };
+    }>(tabId, "Target.getTargetInfo");
+    url = targetInfo.targetInfo?.url ?? "";
+  } catch {
+    // If we can't get the URL (rare), leave it as "". A "" → "" diff is a no-op
+    // signal, so this is safe.
+  }
+
+  const signals = derivePageStateSignals(axTree.nodes, refs, url);
+
+  setRefs(tabId, refs, snapshotText, signals);
 
   // Count refs whose backendNodeId falls below the fold. We do this by
   // walking the collected refs (which are guaranteed to be interactive
@@ -182,58 +292,132 @@ export async function captureSnapshot(
     }
   }
 
-  return { snapshotText, refs, previous, belowFoldCount };
+  return {
+    snapshotText,
+    refs,
+    previous,
+    signals,
+    previousSignals,
+    belowFoldCount,
+  };
 }
 
 /**
- * Compute a line-level diff between two snapshots. Returns a short summary
- * suitable for auto-attaching to action responses.
+ * Compute a diff between two snapshots that combines the line-level a11y
+ * text diff with a multi-signal state diff. Returns a short summary suitable
+ * for auto-attaching to action responses.
  *
- * Returns null if the snapshots are identical (signals "no visible change",
- * often a silent action failure).
+ * Returns null ONLY when text AND all signals are identical — i.e. nothing
+ * observable changed. This is intentionally narrower than the old
+ * text-only set-diff: many successful interactions (focus, toggles, modal
+ * opens) leave the a11y text identical, and reporting them as "no change"
+ * was driving the agent into retry loops.
  */
 export function diffSnapshots(
-  previous: string,
-  current: string,
+  prev: { text: string; signals: PageStateSignals },
+  curr: { text: string; signals: PageStateSignals },
   opts: { maxLines?: number } = {},
 ): string | null {
   const maxLines = opts.maxLines ?? 40;
-  const prevLines = previous.split("\n");
-  const currLines = current.split("\n");
+  const prevLines = prev.text.split("\n");
+  const currLines = curr.text.split("\n");
 
   const prevSet = new Set(prevLines);
   const currSet = new Set(currLines);
 
   const added: string[] = [];
   const removed: string[] = [];
+  for (const line of currLines) if (!prevSet.has(line)) added.push(line);
+  for (const line of prevLines) if (!currSet.has(line)) removed.push(line);
 
-  for (const line of currLines) {
-    if (!prevSet.has(line)) added.push(line);
-  }
-  for (const line of prevLines) {
-    if (!currSet.has(line)) removed.push(line);
-  }
-
-  if (added.length === 0 && removed.length === 0) return null;
-
-  // Navigation or major change — truncate and summarize
-  const totalChanges = added.length + removed.length;
-  if (totalChanges > maxLines) {
-    const sampledAdded = added.slice(0, Math.floor(maxLines / 2));
-    const sampledRemoved = removed.slice(0, Math.floor(maxLines / 2));
-    const lines = [
-      `[major change: ${added.length} added, ${removed.length} removed — showing first ${maxLines}]`,
-      ...sampledAdded.map((l) => `[+] ${l.trim()}`),
-      ...sampledRemoved.map((l) => `[-] ${l.trim()}`),
-      `[call snapshot to see the full updated tree]`,
-    ];
-    return lines.join("\n");
+  // Text-changing case: return the existing-style line diff, unchanged.
+  if (added.length > 0 || removed.length > 0) {
+    const totalChanges = added.length + removed.length;
+    if (totalChanges > maxLines) {
+      const sampledAdded = added.slice(0, Math.floor(maxLines / 2));
+      const sampledRemoved = removed.slice(0, Math.floor(maxLines / 2));
+      return [
+        `[major change: ${added.length} added, ${removed.length} removed — showing first ${maxLines}]`,
+        ...sampledAdded.map((l) => `[+] ${l.trim()}`),
+        ...sampledRemoved.map((l) => `[-] ${l.trim()}`),
+        `[call snapshot to see the full updated tree]`,
+      ].join("\n");
+    }
+    return [
+      ...added.map((l) => `[+] ${l.trim()}`),
+      ...removed.map((l) => `[-] ${l.trim()}`),
+    ].join("\n");
   }
 
-  return [
-    ...added.map((l) => `[+] ${l.trim()}`),
-    ...removed.map((l) => `[-] ${l.trim()}`),
-  ].join("\n");
+  // Text identical: check signal diff.
+  const signalChanges = describeSignalChanges(prev.signals, curr.signals);
+  if (signalChanges.length > 0) {
+    return `[no a11y text change, but: ${signalChanges.join("; ")}]`;
+  }
+
+  return null;
+}
+
+/**
+ * Render per-signal change descriptions. Returns one human-readable string
+ * per signal that changed; empty array means signals are identical.
+ */
+function describeSignalChanges(
+  prev: PageStateSignals,
+  curr: PageStateSignals,
+): string[] {
+  const out: string[] = [];
+
+  // Focus.
+  if (prev.focusedBackendNodeId !== curr.focusedBackendNodeId) {
+    const prevLabel = formatFocusLabel(prev);
+    const currLabel = formatFocusLabel(curr);
+    out.push(`focus moved from «${prevLabel}» to «${currLabel}»`);
+  }
+
+  // Toggle counts.
+  if (prev.expandedCount !== curr.expandedCount) {
+    out.push(`aria-expanded count: ${prev.expandedCount} → ${curr.expandedCount}`);
+  }
+  if (prev.pressedCount !== curr.pressedCount) {
+    out.push(`aria-pressed count: ${prev.pressedCount} → ${curr.pressedCount}`);
+  }
+  if (prev.checkedCount !== curr.checkedCount) {
+    out.push(`aria-checked count: ${prev.checkedCount} → ${curr.checkedCount}`);
+  }
+
+  // Dialog count — special-case 0↔N transitions.
+  if (prev.dialogCount !== curr.dialogCount) {
+    if (prev.dialogCount === 0 && curr.dialogCount > 0) out.push("dialog opened");
+    else if (curr.dialogCount === 0 && prev.dialogCount > 0) out.push("dialog closed");
+    else out.push(`dialog count: ${prev.dialogCount} → ${curr.dialogCount}`);
+  }
+
+  // URL. Skip when either side is empty: an empty URL means the
+  // `Target.getTargetInfo` fetch failed (or this is the first capture), not a
+  // real navigation — diffing against "" would emit a spurious "navigated to ".
+  if (prev.url !== "" && curr.url !== "" && prev.url !== curr.url) {
+    out.push(`navigated to ${curr.url}`);
+  }
+
+  // Interactive count.
+  if (prev.interactiveCount !== curr.interactiveCount) {
+    out.push(
+      `interactive elements: ${prev.interactiveCount} → ${curr.interactiveCount}`,
+    );
+  }
+
+  return out;
+}
+
+function formatFocusLabel(signals: PageStateSignals): string {
+  if (signals.focusedName && signals.focusedName.trim().length > 0) {
+    return signals.focusedName;
+  }
+  if (signals.focusedBackendNodeId != null) {
+    return `node#${signals.focusedBackendNodeId}`;
+  }
+  return "none";
 }
 
 // ============================================================================
@@ -246,7 +430,6 @@ function buildTree(
   cursorInteractive: Set<number>,
   scopeBackendNodeId?: number,
 ): TreeNode {
-  let refCounter = 1;
   const treeNodes = new Map<string, TreeNode>();
 
   for (const node of nodes) {
@@ -263,12 +446,18 @@ function buildTree(
 
     const shouldSkip = node.ignored || SKIP_ROLES.has(role) || isHidden;
 
-    const ref = !shouldSkip && isInteractive ? `@e${refCounter++}` : null;
+    // Refs are assigned later by `assignStableRefs`, which walks the built
+    // hierarchy so it can compute a content-stable id (role + name +
+    // landmark + occurrence). Here we only record WHETHER the node is a
+    // ref-worthy interactive element.
+    const interactive = !shouldSkip && isInteractive;
 
     treeNodes.set(node.nodeId, {
       axNode: node,
       children: [],
-      ref,
+      ref: null,
+      interactive,
+      nth: 0,
       visible: !shouldSkip && !isHidden,
     });
   }
@@ -293,7 +482,16 @@ function buildTree(
   }
 
   if (scopeRoot) return scopeRoot;
-  return root ?? { axNode: nodes[0], children: [], ref: null, visible: true };
+  return (
+    root ?? {
+      axNode: nodes[0],
+      children: [],
+      ref: null,
+      interactive: false,
+      nth: 0,
+      visible: true,
+    }
+  );
 }
 
 function renderTree(
@@ -418,13 +616,113 @@ function formatProps(node: AXNode): string {
   return parts.length > 0 ? `[${parts.join(", ")}]` : "";
 }
 
-function reassignRefs(root: TreeNode): void {
-  let counter = 1;
-  function walk(node: TreeNode) {
-    if (node.ref) node.ref = `@e${counter++}`;
-    for (const child of node.children) walk(child);
+/**
+ * Assigns a content-stable `@ref` id to every interactive node in the tree.
+ *
+ * Unlike the old ordinal scheme (`@e1`, `@e2`, … reassigned every capture),
+ * the id here is derived from the element's identity:
+ *   role + accessible name + nearest landmark (region/nav/main/…) context
+ *   + an occurrence index disambiguating siblings that share that signature.
+ *
+ * The signature is hashed to a short, stable token `@e<base36>`. Because the
+ * token depends only on content/structure — not on how many interactive
+ * nodes happen to precede it — the SAME logical element keeps the SAME ref
+ * across snapshots even when the page re-renders, adds, or removes unrelated
+ * elements. This is what lets a ref taken from one snapshot still resolve
+ * after a later one, and what stops diffs from showing phantom
+ * `[-]@e114 / [+]@e117` churn for elements that did not actually change.
+ *
+ * Collision handling: two genuinely distinct elements with an identical
+ * (role, name, landmark) signature — e.g. a list of identical "Connect"
+ * buttons — are disambiguated by their occurrence index within that
+ * signature group, so each still gets a unique, stable ref.
+ */
+function assignStableRefs(root: TreeNode): void {
+  // Count how many times each base signature has been seen so far, so
+  // repeated (role,name,landmark) groups get a stable incrementing index.
+  const seen = new Map<string, number>();
+  // Separately count (frameId, role, name) occurrences in document order.
+  // This `nth` is what re-resolution re-finds by from a fresh AX tree — it
+  // must match the role/name counting that `findNodeByRoleNameNth` does, so
+  // it is intentionally NOT landmark-scoped.
+  const tupleSeen = new Map<string, number>();
+  // Guard against the astronomically-unlikely case of two different
+  // signatures hashing to the same token within one snapshot.
+  const used = new Set<string>();
+
+  function landmarkLabel(role: string, name: string): string | null {
+    if (LANDMARK_ROLES.has(role)) {
+      return name ? `${role}:${name}` : role;
+    }
+    return null;
   }
-  walk(root);
+
+  function walk(node: TreeNode, landmarkPath: string): void {
+    const role = node.axNode.role?.value ?? "";
+    const name = node.axNode.name?.value ?? "";
+
+    // Extend the landmark path when entering a landmark/region node.
+    const lm = landmarkLabel(role, name);
+    const childPath = lm ? (landmarkPath ? `${landmarkPath}>${lm}` : lm) : landmarkPath;
+
+    if (node.interactive) {
+      const baseSig = `${landmarkPath}|${role}|${name}`;
+      const occurrence = seen.get(baseSig) ?? 0;
+      seen.set(baseSig, occurrence + 1);
+      const fullSig = `${baseSig}#${occurrence}`;
+
+      let token = `@e${hashSignature(fullSig)}`;
+      // Extremely unlikely collision fallback: salt until unique.
+      let salt = 0;
+      while (used.has(token)) {
+        salt++;
+        token = `@e${hashSignature(`${fullSig}~${salt}`)}`;
+      }
+      used.add(token);
+      node.ref = token;
+
+      // Frame-scoped (role, name) occurrence index for tuple re-resolution.
+      const frameKey = `${node.axNode.frameId ?? ""}|${role}|${name}`;
+      const nth = tupleSeen.get(frameKey) ?? 0;
+      tupleSeen.set(frameKey, nth + 1);
+      node.nth = nth;
+    }
+
+    for (const child of node.children) walk(child, childPath);
+  }
+
+  walk(root, "");
+}
+
+/** Roles that establish a landmark/region context for ref signatures. */
+const LANDMARK_ROLES = new Set([
+  "banner",
+  "navigation",
+  "main",
+  "complementary",
+  "contentinfo",
+  "region",
+  "search",
+  "form",
+  "article",
+  "dialog",
+  "alertdialog",
+]);
+
+/**
+ * Deterministic, compact hash of a signature string → base36 token.
+ * FNV-1a (32-bit) keeps it small, fast, and dependency-free. Used only to
+ * shorten the human-unreadable signature into a stable `@e…` handle; it is
+ * never persisted or relied on for security.
+ */
+function hashSignature(sig: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < sig.length; i++) {
+    h ^= sig.charCodeAt(i);
+    // 32-bit FNV prime multiply via shifts to stay in integer range.
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(36);
 }
 
 function collectRefs(root: TreeNode): Map<string, RefEntry> {
@@ -436,6 +734,8 @@ function collectRefs(root: TreeNode): Map<string, RefEntry> {
         backendNodeId: node.axNode.backendDOMNodeId,
         role: node.axNode.role?.value ?? "",
         name: node.axNode.name?.value ?? "",
+        nth: node.nth,
+        ...(node.axNode.frameId ? { frameId: node.axNode.frameId } : {}),
       });
     }
     for (const child of node.children) walk(child);
@@ -443,6 +743,53 @@ function collectRefs(root: TreeNode): Map<string, RefEntry> {
 
   walk(root);
   return refs;
+}
+
+/**
+ * Re-find an element's CURRENT backendNodeId by its stable identity tuple
+ * `(role, name, nth)` from a freshly-fetched accessibility tree, scoped to a
+ * frame. This is the tuple-based recovery agent-browser uses: when a cached
+ * backendNodeId goes stale (the element's DOM node was recreated on a
+ * re-render), the ref string may also have changed if its name shifted — but
+ * the stored identity tuple still points at the same logical element, so we
+ * count (role, name) matches in document order and return the nth one.
+ *
+ * Returns null when no matching element exists (genuinely gone) or on CDP
+ * error, so callers can fall through to their existing "stale" handling.
+ *
+ * `frameId` is threaded through for parity with cross-frame resolution; the
+ * current single-session driver ignores it for same-process frames, and
+ * cross-origin (OOPIF) session routing remains a follow-up.
+ */
+export async function findNodeByRoleNameNth(
+  driver: BrowserDriver,
+  tabId: TabId,
+  role: string,
+  name: string,
+  nth: number,
+  _frameId?: string,
+): Promise<number | null> {
+  let axTree: { nodes: AXNode[] };
+  try {
+    axTree = await driver.sendCommand<{ nodes: AXNode[] }>(
+      tabId,
+      "Accessibility.getFullAXTree",
+    );
+  } catch {
+    return null;
+  }
+
+  let matchCount = 0;
+  for (const node of axTree.nodes) {
+    if (node.ignored) continue;
+    if ((node.role?.value ?? "") !== role) continue;
+    if ((node.name?.value ?? "") !== name) continue;
+    if (matchCount === nth) {
+      return node.backendDOMNodeId ?? null;
+    }
+    matchCount++;
+  }
+  return null;
 }
 
 async function getViewportInfo(
@@ -786,9 +1133,7 @@ export async function captureSnapshotWithUrlIds(
     cursorInteractive,
     rootBackendNodeId,
   );
-  if (rootBackendNodeId != null) {
-    reassignRefs(tree);
-  }
+  assignStableRefs(tree);
 
   // Use "full" rendering (not just interactive) — extraction needs to see
   // content elements like headings, text, cells. The URL-ID pass is the

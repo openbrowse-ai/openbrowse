@@ -330,6 +330,117 @@ export function keepOnlyLatestScreenshot(
 }
 
 /**
+ * Tools whose output embeds a page accessibility snapshot (or a diff of
+ * one) keyed to per-snapshot `@ref` ids. Once a NEWER snapshot of the same
+ * tab exists, every earlier snapshot's text is dead weight: its refs are
+ * invalid by construction (refs are reassigned on every capture), and the
+ * agent is instructed to re-snapshot rather than re-read an old tree. So we
+ * keep only the latest snapshot per tab alive in the model's context.
+ *
+ * Maps the tool name → the output field that carries the snapshot text:
+ *   - `snapshot`     → `snapshot`
+ *   - `navigate`     → `snapshot` (fresh tree attached on navigation)
+ *   - `clickElement` → `diff`
+ *   - `typeInElement`→ `diff`
+ *   - `pressKey`     → `diff`
+ *
+ * The grouping key is the tool output's `tab` field, so a multi-tab task
+ * keeps the latest snapshot of EACH tab.
+ */
+export const SNAPSHOT_OUTPUT_FIELDS: Record<string, "snapshot" | "diff"> = {
+  snapshot: "snapshot",
+  navigate: "snapshot",
+  clickElement: "diff",
+  typeInElement: "diff",
+  pressKey: "diff",
+};
+
+/**
+ * Keeps only the latest snapshot-bearing tool output per tab; replaces the
+ * snapshot/diff text on every earlier one with a compact stub that preserves
+ * orientation metadata (tab, url, refCount) but drops the multi-kilobyte
+ * accessibility tree.
+ *
+ * Why per-tab-latest is safe: `@ref` ids are reassigned on every capture and
+ * the ref store only resolves the most recent snapshot, so an older
+ * snapshot's refs are already unusable. The agent is told to re-snapshot to
+ * refresh refs. We never strip the latest snapshot of any tab, so the model
+ * always has a current, actionable view of every tab it touched.
+ *
+ * Detection is tool-name-based (via SNAPSHOT_OUTPUT_FIELDS) — it never
+ * inspects arbitrary outputs, so it cannot accidentally strip non-snapshot
+ * data.
+ *
+ * Idempotent: stubs are recognized (they lack the snapshot field) and skipped
+ * on a second pass. Returns the original array reference when nothing changed.
+ */
+export function keepOnlyLatestSnapshotPerTab(
+  messages: AgentUIMessage[],
+): AgentUIMessage[] {
+  // First pass: locate every live (non-stubbed) snapshot-bearing output,
+  // grouped by tab. A part is "live" when its snapshot/diff field is a
+  // non-empty string (stubs replace it with an object).
+  const locsByTab = new Map<string, Array<{ m: number; p: number }>>();
+  for (let m = 0; m < messages.length; m++) {
+    const parts = messages[m].parts;
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p] as any;
+      if (
+        part?.type !== "dynamic-tool" ||
+        part.state !== "output-available" ||
+        typeof part.toolName !== "string"
+      ) {
+        continue;
+      }
+      const field = SNAPSHOT_OUTPUT_FIELDS[part.toolName];
+      if (!field) continue;
+      const output = part.output;
+      if (!output || typeof output !== "object") continue;
+      // Only count it if the snapshot text is actually present (live).
+      if (typeof (output as any)[field] !== "string") continue;
+      if (((output as any)[field] as string).length === 0) continue;
+      const tab =
+        typeof (output as any).tab === "string"
+          ? ((output as any).tab as string)
+          : "__no_tab__";
+      const arr = locsByTab.get(tab) ?? [];
+      arr.push({ m, p });
+      locsByTab.set(tab, arr);
+    }
+  }
+
+  // Build the strip set: every snapshot EXCEPT the last one for its tab.
+  const stripSet = new Set<string>();
+  for (const locs of locsByTab.values()) {
+    for (const loc of locs.slice(0, -1)) stripSet.add(`${loc.m}:${loc.p}`);
+  }
+
+  if (stripSet.size === 0) return messages;
+
+  return messages.map((msg, m) => {
+    let touched = false;
+    const newParts = msg.parts.map((part, p) => {
+      if (!stripSet.has(`${m}:${p}`)) return part;
+      touched = true;
+      const anyPart = part as any;
+      const field = SNAPSHOT_OUTPUT_FIELDS[anyPart.toolName as string];
+      const prev = (anyPart.output ?? {}) as Record<string, unknown>;
+      const stub: Record<string, unknown> = {
+        superseded: true,
+        note: "[older snapshot superseded — call snapshot to refresh refs]",
+      };
+      if (typeof prev.tab === "string") stub.tab = prev.tab;
+      if (typeof prev.url === "string") stub.url = prev.url;
+      if (typeof prev.refCount === "number") stub.refCount = prev.refCount;
+      // Drop the heavy snapshot/diff text; keep everything else small.
+      const { [field]: _omit, ...rest } = prev;
+      return { ...anyPart, output: { ...rest, ...stub } };
+    });
+    return touched ? { ...msg, parts: newParts } : msg;
+  });
+}
+
+/**
  * Walks `messages` from the end, counting user-role messages, and
  * returns the index of the first message that belongs to the
  * "protected tail" of the most recent `keepUserTurns` user turns. Any
