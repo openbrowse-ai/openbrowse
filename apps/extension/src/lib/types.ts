@@ -97,6 +97,12 @@ export interface AgentSettings {
   compactionModel?: string;
   thinkingEnabled?: boolean;
   thinkingConfig?: ThinkingConfig;
+  /**
+   * Model used by the computer-use (CUA) subagent. Must be a
+   * computer-use-capable model (compound "providerId:modelId"). When unset,
+   * falls back to the `cua` agent definition's `defaultModel`.
+   */
+  cuaModel?: string;
 }
 
 export interface Conversation {

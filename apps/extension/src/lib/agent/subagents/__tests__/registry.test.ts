@@ -31,3 +31,13 @@ describe("subagent registry", () => {
     }
   });
 });
+
+describe("cua built-in", () => {
+  it("is registered with custom CUA tool source and attached isolation", () => {
+    const cua = getAgent("cua");
+    expect(cua).toBeDefined();
+    expect(cua?.toolSource).toBe("custom");
+    expect(cua?.custom?.kind).toBe("cua");
+    expect(cua?.defaultIsolation).toBe("attached");
+  });
+});

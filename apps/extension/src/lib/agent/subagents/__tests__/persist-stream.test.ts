@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentUIMessage } from "../../../types";
 import { chatDb } from "../../../chat-db";
 import {
+  AssistantStreamPersister,
   persistAssistantStream,
   persistDelegationMessage,
 } from "../persist-stream";
@@ -261,5 +262,67 @@ describe("persistAssistantStream", () => {
       parts: [{ type: "text", text: "hello" }],
     });
     expect(result.transcript[1].id).toBe("asst-2");
+  });
+});
+
+describe("AssistantStreamPersister (incremental / live persistence)", () => {
+  beforeEach(async () => {
+    indexedDB = new IDBFactory();
+    chatDb._resetForTests();
+    await chatDb.createConversation({
+      id: "child-1",
+      title: "child",
+      spaceId: null,
+      createdAt: 100,
+      updatedAt: 100,
+    });
+  });
+  afterEach(() => {
+    chatDb._resetForTests();
+  });
+
+  it("writes each message to chat-db immediately (queryable before the run ends)", async () => {
+    const persister = new AssistantStreamPersister("child-1");
+
+    await persister.persist({
+      id: "asst-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "step 1" }],
+    } as AgentUIMessage);
+
+    // The message is in chat-db right away — this is what makes the trace
+    // render in real time, rather than only after the run finishes.
+    let messages = await chatDb.getMessages("child-1");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ id: "asst-1", content: "step 1" });
+
+    await persister.persist({
+      id: "asst-2",
+      role: "assistant",
+      parts: [{ type: "text", text: "step 2" }],
+    } as AgentUIMessage);
+
+    messages = await chatDb.getMessages("child-1");
+    expect(messages).toHaveLength(2);
+  });
+
+  it("upserts by id (growing parts for the same message id don't duplicate)", async () => {
+    const persister = new AssistantStreamPersister("child-1");
+
+    await persister.persist({
+      id: "asst-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "partial" }],
+    } as AgentUIMessage);
+    await persister.persist({
+      id: "asst-1",
+      role: "assistant",
+      parts: [{ type: "text", text: "partial then complete" }],
+    } as AgentUIMessage);
+
+    const messages = await chatDb.getMessages("child-1");
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe("partial then complete");
+    expect(persister.result().messageCount).toBe(1);
   });
 });

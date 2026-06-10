@@ -17,13 +17,15 @@ import type { SerializedUIPart } from "../message-types";
 /**
  * How a subagent is isolated from its parent.
  *
- *   - `peer`       — new child `Conversation` row, own OPFS workspace, own
- *                    tab group in the same window/space. Tabs roll up under
- *                    child only.
- *   - `incognito`  — like `peer` but in a fresh incognito window. Window is
- *                    closed automatically when the subagent finishes.
+ *   - `peer`       — new child Conversation, own tab group in the same window.
+ *   - `incognito`  — like peer but in a fresh incognito window (auto-closed).
+ *   - `attached`   — operates on the PARENT's existing live tab(s). The runner
+ *                    seeds the child handle map with the parent's real tab id
+ *                    (resolved from DelegationContext.parentTabHandle). No new
+ *                    tab group is created. Used by the CUA subagent so it can
+ *                    perceive/act on the exact page the parent is working on.
  */
-export type IsolationProfile = "peer" | "incognito";
+export type IsolationProfile = "peer" | "incognito" | "attached";
 
 /**
  * Status of a subagent run, persisted on the child Conversation row when
@@ -72,7 +74,26 @@ export interface AgentDefinition {
   color?: string;
   /** Origin of the definition. Built-ins ship in code; user agents will load from OPFS. */
   source: "built-in" | "user";
+  /**
+   * How the subagent's tool set is assembled.
+   *   - `inherit` (default): filter the parent's tools by `allowedTools`.
+   *   - `custom`: ignore parent tools; build from `custom` (see below).
+   */
+  toolSource?: "inherit" | "custom";
+  /**
+   * Custom tool/loop configuration, read only when `toolSource === "custom"`.
+   * Discriminated by `kind`. The runner switches on this to pick a loop
+   * strategy (e.g. a CUA provider) instead of the standard ToolLoopAgent.
+   */
+  custom?: CustomAgentConfig;
 }
+
+/** Configuration for a `toolSource: "custom"` agent. */
+export type CustomAgentConfig = {
+  kind: "cua";
+  /** Max viewport width declared to the CUA model (CSS px). Default 1280. */
+  maxDisplayWidth?: number;
+};
 
 /**
  * Structured handoff the parent assembles when calling `delegate`. The

@@ -80,6 +80,72 @@ export async function persistDelegationMessage(
 }
 
 /**
+ * Stateful, incremental persister for a subagent's assistant messages.
+ *
+ * Both the streaming path (`persistAssistantStream`) and live, message-at-a-
+ * time callers (e.g. the CUA loop's `onUiMessage`) use this so a single
+ * message-handling implementation governs dedup-by-id, ordering, the
+ * "meaningful content" filter, and chat-db upserts. Persisting each message
+ * as it arrives is what makes the subagent's trace render in REAL TIME in
+ * the parent's DelegateResult block.
+ */
+export class AssistantStreamPersister {
+  private readonly transcriptIndexById = new Map<string, number>();
+  private readonly transcript: SerializedAssistantMessage[] = [];
+  private readonly createdAtById = new Map<string, number>();
+  private lastText = "";
+
+  constructor(
+    private readonly childConversationId: string,
+    private readonly onSummary?: (text: string) => void,
+  ) {}
+
+  /** Persist one UIMessage (upsert by id). Safe to call repeatedly with the
+   *  same id as the SDK streams growing parts. Skips non-assistant / empty. */
+  async persist(message: AgentUIMessage): Promise<void> {
+    if (message.role !== "assistant") return;
+
+    const parts = serializeParts(message.parts);
+    if (!hasMeaningfulContent(parts)) return;
+
+    const text = extractTextContent(parts);
+    let createdAt = this.createdAtById.get(message.id);
+    if (createdAt === undefined) {
+      createdAt = Date.now();
+      this.createdAtById.set(message.id, createdAt);
+    }
+
+    const existingIdx = this.transcriptIndexById.get(message.id);
+    if (existingIdx === undefined) {
+      this.transcriptIndexById.set(message.id, this.transcript.length);
+      this.transcript.push({ id: message.id, parts });
+    } else {
+      this.transcript[existingIdx] = { id: message.id, parts };
+    }
+
+    await chatDb.saveMessage({
+      id: message.id,
+      conversationId: this.childConversationId,
+      role: "assistant",
+      content: text,
+      parts,
+      createdAt,
+    });
+
+    this.lastText = text;
+    this.onSummary?.(text);
+  }
+
+  result(): AssistantStreamResult {
+    return {
+      finalText: this.lastText,
+      messageCount: this.transcriptIndexById.size,
+      transcript: this.transcript,
+    };
+  }
+}
+
+/**
  * Consume a UIMessage stream and persist each meaningful update under
  * the child conversation. Returns the accumulated transcript +
  * final text + count.
@@ -88,53 +154,11 @@ export async function persistAssistantStream(
   opts: PersistAssistantStreamOptions,
 ): Promise<AssistantStreamResult> {
   const { childConversationId, uiMessages, onSummary } = opts;
-
-  const transcriptIndexById = new Map<string, number>();
-  const transcript: SerializedAssistantMessage[] = [];
-  // Stable createdAt-per-id so an upsert doesn't reshuffle ordering
-  // when the stream emits multiple ticks for the same message.
-  const createdAtById = new Map<string, number>();
-  let lastText = "";
+  const persister = new AssistantStreamPersister(childConversationId, onSummary);
 
   for await (const message of uiMessages) {
-    if (message.role !== "assistant") continue;
-
-    const parts = serializeParts(message.parts);
-    if (!hasMeaningfulContent(parts)) continue;
-
-    const text = extractTextContent(parts);
-    let createdAt = createdAtById.get(message.id);
-    if (createdAt === undefined) {
-      createdAt = Date.now();
-      createdAtById.set(message.id, createdAt);
-    }
-
-    // Update transcript (upsert by id).
-    const existingIdx = transcriptIndexById.get(message.id);
-    if (existingIdx === undefined) {
-      transcriptIndexById.set(message.id, transcript.length);
-      transcript.push({ id: message.id, parts });
-    } else {
-      transcript[existingIdx] = { id: message.id, parts };
-    }
-
-    // Persist to chat-db
-    await chatDb.saveMessage({
-      id: message.id,
-      conversationId: childConversationId,
-      role: "assistant",
-      content: text,
-      parts,
-      createdAt,
-    });
-
-    lastText = text;
-    onSummary?.(text);
+    await persister.persist(message);
   }
 
-  return {
-    finalText: lastText,
-    messageCount: transcriptIndexById.size,
-    transcript,
-  };
+  return persister.result();
 }

@@ -16,6 +16,7 @@ export type {
 } from "./browser-driver";
 export type { ToolContext, ToolSession } from "./tool-context";
 export {
+  bindTabByHandle,
   handleForTab,
   resolveTabIdOrThrow,
   resolveTabOrThrow,

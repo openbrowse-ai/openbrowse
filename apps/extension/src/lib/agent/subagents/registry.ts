@@ -10,6 +10,7 @@
  * avoid users accidentally shadowing the trusted defaults.
  */
 
+import { cuaAgent } from "./built-ins/cua";
 import { exploreAgent } from "./built-ins/explore";
 import { generalAgent } from "./built-ins/general";
 import type { AgentDefinition } from "./types";
@@ -18,6 +19,7 @@ import type { AgentDefinition } from "./types";
 const BUILT_IN_AGENTS: readonly AgentDefinition[] = Object.freeze([
   exploreAgent,
   generalAgent,
+  cuaAgent,
 ]);
 
 /** All currently registered agents. */
