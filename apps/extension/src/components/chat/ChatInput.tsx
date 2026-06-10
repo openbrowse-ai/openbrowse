@@ -6,6 +6,13 @@ import {
 } from "@/components/tiptap/slash-command-extract";
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
 import { Kbd } from "@/components/ui/kbd";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
@@ -15,6 +22,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getImageSizeLimit } from "@/lib/agent/vision-limits";
+import {
+  resolveThinkingVendor,
+  isGemini3Model,
+  isGeminiFlashModel,
+} from "@/lib/agent/thinking";
 import { openSettingsTab } from "@/lib/open-settings";
 import {
   countLines,
@@ -264,7 +276,7 @@ function ModelInfoContent({ model }: { model: ModelOption }) {
                 key={cap}
                 className="rounded bg-foreground/10 px-1.5 py-0.5 text-[10px] capitalize"
               >
-                {cap}
+                {cap === "computer-use" ? "Computer Use" : cap}
               </span>
             ))}
           </div>
@@ -1020,24 +1032,59 @@ export function ChatInput({
   );
 }
 
-function getProviderType(
-  modelId: string,
-): "anthropic" | "openai" | "google" | "other" {
-  if (modelId.startsWith("claude-")) return "anthropic";
-  if (modelId.startsWith("gpt-") || modelId.startsWith("o")) return "openai";
-  if (modelId.startsWith("gemini-")) return "google";
-  return "other";
+/**
+ * Split a compound `"<providerId>:<modelId>"` (the form stored in
+ * `agentSettings.agentModel`) into its parts. Legacy flat ids (no provider
+ * segment) yield an empty provider id and the whole string as the model id.
+ */
+function splitCompoundModelId(compound: string): {
+  providerId: string;
+  modelId: string;
+} {
+  const idx = compound.indexOf(":");
+  if (idx < 0) return { providerId: "", modelId: compound };
+  return {
+    providerId: compound.slice(0, idx),
+    modelId: compound.slice(idx + 1),
+  };
 }
 
-function getBudgetRange(modelId: string): {
+/**
+ * Resolve the thinking vendor from the compound model id the UI carries.
+ * Handles both direct providers and gateway-routed `vendor/model` ids. Returns
+ * `"other"` when the vendor is unknown.
+ */
+function getProviderType(
+  compoundModelId: string,
+): "anthropic" | "openai" | "google" | "other" {
+  const { providerId, modelId } = splitCompoundModelId(compoundModelId);
+  return resolveThinkingVendor(providerId, modelId) ?? "other";
+}
+
+/** Gemini 3 thinking levels (flash adds `minimal`). */
+function getGemini3Levels(compoundModelId: string): string[] {
+  const { modelId } = splitCompoundModelId(compoundModelId);
+  return isGeminiFlashModel(modelId)
+    ? ["minimal", "low", "medium", "high"]
+    : ["low", "medium", "high"];
+}
+
+/** True when the (compound) model is a Gemini 3 model using `thinkingLevel`. */
+function isGemini3Compound(compoundModelId: string): boolean {
+  const { modelId } = splitCompoundModelId(compoundModelId);
+  return isGemini3Model(modelId);
+}
+
+function getBudgetRange(compoundModelId: string): {
   min: number;
   max: number;
   step: number;
   default: number;
 } {
-  const provider = getProviderType(modelId);
+  const provider = getProviderType(compoundModelId);
+  const { modelId } = splitCompoundModelId(compoundModelId);
   if (provider === "google") {
-    if (modelId.includes("flash"))
+    if (isGeminiFlashModel(modelId))
       return { min: 0, max: 24_576, step: 512, default: 8192 };
     return { min: 128, max: 32_768, step: 512, default: 10000 };
   }
@@ -1051,10 +1098,14 @@ function getBudgetRange(modelId: string): {
   return { min: 1024, max: 32_768, step: 1024, default: 10000 };
 }
 
-function getDefaultThinkingConfig(modelId: string): ThinkingConfig {
-  const provider = getProviderType(modelId);
+function getDefaultThinkingConfig(compoundModelId: string): ThinkingConfig {
+  const provider = getProviderType(compoundModelId);
   if (provider === "openai") return { type: "effort", level: "medium" };
-  const range = getBudgetRange(modelId);
+  // Gemini 3 uses an effort-style level (mapped to `thinkingLevel` at the
+  // transport). Everything else (Gemini 2.5, Anthropic) uses a token budget.
+  if (provider === "google" && isGemini3Compound(compoundModelId))
+    return { type: "effort", level: "medium" };
+  const range = getBudgetRange(compoundModelId);
   return { type: "budget", tokens: range.default };
 }
 
@@ -1069,21 +1120,34 @@ function ThinkingControl({
 }) {
   const provider = getProviderType(modelId);
 
-  if (provider === "openai") {
-    const levels = ["minimal", "low", "medium", "high", "xhigh"];
-    const current = config?.type === "effort" ? config.level : "medium";
+  // Effort/level dropdown: OpenAI (reasoning effort) and Gemini 3
+  // (thinkingLevel). Both persist as `{ type: "effort"; level }`.
+  const isGemini3 = provider === "google" && isGemini3Compound(modelId);
+  if (provider === "openai" || isGemini3) {
+    const levels = isGemini3
+      ? getGemini3Levels(modelId)
+      : ["minimal", "low", "medium", "high", "xhigh"];
+    const fallback = levels.includes("medium") ? "medium" : levels[0];
+    const current =
+      config?.type === "effort" && levels.includes(config.level)
+        ? config.level
+        : fallback;
     return (
-      <select
+      <Select
         value={current}
-        onChange={(e) => onChange({ type: "effort", level: e.target.value })}
-        className="h-6 rounded border border-border bg-background px-1.5 text-xs text-foreground outline-none"
+        onValueChange={(level) => onChange({ type: "effort", level })}
       >
-        {levels.map((l) => (
-          <option key={l} value={l}>
-            {l}
-          </option>
-        ))}
-      </select>
+        <SelectTrigger size="sm" className="h-6 text-xs capitalize">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {levels.map((l) => (
+            <SelectItem key={l} value={l} className="text-xs capitalize">
+              {l}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     );
   }
 

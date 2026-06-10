@@ -22,6 +22,7 @@ import { nextUsageSnapshot, type StepUsage } from "./usage-snapshot";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
 import { resolveCuaProvider, isAnthropicComputerUseModel } from "./cua";
+import { buildThinkingProviderOptions } from "./thinking";
 import type {
   AgentLoopConfig,
   AgentLoopResult,
@@ -1412,29 +1413,16 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
 
   let providerOptions: ToolLoopAgentSettings["providerOptions"];
   if (thinkingConfig?.enabled && thinkingConfig.config) {
-    const cfg = thinkingConfig.config;
-    if (cfg.type === "budget") {
-      if (provider.id === "anthropic") {
-        providerOptions = {
-          anthropic: { thinking: { type: "adaptive", display: "summarized" } },
-        };
-      } else if (provider.id === "google") {
-        providerOptions = {
-          google: { thinkingConfig: { thinkingBudget: cfg.tokens } },
-        };
-      }
-    } else if (cfg.type === "effort") {
-      if (provider.id === "anthropic") {
-        providerOptions = {
-          anthropic: {
-            thinking: { type: "adaptive", display: "summarized" },
-            effort: cfg.level,
-          },
-        };
-      } else if (provider.id === "openai") {
-        providerOptions = { openai: { reasoning: { effort: cfg.level } } };
-      }
-    }
+    // Resolve the underlying vendor (handles both direct providers and
+    // gateway-routed `vendor/model` ids) and build the vendor-keyed options.
+    // For Gemini this also picks `thinkingLevel` (Gemini 3) vs `thinkingBudget`
+    // (Gemini 2.5) and sets `includeThoughts` so reasoning summaries stream
+    // back. See `./thinking` for the full dispatch.
+    providerOptions = buildThinkingProviderOptions(
+      provider.id,
+      actualModelId,
+      thinkingConfig.config,
+    ) as ToolLoopAgentSettings["providerOptions"];
   }
 
   // The runner that the `delegate` tool uses to actually spawn a nested
