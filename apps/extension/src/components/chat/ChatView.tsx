@@ -32,6 +32,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { ConversationIdContext } from "@/lib/conversation-id-context";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { useProviders } from "@/hooks/useProviders";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
@@ -496,6 +497,7 @@ export function ChatView({
   const isEditing = editing !== null;
 
   return (
+    <ConversationIdContext.Provider value={conversationId ?? null}>
     <div className={cn("flex flex-col h-full pt-1", className)}>
       {/* Header */}
       {showHeader && (
@@ -836,6 +838,7 @@ export function ChatView({
         />
       </div>
     </div>
+    </ConversationIdContext.Provider>
   );
 }
 

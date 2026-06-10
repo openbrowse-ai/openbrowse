@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bindTabByHandle } from "../driver";
 import { getChromeWindowsAPI } from "../subagents/incognito-window";
 import type { AgentLoopConfig, AgentLoopResult } from "../subagents/runner";
 import { runSubagent } from "../subagents/runner";
@@ -27,7 +28,7 @@ export interface SubagentChildAssignedDetail {
   childConversationId: string;
 }
 
-const isolationSchema = z.enum(["peer", "incognito"]);
+const isolationSchema = z.enum(["peer", "incognito", "attached"]);
 
 const delegationContextSchema = z.object({
   task: z.string().describe("Concise description of the work the subagent should do."),
@@ -47,7 +48,11 @@ const delegationContextSchema = z.object({
     .string()
     .optional()
     .describe(
-      "The active tab the parent is discussing. The subagent reads this tab.",
+      "REQUIRED when slug is 'cua': the handle (e.g. 't1') of the tab the " +
+        "computer-use agent will control. Use a handle from the tab legend " +
+        "or listTabs. If the target tab was opened by the user, it will be " +
+        "bound into the conversation automatically. For other subagents this " +
+        "is the active tab the parent is discussing; the subagent reads it.",
     ),
   notes: z
     .string()
@@ -87,6 +92,15 @@ interface CreateDelegateToolOptions {
    * fakes in tests.
    */
   runAgentLoop: (config: AgentLoopConfig) => Promise<AgentLoopResult>;
+  /**
+   * Whether the Computer Use (`cua`) subagent is enabled — i.e. a
+   * computer-use-capable model is configured for it (explicit `cuaModel`
+   * setting, or the main agent model is itself a configured Claude
+   * computer-use model). When false, `cua` is hidden from the tool
+   * description AND rejected at execute time, so the model never delegates
+   * to a CUA loop that can't resolve a provider. Defaults to false.
+   */
+  cuaEnabled?: boolean;
 }
 
 /**
@@ -97,9 +111,10 @@ interface CreateDelegateToolOptions {
 export function createDelegateTool(
   opts: CreateDelegateToolOptions,
 ): BrowserTool<Input, Output> {
+  const cuaEnabled = opts.cuaEnabled ?? false;
   return {
     name: "delegate",
-    description: buildDelegateDescription(),
+    description: buildDelegateDescription(cuaEnabled),
     parameters,
     execute: async (input, ctx): Promise<Output> => {
       const parentConversationId = ctx.session?.conversationId;
@@ -107,6 +122,18 @@ export function createDelegateTool(
         return failure(
           input.slug,
           "delegate requires an active conversation; no conversationId in tool context.",
+        );
+      }
+
+      // Gate the Computer Use subagent on configuration. When no
+      // computer-use model is configured, `cua` is absent from the tool
+      // description, but the model may still try it — reject clearly so it
+      // can fall back to DOM tools instead of hitting an opaque provider
+      // error deeper in the run.
+      if (input.slug === "cua" && !cuaEnabled) {
+        return failure(
+          "cua",
+          "Computer Use is not enabled. Select a computer-use model in Settings → General → Computer Use model, then retry. Until then, use the DOM tools (snapshot, clickElement, typeInElement, pressKey, executeOnPage) directly.",
         );
       }
 
@@ -133,6 +160,46 @@ export function createDelegateTool(
         parentTabHandle: input.context?.parentTabHandle,
         notes: input.context?.notes,
       };
+
+      // For `attached` (CUA) subagents, the runner seeds the child handle map
+      // from the parent's named tab(s). Those handles must resolve in THIS
+      // (parent) context. If a referenced tab is user-opened and not yet
+      // bound to the conversation, bind it now (same mechanism as `selectTab`)
+      // so seeding succeeds — without this, the CUA agent fails with
+      // "no parent tab handle for CUA".
+      //
+      // We also NORMALIZE each referenced handle to its canonical `tN` form:
+      // the model may pass a raw numeric chrome tab id (from listTabs) that
+      // `resolveHandle` (which keys on `tN`) can't resolve. After binding we
+      // map the tab id back to its canonical handle and rewrite the context,
+      // so the runner's seeding resolves it regardless of input form.
+      // Best-effort: handles that can't be bound are left as-is and surfaced
+      // by the CUA branch's self-healing message.
+      if (isolation === "attached") {
+        const normalizeHandle = async (
+          handle: string,
+        ): Promise<string> => {
+          if (ctx.session?.resolveHandle?.(handle) != null) return handle;
+          try {
+            const tabId = await bindTabByHandle(ctx, handle);
+            if (tabId == null) return handle;
+            return ctx.session?.getOrCreateHandle?.(tabId) ?? handle;
+          } catch {
+            return handle;
+          }
+        };
+
+        if (delegationContext.parentTabHandle) {
+          delegationContext.parentTabHandle = await normalizeHandle(
+            delegationContext.parentTabHandle,
+          );
+        }
+        if (delegationContext.tabHandles?.length) {
+          delegationContext.tabHandles = await Promise.all(
+            delegationContext.tabHandles.map(normalizeHandle),
+          );
+        }
+      }
 
       try {
         const windowsAPI = getChromeWindowsAPI();
@@ -194,7 +261,7 @@ function failure(slug: string, message: string): Output {
   };
 }
 
-function buildDelegateDescription(): string {
+function buildDelegateDescription(cuaEnabled: boolean): string {
   const lines: string[] = [
     "Delegate a focused task to a specialized subagent. The subagent runs with",
     "fresh context (no parent chat history), its own system prompt, and a",
@@ -213,6 +280,10 @@ function buildDelegateDescription(): string {
   ];
 
   for (const a of listAgents()) {
+    // Hide the Computer Use subagent unless it's enabled (a computer-use
+    // model is configured). Listing it otherwise would invite delegations
+    // that fail to resolve a provider.
+    if (a.slug === "cua" && !cuaEnabled) continue;
     lines.push(`- ${a.slug} — ${a.description}`);
     lines.push(`  When to use: ${a.whenToUse}`);
     lines.push(`  Default isolation: ${a.defaultIsolation}`);
@@ -224,6 +295,17 @@ function buildDelegateDescription(): string {
     "- peer: child conversation, own tab group in the same window. (Default)",
     "- incognito: child conversation in a fresh incognito window with no shared cookies, auth, or storage. Auto-closes when done. Use for auth-isolated runs (e.g. testing signup flows).",
   );
+
+  if (cuaEnabled) {
+    lines.push(
+      "",
+      "Delegating to the `cua` (computer-use) subagent:",
+      "- Resolve concrete targets FIRST. The subagent has fresh context and cannot resolve relative/possessive references — never pass 'my posts', 'our profile', 'the user's comments', etc. Determine the concrete profile name/URL, person, or post identifier yourself, then delegate with that explicit target.",
+      "- ONE concrete action per call (e.g. \"open the comments section of the post titled X\", \"click Like on the comment by Jane Doe\"). Do NOT hand off multi-step loops, listing, or discovery.",
+      "- Do the planning, listing, and looping yourself. You can perceive the page directly (snapshot → screenshot with annotate → executeOnPage); use that to enumerate items and loop, delegating each individual hard click to `cua` separately.",
+      "- `cua` returns a summary of what it did and what is now on screen (often enumerating visible items). Read it, do your own perception/listing, then issue the next granular `cua` call.",
+    );
+  }
 
   return lines.join("\n");
 }

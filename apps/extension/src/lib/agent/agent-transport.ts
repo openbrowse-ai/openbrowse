@@ -21,11 +21,13 @@ import { scanToolUsage, mergeDistinct } from "./tool-usage";
 import { nextUsageSnapshot, type StepUsage } from "./usage-snapshot";
 import { ExtensionDriver } from "./driver/extension-driver";
 import type { ToolContext } from "./driver";
+import { resolveCuaProvider, isAnthropicComputerUseModel } from "./cua";
 import type {
   AgentLoopConfig,
   AgentLoopResult,
 } from "./subagents/runner";
 import {
+  AssistantStreamPersister,
   persistAssistantStream,
   persistDelegationMessage,
 } from "./subagents/persist-stream";
@@ -54,6 +56,7 @@ import {
   listScheduledTasksTool,
   listTabsTool,
   navigateTool,
+  pressKeyTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
@@ -73,7 +76,7 @@ import { createPythonTool } from "./tools/execute-python";
 import { setTaskTitleTool } from "./tools/set-task-title";
 import type { BrowserTool } from "./types";
 
-import { SYSTEM_PROMPT } from "./system-prompt";
+import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
 
 const MEMORY_INSTRUCTIONS = `
 
@@ -128,211 +131,13 @@ Rule of thumb: if it only matters when working in this particular space, scope i
 `;
 
 import { getTargetTabId } from "./active-tab";
+import {
+  notifyAgentStatus,
+  setAgentSpaceColor,
+  getAgentSpaceColor,
+} from "./agent-indicator";
 
-const INDICATOR_CSS = `
-  #openbrowse-agent-border {
-    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483646;
-    margin: 0 !important; padding: 0 !important; transform: none !important;
-    pointer-events: none;
-    overflow: hidden;
-  }
-  .ob-glow {
-    position: absolute;
-    inset: -40px;
-    filter: blur(40px);
-    animation: ob-breathe 4s ease-in-out infinite;
-    -webkit-mask:
-      linear-gradient(to right, #fff 0px, transparent 100px, transparent calc(100% - 100px), #fff 100%),
-      linear-gradient(to bottom, #fff 0px, transparent 100px, transparent calc(100% - 100px), #fff 100%);
-    mask:
-      linear-gradient(to right, #fff 0px, transparent 100px, transparent calc(100% - 100px), #fff 100%),
-      linear-gradient(to bottom, #fff 0px, transparent 100px, transparent calc(100% - 100px), #fff 100%);
-  }
-  .ob-glow::before,
-  .ob-glow::after {
-    content: "";
-    position: absolute;
-    border-radius: 50%;
-    background: radial-gradient(circle, var(--ob-c1, #3b82f6) 0%, transparent 70%);
-  }
-  .ob-glow::before {
-    width: 50%; height: 60%;
-    animation: ob-orbit1 8s ease-in-out infinite;
-  }
-  .ob-glow::after {
-    width: 40%; height: 50%;
-    opacity: 0.6;
-    animation: ob-orbit2 8s ease-in-out infinite;
-  }
-  @keyframes ob-orbit1 {
-    0% { top: -20%; left: 20%; }
-    25% { top: 20%; left: 80%; }
-    50% { top: 70%; left: 50%; }
-    75% { top: 20%; left: -10%; }
-    100% { top: -20%; left: 20%; }
-  }
-  @keyframes ob-orbit2 {
-    0% { top: 60%; left: 70%; }
-    25% { top: -10%; left: 40%; }
-    50% { top: 10%; left: -5%; }
-    75% { top: 70%; left: 30%; }
-    100% { top: 60%; left: 70%; }
-  }
-  @keyframes ob-breathe {
-    0%, 100% { opacity: 0.6; }
-    50% { opacity: 1; }
-  }
-  #openbrowse-agent-blocker {
-    position: fixed; inset: 0; z-index: 2147483645; cursor: not-allowed;
-  }
-  #openbrowse-agent-toast {
-    position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
-    z-index: 2147483647; display: flex; align-items: center; gap: 10px;
-    padding: 10px 16px; border-radius: 8px;
-    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
-    color: #fafafa; background: #18181b;
-    border: 1px solid rgba(255,255,255,0.08);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    animation: ob-toast-in 0.2s ease-out;
-  }
-  @media (prefers-color-scheme: light) {
-    #openbrowse-agent-toast { color: #18181b; background: #fff; border: 1px solid #e4e4e7; }
-    #openbrowse-agent-toast button { background: #18181b !important; color: #fafafa !important; }
-  }
-  @keyframes ob-toast-in { from{opacity:0;transform:translateX(-50%) translateY(8px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
-  #openbrowse-agent-toast button {
-    background: #fafafa; color: #18181b; border: none;
-    padding: 4px 10px; border-radius: 4px;
-    font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit;
-  }
-`;
-
-function showIndicatorScript(color: string | null) {
-  if (document.getElementById("openbrowse-agent-border")) return;
-  const border = document.createElement("div");
-  border.id = "openbrowse-agent-border";
-  if (color) {
-    border.style.setProperty("--ob-c1", color);
-  }
-  const glow = document.createElement("div");
-  glow.className = "ob-glow";
-  border.appendChild(glow);
-  const blocker = document.createElement("div");
-  blocker.id = "openbrowse-agent-blocker";
-  const toast = document.createElement("div");
-  toast.id = "openbrowse-agent-toast";
-  const logoUrl = chrome.runtime.getURL("icon/logo.svg");
-  toast.innerHTML = `<img src="${logoUrl}" style="width:18px;height:18px;border-radius:4px;"><span>OpenBrowse is working on this tab</span><button id="openbrowse-agent-stop">Stop</button>`;
-  document.documentElement.appendChild(border);
-  document.documentElement.appendChild(blocker);
-  document.documentElement.appendChild(toast);
-  document.getElementById("openbrowse-agent-stop")!.onclick = () => {
-    chrome.runtime.sendMessage({ type: "AGENT_STOP" });
-    document.getElementById("openbrowse-agent-border")?.remove();
-    document.getElementById("openbrowse-agent-blocker")?.remove();
-    document.getElementById("openbrowse-agent-toast")?.remove();
-  };
-}
-
-function hideIndicatorScript() {
-  document.getElementById("openbrowse-agent-border")?.remove();
-  document.getElementById("openbrowse-agent-blocker")?.remove();
-  document.getElementById("openbrowse-agent-toast")?.remove();
-}
-
-export async function injectIndicator(tabId: number, color?: string | null) {
-  try {
-    await chrome.scripting.insertCSS({
-      target: { tabId },
-      css: INDICATOR_CSS,
-    });
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: showIndicatorScript,
-      args: [color ?? null],
-    });
-  } catch {
-    // page not injectable (chrome://, etc.)
-  }
-}
-
-async function removeIndicator(tabId: number) {
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: hideIndicatorScript,
-    });
-  } catch {
-    // page not injectable
-  }
-}
-
-export function notifyAgentStatus(
-  working: boolean,
-  color?: string | null,
-  tabId?: number | null,
-) {
-  indicatorQueue = indicatorQueue.then(async () => {
-    try {
-      // The blocking indicator must land on the tab the agent's tool is
-      // actually operating on — NOT whatever tab the user happens to be
-      // focused on. When the agent works inside its owned tab group, the
-      // user may be looking at a different (non-worked) tab in the same
-      // window; targeting the active tab would inject the blocker onto
-      // that innocent tab. So:
-      //  - When working, require an explicit target tabId from the tool
-      //    call. If none was resolved, skip injection entirely.
-      //  - When idle, remove from the last tab we injected onto.
-      const targetTabId = working
-        ? (tabId ?? null)
-        : (tabId ?? lastIndicatorTabId);
-      if (targetTabId == null) {
-        if (!working) lastIndicatorTabId = null;
-        return;
-      }
-      let url = "";
-      try {
-        const tab = await chrome.tabs.get(targetTabId);
-        url = tab.url ?? "";
-      } catch {
-        // Tab gone; nothing to inject/remove.
-        if (!working) lastIndicatorTabId = null;
-        return;
-      }
-      // Skip injection on internal pages (extension/chrome/devtools UI).
-      if (
-        url.startsWith("chrome://") ||
-        url.startsWith("chrome-extension://") ||
-        url.startsWith("devtools://")
-      ) {
-        return;
-      }
-      if (working) {
-        // If the agent moved to a different tab within the same run,
-        // clear the blocker from the previously-targeted tab so it
-        // doesn't linger as a stale overlay. removeIndicator swallows
-        // its own errors (e.g. tab gone / not injectable).
-        if (lastIndicatorTabId != null && lastIndicatorTabId !== targetTabId) {
-          await removeIndicator(lastIndicatorTabId);
-        }
-        lastIndicatorTabId = targetTabId;
-        await injectIndicator(targetTabId, color);
-      } else {
-        lastIndicatorTabId = null;
-        await removeIndicator(targetTabId);
-      }
-      chrome.runtime
-        .sendMessage({
-          type: working ? "AGENT_TAB_WORKING" : "AGENT_TAB_IDLE",
-          tabId: targetTabId,
-          color,
-        })
-        .catch(() => {});
-    } catch {
-      // no resolvable tab
-    }
-  });
-}
+export { notifyAgentStatus, setAgentSpaceColor };
 
 const TAB_INTERACTING_TOOLS = new Set([
   "readPage",
@@ -348,14 +153,6 @@ const TAB_INTERACTING_TOOLS = new Set([
 ]);
 
 let agentActive = false;
-let currentSpaceColor: string | null = null;
-let indicatorQueue: Promise<void> = Promise.resolve();
-/**
- * The tab the blocking indicator was last injected onto, so an idle
- * notification (which may not carry a tabId) can remove it from the
- * correct tab rather than the user's currently-focused one.
- */
-let lastIndicatorTabId: number | null = null;
 
 let agentConversationId: string | null = null;
 
@@ -458,9 +255,6 @@ export function getAgentContext(): {
   };
 }
 
-export function setAgentSpaceColor(color: string | null) {
-  currentSpaceColor = color;
-}
 
 const IMAGE_TOOLS = new Set(["screenshot"]);
 
@@ -599,6 +393,7 @@ export function createBrowserToolSet(
     navigate: toSDKTool(navigateTool, "navigate"),
     clickElement: toSDKTool(clickElementTool, "clickElement"),
     typeInElement: toSDKTool(typeInElementTool, "typeInElement"),
+    pressKey: toSDKTool(pressKeyTool, "pressKey"),
     scrollPage: toSDKTool(scrollPageTool, "scrollPage"),
     selectTab: toSDKTool(selectTabTool, "selectTab"),
     closeTabs: toSDKTool(closeTabsTool, "closeTabs"),
@@ -925,7 +720,7 @@ export function toSDKTool<TInput, TOutput>(
           favIconUrl: resolved.tab.favIconUrl,
         });
       }
-      notifyAgentStatus(true, currentSpaceColor, resolved?.tabId ?? null);
+      notifyAgentStatus(true, getAgentSpaceColor(), resolved?.tabId ?? null);
     }
     try {
       // Threaded ToolContext from the SDK's experimental_context channel.
@@ -944,26 +739,46 @@ export function toSDKTool<TInput, TOutput>(
       // into every child tool's own execute via the same wrapper.
       // baseCtx.signal (if any) is overridden — the SDK's per-call
       // signal is always the most accurate source of truth.
+      //
+      // We wrap it in a fresh AbortController tracked globally so
+      // `resetAgentIndicator` can forcefully abort tools when the
+      // parent connection drops or the turn is interrupted.
+      const ac = new AbortController();
+      activeToolAbortControllers.add(ac);
+      const onAbort = () => ac.abort();
+      if (options.abortSignal) {
+        if (options.abortSignal.aborted) onAbort();
+        else options.abortSignal.addEventListener("abort", onAbort);
+      }
+      
       const ctx: ToolContext = {
         ...baseCtx,
         toolCallId: options.toolCallId,
-        ...(options.abortSignal && { signal: options.abortSignal }),
+        signal: ac.signal,
       };
-      const result = await t.execute(effectiveInput, ctx);
-      toolResultStore.set(options.toolCallId, result);
-      if (isTabTool) {
-        // Refresh the tab info post-execute so the UI shows the landed
-        // URL/title (navigate / clickElement may have changed it).
-        const resolved = await resolveTabFromInput(cid, input);
-        if (resolved) {
-          toolTabInfoStore.set(options.toolCallId, {
-            tabId: resolved.tabId,
-            title: resolved.tab.title ?? "",
-            favIconUrl: resolved.tab.favIconUrl,
-          });
+      
+      try {
+        const result = await t.execute(effectiveInput, ctx);
+        toolResultStore.set(options.toolCallId, result);
+        if (isTabTool) {
+          // Refresh the tab info post-execute so the UI shows the landed
+          // URL/title (navigate / clickElement may have changed it).
+          const resolved = await resolveTabFromInput(cid, input);
+          if (resolved) {
+            toolTabInfoStore.set(options.toolCallId, {
+              tabId: resolved.tabId,
+              title: resolved.tab.title ?? "",
+              favIconUrl: resolved.tab.favIconUrl,
+            });
+          }
         }
+        return result;
+      } finally {
+        if (options.abortSignal) {
+          options.abortSignal.removeEventListener("abort", onAbort);
+        }
+        activeToolAbortControllers.delete(ac);
       }
-      return result;
     } catch (err) {
       const errResult = {
         error: err instanceof Error ? err.message : String(err),
@@ -1066,11 +881,17 @@ export function toSDKTool<TInput, TOutput>(
   } as ToolSet[string];
 }
 
+export const activeToolAbortControllers = new Set<AbortController>();
+
 export function resetAgentIndicator() {
   if (agentActive) {
     agentActive = false;
     notifyAgentStatus(false);
   }
+  for (const ac of activeToolAbortControllers) {
+    ac.abort();
+  }
+  activeToolAbortControllers.clear();
 }
 
 
@@ -1206,6 +1027,63 @@ async function recordUsageForStep(
   }
 }
 
+/**
+ * For a CUA subagent under `attached` isolation, the runner seeded the
+ * parent's tab handle into the child session as `cuaTabHandle`. Recover it
+ * so the CUA loop can resolve the live tab id.
+ */
+function firstSeededHandle(ctx: ToolContext): string | undefined {
+  return ctx.session?.cuaTabHandle;
+}
+
+/**
+ * Resolve the Computer Use (CUA) subagent's model against the registry and
+ * report whether its provider is configured.
+ *
+ * Resolution priority (NO hardcoded fallback — a missing model means CUA is
+ * simply not enabled):
+ *   1. The user's explicit `cuaModel` setting (compound "providerId:modelId").
+ *   2. The main agent's model IF it is itself a Claude computer-use model —
+ *      it is already configured (the conversation is running), so this "just
+ *      works" on direct Anthropic OR the AI Gateway.
+ *
+ * Returns the resolved registry provider + bare model id + the provider's
+ * config, plus `configured` (all required config fields present). When no
+ * model resolves, returns `{ configured: false }` with no model — the caller
+ * treats this as "CUA disabled".
+ */
+function resolveCuaSelection(
+  settings: Settings,
+  providers: import("@/registry/providers/types").ProviderDefinition[],
+  cuaModelSetting: string | undefined,
+  agentModel: string,
+):
+  | {
+      configured: boolean;
+      modelId: string;
+      provider: import("@/registry/providers/types").ProviderDefinition;
+      actualModelId: string;
+      config: Record<string, string>;
+    }
+  | { configured: false; modelId?: undefined } {
+  const mainModelIsCua = !!agentModel && isAnthropicComputerUseModel(agentModel);
+  const modelId = cuaModelSetting || (mainModelIsCua ? agentModel : undefined);
+  if (!modelId) return { configured: false };
+
+  const [providerId, ...idParts] = modelId.split(":");
+  const actualModelId = idParts.length > 0 ? idParts.join(":") : modelId;
+  const provider =
+    (idParts.length > 0
+      ? providers.find((p) => p.id === providerId)
+      : undefined) ??
+    providers.find((p) => p.models.some((m) => m.id === actualModelId));
+  if (!provider) return { configured: false };
+
+  const config = settings.providerConfigs[provider.id] ?? {};
+  const required = provider.configSchema?.filter((f) => f.required) ?? [];
+  const configured = required.every((f) => !!config[f.key]);
+  return { configured, modelId, provider, actualModelId, config };
+}
 
 export async function createAgentTransport(
   settings: Settings,
@@ -1344,6 +1222,26 @@ export async function createAgentTransport(
   const mcpToolsList = getMcpRegistry().getAllTools();
   const mcpStates = getMcpRegistry().getStates();
   let instructions = SYSTEM_PROMPT;
+
+  // Resolve once whether the Computer Use (cua) subagent is enabled — i.e. a
+  // computer-use model is configured (explicit setting, or the main model is
+  // itself a configured Claude CUA model). This gates three things in lockstep:
+  // the CUA delegation guidance below, the `cua` entry in the delegate tool's
+  // description, and the delegate execute-time check.
+  const agentSettings = await storage.getAgentSettings();
+  const cuaSelection = resolveCuaSelection(
+    settings,
+    providers,
+    agentSettings.cuaModel,
+    agentModel,
+  );
+  const cuaEnabled = cuaSelection.configured;
+
+  // Only inject the CUA delegation guidance when CUA is actually usable —
+  // otherwise the model sees instructions for a subagent it can't delegate to.
+  if (cuaEnabled) {
+    instructions += `\n\n${CUA_DELEGATION_PROMPT}`;
+  }
 
   if (spaceId && spaceName) {
     instructions += `\n\nYou are chatting from the space "${spaceName}" (id: ${spaceId}). When saving space-scoped memories, use this spaceId.`;
@@ -1563,6 +1461,128 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   const runSubagentAgentLoop = async (
     cfg: AgentLoopConfig,
   ): Promise<AgentLoopResult> => {
+    // CUA path: a custom-tool subagent runs a provider-native computer-use
+    // loop instead of the standard filtered ToolLoopAgent.
+    if (
+      cfg.agentDef.toolSource === "custom" &&
+      cfg.agentDef.custom?.kind === "cua"
+    ) {
+      // The attached isolation seeded the parent tab handle into this
+      // session's handle map. Resolve it to the real tab id.
+      const handle = firstSeededHandle(cfg.toolContext);
+      const tabId = handle
+        ? cfg.toolContext.session?.resolveHandle?.(handle)
+        : undefined;
+      if (tabId == null) {
+        // Strict: never silently guess a tab. Return an actionable
+        // instruction to the PARENT agent (this finalText flows back as the
+        // delegate tool result) so it self-corrects on the next turn.
+        const finalText = handle
+          ? `Could not start the Computer Use agent: the tab handle "${handle}" is not bound to this conversation. Re-call delegate({ slug: "cua", context: { parentTabHandle: "<handle>" } }) with a handle from the current tab legend (call listTabs to refresh it).`
+          : `Could not start the Computer Use agent: no tab was specified. Re-call delegate({ slug: "cua", context: { parentTabHandle: "<handle>" } }) with the handle (e.g. "t1") of the tab to control, taken from the tab legend or listTabs.`;
+        return {
+          finalText,
+          status: "failed",
+          errorMessage: handle
+            ? "cua parent tab handle did not resolve"
+            : "no parent tab handle for CUA",
+        };
+      }
+
+      // Resolve the CUA subagent's model + configured provider via the same
+      // helper that computed `cuaEnabled` at transport-build time, so the
+      // delegate gate and the actual run can never disagree. Priority:
+      //   1. The user's explicit `cuaModel` setting.
+      //   2. The main agent's model IF it's a Claude computer-use model.
+      // There is NO hardcoded fallback: an unresolved/unconfigured model
+      // means Computer Use is not enabled.
+      const sel = resolveCuaSelection(
+        settings,
+        providers,
+        agentSettings.cuaModel,
+        agentModel,
+      );
+      if (!sel.modelId || !sel.configured) {
+        return {
+          finalText:
+            "Computer Use is not enabled. Select a computer-use model in Settings → General → Computer Use model (e.g. anthropic:claude-sonnet-4-6, or your gateway's Claude model), then retry.",
+          status: "failed",
+          errorMessage: "cua not configured",
+        };
+      }
+      const cuaRegistryProvider = sel.provider;
+      const cuaActualModelId = sel.actualModelId;
+      const cuaConfig = sel.config;
+
+      let cuaProvider;
+      let cuaModel;
+      try {
+        cuaProvider = resolveCuaProvider(
+          cuaRegistryProvider.id,
+          cuaActualModelId,
+          cuaConfig,
+        );
+        cuaModel = await cuaRegistryProvider.createLanguageModel(
+          cuaConfig,
+          cuaActualModelId,
+        );
+      } catch (err) {
+        return {
+          finalText: err instanceof Error ? err.message : String(err),
+          status: "failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      // Persist the delegation prompt as the child's first user message
+      // BEFORE running, mirroring the standard subagent path.
+      if (cfg.childConversationId) {
+        try {
+          await persistDelegationMessage(
+            cfg.childConversationId,
+            cfg.userMessage,
+          );
+        } catch {
+          // best-effort
+        }
+      }
+
+      // Persist each assistant message AS IT STREAMS so the subagent's
+      // trace renders in real time in the parent's DelegateResult block
+      // (rather than appearing in bulk only after the run finishes). Writes
+      // are serialized through a promise chain to preserve order without
+      // blocking the loop's iteration. `onUiMessage` fires per streamed
+      // message; we upsert by id via the shared persister.
+      const cuaPersister = cfg.childConversationId
+        ? new AssistantStreamPersister(cfg.childConversationId)
+        : null;
+      let persistChain: Promise<void> = Promise.resolve();
+
+      const result = await cuaProvider.runLoop({
+        model: cuaModel,
+        driver: extensionDriver,
+        tabId,
+        modelId: cuaActualModelId,
+        task: cfg.userMessage,
+        systemPrompt: cfg.systemPrompt,
+        maxSteps: cfg.agentDef.maxSteps ?? 40,
+        ...(cfg.abortSignal && { abortSignal: cfg.abortSignal }),
+        onUiMessage: (m) => {
+          if (!cuaPersister) return;
+          persistChain = persistChain
+            .then(() => cuaPersister.persist(m as AgentUIMessage))
+            .catch(() => {
+              // best-effort — finalText still returns to the parent
+            });
+        },
+      });
+
+      // Wait for any in-flight persists to land before returning.
+      await persistChain;
+
+      return result;
+    }
+
     const subagentTools: Record<string, ToolSet[string]> = {};
     const allow = new Set(cfg.agentDef.allowedTools);
     const deny = new Set(cfg.agentDef.deniedTools ?? []);
@@ -1677,6 +1697,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
 
   const delegateTool = createDelegateTool({
     runAgentLoop: runSubagentAgentLoop,
+    cuaEnabled,
   });
 
   const tools = (() => {

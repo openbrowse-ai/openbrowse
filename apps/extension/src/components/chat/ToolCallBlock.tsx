@@ -20,6 +20,8 @@ import {
   ReadFileResult,
 } from "./tool-results/fs";
 import { ScreenshotResult } from "./tool-results/screenshot";
+import { ComputerResult } from "./tool-results/computer";
+import { NavigateResult } from "./tool-results/navigate";
 import { SkillResult } from "./tool-results/skill";
 import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
@@ -52,6 +54,12 @@ type ResultRenderer = (props: {
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   snapshot: ({ result }) => <SnapshotResult result={result} />,
   screenshot: ({ result }) => <ScreenshotResult result={result} />,
+  computer: ({ args, result }) => <ComputerResult args={args} result={result} />,
+  navigate: ({ args, result }) => <NavigateResult args={args} result={result} />,
+  goBack: ({ args, result }) => <NavigateResult args={args} result={result} />,
+  goForward: ({ args, result }) => (
+    <NavigateResult args={args} result={result} />
+  ),
   executeCode: ({ args, result }) => <CodeResult args={args} result={result} />,
   executeOnPage: ({ args, result }) => (
     <CodeResult args={args} result={result} />
@@ -114,8 +122,11 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   readPage: { pending: "Reading page...", done: "Read page" },
   screenshot: { pending: "Taking screenshot...", done: "Took screenshot" },
   snapshot: { pending: "Taking snapshot...", done: "Took snapshot" },
+  computer: { pending: "Using computer...", done: "Used computer" },
   listTabs: { pending: "Listing tabs...", done: "Listed tabs" },
   navigate: { pending: "Navigating...", done: "Navigated" },
+  goBack: { pending: "Going back...", done: "Went back" },
+  goForward: { pending: "Going forward...", done: "Went forward" },
   selectTab: { pending: "Switching tab...", done: "Switched tab" },
   clickElement: { pending: "Clicking...", done: "Clicked" },
   typeInElement: { pending: "Typing...", done: "Typed" },
@@ -234,6 +245,68 @@ function webFetchLabels(
 }
 
 /**
+ * Static, action-specific status text for the CUA `computer` tool, derived
+ * from `args.action` (the Anthropic computer-tool action). Without this the
+ * row would just read the generic "Used computer".
+ */
+export function computerLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const action = typeof args.action === "string" ? args.action : "";
+  const coord = Array.isArray(args.coordinate) ? args.coordinate : null;
+  const at =
+    coord && coord.length === 2 ? ` at (${coord[0]}, ${coord[1]})` : "";
+  switch (action) {
+    case "screenshot":
+      return { pending: "Taking screenshot...", done: "Took screenshot" };
+    case "left_click":
+      return { pending: `Clicking${at}...`, done: `Clicked${at}` };
+    case "right_click":
+      return { pending: `Right-clicking${at}...`, done: `Right-clicked${at}` };
+    case "middle_click":
+      return { pending: `Middle-clicking${at}...`, done: `Middle-clicked${at}` };
+    case "double_click":
+      return { pending: `Double-clicking${at}...`, done: `Double-clicked${at}` };
+    case "triple_click":
+      return { pending: `Triple-clicking${at}...`, done: `Triple-clicked${at}` };
+    case "left_click_drag":
+      return { pending: "Dragging...", done: "Dragged" };
+    case "mouse_move":
+      return { pending: `Moving cursor${at}...`, done: `Moved cursor${at}` };
+    case "type": {
+      const t = typeof args.text === "string" ? args.text : "";
+      const preview = t.length > 24 ? `${t.slice(0, 23)}…` : t;
+      return {
+        pending: preview ? `Typing "${preview}"...` : "Typing...",
+        done: preview ? `Typed "${preview}"` : "Typed",
+      };
+    }
+    case "key": {
+      const k = typeof args.text === "string" ? args.text : "";
+      return {
+        pending: k ? `Pressing ${k}...` : "Pressing key...",
+        done: k ? `Pressed ${k}` : "Pressed key",
+      };
+    }
+    case "scroll": {
+      const dir =
+        typeof args.scroll_direction === "string" ? args.scroll_direction : "";
+      return {
+        pending: dir ? `Scrolling ${dir}...` : "Scrolling...",
+        done: dir ? `Scrolled ${dir}` : "Scrolled",
+      };
+    }
+    case "wait":
+      return { pending: "Waiting...", done: "Waited" };
+    case "cursor_position":
+      return { pending: "Reading cursor...", done: "Read cursor position" };
+    default:
+      return fallback;
+  }
+}
+
+/**
  * Refine the closeTabs collapsed-row label from its args so the user sees
  * what's being closed (e.g. "Closing 2 tabs..." / "Closed 2 tabs", or
  * "Closing tab group...") instead of the generic "Closing tabs...".
@@ -328,12 +401,14 @@ export function ToolCallBlock({
   const dynamicLabels =
     toolName === "webFetch"
       ? webFetchLabels(args, labels)
-      : toolName === "closeTabs"
-        ? closeTabsLabels(args, labels)
-        : toolName === "create_scheduled_task" ||
-            toolName === "update_scheduled_task"
-          ? scheduledTaskLabels(toolName, args, labels)
-          : labels;
+      : toolName === "computer"
+        ? computerLabels(args, labels)
+        : toolName === "closeTabs"
+          ? closeTabsLabels(args, labels)
+          : toolName === "create_scheduled_task" ||
+              toolName === "update_scheduled_task"
+            ? scheduledTaskLabels(toolName, args, labels)
+            : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

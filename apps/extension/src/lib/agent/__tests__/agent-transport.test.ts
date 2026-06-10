@@ -29,15 +29,16 @@ function makeMinimalContext(): ToolContext {
 
 function makeRecordingTool(): {
   tool: BrowserTool<{ x: string }, { ok: boolean }>;
-  received: { ctx: ToolContext | null };
+  received: { ctx: ToolContext | null; resolve?: () => void };
 } {
-  const received: { ctx: ToolContext | null } = { ctx: null };
+  const received: { ctx: ToolContext | null; resolve?: () => void } = { ctx: null };
   const tool: BrowserTool<{ x: string }, { ok: boolean }> = {
     name: "recordingTool",
     description: "Records the ctx it receives",
     parameters: z.object({ x: z.string() }),
     execute: async (_input, ctx) => {
       received.ctx = ctx;
+      await new Promise<void>(r => { received.resolve = r; });
       return { ok: true };
     },
   };
@@ -45,16 +46,14 @@ function makeRecordingTool(): {
 }
 
 describe("toSDKTool — abortSignal propagation", () => {
-  it("forwards options.abortSignal to ctx.signal so delegate can cancel", async () => {
+  it("forwards a linked abortSignal to ctx.signal so delegate can cancel", async () => {
     const { tool, received } = makeRecordingTool();
     const wrapped = toSDKTool(tool, "recordingTool");
 
     const controller = new AbortController();
     const baseCtx = makeMinimalContext();
 
-    // Invoke as the AI SDK would: shaped options object with the
-    // per-call abortSignal.
-    await (
+    const executePromise = (
       wrapped.execute as unknown as (
         input: { x: string },
         options: {
@@ -72,51 +71,28 @@ describe("toSDKTool — abortSignal propagation", () => {
       },
     );
 
-    expect(received.ctx).not.toBeNull();
-    expect(received.ctx?.signal).toBe(controller.signal);
-    expect(received.ctx?.toolCallId).toBe("tc_1");
-  });
+    // wait for tool to receive execution
+    await new Promise(r => setTimeout(r, 0));
 
-  it("propagates abort through the same signal reference (not a snapshot)", async () => {
-    const { tool, received } = makeRecordingTool();
-    const wrapped = toSDKTool(tool, "recordingTool");
-
-    const controller = new AbortController();
-    const baseCtx = makeMinimalContext();
-
-    await (
-      wrapped.execute as unknown as (
-        input: { x: string },
-        options: {
-          toolCallId: string;
-          experimental_context?: unknown;
-          abortSignal?: AbortSignal;
-        },
-      ) => Promise<unknown>
-    )(
-      { x: "hello" },
-      {
-        toolCallId: "tc_2",
-        abortSignal: controller.signal,
-        experimental_context: baseCtx,
-      },
-    );
-
-    // Mutate the controller AFTER execute resolved; the captured signal
-    // should reflect the change because the wrapper passes the live
-    // reference, not a copy.
+    expect(received.ctx?.signal).toBeDefined();
     expect(received.ctx?.signal?.aborted).toBe(false);
+    expect(received.ctx?.toolCallId).toBe("tc_1");
+    
+    // Test that the linked signal aborts when the parent aborts
     controller.abort();
     expect(received.ctx?.signal?.aborted).toBe(true);
+    
+    received.resolve?.();
+    await executePromise;
   });
 
-  it("leaves ctx.signal undefined when the SDK does not provide one", async () => {
+  it("provides its own ctx.signal even when the SDK does not provide one (so UI can still cancel)", async () => {
     const { tool, received } = makeRecordingTool();
     const wrapped = toSDKTool(tool, "recordingTool");
 
     const baseCtx = makeMinimalContext();
 
-    await (
+    const executePromise = (
       wrapped.execute as unknown as (
         input: { x: string },
         options: {
@@ -133,6 +109,12 @@ describe("toSDKTool — abortSignal propagation", () => {
       },
     );
 
-    expect(received.ctx?.signal).toBeUndefined();
+    // wait for tool to receive execution
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(received.ctx?.signal).toBeDefined();
+    
+    received.resolve?.();
+    await executePromise;
   });
 });

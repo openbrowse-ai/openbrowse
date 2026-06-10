@@ -1,6 +1,7 @@
 import type { BrowserDriver, TabId } from "../driver";
 import type { CanonicalAction, ModifierKey } from "./actions";
 import { modifierMask, dispatchKeyCombo } from "../keyboard";
+import { captureScreenshot } from "../capture-utils";
 
 async function mouse(
   driver: BrowserDriver,
@@ -108,27 +109,13 @@ export async function executeCanonicalAction(
 }
 
 /**
- * Capture a viewport PNG and return base64 (no data: prefix). Mirrors the
- * retry behavior of tools/screenshot.ts.
+ * Capture a viewport PNG and return base64 (no data: prefix). Delegates to the
+ * shared `captureScreenshot`, which hides OpenBrowse's overlays around the
+ * capture and handles the transient-failure retry.
  */
 export async function captureViewportShot(
   driver: BrowserDriver,
   tabId: TabId,
 ): Promise<string> {
-  try {
-    const r = await driver.sendCommand<{ data: string }>(
-      tabId,
-      "Page.captureScreenshot",
-      { format: "png" },
-    );
-    return r.data;
-  } catch {
-    await new Promise((r) => setTimeout(r, 600));
-    const r = await driver.sendCommand<{ data: string }>(
-      tabId,
-      "Page.captureScreenshot",
-      { format: "png" },
-    );
-    return r.data;
-  }
+  return captureScreenshot(driver, tabId, { format: "png" });
 }
