@@ -122,7 +122,7 @@ export default defineConfig({
     host_permissions: ["<all_urls>"],
     web_accessible_resources: [
       {
-        resources: ["overlay.html", "icon/logo.svg"],
+        resources: ["overlay.html", "icon/logo.svg", "icon/logo-dark.svg"],
         matches: ["<all_urls>"],
       },
     ],

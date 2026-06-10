@@ -29,6 +29,17 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
   const providerModels = useConfiguredModels(settings);
   const hasConfiguredModels = providerModels.length > 0;
 
+  // Only computer-use-capable models are valid for the CUA subagent.
+  const cuaProviderModels = providerModels
+    .map((group) => ({
+      ...group,
+      models: group.models.filter((m) =>
+        m.capabilities?.includes("computer-use"),
+      ),
+    }))
+    .filter((group) => group.models.length > 0);
+  const hasCuaModels = cuaProviderModels.length > 0;
+
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -178,6 +189,31 @@ export function GeneralTab({ settings, onChange, agentSettings, onAgentSettingsC
         ) : (
           <p className="text-sm text-muted-foreground rounded-md border border-input px-3 py-2">
             Configure a provider in the Models tab first
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label>Computer Use model</Label>
+        <p className="text-xs text-muted-foreground">
+          Model used by the Computer Use subagent, which controls a page with
+          pixel-level screenshots and mouse/keyboard for sites the normal agent
+          can&apos;t handle. Only computer-use-capable models are shown.
+          Selecting a model here enables the Computer Use agent; leave it unset
+          to disable it.
+        </p>
+        {hasCuaModels ? (
+          <ModelPicker
+            trigger="settings"
+            providerModels={cuaProviderModels}
+            value={agentSettings.cuaModel ?? ""}
+            onValueChange={(v) => onAgentSettingsChange({ cuaModel: v })}
+            placeholder="Select a computer-use model"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground rounded-md border border-input px-3 py-2">
+            Configure a provider with a computer-use-capable model (e.g.
+            Anthropic Claude Sonnet 4.6) in the Models tab first
           </p>
         )}
       </div>
