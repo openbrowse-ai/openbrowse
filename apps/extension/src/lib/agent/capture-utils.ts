@@ -70,14 +70,26 @@ export async function captureScreenshot(
         params,
       );
       return r.data;
-    } catch {
+    } catch (firstErr) {
+      // `Page.captureScreenshot` intermittently fails with `-32000 Unable to
+      // capture screenshot` while the renderer is mid-paint/navigation. Wait
+      // ~600ms — long enough for a typical paint/commit to settle without
+      // noticeably stalling the agent — then retry once. Preserve the first
+      // error as the `cause` so the retry failure doesn't lose context.
       await new Promise((r) => setTimeout(r, 600));
-      const r = await driver.sendCommand<{ data: string }>(
-        tabId,
-        "Page.captureScreenshot",
-        params,
-      );
-      return r.data;
+      try {
+        const r = await driver.sendCommand<{ data: string }>(
+          tabId,
+          "Page.captureScreenshot",
+          params,
+        );
+        return r.data;
+      } catch (secondErr) {
+        if (secondErr instanceof Error && firstErr !== secondErr) {
+          (secondErr as { cause?: unknown }).cause ??= firstErr;
+        }
+        throw secondErr;
+      }
     }
   } finally {
     await setOverlaysHidden(driver, tabId, false);

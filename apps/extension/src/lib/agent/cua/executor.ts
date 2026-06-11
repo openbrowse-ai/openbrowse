@@ -12,6 +12,29 @@ async function mouse(
 }
 
 /**
+ * Log a `waitForLoad` failure from a CUA navigation. A load timeout is
+ * expected/benign (e.g. a page that never fires `complete`, or an instant
+ * history nav) so it's logged at debug; any other error is unexpected and
+ * logged at warn. Either way we proceed — the next screenshot reflects
+ * whatever state the page settled into.
+ */
+function logWaitForLoadError(
+  kind: string,
+  tabId: TabId,
+  url: string,
+  err: unknown,
+): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const isTimeout = /timed out/i.test(message);
+  const ctx = `[cua/executor] ${kind} waitForLoad (tab ${String(tabId)}, ${url})`;
+  if (isTimeout) {
+    console.debug(`${ctx}: ${message}`);
+  } else {
+    console.warn(`${ctx}: ${message}`);
+  }
+}
+
+/**
  * Run a single provider-neutral action against a tab via CDP. Coordinates
  * must already be CSS pixels. Returns nothing; the caller captures a fresh
  * screenshot afterward.
@@ -82,7 +105,9 @@ export async function executeCanonicalAction(
 
     case "navigate":
       await driver.updateTabUrl(tabId, action.url);
-      await driver.waitForLoad(tabId, 5000).catch(() => {});
+      await driver
+        .waitForLoad(tabId, 5000)
+        .catch((err) => logWaitForLoadError("navigate", tabId, action.url, err));
       return;
 
     case "goBack":
@@ -95,15 +120,19 @@ export async function executeCanonicalAction(
       const entry = hist.entries[targetIdx];
       if (!entry) return; // no history in that direction — no-op
       await driver.sendCommand(tabId, "Page.navigateToHistoryEntry", { entryId: entry.id });
-      await driver.waitForLoad(tabId, 5000).catch(() => {});
+      await driver
+        .waitForLoad(tabId, 5000)
+        .catch((err) => logWaitForLoadError(action.kind, tabId, entry.url, err));
       return;
     }
 
     case "zoom":
     case "screenshot":
     case "done":
+    case "error":
       // No CDP side effect. `zoom`/`screenshot` capture is handled by the
-      // loop; `done` terminates the loop.
+      // loop; `done` terminates the loop; `error` is surfaced to the model as
+      // text by `executeAndShoot`.
       return;
   }
 }

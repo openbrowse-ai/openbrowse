@@ -198,10 +198,11 @@ export async function bindTabByHandle(
   let tabId = ctx.session?.resolveHandle?.(handle);
 
   // Fallback: a user-opened tab may appear in listTabs under its numeric
-  // chrome id before it is bound to the conversation.
-  if (tabId == null) {
-    const parsed = parseInt(handle, 10);
-    if (!Number.isNaN(parsed)) tabId = parsed;
+  // chrome id before it is bound to the conversation. Only accept a strictly
+  // all-digit handle — `parseInt("123abc")` would otherwise resolve a
+  // malformed handle to a real tab.
+  if (tabId == null && /^\d+$/.test(handle)) {
+    tabId = Number(handle);
   }
   if (tabId == null) return null;
 

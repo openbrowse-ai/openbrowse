@@ -137,6 +137,17 @@ export function createDelegateTool(
         );
       }
 
+      // `parentTabHandle` is declared optional on the schema (it's meaningless
+      // for other subagents) but is REQUIRED for `cua`: the computer-use loop
+      // must know which tab to drive. Reject early with a clear message rather
+      // than failing deep in the runner with "no parent tab handle for CUA".
+      if (input.slug === "cua" && !input.context?.parentTabHandle) {
+        return failure(
+          "cua",
+          "Computer Use requires `context.parentTabHandle` — the handle (e.g. 't1') of the tab the agent should control. Pass a handle from the tab legend or listTabs.",
+        );
+      }
+
       const agentDef = getAgent(input.slug);
       if (!agentDef) {
         const available = listAgents()

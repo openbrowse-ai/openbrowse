@@ -6,6 +6,7 @@ import {
   getRef,
   getPreviousSnapshot,
   getPreviousSignals,
+  invalidateRefsIfNavigated,
 } from "../ref-store";
 import { dispatchKeyCombo } from "../keyboard";
 import { captureSnapshot, diffSnapshots, findNodeByRoleNameNth } from "../snapshot-capture";
@@ -83,6 +84,10 @@ export const pressKeyTool: BrowserTool<Input, Output> = {
     }
 
     try {
+      // If the key (e.g. Enter) navigated to a different document, drop the
+      // stale ref map BEFORE the snapshot's merge so old-page refs can't leak —
+      // mirrors navigate.ts. Same-URL re-renders keep the carry-over.
+      await invalidateRefsIfNavigated(ctx.driver, tabId, previousSignals.url);
       const { snapshotText, signals } = await captureSnapshot(ctx.driver, tabId);
       const diff = diffSnapshots(
         { text: previousSnapshot, signals: previousSignals },

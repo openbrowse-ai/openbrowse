@@ -11,6 +11,12 @@ export interface CuaRunConfig {
   task: string;
   systemPrompt: string;
   maxSteps: number;
+  /**
+   * Max width (CSS px) of the display declared to the model; the viewport is
+   * downscaled to fit. Lets a provider tune the resolution/cost tradeoff.
+   * Defaults to 1280 when unset.
+   */
+  maxDisplayWidth?: number;
   abortSignal?: AbortSignal;
   /** Called with each assistant UIMessage so the runner can persist the trace. */
   onUiMessage?: (message: unknown) => void;

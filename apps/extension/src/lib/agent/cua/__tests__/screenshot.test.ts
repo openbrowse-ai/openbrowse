@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserDriver } from "../../driver";
-import { captureNormalizedShot } from "../screenshot";
+import { captureNormalizedShot, captureRegionShot } from "../screenshot";
 
 function fakeDriver(): BrowserDriver {
   return {
@@ -21,14 +21,14 @@ describe("captureNormalizedShot", () => {
   });
 });
 
-import { captureRegionShot } from "../screenshot";
-
-it("captureRegionShot falls back to a full normalized shot without canvas", async () => {
-  const driver = {
-    sendCommand: vi.fn(async (_t: unknown, method: string) =>
-      method === "Page.captureScreenshot" ? ({ data: "QUJD" } as never) : ({} as never),
-    ),
-  } as unknown as BrowserDriver;
-  const url = await captureRegionShot(driver, 1, { x1: 0, y1: 0, x2: 10, y2: 10 }, 800, 600);
-  expect(url.startsWith("data:image/png;base64,")).toBe(true);
+describe("captureRegionShot", () => {
+  it("falls back to a full normalized shot without canvas", async () => {
+    const driver = {
+      sendCommand: vi.fn(async (_t: unknown, method: string) =>
+        method === "Page.captureScreenshot" ? ({ data: "QUJD" } as never) : ({} as never),
+      ),
+    } as unknown as BrowserDriver;
+    const url = await captureRegionShot(driver, 1, { x1: 0, y1: 0, x2: 10, y2: 10 }, 800, 600);
+    expect(url.startsWith("data:image/png;base64,")).toBe(true);
+  });
 });

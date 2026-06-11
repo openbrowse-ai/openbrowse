@@ -21,7 +21,11 @@ export type CanonicalAction =
   // click coords); captureRegionShot maps them to native pixels.
   | { kind: "zoom"; x1: number; y1: number; x2: number; y2: number }
   | { kind: "screenshot" }
-  | { kind: "done"; summary: string };
+  | { kind: "done"; summary: string }
+  // Emitted when a provider decoder receives an action it cannot map (e.g. an
+  // unknown/renamed tool action). Surfaced to the model as text so a protocol
+  // mismatch isn't silently masked as a screenshot.
+  | { kind: "error"; reason: string; detail?: string };
 
 export type ModifierKey = "shift" | "ctrl" | "alt" | "super";
 

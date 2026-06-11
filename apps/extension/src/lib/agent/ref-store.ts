@@ -102,6 +102,36 @@ export function invalidateRefs(tabId: TabId): void {
   refsByTab.delete(tabId);
 }
 
+/**
+ * After an in-page action (click/type/key), detect whether the action actually
+ * caused a navigation to a different document and, if so, hard-invalidate refs
+ * BEFORE the post-action snapshot's merge. Without this, the carry-over pool
+ * (see `setRefs`) keeps old-page ref ids resolvable to detached backendNodeIds
+ * on the new page — the same leak `navigate.ts` guards against with an explicit
+ * `invalidateRefs`. In-page re-renders (same URL) intentionally do NOT
+ * invalidate, preserving the content-stable ref carry-over.
+ *
+ * `previousUrl` is the URL at the last snapshot (`PageStateSignals.url`).
+ * Best-effort: a failed tab lookup leaves refs untouched. Returns true when it
+ * invalidated.
+ */
+export async function invalidateRefsIfNavigated(
+  driver: { getTab: (tabId: TabId) => Promise<{ url?: string }> },
+  tabId: TabId,
+  previousUrl: string | undefined,
+): Promise<boolean> {
+  if (!previousUrl) return false;
+  let currentUrl: string | undefined;
+  try {
+    currentUrl = (await driver.getTab(tabId)).url;
+  } catch {
+    return false;
+  }
+  if (!currentUrl || currentUrl === previousUrl) return false;
+  invalidateRefs(tabId);
+  return true;
+}
+
 export function hasRefs(tabId: TabId): boolean {
   const entry = refsByTab.get(tabId);
   return !!entry && entry.refs.size > 0;

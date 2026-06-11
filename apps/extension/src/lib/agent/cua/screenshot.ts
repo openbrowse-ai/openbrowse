@@ -116,6 +116,8 @@ export async function captureRegionShot(
   ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
   const outBlob = await canvas.convertToBlob({ type: "image/png" });
   const buf = await outBlob.arrayBuffer();
-  const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+  // Use the loop-based encoder (not `String.fromCharCode(...spread)`), which
+  // overflows the call stack for large screenshots.
+  const b64 = bufferToBase64(buf);
   return `data:image/png;base64,${b64}`;
 }

@@ -96,8 +96,18 @@ export async function dispatchKeyCombo(
   let mainKey: string | undefined;
   for (const k of keys) {
     const mod = COMBO_MODIFIERS[k.toLowerCase()];
-    if (mod) mods.push(mod);
-    else mainKey = k;
+    if (mod) {
+      mods.push(mod);
+    } else if (mainKey !== undefined) {
+      // A combo may have at most one non-modifier key. Two main keys (e.g.
+      // "a+b") is ambiguous — reject rather than silently dropping the first.
+      throw new Error(
+        `Ambiguous key combo "${keys.join("+")}": more than one non-modifier key (` +
+          `"${mainKey}" and "${k}"). A combo must be zero or more modifiers plus a single key.`,
+      );
+    } else {
+      mainKey = k;
+    }
   }
   if (!mainKey) return;
   const modifiers = modifierMask(mods);

@@ -110,4 +110,12 @@ describe("decodeAnthropicAction", () => {
   it("decodes zoom region verbatim in declared coords (no downscale applied)", () => {
     expect(decodeAnthropicAction({ action: "zoom", region: [10, 20, 110, 220] }, 0.5)).toEqual({ kind: "zoom", x1: 10, y1: 20, x2: 110, y2: 220 });
   });
+
+  it("maps an unknown action to an explicit error (not a silent screenshot)", () => {
+    expect(decodeAnthropicAction({ action: "frobnicate" }, ds)).toEqual({
+      kind: "error",
+      reason: "unknown_action",
+      detail: "frobnicate",
+    });
+  });
 });

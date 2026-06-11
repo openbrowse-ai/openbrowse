@@ -30,7 +30,6 @@ const outputSchema = z.object({
   imageDataUrl: z.string().optional(),
   annotatedCount: z.number().optional(),
   annotationError: z.string().optional(),
-  note: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
 
@@ -71,7 +70,7 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Page.captureScreenshot failed twice — ${msg}. Tab may be discarded or in a transient state; try scrolling or waiting before retrying.`,
+        `Page.captureScreenshot failed after retries — ${msg}. Tab may be discarded or in a transient state; try scrolling or waiting before retrying.`,
       );
     }
 

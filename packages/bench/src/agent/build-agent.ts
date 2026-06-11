@@ -52,7 +52,10 @@ import type { TokenLimits } from "@agent/compaction";
  */
 function inferBenchVendor(modelId: string): ThinkingVendor | null {
   if (modelId.startsWith("claude")) return "anthropic";
-  if (modelId.startsWith("gpt") || modelId.startsWith("o")) return "openai";
+  // OpenAI: `gpt-…` plus the reasoning series `o1-`/`o3-`/`o4-…`. Match only an
+  // `o` followed by a digit so unrelated ids (e.g. a hypothetical `opus-…`)
+  // don't get misclassified by a bare `startsWith("o")`.
+  if (modelId.startsWith("gpt") || /^o\d/.test(modelId)) return "openai";
   if (modelId.startsWith("gemini")) return "google";
   return null;
 }

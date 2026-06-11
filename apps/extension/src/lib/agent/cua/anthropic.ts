@@ -125,7 +125,13 @@ export function decodeAnthropicAction(
       return { kind: "zoom", x1: r[0], y1: r[1], x2: r[2], y2: r[3] };
     }
     default:
-      return { kind: "screenshot" };
+      // An unknown action almost always signals a tool-version/protocol
+      // mismatch. Surface it (warn + explicit error action) rather than
+      // silently pretending the model asked for a screenshot.
+      console.warn(
+        `[cua/anthropic] unknown computer action "${input.action}" — surfacing as error`,
+      );
+      return { kind: "error", reason: "unknown_action", detail: input.action };
   }
 }
 

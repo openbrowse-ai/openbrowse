@@ -65,12 +65,18 @@ export const executeOnPageTool: BrowserTool<Input, Output> = {
     ]);
 
     if (evalResult === "timeout") {
+      // The script may have partially run and mutated/replaced DOM nodes
+      // before timing out. Clear refs so the agent re-snapshots.
+      invalidateRefs(tab.id);
       return { tab: handle, error: "Execution timed out after 30s" };
     }
 
     if (evalResult.exceptionDetails) {
       const ex = evalResult.exceptionDetails;
       const msg = ex.exception?.description ?? ex.text ?? "Unknown error";
+      // A thrown exception can still leave the DOM partially mutated, so
+      // invalidate refs here too before returning.
+      invalidateRefs(tab.id);
       return { tab: handle, error: msg };
     }
 

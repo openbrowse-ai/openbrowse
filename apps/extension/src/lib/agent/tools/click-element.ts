@@ -6,6 +6,7 @@ import {
   getRef,
   getPreviousSnapshot,
   getPreviousSignals,
+  invalidateRefsIfNavigated,
 } from "../ref-store";
 import {
   captureSnapshot,
@@ -84,6 +85,11 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     }
 
     try {
+      // If the click navigated to a different document, drop the stale ref map
+      // (incl. the carry-over pool) BEFORE the post-action snapshot's merge so
+      // old-page refs can't leak into the new page — mirrors navigate.ts.
+      // In-page re-renders (same URL) keep the content-stable carry-over.
+      await invalidateRefsIfNavigated(ctx.driver, tabId, previousSignals.url);
       const { snapshotText, signals } = await captureSnapshot(ctx.driver, tabId);
       const diff = diffSnapshots(
         { text: previousSnapshot, signals: previousSignals },

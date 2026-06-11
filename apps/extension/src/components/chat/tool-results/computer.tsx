@@ -38,12 +38,14 @@ export function ComputerResult({ args, result }: Props) {
 
   const action = typeof args.action === "string" ? args.action : "";
   const coord = Array.isArray(args.coordinate) ? args.coordinate : null;
-  // For a drag, ripple at the start point.
+  // For a drag, ripple at the explicit start point only. If no
+  // start_coordinate was provided, render nothing rather than falling back to
+  // the end `coordinate` (which would show a misleading ripple at the drag
+  // end).
   const startCoord = Array.isArray(args.start_coordinate)
     ? args.start_coordinate
     : null;
-  const point =
-    action === "left_click_drag" ? (startCoord ?? coord) : coord;
+  const point = action === "left_click_drag" ? startCoord : coord;
 
   const showRipple =
     CLICK_ACTIONS.has(action) &&
@@ -53,8 +55,12 @@ export function ComputerResult({ args, result }: Props) {
     natural.w > 0 &&
     natural.h > 0;
 
-  const leftPct = showRipple ? (Number(point![0]) / natural!.w) * 100 : 0;
-  const topPct = showRipple ? (Number(point![1]) / natural!.h) * 100 : 0;
+  let leftPct = 0;
+  let topPct = 0;
+  if (showRipple && point && natural) {
+    leftPct = (Number(point[0]) / natural.w) * 100;
+    topPct = (Number(point[1]) / natural.h) * 100;
+  }
 
   return (
     <div className="ml-3 mt-1 pl-3 pb-1">

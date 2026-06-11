@@ -21,6 +21,10 @@ export interface CuaActionOutput {
   /** True when the post-action screenshot is byte-identical to the prior one
    *  for a state-changing action (loop-side detection; see runCuaToolLoop). */
   noChange?: boolean;
+  /** Set when the action could not be decoded/executed (e.g. an unknown
+   *  provider action). Surfaced to the model as text so the mismatch is
+   *  visible rather than masked as a screenshot. */
+  errorNote?: string;
 }
 
 /**
@@ -37,6 +41,29 @@ export async function executeAndShoot(
   displayWidth: number,
   displayHeight: number,
 ): Promise<CuaActionOutput> {
+  // An undecodable action carries no CDP side effect; report it back to the
+  // model as text alongside a fresh screenshot so it can self-correct.
+  if (action.kind === "error") {
+    const note = action.detail
+      ? `Action error (${action.reason}): ${action.detail}`
+      : `Action error: ${action.reason}`;
+    const imageDataUrl = await captureNormalizedShot(
+      driver,
+      tabId,
+      displayWidth,
+      displayHeight,
+    );
+    const currentUrl = await driver
+      .getTab(tabId)
+      .then((t) => t.url)
+      .catch(() => undefined);
+    return {
+      imageDataUrl,
+      errorNote: note,
+      ...(currentUrl !== undefined && { currentUrl }),
+    };
+  }
+
   // The "working on this page" overlay blocks user input via a shield + key
   // capture. The agent's own CDP input is trusted and respects the shield, so
   // we toggle passthrough ON around this action (awaited, so the shield is
@@ -162,7 +189,7 @@ export async function runCuaToolLoop(
   const display = computeDisplay({
     cssWidth: vp.cssWidth,
     cssHeight: vp.cssHeight,
-    maxWidth: 1280,
+    maxWidth: cfg.maxDisplayWidth ?? 1280,
   });
 
   let lastShot: string | undefined;
@@ -273,7 +300,7 @@ export async function runCuaToolLoop(
 export function cuaToModelOutput({
   output,
 }: {
-  output: { imageDataUrl?: string; currentUrl?: string; noChange?: boolean };
+  output: { imageDataUrl?: string; currentUrl?: string; noChange?: boolean; errorNote?: string };
 }) {
   const imageDataUrl = output?.imageDataUrl;
   if (!imageDataUrl) {
@@ -282,6 +309,7 @@ export function cuaToModelOutput({
   const base64 = imageDataUrl.replace(/^data:image\/png;base64,/, "");
   const lines: string[] = [];
   if (output.currentUrl) lines.push(`Current URL: ${output.currentUrl}`);
+  if (output.errorNote) lines.push(output.errorNote);
   if (output.noChange) {
     lines.push(
       "Note: the last action produced no visible change to the page. Try a different approach (a different target, scroll, navigate, or goBack).",

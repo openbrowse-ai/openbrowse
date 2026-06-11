@@ -94,8 +94,8 @@ describe("pressKey", () => {
     const base = makeMockDriver({ axTrees: [tree, tree], url: URL, keyEvents });
     const driver = {
       ...base,
-      sendCommand: async (tab: unknown, method: string, params?: any) => {
-        if (method === "DOM.focus") focusedBackendNodeId = params.backendNodeId;
+      sendCommand: async (tab: unknown, method: string, params?: Record<string, unknown>) => {
+        if (method === "DOM.focus") focusedBackendNodeId = params?.backendNodeId as number | undefined;
         return (base.sendCommand as any)(tab, method, params);
       },
     } as unknown as BrowserDriver;

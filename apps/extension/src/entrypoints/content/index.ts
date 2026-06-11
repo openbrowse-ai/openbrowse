@@ -851,7 +851,14 @@ export default defineContentScript({
       }
     });
 
+    // These messages are posted by OpenBrowse's own overlay iframe
+    // (`window.parent.postMessage(..., "*")` in OverlayApp/LogoMenu), which
+    // runs at the extension origin. A malicious page sharing this window
+    // could otherwise spoof OPENBROWSE_TRIGGER_UNDO / OVERLAY_CLOSE etc., so
+    // only process messages that originate from the extension itself.
+    const extensionOrigin = new URL(chrome.runtime.getURL("")).origin;
     window.addEventListener("message", (e) => {
+      if (e.origin !== extensionOrigin) return;
       if (e.data?.type === "OPENBROWSE_OVERLAY_CLOSE") {
         removeOverlay();
       }
