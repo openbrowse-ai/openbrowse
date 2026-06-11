@@ -5,8 +5,18 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
-import { Check, Copy, Pencil } from "lucide-react";
+import { Check, Copy, Pencil, RefreshCw } from "lucide-react";
 import { useCallback, useMemo, useRef, useState, memo } from "react";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { classifyFile } from "@/lib/vfs/file-classify";
@@ -16,11 +26,17 @@ import { useFileSelection } from "@/lib/file-selection-context";
 interface UserMessageProps {
   message: AgentUIMessage;
   onEdit?: () => void;
+  /**
+   * Retry from this message: discard every turn after it and re-run the
+   * response. Confirmed via a modal before firing.
+   */
+  onRetry?: () => void;
   dimmed?: boolean;
 }
 
-function UserMessageImpl({ message, onEdit, dimmed }: UserMessageProps) {
+function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps) {
   const [copied, setCopied] = useState(false);
+  const [confirmRetryOpen, setConfirmRetryOpen] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const onSelectFile = useFileSelection();
 
@@ -168,7 +184,45 @@ function UserMessageImpl({ message, onEdit, dimmed }: UserMessageProps) {
               <TooltipContent side="bottom">Edit</TooltipContent>
             </Tooltip>
           )}
+          {onRetry && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRetryOpen(true)}
+                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <RefreshCw className="size-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Retry from here</TooltipContent>
+            </Tooltip>
+          )}
         </div>
+      )}
+      {onRetry && (
+        <AlertDialog open={confirmRetryOpen} onOpenChange={setConfirmRetryOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Retry from this message?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This discards every response after this message and re-runs the
+                agent from here. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirmRetryOpen(false);
+                  onRetry();
+                }}
+              >
+                Retry
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </div>
   );

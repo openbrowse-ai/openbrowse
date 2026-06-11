@@ -179,9 +179,8 @@ export function ChatView({
     handleSubmit,
     compactNow,
     handleNew,
-    handleRegenerate,
     handleRetry,
-    handleContinue,
+    handleRetryFromUser,
     confirmEdit,
     approveToolCall,
     isViewer,
@@ -606,11 +605,10 @@ export function ChatView({
                 editingIndex={editingIndex}
                 showThinking={showThinking}
                 error={error}
-                onRegenerate={handleRegenerate}
                 onEdit={startEdit}
+                onRetryFromUser={handleRetryFromUser}
                 onToolApproval={approveToolCall}
                 onRetry={handleRetry}
-                onContinue={handleContinue}
                 onDismissError={clearError}
               />
             )}

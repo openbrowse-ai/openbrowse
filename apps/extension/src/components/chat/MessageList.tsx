@@ -3,11 +3,7 @@ import type { AgentUIMessage } from "@/lib/types";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
 import { ExpandableText } from "./tool-results/expandable-text";
-import {
-  AlertCircle,
-  ArrowRight,
-  RefreshCw,
-} from "lucide-react";
+import { AlertCircle, RefreshCw } from "lucide-react";
 
 interface MessageListProps {
   messages: AgentUIMessage[];
@@ -20,11 +16,12 @@ interface MessageListProps {
   showThinking: boolean;
   error: Error | null | undefined;
   /** Stable, id-taking callbacks (see ChatMessage). */
-  onRegenerate: (id: string) => void;
   onEdit: (id: string) => void;
+  /** Retry from a user message: discard all turns after it and re-run. */
+  onRetryFromUser: (id: string) => void;
   onToolApproval: (opts: { id: string; approved: boolean }) => void;
+  /** Error-banner retry: continue the errored turn in place. */
   onRetry: () => void;
-  onContinue: () => void;
   onDismissError: () => void;
 }
 
@@ -44,11 +41,10 @@ function MessageListImpl({
   editingIndex,
   showThinking,
   error,
-  onRegenerate,
   onEdit,
+  onRetryFromUser,
   onToolApproval,
   onRetry,
-  onContinue,
   onDismissError,
 }: MessageListProps) {
   const canAct = !isLoading && !isEditing;
@@ -106,11 +102,11 @@ function MessageListImpl({
             message={message}
             isStreaming={isLastAssistant}
             dimmed={isDimmed}
-            onRegenerate={onRegenerate}
-            canRegenerate={message.role === "assistant" && canAct}
             onToolApproval={onToolApproval}
             onEdit={onEdit}
             canEdit={message.role === "user" && canAct}
+            onRetryFromUser={onRetryFromUser}
+            canRetry={message.role === "user" && canAct}
           />
         );
       })}
@@ -119,7 +115,6 @@ function MessageListImpl({
         <ErrorMessage
           error={error}
           onRetry={onRetry}
-          onContinue={onContinue}
           onDismiss={onDismissError}
         />
       )}
@@ -146,12 +141,10 @@ function ThinkingIndicator() {
 function ErrorMessage({
   error,
   onRetry,
-  onContinue,
   onDismiss,
 }: {
   error: Error;
   onRetry: () => void;
-  onContinue: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -184,14 +177,6 @@ function ErrorMessage({
               >
                 <RefreshCw className="size-3" />
                 Retry
-              </button>
-              <button
-                type="button"
-                onClick={onContinue}
-                className="flex items-center gap-1 text-xs text-primary hover:underline"
-              >
-                <ArrowRight className="size-3" />
-                Continue
               </button>
               <button
                 type="button"
