@@ -467,3 +467,74 @@ describe("runSubagent — incognito isolation", () => {
     expect(child?.subagentFinalText).toBe("(subagent cancelled)");
   });
 });
+
+describe("runSubagent — attached isolation", () => {
+  beforeEach(async () => {
+    indexedDB = new IDBFactory();
+    chatDb._resetForTests();
+    resetSubagentSlotsForTesting();
+    await chatDb.createConversation({
+      id: "parent-conv",
+      title: "Parent",
+      spaceId: "space-A",
+      createdAt: 100,
+      updatedAt: 100,
+    });
+  });
+  afterEach(() => {
+    chatDb._resetForTests();
+    resetSubagentSlotsForTesting();
+  });
+
+  it("seeds the child handle map so the parent's tab handle resolves to the real tab id", async () => {
+    let resolvedTabId: number | string | undefined;
+    const parentCtx: ToolContext = {
+      driver: {} as ToolContext["driver"],
+      session: {
+        conversationId: "parent-conv",
+        resolveHandle: (h: string) => (h === "t3" ? 4242 : undefined),
+        getOrCreateHandle: (id) => (id === 4242 ? "t3" : `t${id}`),
+      },
+    };
+
+    await runSubagent({
+      agentDef: { ...fakeAgent, defaultIsolation: "attached" },
+      context: { task: "operate", parentTabHandle: "t3" },
+      isolation: "attached",
+      parentConversationId: "parent-conv",
+      parentToolContext: parentCtx,
+      runAgentLoop: async (cfg) => {
+        resolvedTabId = cfg.toolContext.session?.resolveHandle?.("t3");
+        return { finalText: "ok", status: "completed" };
+      },
+    });
+
+    expect(resolvedTabId).toBe(4242);
+  });
+
+  it("stamps the first seeded handle as cuaTabHandle on the child session", async () => {
+    let stamped: string | undefined;
+    const parentCtx: ToolContext = {
+      driver: {} as ToolContext["driver"],
+      session: {
+        conversationId: "parent-conv",
+        resolveHandle: (h: string) => (h === "t3" ? 4242 : undefined),
+        getOrCreateHandle: (id) => (id === 4242 ? "t3" : `t${id}`),
+      },
+    };
+
+    await runSubagent({
+      agentDef: { ...fakeAgent, defaultIsolation: "attached" },
+      context: { task: "operate", parentTabHandle: "t3" },
+      isolation: "attached",
+      parentConversationId: "parent-conv",
+      parentToolContext: parentCtx,
+      runAgentLoop: async (cfg) => {
+        stamped = cfg.toolContext.session?.cuaTabHandle;
+        return { finalText: "ok", status: "completed" };
+      },
+    });
+
+    expect(stamped).toBe("t3");
+  });
+});

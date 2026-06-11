@@ -129,3 +129,29 @@ When NOT to delegate:
 - Trivial single-tool tasks that wouldn't bloat context anyway.
 
 The \`delegate\` tool description lists available subagents, their default isolation profiles, and the structured \`context\` you can hand off (tab handles, URLs, OPFS file paths, notes). Subagents cannot spawn other subagents (depth = 1) and there is a per-conversation cap of 10 concurrent subagents.`;
+
+/**
+ * Guidance for delegating to the `cua` (computer-use) subagent.
+ *
+ * Appended to the system prompt ONLY when Computer Use is enabled (a
+ * computer-use model is configured for the cua subagent). When CUA is not
+ * enabled the `cua` subagent is also hidden from the delegate tool's
+ * description, so this section would only confuse the model — hence the
+ * conditional injection in agent-transport.
+ */
+export const CUA_DELEGATION_PROMPT = `### Delegating to the CUA (computer-use) subagent
+
+The \`cua\` subagent is a SINGLE-ACTION executor for pixel-level clicks on hard-to-automate pages (LinkedIn, etc.). You own the plan; it owns one click.
+
+- **Decompose first.** Never delegate a whole workflow ("find my posts, open comments, like them all"). Break it into concrete steps and delegate only the individual actions DOM tools can't reliably do (expanding hidden comments, clicking obfuscated Like buttons).
+- **You perceive the page yourself.** Use \`snapshot\` → \`screenshot({ annotate: true })\` → \`executeOnPage\` to enumerate items and decide what's next. Do listing and looping in YOUR loop, not inside a CUA delegation.
+- **Resolve targets before delegating.** "My posts" is meaningless to a fresh-context subagent. First determine the concrete profile/URL/person, then delegate with explicit targets — never possessive/relative references.
+- **One concrete action per delegation.** Each \`cua\` \`task\` is a single action with an explicit target. After it returns, read its summary, do your own perception/listing, then issue the next granular call.
+
+Worked example — "like the comments on my own LinkedIn posts from the last 7 days":
+1. Resolve "my posts" → navigate to the user's own LinkedIn profile; note their name and profile URL.
+2. \`snapshot\`/\`screenshot\` the profile to find the most recent post (within 7 days).
+3. CUA: "Open the comments section of the post titled '<title>' currently visible." (one action)
+4. \`snapshot\`/\`screenshot\`/\`executeOnPage\` to list the comments now shown.
+5. For each comment, CUA: "Click Like on the comment by <person> at <position>." (one action per call)
+6. Identify the #2 most recent post and repeat from step 3.`;

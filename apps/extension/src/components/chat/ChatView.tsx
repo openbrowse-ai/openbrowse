@@ -32,6 +32,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { ConversationIdContext } from "@/lib/conversation-id-context";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { useProviders } from "@/hooks/useProviders";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
@@ -178,9 +179,8 @@ export function ChatView({
     handleSubmit,
     compactNow,
     handleNew,
-    handleRegenerate,
     handleRetry,
-    handleContinue,
+    handleRetryFromUser,
     confirmEdit,
     approveToolCall,
     isViewer,
@@ -496,6 +496,7 @@ export function ChatView({
   const isEditing = editing !== null;
 
   return (
+    <ConversationIdContext.Provider value={conversationId ?? null}>
     <div className={cn("flex flex-col h-full pt-1", className)}>
       {/* Header */}
       {showHeader && (
@@ -604,11 +605,10 @@ export function ChatView({
                 editingIndex={editingIndex}
                 showThinking={showThinking}
                 error={error}
-                onRegenerate={handleRegenerate}
                 onEdit={startEdit}
+                onRetryFromUser={handleRetryFromUser}
                 onToolApproval={approveToolCall}
                 onRetry={handleRetry}
-                onContinue={handleContinue}
                 onDismissError={clearError}
               />
             )}
@@ -836,6 +836,7 @@ export function ChatView({
         />
       </div>
     </div>
+    </ConversationIdContext.Provider>
   );
 }
 

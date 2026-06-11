@@ -16,12 +16,16 @@
  * The component is purely presentational — DelegateResult owns the
  * live transcript subscription and title-event listener and feeds the
  * latest snapshot in via `transcript` + `triggerTitle` + `isRunning` /
- * `isFailed`.
+ * `isFailed`. The expanded body also shows the delegation `task`
+ * prompt above the trace and the resolved `model` in a footer; the
+ * trace itself auto-scrolls to the bottom as new parts stream in
+ * (via `use-stick-to-bottom`), pausing when the user scrolls up.
  */
 
 import { Bot, ChevronDownIcon } from "lucide-react";
 import type { ReactNode, ComponentProps } from "react";
 import Markdown from "react-markdown";
+import { StickToBottom } from "use-stick-to-bottom";
 import { Shimmer } from "../../ai-elements/shimmer";
 import { Reasoning } from "../../ai-elements/reasoning";
 import {
@@ -47,6 +51,17 @@ interface Props {
   isFailed: boolean;
   /** Pass-through of error message to render in the trace content */
   error?: string;
+  /**
+   * The task prompt passed to the subagent (the delegate `task` arg).
+   * Rendered in a read-only block above the trace when expanded.
+   */
+  task?: string;
+  /**
+   * The model the subagent ran on (e.g. `anthropic:claude-sonnet-4-6`).
+   * Rendered in a footer below the trace when expanded. `null` means the
+   * subagent inherited the parent's model.
+   */
+  model?: string | null;
 }
 
 export function SubagentTrace({
@@ -56,6 +71,8 @@ export function SubagentTrace({
   isRunning,
   isFailed,
   error,
+  task,
+  model,
 }: Props) {
   const stepCount = transcript.reduce(
     (acc, m) => acc + countMeaningfulParts(m.parts),
@@ -80,21 +97,43 @@ export function SubagentTrace({
             "data-[state=closed]:animate-out data-[state=open]:animate-in",
           )}
         >
-          <div className="mt-2 space-y-1 border-muted border-l-2 pl-4 max-h-[400px] overflow-y-auto styled-scrollbar pr-1">
-            {transcript.flatMap((message, mi) =>
-              message.parts.map((part, pi) => (
-                <PartRow key={`${mi}-${pi}`} part={part} />
-              )),
-            )}
-            {error && (
-              <TraceBlockItem>
-                <div className="w-full rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 mt-2">
-                  <pre className="whitespace-pre-wrap font-mono text-xs text-red-400">
-                    {error}
-                  </pre>
-                </div>
-              </TraceBlockItem>
-            )}
+          {task && task.trim().length > 0 && (
+            <div className="mt-2 rounded-md border border-muted/40 bg-muted/30 px-3 py-2">
+              <div className="mb-1 font-medium text-[10px] uppercase tracking-wide text-muted-foreground/60">
+                Prompt
+              </div>
+              <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/80 prose-p:my-0.5 prose-p:leading-snug max-h-[140px] overflow-y-auto styled-scrollbar">
+                <Markdown>{task}</Markdown>
+              </div>
+            </div>
+          )}
+          <StickToBottom
+            className="mt-2 max-h-[400px] overflow-y-auto styled-scrollbar border-muted border-l-2 pl-4 pr-1"
+            initial="instant"
+            resize="instant"
+          >
+            <StickToBottom.Content className="space-y-1">
+              {transcript.flatMap((message, mi) =>
+                message.parts.map((part, pi) => (
+                  <PartRow key={`${mi}-${pi}`} part={part} />
+                )),
+              )}
+              {error && (
+                <TraceBlockItem>
+                  <div className="w-full rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 mt-2">
+                    <pre className="whitespace-pre-wrap font-mono text-xs text-red-400">
+                      {error}
+                    </pre>
+                  </div>
+                </TraceBlockItem>
+              )}
+            </StickToBottom.Content>
+          </StickToBottom>
+          <div className="mt-2 flex items-center gap-1.5 border-t border-muted/30 pt-2 text-[11px] text-muted-foreground/70">
+            <span className="shrink-0 opacity-70">Model</span>
+            <span className="truncate font-mono" title={model ?? undefined}>
+              {model ?? "inherits parent model"}
+            </span>
           </div>
         </CollapsibleContent>
       </TraceBlock>

@@ -14,6 +14,7 @@ import {
   SCREENSHOT_PROTECTED_TURNS,
   findProtectedTailStart,
   keepOnlyLatestScreenshot,
+  keepOnlyLatestSnapshotPerTab,
   prunePartsAtSendTime,
   stripScreenshotsFromParts,
 } from "./compaction";
@@ -200,6 +201,13 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
     if (this.keepOnlyLatestImage) {
       rewritten = keepOnlyLatestScreenshot(rewritten, this.screenshotToolNames);
     }
+    // Always keep only the latest accessibility snapshot per tab. Older
+    // snapshots' @refs are invalid by construction (reassigned on every
+    // capture) and the agent is told to re-snapshot, so retaining their
+    // multi-kilobyte trees only bloats context. Unlike screenshots this is
+    // unconditional — there is no scenario where a stale snapshot tree is
+    // worth its token cost.
+    rewritten = keepOnlyLatestSnapshotPerTab(rewritten);
 
     // Tie validateUIMessages' inferred UI_MESSAGE to *this transport's*
     // TOOLS so its `tools` parameter resolves to the same shape as

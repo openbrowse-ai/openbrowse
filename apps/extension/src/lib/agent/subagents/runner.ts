@@ -213,6 +213,8 @@ export async function runSubagent(
       childConversationId,
       incognitoWindowId,
       parentToolCallId,
+      isolation,
+      context,
     });
 
     const userMessage = buildDelegationMessage(context);
@@ -290,6 +292,8 @@ function buildChildToolContext(args: {
   incognitoWindowId: number | null;
   /** Parent's `delegate` tool call id, stamped onto child's `session.parent.toolCallId`. */
   parentToolCallId?: string;
+  isolation: IsolationProfile;
+  context: DelegationContext;
 }): ToolContext {
   const {
     parentToolContext,
@@ -297,6 +301,8 @@ function buildChildToolContext(args: {
     childConversationId,
     incognitoWindowId,
     parentToolCallId,
+    isolation,
+    context,
   } = args;
 
   // Fresh per-child handle map. Maps child-side handles to real tab ids
@@ -305,6 +311,29 @@ function buildChildToolContext(args: {
   const handleByTabId = new Map<TabId, string>();
   const tabIdByHandle = new Map<string, TabId>();
   let handleCounter = 0;
+
+  // `attached`: seed the child handle map from the parent's named tab(s)
+  // so the CUA loop's executor targets the parent's LIVE tab. We reuse the
+  // SAME handle string the parent used (e.g. "t3") so the delegation
+  // message and the resolver agree. cuaTabHandle records the first seeded
+  // handle for the CUA loop to resolve.
+  let cuaTabHandle: string | undefined;
+  if (isolation === "attached") {
+    const resolve = parentToolContext.session?.resolveHandle;
+    const named = [
+      ...(context.parentTabHandle ? [context.parentTabHandle] : []),
+      ...(context.tabHandles ?? []),
+    ];
+    for (const handle of named) {
+      const tabId = resolve?.(handle);
+      if (tabId == null) continue;
+      handleByTabId.set(tabId, handle);
+      tabIdByHandle.set(handle, tabId);
+      if (!cuaTabHandle) cuaTabHandle = handle;
+      const n = Number(handle.replace(/^t/, ""));
+      if (Number.isFinite(n) && n > handleCounter) handleCounter = n;
+    }
+  }
 
   const getOrCreateChildHandle = (tabId: TabId): string => {
     const existing = handleByTabId.get(tabId);
@@ -334,6 +363,7 @@ function buildChildToolContext(args: {
       ...(incognitoWindowId !== null && {
         targetWindowId: incognitoWindowId,
       }),
+      ...(cuaTabHandle && { cuaTabHandle }),
       getOrCreateHandle: getOrCreateChildHandle,
       resolveHandle: (h: string) => tabIdByHandle.get(h),
 

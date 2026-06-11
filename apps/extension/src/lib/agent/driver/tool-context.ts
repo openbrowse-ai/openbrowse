@@ -83,6 +83,12 @@ export interface ToolSession {
    */
   targetWindowId?: number;
   /**
+   * For `attached` (CUA) subagents: the parent tab handle the runner seeded
+   * into this session's handle map. The CUA loop resolves this to the live
+   * tab id to operate on.
+   */
+  cuaTabHandle?: string;
+  /**
    * Resolve the window new agent-created tabs should open in for the root
    * agent. Tools that create tabs (e.g. `navigate`) call this when no
    * static `targetWindowId` is set, so a new tab lands in the same window
@@ -167,4 +173,43 @@ export async function resolveTabOrThrow(
       }. Call listTabs to refresh handles.`,
     );
   }
+}
+
+/**
+ * Bind a tab (referenced by handle) into the active conversation so it
+ * appears in the tab legend and can be addressed by subsequent tool calls.
+ *
+ * Resolution order mirrors `selectTab`:
+ *   1. The session handle map (`resolveHandle`).
+ *   2. A numeric fallback — the raw `chrome.tabs` id, for tabs the agent
+ *      hasn't bound yet (e.g. user-opened tabs surfaced by `listTabs`).
+ * The tab is verified to exist via `driver.listTabs()` before binding.
+ *
+ * Returns the bound tab id, or `null` if the handle could not be resolved
+ * to a live tab. Does NOT change the user's visible tab.
+ *
+ * Shared by the `selectTab` tool and the `delegate` tool's auto-bind path
+ * for `attached` (CUA) subagents.
+ */
+export async function bindTabByHandle(
+  ctx: ToolContext,
+  handle: string,
+): Promise<TabId | null> {
+  let tabId = ctx.session?.resolveHandle?.(handle);
+
+  // Fallback: a user-opened tab may appear in listTabs under its numeric
+  // chrome id before it is bound to the conversation. Only accept a strictly
+  // all-digit handle — `parseInt("123abc")` would otherwise resolve a
+  // malformed handle to a real tab.
+  if (tabId == null && /^\d+$/.test(handle)) {
+    tabId = Number(handle);
+  }
+  if (tabId == null) return null;
+
+  const tabs = await ctx.driver.listTabs();
+  const target = tabs.find((t) => t.id === tabId);
+  if (!target) return null;
+
+  await ctx.session?.bindActiveTabToConversation?.(tabId);
+  return tabId;
 }

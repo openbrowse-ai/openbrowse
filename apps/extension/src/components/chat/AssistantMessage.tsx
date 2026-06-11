@@ -145,12 +145,11 @@ export function resolveToolPartState(
 interface AssistantMessageProps {
   message: AgentUIMessage;
   isStreaming?: boolean;
-  onRegenerate?: () => void;
   onToolApproval?: (opts: { id: string; approved: boolean }) => void;
   dimmed?: boolean;
 }
 
-function AssistantMessageImpl({ message, isStreaming = false, onRegenerate, onToolApproval, dimmed }: AssistantMessageProps) {
+function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, dimmed }: AssistantMessageProps) {
   return (
     <div className={`group/message flex flex-col items-start gap-1 ${dimmed ? "opacity-40" : ""}`}>
       <div className="w-full text-sm text-foreground">
@@ -303,7 +302,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onRegenerate, onTo
           return null;
         })}
       </div>
-      <MessageActions message={message} onRegenerate={onRegenerate} />
+      <MessageActions message={message} />
     </div>
   );
 }

@@ -2017,64 +2017,29 @@ export function useAgentChat({
     setInput("");
   }, [onNewConversation, setMessages]);
 
-  const handleRegenerate = useCallback(
-    async (messageId: string) => {
-      if (conversationId) {
-        await chatDb.deleteMessagesFrom(conversationId, messageId);
-      }
-      regenerate({ messageId });
-    },
-    [regenerate, conversationId],
-  );
-
   /**
-   * Retry the last attempt after an error. Used by the error banner's
-   * Retry button.
+   * Retry after an error — CONTINUE the partial assistant turn in place.
    *
-   * Two cases:
+   * Unlike a destructive regenerate, this keeps every part already produced
+   * and resumes generation into the SAME assistant message, without inserting
+   * any synthetic user message.
    *
-   * - Last message is the user's prompt (the agent errored before
-   *   producing any persistable assistant content — `onFinish`'s
-   *   `hasMeaningfulContent` gate skipped saving). We just call
-   *   `regenerate()` and the SDK runs a fresh attempt off that prompt.
+   * How it works: after a mid-stream error the partial assistant message is
+   * the tail of `messages` (onFinish persisted it). The AI SDK's
+   * `createStreamingUIMessageState` seeds the streaming state from a trailing
+   * assistant message (same id + existing parts) and merges new chunks into
+   * it, so a bare `sendMessage()` (no new message) continues that turn. The
+   * transport ships the partial assistant as the trailing message and
+   * Anthropic continues it (assistant prefill).
    *
-   * - Last message is a partial assistant message (mid-stream error
-   *   that produced *some* content). Heal any stranded tool calls in
-   *   the messages that will survive the regenerate slice, delete the
-   *   partial assistant from chatDb to keep it in sync with the
-   *   in-memory slice the SDK is about to take, then call
-   *   `regenerate({ messageId })`.
-   *
-   * The bare `clearError(); handleSubmit()` previously wired here
-   * silently no-op'd whenever the input field was empty (the common
-   * case when clicking Retry).
+   * We first heal any stranded tool calls (a dangling
+   * `input-available`/`approval-requested` part would otherwise throw
+   * `MissingToolResultsError` on convert). If the agent errored before any
+   * assistant content (tail is the user prompt), `sendMessage()` simply
+   * answers that prompt — so one path covers both cases.
    */
   const handleRetry = useCallback(async () => {
     clearError();
-    const last = messages[messages.length - 1];
-    if (!last) return;
-
-    if (last.role === "assistant") {
-      // Heal stranded tool calls in the surviving prefix so the
-      // regenerated request doesn't trip MissingToolResultsError.
-      const survivors = messages.slice(0, messages.length - 1);
-      const { healed, healedMessages } = healPendingTools(
-        survivors,
-        "Superseded by retry",
-      );
-      if (healedMessages.length > 0) {
-        setMessages([...healed, last]);
-        await persistHealedMessages(conversationId, healedMessages);
-      }
-      if (conversationId) {
-        await chatDb.deleteMessagesFrom(conversationId, last.id);
-      }
-      regenerate({ messageId: last.id });
-      return;
-    }
-
-    // Last message is a user prompt — heal any prior stranded tool
-    // calls and ask the SDK to generate an assistant response.
     const { healed, healedMessages } = healPendingTools(
       messages,
       "Superseded by retry",
@@ -2083,44 +2048,45 @@ export function useAgentChat({
       setMessages(healed);
       await persistHealedMessages(conversationId, healedMessages);
     }
-    regenerate();
-  }, [messages, conversationId, regenerate, clearError, setMessages]);
+    sendMessage();
+  }, [messages, conversationId, sendMessage, clearError, setMessages]);
 
   /**
-   * Continue after an error, *keeping* the partial assistant output
-   * already produced (unlike `handleRetry`, which discards the errored
-   * turn and re-runs from the user prompt). Used by the error banner's
-   * Continue button.
-   *
-   * There's no provider-agnostic "resume the exact stream" primitive
-   * once a request has errored out (`resumeStream` only resumes a still
-   * open server stream). So we resume the same way the auto-compaction
-   * flow does: heal any stranded tool calls, then send a synthetic
-   * "Continue where you left off" user message so the model picks up
-   * with the prior partial output already in context. The synthetic
-   * prompt is intentionally not persisted to chatDb.
+   * Retry from a specific USER message: discard every turn after it and
+   * re-run the response from that prompt. Used by the per-user-message Retry
+   * action (the caller confirms first). Follows the heal→delete→regenerate
+   * sequence, but the regenerate target is the user message itself so the SDK
+   * keeps the prompt and drops everything after.
    */
-  const handleContinue = useCallback(async () => {
-    clearError();
-    const { healed, healedMessages } = healPendingTools(
-      messages,
-      "Superseded by continue",
-    );
-    if (healedMessages.length > 0) {
-      setMessages(healed);
-      await persistHealedMessages(conversationId, healedMessages);
-    }
-    sendMessage({
-      id: generateId(),
-      role: "user",
-      parts: [
-        {
-          type: "text",
-          text: "Continue where you left off, or ask for clarification if unsure how to proceed.",
-        },
-      ],
-    });
-  }, [messages, conversationId, sendMessage, clearError, setMessages]);
+  const handleRetryFromUser = useCallback(
+    async (userMessageId: string) => {
+      clearError();
+      const idx = messages.findIndex((m) => m.id === userMessageId);
+      if (idx === -1) return;
+
+      // Heal stranded tool calls in the surviving prefix (everything after
+      // `idx` is about to be deleted by regenerate's slice anyway).
+      const survivors = messages.slice(0, idx + 1);
+      const { healed, healedMessages } = healPendingTools(
+        survivors,
+        "Superseded by retry from user message",
+      );
+      if (healedMessages.length > 0) {
+        setMessages([...healed, ...messages.slice(idx + 1)]);
+        await persistHealedMessages(conversationId, healedMessages);
+      }
+
+      // Keep chatDb in sync with the in-memory slice the SDK will take:
+      // delete the first message AFTER the user message (and everything past
+      // it, by createdAt).
+      const next = messages[idx + 1];
+      if (conversationId && next) {
+        await chatDb.deleteMessagesFrom(conversationId, next.id);
+      }
+      regenerate({ messageId: userMessageId });
+    },
+    [messages, conversationId, regenerate, clearError, setMessages],
+  );
 
   const confirmEdit = useCallback(
     async (
@@ -2317,9 +2283,8 @@ export function useAgentChat({
     handleSubmit,
     compactNow,
     handleNew,
-    handleRegenerate,
     handleRetry,
-    handleContinue,
+    handleRetryFromUser,
     confirmEdit,
     addToolApprovalResponse,
     approveToolCall,

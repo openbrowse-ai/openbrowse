@@ -1,0 +1,30 @@
+/*
+ * Transient click ripple for the CUA `computer` tool result. Overlaid on the
+ * screenshot at the click coordinate; plays once on mount, then fades out.
+ */
+
+.cua-click-ripple {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  margin-left: -14px;
+  margin-top: -14px;
+  border-radius: 50%;
+  background: rgba(56, 132, 255, 0.35);
+  border: 2px solid rgba(56, 132, 255, 0.9);
+  pointer-events: none;
+  transform: scale(0.2);
+  opacity: 0.9;
+  animation: cua-click-ripple 600ms ease-out forwards;
+}
+
+@keyframes cua-click-ripple {
+  0% {
+    transform: scale(0.2);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}

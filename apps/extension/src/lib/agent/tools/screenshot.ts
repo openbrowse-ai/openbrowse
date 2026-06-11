@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { BrowserDriver, TabId } from "../driver";
 import { resolveTabOrThrow } from "../driver";
 import { getRefsForTab, type RefEntry } from "../ref-store";
+import { captureScreenshot } from "../capture-utils";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
@@ -29,7 +30,6 @@ const outputSchema = z.object({
   imageDataUrl: z.string().optional(),
   annotatedCount: z.number().optional(),
   annotationError: z.string().optional(),
-  note: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
 
@@ -58,37 +58,22 @@ export const screenshotTool: BrowserTool<Input, Output> = {
       };
     }
 
-    // Page.captureScreenshot occasionally returns a generic "-32000 Unable to
-    // capture screenshot" when the renderer is mid-paint or briefly throttled
-    // (especially after a sequence of snapshot/scroll calls). One short retry
-    // resolves this in practice.
-    let result: { data: string };
-    let retryNote: string | undefined;
+    // Capture via the shared helper, which hides OpenBrowse's own overlays
+    // (the "working" glow/pill, ripple, toasts, SoM overlay) so they never
+    // leak into the model-facing image, and retries once on the transient
+    // `-32000 Unable to capture screenshot` error. Annotation (below) draws
+    // on the already-clean image, so annotated screenshots are overlay-free
+    // too.
+    let imageData: string;
     try {
-      result = await ctx.driver.sendCommand<{ data: string }>(
-        tabId,
-        "Page.captureScreenshot",
-        captureParams,
+      imageData = await captureScreenshot(ctx.driver, tabId, captureParams);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Page.captureScreenshot failed after retries — ${msg}. Tab may be discarded or in a transient state; try scrolling or waiting before retrying.`,
       );
-    } catch (firstErr) {
-      await new Promise((r) => setTimeout(r, 600));
-      try {
-        result = await ctx.driver.sendCommand<{ data: string }>(
-          tabId,
-          "Page.captureScreenshot",
-          captureParams,
-        );
-        retryNote =
-          "Initial Page.captureScreenshot failed and was retried successfully. The renderer may be under load.";
-      } catch (secondErr) {
-        const msg = secondErr instanceof Error ? secondErr.message : String(secondErr);
-        throw new Error(
-          `Page.captureScreenshot failed twice — ${msg}. Tab may be discarded or in a transient state; try scrolling or waiting before retrying.`,
-        );
-      }
     }
 
-    let imageData = result.data;
     let annotatedCount: number | undefined;
     let annotationError: string | undefined;
 
@@ -117,7 +102,6 @@ export const screenshotTool: BrowserTool<Input, Output> = {
     };
     if (annotatedCount != null) out.annotatedCount = annotatedCount;
     if (annotationError) out.annotationError = annotationError;
-    if (retryNote) out.note = retryNote;
     return out;
   },
 };

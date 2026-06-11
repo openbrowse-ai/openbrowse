@@ -2443,8 +2443,8 @@ export default defineBackground({
         }
       }
       if (changeInfo.status === "complete" && tab.id != null && tab.id === agentWorkingTabId) {
-        import("@/lib/agent/agent-transport").then(({ injectIndicator }) => {
-          injectIndicator(tab.id!, agentWorkingColor);
+        import("@/lib/agent/agent-transport").then(({ notifyAgentStatus }) => {
+          notifyAgentStatus(true, agentWorkingColor, tab.id!);
         }).catch(() => {});
       }
     });

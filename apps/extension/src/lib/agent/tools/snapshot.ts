@@ -52,7 +52,7 @@ export const snapshotTool: BrowserTool<Input, Output> = {
     const viewportOnly = mode === "viewport";
     const captureMode = mode === "viewport" ? "interactive" : mode;
 
-    const { snapshotText, refs, previous, belowFoldCount } =
+    const { snapshotText, refs, previous, signals, previousSignals, belowFoldCount } =
       await captureSnapshot(ctx.driver, tabId, {
         mode: captureMode,
         selector,
@@ -62,8 +62,11 @@ export const snapshotTool: BrowserTool<Input, Output> = {
     const baseResult: Output = {
       tab: handle,
       snapshot:
-        diff && previous
-          ? (diffSnapshots(previous, snapshotText) ?? "(no changes)")
+        diff && previous && previousSignals
+          ? (diffSnapshots(
+              { text: previous, signals: previousSignals },
+              { text: snapshotText, signals },
+            ) ?? "(no changes)")
           : snapshotText,
       refCount: refs.size,
       url,

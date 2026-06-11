@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { resolveTabOrThrow } from "../driver";
-import { invalidateRefs } from "../ref-store";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
@@ -49,7 +48,9 @@ export const scrollPageTool: BrowserTool<Input, Output> = {
 
     if (!result.success)
       throw new Error(result.error ?? "Failed to scroll");
-    invalidateRefs(tab.id);
+    // Don't invalidate refs: scrolling moves elements within the page but
+    // doesn't detach them, and content-stable refs survive a re-snapshot.
+    // The agent's next snapshot refreshes positions via the ref-store merge.
     return { tab: handle, scrolled: true, direction, amount: pixels };
   },
 };

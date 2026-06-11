@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { chatDb } from "../../../lib/chat-db";
+import { useConversationId } from "../../../lib/conversation-id-context";
 import {
   SUBAGENT_CHILD_ASSIGNED_EVENT,
   type SubagentChildAssignedDetail,
@@ -8,6 +9,7 @@ import {
   SUBAGENT_TITLE_UPDATED_EVENT,
   type SubagentTitleUpdatedDetail,
 } from "../../../lib/agent/tools/set-task-title";
+import { getAgent } from "../../../lib/agent/subagents/registry";
 import type {
   SerializedAssistantMessage,
   SubagentRunResult,
@@ -78,7 +80,49 @@ export function DelegateResult({ args, result, toolCallId, state, errorText }: P
       window.removeEventListener(SUBAGENT_CHILD_ASSIGNED_EVENT, handler);
     };
   }, [toolCallId]);
-  const childId = finalChildId ?? liveChildId;
+
+  // Recovered child id (reload path). When the parent turn was aborted
+  // mid-run, `healPendingTools` strips the delegate call's `output` —
+  // taking `childConversationId` with it (heal-pending-tools.ts) — and
+  // the heal is persisted. After a chat switch + return the reloaded
+  // part has no `output`, so `finalChildId` is null and the
+  // SUBAGENT_CHILD_ASSIGNED_EVENT (a live-only DOM event) never re-fires,
+  // leaving `liveChildId` null too. The trace would then collapse to just
+  // the interrupt error even though the child conversation's messages are
+  // still persisted in chat-db.
+  //
+  // Recover the link via the child row's `parentToolCallId` stamp
+  // (runner.ts), keyed by the parent conversation id from context. This
+  // is self-healing: it restores traces for conversations that were
+  // already broken before this fix shipped. Only runs when we have no
+  // child id from the other two sources, and tolerates `undefined`
+  // (older child rows created before `parentToolCallId` existed).
+  const parentConversationId = useConversationId();
+  const [recoveredChildId, setRecoveredChildId] = useState<string | null>(
+    null,
+  );
+  const needsRecovery = finalChildId === null && liveChildId === null;
+  useEffect(() => {
+    if (!needsRecovery || !parentConversationId || !toolCallId) {
+      setRecoveredChildId(null);
+      return;
+    }
+    let cancelled = false;
+    void chatDb
+      .findChildByParentToolCallId(parentConversationId, toolCallId)
+      .then((child) => {
+        if (cancelled) return;
+        setRecoveredChildId(child?.id ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setRecoveredChildId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsRecovery, parentConversationId, toolCallId]);
+
+  const childId = finalChildId ?? liveChildId ?? recoveredChildId;
 
   // Live transcript (peer/incognito only). Reads chat-db when the
   // child conversation's messages change.
@@ -87,6 +131,12 @@ export function DelegateResult({ args, result, toolCallId, state, errorText }: P
   // Live trace title from setTaskTitle. Updated via DOM event AND from
   // chat-db (so a reload mid-run still shows the most recent title).
   const liveTitle = useTraceTitle(toolCallId, childId);
+
+  // Resolved model the subagent ran on. Prefers the child conversation's
+  // live `usage.modelId` (the model that actually ran, including user
+  // overrides like `cuaModel`), falling back to the agent definition's
+  // configured `defaultModel`.
+  const model = useChildModel(childId, slug);
 
   const transcript: SerializedAssistantMessage[] =
     liveTranscript ?? resultTranscript;
@@ -122,6 +172,8 @@ export function DelegateResult({ args, result, toolCallId, state, errorText }: P
       isRunning={isRunning}
       isFailed={isFailed}
       error={error}
+      task={task}
+      model={model}
     />
   );
 }
@@ -168,6 +220,48 @@ function useChildLiveTranscript(
   }, [childConversationId]);
 
   return transcript;
+}
+
+/**
+ * Resolve the model the subagent ran on.
+ *
+ * Priority:
+ *   1. The child conversation's live `usage.modelId` (peer/incognito) —
+ *      the model that actually executed, reflecting user overrides like
+ *      `cuaModel`. Updated live via chat-db subscription.
+ *   2. The agent definition's configured `defaultModel`.
+ *   3. `null` — the subagent inherited the parent's model (e.g. the
+ *      `explore`/`general` agents whose `defaultModel` is undefined).
+ */
+function useChildModel(
+  childConversationId: string | null,
+  slug: string,
+): string | null {
+  const [liveModelId, setLiveModelId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!childConversationId) {
+      setLiveModelId(null);
+      return;
+    }
+    let cancelled = false;
+    async function refresh() {
+      const conv = await chatDb.getConversation(childConversationId!);
+      if (cancelled) return;
+      setLiveModelId(conv?.usage?.modelId ?? null);
+    }
+    void refresh();
+    const unsubscribe = chatDb.subscribeConversationChange((convId) => {
+      if (convId === childConversationId) void refresh();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [childConversationId]);
+
+  const configuredModel = getAgent(slug)?.defaultModel ?? null;
+  return liveModelId ?? configuredModel;
 }
 
 /**

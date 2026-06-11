@@ -18,6 +18,7 @@ import { clickElementTool } from "@agent/tools/click-element";
 import { executeOnPageTool } from "@agent/tools/execute-on-page";
 import { listTabsTool } from "@agent/tools/list-tabs";
 import { navigateTool } from "@agent/tools/navigate";
+import { pressKeyTool } from "@agent/tools/press-key";
 import { readPageTool } from "@agent/tools/read-page";
 import { screenshotTool } from "@agent/tools/screenshot";
 import { scrollPageTool } from "@agent/tools/scroll-page";
@@ -27,6 +28,11 @@ import { typeInElementTool } from "@agent/tools/type-in-element";
 import type { ToolContext } from "@agent/driver";
 import { SYSTEM_PROMPT } from "@agent/system-prompt";
 import { shouldCompact } from "@agent/compaction";
+import {
+  buildThinkingProviderOptions,
+  isGemini3Model,
+  type ThinkingVendor,
+} from "@agent/thinking";
 import { buildToolToastScript } from "../drivers/visualizing-driver";
 import {
   DEFAULT_PAGE_STATE_FIELDS,
@@ -39,6 +45,22 @@ import type { AgentDefinition } from "@agent/subagents/types";
 import type { TokenLimits } from "@agent/compaction";
 
 /**
+ * Infer the model vendor from a direct (non-gateway) bench model id. The bench
+ * CLI accepts `claude-…`, `gpt-…`/`o…`, and `gemini-…` ids (see
+ * `resolveModel` in cli.ts), so we mirror that prefix logic here to feed the
+ * shared `buildThinkingProviderOptions`.
+ */
+function inferBenchVendor(modelId: string): ThinkingVendor | null {
+  if (modelId.startsWith("claude")) return "anthropic";
+  // OpenAI: `gpt-…` plus the reasoning series `o1-`/`o3-`/`o4-…`. Match only an
+  // `o` followed by a digit so unrelated ids (e.g. a hypothetical `opus-…`)
+  // don't get misclassified by a bare `startsWith("o")`.
+  if (modelId.startsWith("gpt") || /^o\d/.test(modelId)) return "openai";
+  if (modelId.startsWith("gemini")) return "google";
+  return null;
+}
+
+/**
  * Catalog of portable page-interacting tools the bench can run WITHOUT a
  * harness (the unconfigured CLI path). Experiment-specific tools (SoM, etc.)
  * are NOT registered here — they live in out-of-tree harness files and are
@@ -48,6 +70,7 @@ export const BENCH_TOOL_CATALOG = {
   snapshot: snapshotTool,
   clickElement: clickElementTool,
   typeInElement: typeInElementTool,
+  pressKey: pressKeyTool,
   navigate: navigateTool,
   screenshot: screenshotTool,
   scrollPage: scrollPageTool,
@@ -69,6 +92,7 @@ export const DEFAULT_TOOL_SET: BenchToolName[] = [
   "snapshot",
   "clickElement",
   "typeInElement",
+  "pressKey",
   "navigate",
   "scrollPage",
   "readPage",
@@ -304,31 +328,29 @@ export function buildBenchAgent(
   let needsMidStreamCompaction = false;
 
   // Build providerOptions for thinking/reasoning when enabled. We dispatch on
-  // the model id (which the AI SDK exposes via `(model as any).modelId`) so we
-  // can pick the correct provider-specific options shape.
+  // the model id (which the AI SDK exposes via `(model as any).modelId`) and
+  // reuse the extension's shared `buildThinkingProviderOptions` so the bench
+  // and the production agent stay in lockstep — including Gemini 3
+  // (`thinkingLevel`) vs Gemini 2.5 (`thinkingBudget`) and `includeThoughts`.
   let providerOptions: any | undefined;
   if (opts.thinking?.enabled) {
     const budget = opts.thinking.budget ?? 4096;
     const modelId = (opts.model as any).modelId ?? (opts.model as any).id ?? "";
-    if (typeof modelId === "string" && modelId.startsWith("gemini-")) {
-      providerOptions = {
-        google: {
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingBudget: budget,
-          },
-        },
-      };
-    } else if (typeof modelId === "string" && modelId.startsWith("claude")) {
-      providerOptions = {
-        anthropic: {
-          thinking: { type: "adaptive", display: "summarized" },
-        },
-      };
-    } else if (typeof modelId === "string" && (modelId.startsWith("gpt") || modelId.startsWith("o"))) {
-      providerOptions = {
-        openai: { reasoningEffort: "medium" },
-      };
+    if (typeof modelId === "string" && modelId.length > 0) {
+      const vendor = inferBenchVendor(modelId);
+      if (vendor) {
+        // The bench uses direct SDK model ids (no provider prefix), so the
+        // registry-style providerId IS the vendor. Gemini 3 ignores the
+        // numeric budget and uses an effort-style `thinkingLevel`; everything
+        // else uses the budget.
+        const config =
+          vendor === "google" && isGemini3Model(modelId)
+            ? ({ type: "effort", level: "medium" } as const)
+            : vendor === "openai"
+              ? ({ type: "effort", level: "medium" } as const)
+              : ({ type: "budget", tokens: budget } as const);
+        providerOptions = buildThinkingProviderOptions(vendor, modelId, config);
+      }
     }
   }
 

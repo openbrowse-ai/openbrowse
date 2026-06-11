@@ -66,7 +66,7 @@ export interface ModelDefinition {
    * - `"vision"` — image input
    * - `"thinking"` — extended thinking / chain-of-thought
    */
-  capabilities: ("chat" | "tools" | "vision" | "thinking")[];
+  capabilities: ("chat" | "tools" | "vision" | "thinking" | "computer-use")[];
 
   /**
    * Qualitative intelligence rating for comparison UI.

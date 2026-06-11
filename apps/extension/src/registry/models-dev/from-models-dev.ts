@@ -20,6 +20,30 @@ import type {
 
 const DEFAULT_API_KEY_PLACEHOLDER = "sk-...";
 
+/**
+ * Models.dev does not expose a computer-use signal, so we flag the
+ * computer-use-capable models by id. Anthropic Opus 4.5+ and Sonnet 4.5/4.6
+ * (and Haiku 4.5) support the computer-use tool.
+ *
+ * Matches both id conventions: the direct Anthropic provider
+ * (`claude-sonnet-4-6`, hyphen versions) and the Vercel AI Gateway provider
+ * (`anthropic/claude-sonnet-4.6`, an `anthropic/` prefix + dot versions).
+ * Kept in sync with `lib/agent/cua/model-ids.ts` (the registry deliberately
+ * does not import from the agent layer to preserve dependency direction).
+ */
+function isComputerUseModelId(modelId: string): boolean {
+  const stripped = modelId.includes("/")
+    ? modelId.slice(modelId.lastIndexOf("/") + 1)
+    : modelId;
+  const id = stripped.toLowerCase().replace(/\./g, "-");
+  if (!id.includes("claude")) return false;
+  return (
+    /sonnet-4-(5|6)/.test(id) ||
+    /haiku-4-5/.test(id) ||
+    /opus-4-(5|6|7|8)/.test(id)
+  );
+}
+
 function defaultConfigSchema(placeholder: string): ConfigField[] {
   return [
     {
@@ -45,6 +69,7 @@ function capabilitiesOf(model: ModelsDevModel): ModelDefinition["capabilities"] 
   const inputs = new Set(model.modalities?.input ?? []);
   if (inputs.has("image") || inputs.has("pdf")) caps.push("vision");
   if (model.reasoning) caps.push("thinking");
+  if (isComputerUseModelId(model.id)) caps.push("computer-use");
   return caps;
 }
 

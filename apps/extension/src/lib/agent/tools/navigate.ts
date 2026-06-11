@@ -88,6 +88,10 @@ export const navigateTool: BrowserTool<Input, Output> = {
     }
 
     await ctx.driver.setActiveTab(tabId);
+    // Navigation is a genuine page change — unlike click/type/scroll, the old
+    // page's elements are gone, so we DO want a clean slate. Invalidating here
+    // also clears the ref-store carry-over pool so stale cross-page refs can't
+    // leak into the post-navigation snapshot's merge.
     invalidateRefs(tabId);
     await ctx.driver.waitForLoad(tabId);
 

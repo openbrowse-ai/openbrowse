@@ -36,7 +36,7 @@ describe("fromModelsDevProvider", () => {
     expect(haiku).toBeDefined();
     expect(haiku!.name).toBe("Claude Haiku 4.5 (latest)");
     expect(haiku!.capabilities.sort()).toEqual(
-      ["chat", "tools", "vision", "thinking"].sort(),
+      ["chat", "tools", "vision", "thinking", "computer-use"].sort(),
     );
     expect(haiku!.contextWindow).toBe(200_000);
     expect(haiku!.maxOutputTokens).toBe(64_000);
