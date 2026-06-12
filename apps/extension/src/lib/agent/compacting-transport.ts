@@ -454,7 +454,14 @@ export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
   // opaque "Invalid prompt: messages do not match the ModelMessage[]
   // schema" thrown from convertToModelMessages with no detail about
   // which part is malformed.
-  return filtered.map(healNonTerminalToolParts);
+  // Heal each message, then drop any that became empty. The heal can DROP an
+  // input-less interrupted tool part (see `repairToolPart` /
+  // `healNonTerminalToolParts`), so a message whose only content was such a
+  // part must be removed too — an empty assistant message would otherwise
+  // reach `convertToModelMessages`.
+  return filtered
+    .map(healNonTerminalToolParts)
+    .filter((m) => m.parts.length > 0);
 }
 
 const TERMINAL_TOOL_STATES = new Set([
@@ -467,6 +474,13 @@ const TRANSPORT_HEAL_TEXT =
   "Tool execution was interrupted before it returned a result";
 
 /**
+ * Sentinel returned by `repairToolPart` to mean "this tool part cannot be
+ * represented as a valid provider message — drop it entirely". See the
+ * input-less-interrupted case in `repairToolPart`.
+ */
+const DROP_TOOL_PART = Symbol("drop-tool-part");
+
+/**
  * Repair a single tool UIPart so that `convertToModelMessages` can map
  * it to a fully-valid `ModelMessage`. The AI SDK's `standardizePrompt`
  * (which runs inside `streamText`) validates the converted messages
@@ -477,12 +491,24 @@ const TRANSPORT_HEAL_TEXT =
  * `ModelMessage[]` that fails validation downstream — with no
  * indication of which message was malformed.
  *
- * The healer enforces three invariants:
+ * The healer enforces these invariants:
  *
- *  1. `input` is always present. Tool calls aborted before the model
- *     finished streaming arguments may have `input: undefined`. Default
- *     to `{}` so the resulting `tool-call` content has a well-formed
- *     `input` object.
+ *  1. A tool part must carry a usable `input`. A real `input` is preserved;
+ *     a MISSING input is left `undefined` (never `{}` — that re-triggers the
+ *     tool's strict, e.g. MCP, schema validation in validateUIMessages and
+ *     fails its required fields). Critically, an INTERRUPTED tool call that
+ *     never received its `input` at all (aborted mid-`input-streaming`, no
+ *     `rawInput`) is DROPPED — returned as `DROP_TOOL_PART`. Such a part
+ *     would otherwise be folded to `output-error` with `input: undefined`,
+ *     and `convertToModelMessages` would emit a `tool-call` block whose
+ *     `input` is missing. validateUIMessages skips that (input is undefined),
+ *     but the PROVIDER rejects it: Anthropic/Bedrock with
+ *     `tool_use.input: Field required` (HTTP 400) and Gemini/Vertex with a
+ *     silent `Malformed function call ... Function call is empty` error
+ *     finish. A `tool_use` with no input carries no information for the
+ *     model, and each UI tool part expands to a self-contained
+ *     `tool-call` + paired `tool-result`, so dropping the whole part removes
+ *     both sides cleanly (no orphaned `tool_result`).
  *
  *  2. State is terminal. Any non-terminal state collapses to
  *     `output-error` with `errorText: TRANSPORT_HEAL_TEXT` and the
@@ -498,7 +524,7 @@ const TRANSPORT_HEAL_TEXT =
  */
 function repairToolPart(
   part: AgentUIMessage["parts"][number],
-): AgentUIMessage["parts"][number] {
+): AgentUIMessage["parts"][number] | typeof DROP_TOOL_PART {
   const p = part as { type?: unknown; state?: unknown };
   const isTool =
     p.type === "dynamic-tool" ||
@@ -516,6 +542,10 @@ function repairToolPart(
   // e.g. MCP) schema and fail required fields; `undefined` is skipped, and
   // convertToModelMessages tolerates undefined input on errored/denied calls.
   const hasInput = raw.input !== undefined && raw.input !== null;
+  // Fall back to a captured `rawInput` (some SDK paths stash the partial /
+  // raw argument string here) before giving up on input entirely.
+  const rawInput = raw.rawInput;
+  const hasRawInput = rawInput !== undefined && rawInput !== null;
   const input: unknown = hasInput ? raw.input : undefined;
   // The structural schema rejects a tool part missing the `input` key, so a
   // terminal part that lacks it must still be rewritten to add it.
@@ -577,6 +607,17 @@ function repairToolPart(
   // Non-terminal state → collapse to output-error. Drop any partial
   // output so the part is unambiguous.
   if (!state || !TERMINAL_TOOL_STATES.has(state)) {
+    // An interrupted call that never received ANY input (aborted mid
+    // `input-streaming`, no `rawInput` either) cannot be emitted as a valid
+    // `tool_use`: convertToModelMessages would produce a `tool-call` with no
+    // `input` field, which the provider rejects (Anthropic/Bedrock
+    // `tool_use.input: Field required`; Gemini silent malformed-call error).
+    // Such a part carries no information — drop it entirely. The paired
+    // `tool-result` is emitted from the same UI part, so dropping the whole
+    // part leaves no orphan.
+    if (!hasInput && !hasRawInput) {
+      return DROP_TOOL_PART;
+    }
     return {
       ...raw,
       input,
@@ -592,6 +633,12 @@ function repairToolPart(
   // converter.
   if (state === "output-available") {
     if (raw.output === undefined || raw.output === null) {
+      // Downgrading to output-error; same input-less guard as the
+      // non-terminal branch — a resulting `tool-call` with no input is
+      // rejected by the provider, so drop it instead.
+      if (!hasInput && !hasRawInput) {
+        return DROP_TOOL_PART;
+      }
       return {
         ...raw,
         input,
@@ -654,11 +701,19 @@ function repairToolPart(
 
 function healNonTerminalToolParts(message: AgentUIMessage): AgentUIMessage {
   let changed = false;
-  const newParts = message.parts.map((part) => {
+  const newParts: AgentUIMessage["parts"] = [];
+  for (const part of message.parts) {
     const repaired = repairToolPart(part);
+    if (repaired === DROP_TOOL_PART) {
+      // Input-less interrupted tool call — omit it entirely (see
+      // repairToolPart). Its paired tool-result comes from the same part,
+      // so nothing is orphaned.
+      changed = true;
+      continue;
+    }
     if (repaired !== part) changed = true;
-    return repaired;
-  });
+    newParts.push(repaired);
+  }
   if (!changed) return message;
   return { ...message, parts: newParts };
 }

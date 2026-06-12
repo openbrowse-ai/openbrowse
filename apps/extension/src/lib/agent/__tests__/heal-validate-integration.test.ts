@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateUIMessages, convertToModelMessages, tool } from "ai";
 import { healPendingTools } from "../heal-pending-tools";
+import { rewriteForLLM } from "../compacting-transport";
 import { jsonSchemaToZod } from "@/lib/mcp/schema-to-zod";
 import type { AgentUIMessage } from "@/lib/types";
 
@@ -126,5 +127,61 @@ describe("convertToModelMessages + heal (Error 2 end-to-end)", () => {
       expect(toolResultIds.has(id)).toBe(true);
     }
     expect(toolUseIds.has("toolu_9")).toBe(true);
+  });
+});
+
+describe("rewriteForLLM + convertToModelMessages (input-less interrupted call)", () => {
+  it("produces NO tool-call with missing input (provider tool_use.input rejection)", async () => {
+    // The production bug: an interrupted MCP call that never received its
+    // input. Pre-fix this folded to output-error with input: undefined, and
+    // convertToModelMessages emitted a tool-call with no input field →
+    // Anthropic/Bedrock `tool_use.input: Field required` / Gemini silent
+    // malformed-call error.
+    const stranded = [
+      userMsg("go"),
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [
+          { type: "text", text: "let me look that up" },
+          {
+            type: "tool-mcp_srv_list-records-in-list",
+            toolCallId: "toolu_lost",
+            state: "input-streaming",
+            // no input — args never finished streaming
+          },
+        ],
+      },
+    ] as unknown as AgentUIMessage[];
+
+    const rewritten = rewriteForLLM(stranded as never);
+    const validated = await validateUIMessages({
+      messages: rewritten as never,
+      tools,
+    });
+    const modelMessages = await convertToModelMessages(validated, { tools });
+
+    // No tool-call content may have an undefined/missing input.
+    for (const m of modelMessages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const c of m.content as Array<{ type: string; input?: unknown }>) {
+        if (c.type === "tool-call") {
+          expect(c.input).toBeDefined();
+        }
+      }
+    }
+
+    // The interrupted tool part was dropped entirely; its surrounding text
+    // survives.
+    const allParts = rewritten.flatMap((m) => m.parts);
+    expect(
+      allParts.some(
+        (p) =>
+          (p as { toolCallId?: string }).toolCallId === "toolu_lost",
+      ),
+    ).toBe(false);
+    expect(
+      allParts.some((p) => p.type === "text" && p.text === "let me look that up"),
+    ).toBe(true);
   });
 });

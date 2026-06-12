@@ -110,6 +110,105 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(part.errorText).toMatch(/interrupted/i);
   });
 
+  // ── input-less interrupted calls are DROPPED, not healed ──
+  //
+  // A tool call aborted mid `input-streaming` that never received ANY input
+  // would be folded to output-error with `input: undefined`.
+  // convertToModelMessages then emits a `tool-call` whose `input` field is
+  // missing, which the provider rejects (Anthropic/Bedrock
+  // `tool_use.input: Field required`; Gemini silent malformed-call error).
+  // Such a part carries no information, so the transport heal drops it.
+
+  it("DROPS an input-less input-streaming part (provider tool_use.input rejection)", () => {
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "no-input-streaming",
+      state: "input-streaming",
+      // no `input` key at all
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      // Keep a text part so the message itself survives.
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "working on it" }, part],
+      } as AgentUIMessage,
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    // The text part survives; the input-less tool part is gone.
+    expect(out[1].parts).toHaveLength(1);
+    expect(out[1].parts[0]).toMatchObject({ type: "text", text: "working on it" });
+  });
+
+  it("DROPS an input-less input-available part", () => {
+    const part = {
+      type: "dynamic-tool",
+      toolName: "navigate",
+      toolCallId: "no-input-available",
+      state: "input-available",
+      input: undefined,
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "step" }, part],
+      } as AgentUIMessage,
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out[1].parts).toHaveLength(1);
+    expect(out[1].parts[0]).toMatchObject({ type: "text" });
+  });
+
+  it("DROPS the entire message when its only content is an input-less interrupted call", () => {
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "lone-no-input",
+      state: "input-streaming",
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    // The assistant message had no other content → removed entirely.
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
+  });
+
+  it("still HEALS (does not drop) an interrupted call that HAS a real input", () => {
+    // assistantToolPart supplies `input: { url: ... }`.
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(assistantToolPart("input-streaming")),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const part = out[1].parts[0] as { state: string; input: unknown };
+    expect(part.state).toBe("output-error");
+    expect(part.input).toEqual({ url: "https://example.com" });
+  });
+
+  it("falls back to rawInput when input is absent (does not drop)", () => {
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "raw-input-only",
+      state: "input-streaming",
+      rawInput: '{"url":"https://partial',
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const healed = out[1].parts[0] as { state: string };
+    expect(healed.state).toBe("output-error");
+  });
+
   it("heals output-streaming parts to output-error", () => {
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
@@ -307,7 +406,10 @@ describe("rewriteForLLM tool-state heal", () => {
 
   // ── Strict-shape repair: input/output/errorText must be present ──
 
-  it("leaves missing input undefined on a non-terminal part (no {} synthesis)", () => {
+  it("DROPS a non-terminal part with missing input instead of keeping output-error/undefined", () => {
+    // Previously this folded to output-error with input: undefined, which
+    // convertToModelMessages turned into a provider-rejected tool_use with no
+    // input. The transport heal now drops such input-less interrupted calls.
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
       assistantWithPart({
@@ -318,9 +420,9 @@ describe("rewriteForLLM tool-state heal", () => {
       } as unknown as AgentUIMessage["parts"][number]),
     ];
     const out = rewriteForLLM(msgs);
-    const part = out[1].parts[0] as { state: string; input: unknown };
-    expect(part.state).toBe("output-error");
-    expect(part.input).toBeUndefined();
+    // The assistant message had no other content → removed entirely.
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
   });
 
   it("leaves missing input undefined on a terminal output-error part (no {} synthesis)", () => {
