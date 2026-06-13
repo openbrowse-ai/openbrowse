@@ -496,19 +496,24 @@ const DROP_TOOL_PART = Symbol("drop-tool-part");
  *  1. A tool part must carry a usable `input`. A real `input` is preserved;
  *     a MISSING input is left `undefined` (never `{}` — that re-triggers the
  *     tool's strict, e.g. MCP, schema validation in validateUIMessages and
- *     fails its required fields). Critically, an INTERRUPTED tool call that
- *     never received its `input` at all (aborted mid-`input-streaming`, no
- *     `rawInput`) is DROPPED — returned as `DROP_TOOL_PART`. Such a part
- *     would otherwise be folded to `output-error` with `input: undefined`,
- *     and `convertToModelMessages` would emit a `tool-call` block whose
- *     `input` is missing. validateUIMessages skips that (input is undefined),
- *     but the PROVIDER rejects it: Anthropic/Bedrock with
+ *     fails its required fields). Critically, ANY tool call with no usable
+ *     input at all (no real `input` and no partial `rawInput`) is DROPPED —
+ *     returned as `DROP_TOOL_PART`. This covers an interrupted call aborted
+ *     mid-`input-streaming` AND an already-terminal `output-error` /
+ *     `output-denied` part whose input was never captured (e.g. a tool whose
+ *     arguments failed to parse, or a part healed from a non-terminal state on
+ *     a prior pass). Such a part would otherwise reach
+ *     `convertToModelMessages`, which emits a `tool-call` block whose `input`
+ *     is missing. validateUIMessages skips that (input is undefined), but the
+ *     PROVIDER rejects it: Anthropic/Bedrock with
  *     `tool_use.input: Field required` (HTTP 400) and Gemini/Vertex with a
  *     silent `Malformed function call ... Function call is empty` error
- *     finish. A `tool_use` with no input carries no information for the
- *     model, and each UI tool part expands to a self-contained
- *     `tool-call` + paired `tool-result`, so dropping the whole part removes
- *     both sides cleanly (no orphaned `tool_result`).
+ *     finish (Gemini also coerces some of these, which is why the terminal
+ *     `output-error` case reproduced only on Anthropic). A `tool_use` with no
+ *     input carries no information for the model, and each UI tool part
+ *     expands to a self-contained `tool-call` + paired `tool-result`, so
+ *     dropping the whole part removes both sides cleanly (no orphaned
+ *     `tool_result`).
  *
  *  2. State is terminal. Any non-terminal state collapses to
  *     `output-error` with `errorText: TRANSPORT_HEAL_TEXT` and the
@@ -654,6 +659,20 @@ function repairToolPart(
   }
 
   if (state === "output-error") {
+    // A terminal errored call with NO usable input (neither a real `input`
+    // nor a partial `rawInput`) cannot be emitted as a valid `tool_use`:
+    // convertToModelMessages forwards `input: undefined`, which Anthropic
+    // rejects (`tool_use.input: Field required`). Gemini tolerates it, which
+    // is why the bug only reproduced on Anthropic/Opus. Such a part carries
+    // no information — drop it (its paired tool-result comes from the same
+    // part, so nothing is orphaned). When `rawInput` is present the SDK fills
+    // the emitted input from it (a defined value the provider accepts), so we
+    // keep those. This complements the non-terminal/`output-available` drop
+    // above; an `output-error` reached here either streamed in that way or was
+    // healed from a non-terminal state on a prior pass.
+    if (!hasInput && !hasRawInput) {
+      return DROP_TOOL_PART;
+    }
     const errorText =
       typeof raw.errorText === "string" && raw.errorText.length > 0
         ? raw.errorText
@@ -673,6 +692,11 @@ function repairToolPart(
     const approval = raw.approval as
       | { id?: unknown; approved?: unknown; reason?: unknown }
       | undefined;
+    // Same input-less guard as output-error: a denied call with no usable
+    // input also emits a provider-rejected `tool_use`. Drop it.
+    if (!hasInput && !hasRawInput) {
+      return DROP_TOOL_PART;
+    }
     // Strict denial shape: state=output-denied REQUIRES `approved: false`.
     // `approved: true` paired with that state is contradictory and gets
     // healed to a clean output-error rather than carried forward.

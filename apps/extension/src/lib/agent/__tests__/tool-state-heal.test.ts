@@ -425,7 +425,10 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(out[0].role).toBe("user");
   });
 
-  it("leaves missing input undefined on a terminal output-error part (no {} synthesis)", () => {
+  it("DROPS a terminal output-error part with no usable input (Anthropic tool_use.input rejection)", () => {
+    // A failed tool whose input was never captured. Previously this kept
+    // input: undefined, which convertToModelMessages forwarded as a
+    // provider-rejected tool_use (Anthropic `tool_use.input: Field required`).
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
       assistantWithPart({
@@ -433,15 +436,71 @@ describe("rewriteForLLM tool-state heal", () => {
         toolCallId: "err-no-input",
         state: "output-error",
         errorText: "boom",
-        // input missing — convertToModelMessages tolerates undefined input
-        // on errored tool-calls, and validateUIMessages skips schema
-        // validation when output-error input is undefined.
+        // no input, no rawInput
       } as unknown as AgentUIMessage["parts"][number]),
     ];
     const out = rewriteForLLM(msgs);
-    const part = out[1].parts[0] as { input: unknown; errorText: string };
-    expect(part.input).toBeUndefined();
+    // The lone errored part is dropped → the message becomes empty → removed.
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
+  });
+
+  it("KEEPS a terminal output-error part that HAS a real input", () => {
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "err-with-input",
+        state: "output-error",
+        errorText: "boom",
+        input: { url: "https://example.com" },
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const part = out[1].parts[0] as {
+      state: string;
+      input: unknown;
+      errorText: string;
+    };
+    expect(part.state).toBe("output-error");
+    expect(part.input).toEqual({ url: "https://example.com" });
     expect(part.errorText).toBe("boom");
+  });
+
+  it("KEEPS a terminal output-error part with no input but a rawInput", () => {
+    // convertToModelMessages fills the emitted input from rawInput, producing
+    // a defined value the provider accepts — so we must not drop these.
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "err-raw-input",
+        state: "output-error",
+        errorText: "boom",
+        rawInput: '{"url":"https://partial',
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const part = out[1].parts[0] as { state: string };
+    expect(part.state).toBe("output-error");
+  });
+
+  it("DROPS a terminal output-denied part with no usable input", () => {
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "denied-no-input",
+        state: "output-denied",
+        approval: { id: "ap1", approved: false, reason: "no" },
+        // no input, no rawInput
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
   });
 
   it("downgrades output-available with missing output to output-error", () => {

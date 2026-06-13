@@ -184,4 +184,59 @@ describe("rewriteForLLM + convertToModelMessages (input-less interrupted call)",
       allParts.some((p) => p.type === "text" && p.text === "let me look that up"),
     ).toBe(true);
   });
+
+  it("produces NO tool-call with missing input for a terminal output-error MCP part (Opus/Anthropic repro)", async () => {
+    // The remaining Opus failure: a FAILED MCP tool call ("Updated list entry
+    // — Failed") whose input was never captured, persisted as a terminal
+    // output-error with no input. Pre-fix, convertToModelMessages emitted a
+    // tool-call with input: undefined → Anthropic `tool_use.input: Field
+    // required` (Gemini coerced it, so it only broke on Opus).
+    const stranded = [
+      userMsg("update the list"),
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [
+          { type: "text", text: "updating the list entry" },
+          {
+            type: "tool-mcp_srv_list-records-in-list",
+            toolCallId: "toolu_failed",
+            state: "output-error",
+            errorText: "Updated list entry failed",
+            // no input, no rawInput — input was never captured
+          },
+        ],
+      },
+      userMsg("try again"),
+    ] as unknown as AgentUIMessage[];
+
+    const rewritten = rewriteForLLM(stranded as never);
+    const validated = await validateUIMessages({
+      messages: rewritten as never,
+      tools,
+    });
+    const modelMessages = await convertToModelMessages(validated, { tools });
+
+    for (const m of modelMessages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const c of m.content as Array<{ type: string; input?: unknown }>) {
+        if (c.type === "tool-call") {
+          expect(c.input).toBeDefined();
+        }
+      }
+    }
+
+    // The input-less errored tool part was dropped; surrounding text survives.
+    const allParts = rewritten.flatMap((m) => m.parts);
+    expect(
+      allParts.some(
+        (p) => (p as { toolCallId?: string }).toolCallId === "toolu_failed",
+      ),
+    ).toBe(false);
+    expect(
+      allParts.some(
+        (p) => p.type === "text" && p.text === "updating the list entry",
+      ),
+    ).toBe(true);
+  });
 });
