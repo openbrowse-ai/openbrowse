@@ -7,6 +7,10 @@ export const metadata: Metadata = {
   description: "Every release shipped to OpenBrowse, straight from GitHub.",
 };
 
+// Re-fetch GitHub releases hourly at runtime so new releases appear without a
+// redeploy. Matches the ISR cadence used by lib/models-dev.ts.
+export const revalidate = 3600; // 1 hour
+
 export default async function ChangelogPage() {
   const releases = await getReleases();
   const latest = releases[0];
