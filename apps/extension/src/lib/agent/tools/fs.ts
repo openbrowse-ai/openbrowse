@@ -47,7 +47,7 @@ function stripVfsRoot(conversationId: string | null, fullPath: string): string {
   return fullPath;
 }
 
-export function createFsTools(conversationId: string | null) {
+export function createFsTools() {
   const readTool: BrowserTool<{ file_path: string; offset?: number; limit?: number }, string> = {
     name: "Read",
     description: "Reads the content of a file. Returns lines prefixed with line numbers.",
@@ -56,7 +56,8 @@ export function createFsTools(conversationId: string | null) {
       offset: z.number().optional().describe("Line number to start reading from (1-indexed)"),
       limit: z.number().optional().describe("Max lines to read (default 2000)"),
     }),
-    execute: async ({ file_path, offset, limit }) => {
+    execute: async ({ file_path, offset, limit }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       try {
         const fullPath = resolveVfsPath(conversationId, file_path);
         const exists = await OPFS.exists(fullPath);
@@ -87,7 +88,8 @@ export function createFsTools(conversationId: string | null) {
       file_path: z.string(),
       content: z.string(),
     }),
-    execute: async ({ file_path, content }) => {
+    execute: async ({ file_path, content }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot write to global skills directory.`;
       }
@@ -113,7 +115,8 @@ export function createFsTools(conversationId: string | null) {
       newString: z.string(),
       replaceAll: z.boolean().optional(),
     }),
-    execute: async ({ file_path, oldString, newString, replaceAll }) => {
+    execute: async ({ file_path, oldString, newString, replaceAll }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot edit files in global skills directory.`;
       }
@@ -153,7 +156,8 @@ export function createFsTools(conversationId: string | null) {
       pattern: z.string(),
       path: z.string().optional().describe("Directory to search in. Defaults to workspace root."),
     }),
-    execute: async ({ pattern, path }) => {
+    execute: async ({ pattern, path }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       try {
         const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
         const regex = globToRegex(pattern);
@@ -184,7 +188,8 @@ export function createFsTools(conversationId: string | null) {
       path: z.string().optional(),
       include: z.string().optional().describe("File pattern to include (e.g. '*.js')"),
     }),
-    execute: async ({ pattern, path, include }) => {
+    execute: async ({ pattern, path, include }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       try {
         const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
         const searchRegex = new RegExp(pattern);
@@ -227,7 +232,8 @@ export function createFsTools(conversationId: string | null) {
     parameters: z.object({
       path: z.string().describe("Path to list (use '.' or '' for root)"),
     }),
-    execute: async ({ path }) => {
+    execute: async ({ path }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
       try {
         const targetPath = (path === '.' || !path) ? '' : path;
         const fullPath = resolveVfsPath(conversationId, targetPath);

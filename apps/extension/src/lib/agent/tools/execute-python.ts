@@ -59,9 +59,7 @@ type Output = {
   timings: PythonExecuteResponse["timings"];
 };
 
-export function createPythonTool(
-  conversationId: string | null,
-): BrowserTool<Input, Output> {
+export function createPythonTool(): BrowserTool<Input, Output> {
   return {
     name: "executePython",
     description:
@@ -76,7 +74,17 @@ export function createPythonTool(
       "For the runtime package list and Pyodide-specific idioms, load the `python-env` skill.",
     parameters,
     approval: { required: true },
-    execute: async ({ code, input, timeout_ms, reset_state, allow_network }) => {
+    execute: async (
+      { code, input, timeout_ms, reset_state, allow_network },
+      ctx,
+    ) => {
+      // Resolve the conversation id from the per-call ToolContext, not a
+      // build-time closure. The parent agent's wrapper sets this from the
+      // live agentConversationId; a subagent injects its own (child) ctx.
+      // This is what makes a brand-new chat (whose transport was built
+      // before the conversation row existed) and subagent workspaces
+      // resolve correctly.
+      const conversationId = ctx.session?.conversationId ?? null;
       if (!conversationId) {
         return {
           ok: false,

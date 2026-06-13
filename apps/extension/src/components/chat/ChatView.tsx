@@ -40,6 +40,7 @@ import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { openSettingsTab } from "@/lib/open-settings";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
+import { CoworkBar } from "@/components/cowork/cowork-bar";
 import {
   ArrowLeft,
   ArrowUp,
@@ -111,6 +112,13 @@ interface ChatViewProps {
    * (e.g. with `/skill-name `).
    */
   initialInput?: string;
+  /**
+   * Whether the composer's cowork bar should surface Workspace files and
+   * Context controls. Enabled in the side panel (which has no dedicated
+   * rail); the home view leaves this off because its RightRail already
+   * renders the Working folder and Context cards.
+   */
+  showWorkspaceControls?: boolean;
 }
 
 export function ChatView({
@@ -129,6 +137,7 @@ export function ChatView({
   originWindowId,
   originTabId,
   originUrl,
+  showWorkspaceControls = false,
   initialInput,
 }: ChatViewProps) {
   // Track the live origin tab id in popup mode. May change if the original
@@ -619,6 +628,11 @@ export function ChatView({
 
       {/* Input */}
       <div className="p-2 max-w-3xl mx-auto w-full">
+        <CoworkBar
+          key={conversationId ?? "none"}
+          conversationId={conversationId ?? null}
+          showWorkspaceControls={showWorkspaceControls}
+        />
         {isCompacting && (
           <div className="flex items-center gap-2 px-4 py-2 text-xs text-muted-foreground mb-1.5">
             <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />

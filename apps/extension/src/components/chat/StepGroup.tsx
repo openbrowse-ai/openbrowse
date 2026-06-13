@@ -1,4 +1,8 @@
-import { cn } from "@/lib/utils";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { ChevronRightIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -55,26 +59,21 @@ export function StepGroup({ stepCount, isActive, children }: StepGroupProps) {
   const label = stepCount === 1 ? "Completed 1 step" : `Completed ${stepCount} steps`;
 
   return (
-    <div className="my-0.5 w-full">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="group flex items-center gap-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-      >
-        <span className="font-medium">{label}</span>
-        <ChevronRightIcon
-          className={cn(
-            "size-3 shrink-0 transition-transform",
-            open && "rotate-90",
-          )}
-        />
-      </button>
-      {open && (
+    <Collapsible open={open} onOpenChange={setOpen} className="my-0.5 w-full">
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="group flex items-center gap-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <span className="font-medium">{label}</span>
+          <ChevronRightIcon className="size-3 shrink-0 transition-transform group-data-[state=open]:rotate-90" />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
         <div className="mt-1 ml-1 flex flex-col border-l-2 border-muted pl-3">
           {children}
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

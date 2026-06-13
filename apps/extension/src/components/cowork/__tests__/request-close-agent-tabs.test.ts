@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { requestCloseAgentTabs } from "../request-close-agent-tabs";
+import { requestCloseAgentTabs } from "@/components/cowork/request-close-agent-tabs";
 
 const sent: any[] = [];
 
