@@ -16,8 +16,17 @@ export function useConversationTodos(conversationId: string | null): TodoItem[] 
     }
     let isMounted = true;
     const fetchTodos = async () => {
-      const conv = await chatDb.getConversation(conversationId);
-      if (isMounted && conv) setTodos(conv.todos || []);
+      try {
+        const conv = await chatDb.getConversation(conversationId);
+        // Clear stale todos when the conversation is gone (e.g. deleted in
+        // another window) so the old list doesn't leak into the UI.
+        if (isMounted) setTodos(conv?.todos ?? []);
+      } catch {
+        // Transient read failure; drop to a safe empty state and let the
+        // next poll tick retry. Swallow so the rejection doesn't escape the
+        // bare call / setInterval loop.
+        if (isMounted) setTodos([]);
+      }
     };
     fetchTodos();
     const interval = setInterval(fetchTodos, 1000);

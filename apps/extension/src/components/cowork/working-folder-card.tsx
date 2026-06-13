@@ -33,8 +33,13 @@ export function WorkingFolderCard({
 
   useEffect(() => {
     let mounted = true;
+    // Walks can overlap (initial + multiple `vfs:change` events); a stale
+    // earlier walk must not clobber a newer result, so commit only the
+    // latest run (monotonic token).
+    let seq = 0;
 
     async function fetchFiles() {
+      const my = ++seq;
       const paths: string[] = [];
       try {
         for await (const path of OPFS.walk(vfsRoot)) {
@@ -53,7 +58,7 @@ export function WorkingFolderCard({
       } catch {
         // Workspace doesn't exist yet
       }
-      if (mounted) setFiles(paths.sort());
+      if (mounted && my === seq) setFiles(paths.sort());
     }
 
     fetchFiles();
@@ -112,7 +117,7 @@ export function WorkingFolderCard({
                           file.split("/").pop() ?? file,
                         );
                       }}
-                      className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground group-hover:flex focus-visible:flex"
+                      className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 pointer-events-none transition-opacity hover:bg-background hover:text-foreground group-hover:opacity-100 group-hover:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                       aria-label={`Download ${file}`}
                     >
                       <Download className="size-3.5" />

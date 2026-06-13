@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
+import { ContextUsage } from "@/components/chat/ContextUsage";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
 import { FileSelectionContext } from "@/lib/file-selection-context";
 
@@ -512,6 +513,9 @@ export default function App() {
             open={pickerOpen}
             onOpenChange={setPickerOpen}
           />
+          {activeConversationId && (
+            <ContextUsage conversationId={activeConversationId} compact />
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

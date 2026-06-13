@@ -67,75 +67,81 @@ export function ContextCard({
     let isMounted = true;
 
     async function refresh() {
-      const conv = await chatDb.getConversation(conversationId);
-      if (!isMounted) return;
+      try {
+        const conv = await chatDb.getConversation(conversationId);
+        if (!isMounted) return;
 
-      // Tabs — collect parent-owned tabs first, then any tabs owned by
-      // subagent children (peer subagents bind their tabs to the *child*
-      // conversation row in tab-scoping; incognito subagents normally
-      // auto-close their ephemeral window, but if any child tabs are
-      // still alive we surface them too). Each id is hydrated via
-      // chrome.tabs.get; closed tabs (rejected promises) drop out.
-      const children = await chatDb.listChildren(conversationId);
-      if (!isMounted) return;
+        // Tabs — collect parent-owned tabs first, then any tabs owned by
+        // subagent children (peer subagents bind their tabs to the *child*
+        // conversation row in tab-scoping; incognito subagents normally
+        // auto-close their ephemeral window, but if any child tabs are
+        // still alive we surface them too). Each id is hydrated via
+        // chrome.tabs.get; closed tabs (rejected promises) drop out.
+        const children = await chatDb.listChildren(conversationId);
+        if (!isMounted) return;
 
-      type OwnedRef = {
-        tabId: number;
-        owningConversationId: string;
-        subagent?: { label: string };
-      };
-      const ownedRefs: OwnedRef[] = [];
-      for (const id of conv?.ownedTabIds ?? []) {
-        ownedRefs.push({ tabId: id, owningConversationId: conversationId });
-      }
-      for (const child of children) {
-        const label =
-          child.subagentTraceTitle ??
-          child.subagentSlug ??
-          "Subagent";
-        for (const id of child.ownedTabIds ?? []) {
-          ownedRefs.push({
-            tabId: id,
-            owningConversationId: child.id,
-            subagent: { label },
-          });
+        type OwnedRef = {
+          tabId: number;
+          owningConversationId: string;
+          subagent?: { label: string };
+        };
+        const ownedRefs: OwnedRef[] = [];
+        for (const id of conv?.ownedTabIds ?? []) {
+          ownedRefs.push({ tabId: id, owningConversationId: conversationId });
         }
-      }
-
-      // `Promise.allSettled` preserves input order, so the resulting rows
-      // keep ownedRefs order (parent tabs first, then subagent tabs).
-      const results = await Promise.allSettled(
-        ownedRefs.map((r) => chrome.tabs.get(r.tabId)),
-      );
-      if (!isMounted) return;
-      const hydrated: ContextTab[] = [];
-      results.forEach((res, i) => {
-        if (res.status === "fulfilled") {
-          const tab = res.value;
-          const ref = ownedRefs[i];
-          hydrated.push({
-            id: ref.tabId,
-            title: tab.title || tab.url || "Untitled tab",
-            favicon: tab.favIconUrl ?? "",
-            owningConversationId: ref.owningConversationId,
-            subagent: ref.subagent,
-          });
+        for (const child of children) {
+          const label =
+            child.subagentTraceTitle ??
+            child.subagentSlug ??
+            "Subagent";
+          for (const id of child.ownedTabIds ?? []) {
+            ownedRefs.push({
+              tabId: id,
+              owningConversationId: child.id,
+              subagent: { label },
+            });
+          }
         }
-      });
-      if (isMounted) setTabs(hydrated);
 
-      if (!isMounted) return;
-      // Connectors + skills are recorded live onto the conversation row at
-      // step-finish time (see recordToolUsageForStep in agent-transport), so
-      // we read them directly from `conv` rather than scanning message parts.
-      const connectorList: DerivedConnector[] = (conv?.usedConnectorIds ?? [])
-        .map((id) => {
-          const c = getConnector(id);
-          return c ? { id: c.id, name: c.name } : null;
-        })
-        .filter((c): c is DerivedConnector => c !== null);
-      setConnectors(connectorList);
-      setSkills(conv?.loadedSkillNames ?? []);
+        // `Promise.allSettled` preserves input order, so the resulting rows
+        // keep ownedRefs order (parent tabs first, then subagent tabs).
+        const results = await Promise.allSettled(
+          ownedRefs.map((r) => chrome.tabs.get(r.tabId)),
+        );
+        if (!isMounted) return;
+        const hydrated: ContextTab[] = [];
+        results.forEach((res, i) => {
+          if (res.status === "fulfilled") {
+            const tab = res.value;
+            const ref = ownedRefs[i];
+            hydrated.push({
+              id: ref.tabId,
+              title: tab.title || tab.url || "Untitled tab",
+              favicon: tab.favIconUrl ?? "",
+              owningConversationId: ref.owningConversationId,
+              subagent: ref.subagent,
+            });
+          }
+        });
+        if (isMounted) setTabs(hydrated);
+
+        if (!isMounted) return;
+        // Connectors + skills are recorded live onto the conversation row at
+        // step-finish time (see recordToolUsageForStep in agent-transport), so
+        // we read them directly from `conv` rather than scanning message parts.
+        const connectorList: DerivedConnector[] = (conv?.usedConnectorIds ?? [])
+          .map((id) => {
+            const c = getConnector(id);
+            return c ? { id: c.id, name: c.name } : null;
+          })
+          .filter((c): c is DerivedConnector => c !== null);
+        setConnectors(connectorList);
+        setSkills(conv?.loadedSkillNames ?? []);
+      } catch {
+        // Transient read failure (chatDb / chrome.tabs). Leave the last good
+        // state in place; the next poll tick (or vfs:change) retries. Swallow
+        // so the rejection doesn't escape the bare call / setInterval loop.
+      }
     }
 
     refresh();
@@ -149,8 +155,13 @@ export function ContextCard({
   // Uploads: OPFS walk over `.uploads/`, refreshed on vfs:change.
   useEffect(() => {
     let mounted = true;
+    // Overlapping walks (initial + multiple `vfs:change` events) must not
+    // let a stale earlier result clobber a newer one; commit only the
+    // latest run (monotonic token).
+    let seq = 0;
 
     async function fetchUploads() {
+      const my = ++seq;
       const names: string[] = [];
       try {
         for await (const path of OPFS.walk(uploadsRoot)) {
@@ -162,7 +173,7 @@ export function ContextCard({
       } catch {
         // No uploads dir yet.
       }
-      if (mounted) setUploads(names.sort());
+      if (mounted && my === seq) setUploads(names.sort());
     }
 
     fetchUploads();

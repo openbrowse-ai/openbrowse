@@ -24,8 +24,14 @@ export function useWorkspaceHasContent(
     }
     const root = `conversations/${conversationId}/workspace`;
     let mounted = true;
+    // Probe runs can overlap (initial + multiple `vfs:change` events). A
+    // slow earlier walk could resolve after a newer one and clobber state
+    // with a stale result, so each run captures a monotonic token and only
+    // commits if it's still the latest.
+    let seq = 0;
 
     async function probe() {
+      const my = ++seq;
       let found = false;
       try {
         for await (const _ of OPFS.walk(root)) {
@@ -35,7 +41,7 @@ export function useWorkspaceHasContent(
       } catch {
         // Workspace doesn't exist yet.
       }
-      if (mounted) setHasContent(found);
+      if (mounted && my === seq) setHasContent(found);
     }
 
     probe();

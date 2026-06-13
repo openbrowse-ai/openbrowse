@@ -122,16 +122,23 @@ export function resolveModelsLabel(
 /**
  * Circular progress ring (no label). The arc fills proportionally to
  * `percent` (0–100), starting at the top. Uses `currentColor` so it
- * inherits the trigger button's theme color.
+ * inherits the trigger button's theme color. `className` controls the
+ * rendered size (defaults to the home header's `size-4`).
  */
-function ContextRing({ percent }: { percent: number }) {
+function ContextRing({
+  percent,
+  className = "size-4",
+}: {
+  percent: number;
+  className?: string;
+}) {
   const radius = 9;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference * (1 - Math.min(100, Math.max(0, percent)) / 100);
   return (
     <svg
       viewBox="0 0 24 24"
-      className="size-4 -rotate-90"
+      className={`${className} -rotate-90`}
       fill="none"
       aria-hidden="true"
     >
@@ -181,8 +188,17 @@ interface ConvSnapshot {
  * (mirroring CoworkPanel's ContextCard). The ring trigger shows a compact
  * Tokens / Usage% / Cost tooltip on hover and opens a detailed popover on
  * click. Renders nothing until usage exists.
+ *
+ * `compact` shrinks the trigger (smaller ring + tighter padding) to match
+ * the side panel's denser header buttons; the home header uses the default.
  */
-export function ContextUsage({ conversationId }: { conversationId: string }) {
+export function ContextUsage({
+  conversationId,
+  compact = false,
+}: {
+  conversationId: string;
+  compact?: boolean;
+}) {
   const [snapshot, setSnapshot] = useState<ConvSnapshot | null>(null);
 
   useEffect(() => {
@@ -236,11 +252,12 @@ export function ContextUsage({ conversationId }: { conversationId: string }) {
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className={`rounded ${compact ? "p-1" : "p-1.5"} text-muted-foreground hover:bg-accent hover:text-foreground`}
               aria-label="Context usage"
             >
               <ContextRing
                 percent={usagePercentValue(usage.totalTokens, usage.contextWindow)}
+                className={compact ? "size-3.5" : "size-4"}
               />
             </button>
           </PopoverTrigger>
