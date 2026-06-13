@@ -1,5 +1,27 @@
 # openbrowse
 
+## 0.8.1
+
+### Patch Changes
+
+- 31d6205: Fold completed tool calls into a "Completed N steps" collapsible.
+
+  While tools are running they stay expanded and live; once the assistant
+  begins its answer text, a run of 3+ tool calls auto-folds into a
+  collapsible labeled "Completed N steps" (click to re-expand), matching
+  the Perplexity Comet pattern. Runs of 1-2 tools, reasoning-only groups,
+  and pending approval prompts render inline as before.
+
+- 31d6205: Fix interrupted tool calls breaking the next request.
+
+  A tool call aborted before its arguments finished streaming was replayed
+  on the next turn as a `tool_use` block with no `input`, which providers
+  reject — Anthropic/Bedrock with `tool_use.input: Field required` (a
+  visible "Something went wrong" error) and Gemini/Vertex with a silent
+  malformed-function-call error that just stopped the generation. The
+  send-time heal now drops these input-less interrupted calls before they
+  reach the provider, so the conversation can continue.
+
 ## 0.8.0
 
 ### Minor Changes
