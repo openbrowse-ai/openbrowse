@@ -29,8 +29,14 @@ type AgentMessage = AgentUIMessage;
  * to fail `validateUIMessages` ("Type validation failed ... path: ['list']"):
  * the SDK schema-validates an `output-error` part's input only when it is
  * `!== undefined`, and an empty object fails a schema with required fields.
- * `convertToModelMessages` tolerates undefined input on errored/denied
- * tool-calls, so leaving it undefined is both safe and correct.
+ * NOTE: `convertToModelMessages` emits a `tool-call` with `input: undefined`
+ * for such a part, and the PROVIDER rejects that (Anthropic/Bedrock
+ * `tool_use.input: Field required`; Gemini silent malformed-call error). This
+ * persistence-level heal therefore does NOT make an input-less interrupted
+ * call safe to send on its own — the send-time transport heal
+ * (`repairToolPart`) DROPS input-less interrupted calls before they reach the
+ * provider. Keeping the persisted/UI copy lets the user still see the
+ * "Interrupted" badge.
  *
  * Returns both the new full `messages` list and the subset that actually
  * changed. Callers persist the changed subset to chatDb so the heal survives

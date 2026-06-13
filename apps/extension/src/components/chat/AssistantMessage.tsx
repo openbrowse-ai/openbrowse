@@ -10,6 +10,7 @@ import { CompletionCheckBlock } from "./CompletionCheckBlock";
 import { CompletionCheckRunningBlock } from "./CompletionCheckRunningBlock";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolApprovalBlock } from "./ToolApprovalBlock";
+import { StepGroup } from "./StepGroup";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
 import { memo } from "react";
@@ -149,33 +150,113 @@ interface AssistantMessageProps {
   dimmed?: boolean;
 }
 
-function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, dimmed }: AssistantMessageProps) {
+/**
+ * Part types that belong inside a "step" group: tool calls and the reasoning
+ * that accompanies them. These get folded into the "Completed N steps"
+ * collapsible once the assistant begins its answer text. `step-start` is
+ * grouped too (skipped at render time) so it never breaks a run of tools.
+ */
+function isWorkPart(part: AgentUIMessage["parts"][number]): boolean {
+  const t = part.type;
   return (
-    <div className={`group/message flex flex-col items-start gap-1 ${dimmed ? "opacity-40" : ""}`}>
-      <div className="w-full text-sm text-foreground">
-        {message.parts.map((part, i) => {
-          if (part.type === "text") {
-            const isLastPart = i === message.parts.length - 1;
-            return (
-              <Markdown
-                key={i}
-                source={part.text}
-                isStreaming={isStreaming && isLastPart}
-              />
-            );
-          }
-          if (part.type === "reasoning") {
-            const nextPart = message.parts[i + 1];
-            const isActivelyReasoning = isStreaming && (!nextPart || (nextPart.type === "text" && !nextPart.text));
-            return (
-              <Reasoning
-                key={i}
-                text={part.text}
-                isStreaming={isActivelyReasoning}
-              />
-            );
-          }
-          if (part.type === "dynamic-tool") {
+    t === "reasoning" ||
+    t === "dynamic-tool" ||
+    t === "step-start" ||
+    (typeof t === "string" && t.startsWith("tool-"))
+  );
+}
+
+/** Count tool-call parts in a group (drives the "N steps" label). */
+function countToolParts(parts: { type: string }[]): number {
+  return parts.filter(
+    (p) => p.type === "dynamic-tool" || p.type.startsWith("tool-"),
+  ).length;
+}
+
+/**
+ * True if a group contains an in-flight approval request. Such a group must
+ * never be folded — the user needs to see and act on the prompt.
+ */
+function hasPendingApproval(parts: AgentUIMessage["parts"]): boolean {
+  return parts.some(
+    (p) => (p as { state?: unknown }).state === "approval-requested",
+  );
+}
+
+type Segment =
+  | { kind: "break"; part: AgentUIMessage["parts"][number]; index: number }
+  | {
+      kind: "group";
+      parts: { part: AgentUIMessage["parts"][number]; index: number }[];
+    };
+
+/** Build render segments: runs of work parts grouped, break parts standalone. */
+function buildSegments(parts: AgentUIMessage["parts"]): Segment[] {
+  const segments: Segment[] = [];
+  let current: { part: AgentUIMessage["parts"][number]; index: number }[] = [];
+
+  const flush = () => {
+    if (current.length > 0) {
+      segments.push({ kind: "group", parts: current });
+      current = [];
+    }
+  };
+
+  parts.forEach((part, index) => {
+    if (isWorkPart(part)) {
+      current.push({ part, index });
+    } else {
+      flush();
+      segments.push({ kind: "break", part, index });
+    }
+  });
+  flush();
+  return segments;
+}
+
+function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, dimmed }: AssistantMessageProps) {
+  const parts = message.parts;
+  const segments = buildSegments(parts);
+
+  // Index of the last group segment — the only one that can still be "active"
+  // (tools running, no answer text yet).
+  const lastGroupSegmentIndex = (() => {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i].kind === "group") return i;
+    }
+    return -1;
+  })();
+
+  // Does any non-empty text part exist after a given part index? If so, the
+  // group that precedes it has produced its answer and should fold.
+  const hasTextAfter = (index: number): boolean =>
+    parts.some(
+      (p, i) => i > index && p.type === "text" && p.text.length > 0,
+    );
+
+  const renderPart = (part: AgentUIMessage["parts"][number], i: number) => {
+    if (part.type === "text") {
+      const isLastPart = i === parts.length - 1;
+      return (
+        <Markdown
+          key={i}
+          source={part.text}
+          isStreaming={isStreaming && isLastPart}
+        />
+      );
+    }
+    if (part.type === "reasoning") {
+      const nextPart = parts[i + 1];
+      const isActivelyReasoning = isStreaming && (!nextPart || (nextPart.type === "text" && !nextPart.text));
+      return (
+        <Reasoning
+          key={i}
+          text={part.text}
+          isStreaming={isActivelyReasoning}
+        />
+      );
+    }
+    if (part.type === "dynamic-tool") {
             if (part.state === "approval-requested" && "approval" in part && onToolApproval) {
               const approval = part.approval as { id: string };
               return (
@@ -300,6 +381,49 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             }
           }
           return null;
+  };
+
+  return (
+    <div className={`group/message flex flex-col items-start gap-1 ${dimmed ? "opacity-40" : ""}`}>
+      <div className="w-full text-sm text-foreground">
+        {segments.map((segment, si) => {
+          if (segment.kind === "break") {
+            return renderPart(segment.part, segment.index);
+          }
+
+          // A work group. Count tool calls — a group with no tool calls (e.g.
+          // reasoning-only) renders inline without the step wrapper.
+          const groupParts = segment.parts.map((p) => p.part);
+          const toolCount = countToolParts(groupParts);
+          const rendered = segment.parts.map(({ part, index }) =>
+            renderPart(part, index),
+          );
+
+          // No tool calls, fewer than 3 tool steps, or an in-flight approval
+          // the user must see/act on: render inline (no fold). Only runs of
+          // 3+ tool calls collapse into a "Completed N steps" block.
+          if (toolCount < 3 || hasPendingApproval(groupParts)) {
+            return (
+              <div key={`g${si}`} className="flex w-full flex-col">
+                {rendered}
+              </div>
+            );
+          }
+
+          // Active = trailing group of a streaming message that hasn't produced
+          // answer text yet.
+          const lastPartIndex =
+            segment.parts[segment.parts.length - 1]?.index ?? -1;
+          const isActive =
+            isStreaming &&
+            si === lastGroupSegmentIndex &&
+            !hasTextAfter(lastPartIndex);
+
+          return (
+            <StepGroup key={`g${si}`} stepCount={toolCount} isActive={isActive}>
+              {rendered}
+            </StepGroup>
+          );
         })}
       </div>
       <MessageActions message={message} />
