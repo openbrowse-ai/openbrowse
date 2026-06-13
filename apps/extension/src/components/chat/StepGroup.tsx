@@ -59,6 +59,7 @@ export function StepGroup({ stepCount, isActive, children }: StepGroupProps) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
         className="group flex items-center gap-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground"
       >
         <span className="font-medium">{label}</span>
