@@ -77,6 +77,7 @@ interface OAuthMetadata {
   token_endpoint: string;
   registration_endpoint?: string;
   scopes_supported?: string[];
+  grant_types_supported?: string[];
 }
 
 async function discoverOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> {
@@ -104,6 +105,7 @@ async function discoverOAuthMetadata(serverUrl: string): Promise<OAuthMetadata> 
             token_endpoint: asData.token_endpoint,
             registration_endpoint: asData.registration_endpoint,
             scopes_supported: resourceData.scopes_supported ?? asData.scopes_supported,
+            grant_types_supported: asData.grant_types_supported,
           };
         }
       }
@@ -142,7 +144,16 @@ async function dynamicClientRegistration(
     body: JSON.stringify({
       client_name: "OpenBrowse",
       redirect_uris: [redirectUri],
-      grant_types: ["authorization_code"],
+      // Register for BOTH grants. Omitting `refresh_token` here means the
+      // provider authorizes the client only for `authorization_code`, so a
+      // later `grant_type=refresh_token` token call is rejected — even when
+      // the server supports refresh tokens and `offline_access` was granted.
+      // That left Attio/Stripe unable to silently renew an expired access
+      // token after a service-worker restart (e.g. an extension update),
+      // forcing a full re-auth. Providers that don't support refresh tokens
+      // simply ignore the extra grant type (verified: Supabase still returns
+      // 201).
+      grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
     }),
@@ -206,21 +217,41 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
     let clientId = serverConfig.auth?.clientId;
     let clientSecret = serverConfig.auth?.clientSecret;
 
-    if (!clientId && metadata.registration_endpoint) {
-      const registration = await dynamicClientRegistration(
-        metadata.registration_endpoint,
-        redirectUri,
-      );
-      clientId = registration.client_id;
-      clientSecret = registration.client_secret;
+    // Re-register on an interactive auth start even when a client_id already
+    // exists. A client registered by an older build was registered for the
+    // `authorization_code` grant only, so the provider refused later
+    // `refresh_token` token calls — the root cause of connectors silently
+    // disconnecting after an extension update. Since this is an explicit,
+    // user-initiated re-authorization, minting a fresh client (now registered
+    // for the refresh_token grant too) is safe and repairs those stored
+    // clients without requiring the user to remove and re-add the connector.
+    const needsRegistration = !clientId || Boolean(metadata.registration_endpoint);
 
-      // Persist the client_id for future use
-      const updatedServers = settings.mcpServers.map((s) =>
-        s.id === serverId
-          ? { ...s, auth: { ...s.auth, type: "oauth" as const, clientId, clientSecret } }
-          : s,
-      );
-      await storage.setSettings({ ...settings, mcpServers: updatedServers });
+    if (needsRegistration && metadata.registration_endpoint) {
+      try {
+        const registration = await dynamicClientRegistration(
+          metadata.registration_endpoint,
+          redirectUri,
+        );
+        clientId = registration.client_id;
+        clientSecret = registration.client_secret;
+
+        // Persist the client_id for future use
+        const updatedServers = settings.mcpServers.map((s) =>
+          s.id === serverId
+            ? { ...s, auth: { ...s.auth, type: "oauth" as const, clientId, clientSecret } }
+            : s,
+        );
+        await storage.setSettings({ ...settings, mcpServers: updatedServers });
+      } catch (err) {
+        // If re-registration fails but we already have a stored client_id,
+        // fall back to it rather than blocking auth entirely.
+        if (!clientId) throw err;
+        console.warn(
+          "[MCP OAuth] Re-registration failed; using existing client_id",
+          err,
+        );
+      }
     }
 
     if (!clientId) {
@@ -248,17 +279,11 @@ async function handleOAuthStart(serverId: string, sendResponse: (r: unknown) => 
     const state = generateCodeVerifier();
     oauthStates.set(serverId, state);
 
-    // Build the requested scope. Append `offline_access` ONLY when the
-    // provider advertises it in its metadata — that RFC scope is what makes
-    // many providers issue a refresh_token (so we can silently refresh later),
-    // but strict providers reject unknown scopes, so we don't add it blindly.
-    const supportedScopes = metadata.scopes_supported ?? [];
-    const scopeSet = new Set<string>(supportedScopes);
-    if (supportedScopes.includes("offline_access")) {
-      scopeSet.add("offline_access");
-    }
-    const requestedScope =
-      scopeSet.size > 0 ? Array.from(scopeSet).join(" ") : undefined;
+    // Build the requested scope. `buildAuthScope` adds `offline_access` when
+    // the provider supports it (so we receive a refresh_token), without
+    // tripping strict providers that reject unknown scopes.
+    const { buildAuthScope } = await import("./mcp-oauth");
+    const requestedScope = buildAuthScope(metadata);
 
     // Build authorization URL
     const params = new URLSearchParams({

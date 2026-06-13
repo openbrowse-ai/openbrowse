@@ -235,3 +235,49 @@ describe("isUnauthorizedError", () => {
     expect(isUnauthorizedError(new Error("500 boom"))).toBe(false);
   });
 });
+
+describe("buildAuthScope", () => {
+  afterEach(() => vi.resetModules());
+
+  it("adds offline_access when the provider lists it (Attio)", async () => {
+    const { buildAuthScope } = await import("../mcp-oauth");
+    // Real Attio auth-server metadata shape.
+    const scope = buildAuthScope({
+      scopes_supported: ["mcp", "offline_access", "openid"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+    });
+    expect(scope).toBeDefined();
+    expect(scope!.split(" ")).toContain("offline_access");
+    expect(scope!.split(" ")).toContain("mcp");
+  });
+
+  it("adds offline_access when no scopes are declared but refresh_token grant is supported (Stripe)", async () => {
+    const { buildAuthScope } = await import("../mcp-oauth");
+    // Real Stripe auth-server metadata shape: no scopes_supported field.
+    const scope = buildAuthScope({
+      grant_types_supported: ["authorization_code", "refresh_token"],
+    });
+    expect(scope).toBe("offline_access");
+  });
+
+  it("does NOT add offline_access for a granular-scope provider that omits it (Supabase)", async () => {
+    const { buildAuthScope } = await import("../mcp-oauth");
+    // Real Supabase metadata shape: granular scopes, no offline_access.
+    const scope = buildAuthScope({
+      scopes_supported: ["projects:read", "database:read"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+    });
+    expect(scope).toBe("projects:read database:read");
+    expect(scope).not.toContain("offline_access");
+  });
+
+  it("returns undefined when nothing can be requested", async () => {
+    const { buildAuthScope } = await import("../mcp-oauth");
+    // No scopes declared and no refresh_token grant → request no scope at all
+    // (don't risk an unknown-scope rejection on a strict provider).
+    expect(buildAuthScope({})).toBeUndefined();
+    expect(
+      buildAuthScope({ grant_types_supported: ["authorization_code"] }),
+    ).toBeUndefined();
+  });
+});
