@@ -20,6 +20,38 @@ import type { McpAuthConfig } from "@/lib/mcp/types";
 const DEFAULT_EXPIRY_SKEW_MS = 60_000;
 
 /**
+ * Decide the OAuth `scope` to request at authorization time.
+ *
+ * We want `offline_access` whenever possible — that RFC scope is what makes
+ * many providers issue a refresh_token (so we can silently refresh after a
+ * service-worker restart / extension update) — but strict providers reject
+ * unknown scopes, so it can't be added blindly. Two safe cases add it:
+ *   1. The provider lists `offline_access` in `scopes_supported` (e.g. Attio).
+ *   2. The provider publishes NO `scopes_supported` at all but DOES advertise
+ *      the `refresh_token` grant (e.g. Stripe). With no declared scope set
+ *      there's nothing to reject against, and the provider still needs a
+ *      signal that we want offline access.
+ *
+ * Returns the space-joined scope string, or `undefined` when there is nothing
+ * to request (so the caller omits the `scope` param entirely).
+ */
+export function buildAuthScope(metadata: {
+  scopes_supported?: string[];
+  grant_types_supported?: string[];
+}): string | undefined {
+  const supportedScopes = metadata.scopes_supported ?? [];
+  const grantTypes = metadata.grant_types_supported ?? [];
+  const supportsRefreshGrant = grantTypes.includes("refresh_token");
+  const scopeSet = new Set<string>(supportedScopes);
+  if (supportedScopes.includes("offline_access")) {
+    scopeSet.add("offline_access");
+  } else if (supportedScopes.length === 0 && supportsRefreshGrant) {
+    scopeSet.add("offline_access");
+  }
+  return scopeSet.size > 0 ? Array.from(scopeSet).join(" ") : undefined;
+}
+
+/**
  * True when `auth` carries an expiry that is at/after the skew window — i.e.
  * the access token is expired or about to expire and should be refreshed
  * before use. Returns false when no `expiresAt` is known (we can't tell, so
