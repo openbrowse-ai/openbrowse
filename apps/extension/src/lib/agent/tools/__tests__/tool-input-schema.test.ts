@@ -41,8 +41,8 @@ import { todoWriteTool } from "../todowrite";
 import { typeInElementTool } from "../type-in-element";
 import { updateMemoryTool } from "../update-memory";
 
-const fsTools = createFsTools(null);
-const pythonTool = createPythonTool(null);
+const fsTools = createFsTools();
+const pythonTool = createPythonTool();
 
 // Mirrors `browserTools` in agent-transport.ts. Add new tools here when
 // they're registered there.

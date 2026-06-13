@@ -21,6 +21,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
+import { ContextUsage } from "@/components/chat/ContextUsage";
+import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import { FileSelectionContext } from "@/lib/file-selection-context";
 
 function readPopupParams() {
   if (typeof window === "undefined") {
@@ -60,6 +63,30 @@ export default function App() {
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(new Set());
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
+
+  // Workspace-relative path of the file open in the full-panel viewer.
+  const [viewerFile, setViewerFile] = useState<string | null>(null);
+
+  // FileSelectionContext handler: any file click (the composer's cowork bar
+  // or transcript chips) opens the in-panel viewer.
+  const handleSelectFile = useCallback((file: string | null) => {
+    setViewerFile(file);
+  }, []);
+
+  // Reset the viewer when switching conversations.
+  useEffect(() => {
+    setViewerFile(null);
+  }, [activeConversationId]);
+
+  // Escape dismisses the viewer overlay.
+  useEffect(() => {
+    if (viewerFile === null) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setViewerFile(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [viewerFile]);
 
   useEffect(() => {
     async function init() {
@@ -419,113 +446,128 @@ export default function App() {
   }, [handleNew]);
 
   return (
-    <div className="flex flex-col h-screen">
-      <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
-        <SpaceSwitcher spaces={spaces} activeSpaceId={activeSpaceId} />
-        {conversationTitle && (
-          <>
-            <span className="text-muted-foreground text-xs">/</span>
-            <span className={`text-xs truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}>{conversationTitle}</span>
-          </>
-        )}
-        <div className="flex-1" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={handleNew}
-              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <MessageSquarePlus className="size-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent className="flex items-center gap-1.5">
-            New conversation
-            <Kbd>⌥N</Kbd>
-          </TooltipContent>
-        </Tooltip>
-        {!isPopupMode && (
+    <FileSelectionContext.Provider value={handleSelectFile}>
+      <div className="relative flex flex-col h-screen">
+        <div className="relative flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+          <SpaceSwitcher spaces={spaces} activeSpaceId={activeSpaceId} />
+          {conversationTitle && (
+            <>
+              <span className="text-muted-foreground text-xs">/</span>
+              <span className={`text-xs truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}>{conversationTitle}</span>
+            </>
+          )}
+          <div className="flex-1" />
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                onClick={handleDetach}
+                onClick={handleNew}
                 className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
               >
-                <PictureInPicture className="size-3.5" />
+                <MessageSquarePlus className="size-3.5" />
               </button>
             </TooltipTrigger>
-            <TooltipContent>Detach to popover</TooltipContent>
-          </Tooltip>
-        )}
-        {isPopupMode && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={handleReattach}
-                disabled={!canReattach}
-                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-              >
-                <PanelRight className="size-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {canReattach
-                ? "Reattach to side panel"
-                : "Unable to attach. The original tab is closed or no active window is available."}
+            <TooltipContent className="flex items-center gap-1.5">
+              New conversation
+              <Kbd>⌥N</Kbd>
             </TooltipContent>
           </Tooltip>
-        )}
-        <ChatPicker
-          spaceId={activeSpaceId}
-          activeConversationId={activeConversationId}
-          onSelect={(id) => setActiveConversationId(id)}
-          onNew={handleNew}
-          open={pickerOpen}
-          onOpenChange={setPickerOpen}
-        />
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <MoreVertical className="size-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44">
-            <DropdownMenuItem onClick={handleOpenFullView}>
-              <ExternalLink className="size-3.5" />
-              Open in full view
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => void openSettingsTab()}>
-              <Settings className="size-3.5" />
-              Settings
-            </DropdownMenuItem>
-            {activeConversationId && (
-              <DropdownMenuItem onClick={handleExportChat}>
-                <Download className="size-3.5" />
-                Export chat
+          {!isPopupMode && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={handleDetach}
+                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <PictureInPicture className="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Detach to popover</TooltipContent>
+            </Tooltip>
+          )}
+          {isPopupMode && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={handleReattach}
+                  disabled={!canReattach}
+                  className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+                >
+                  <PanelRight className="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {canReattach
+                  ? "Reattach to side panel"
+                  : "Unable to attach. The original tab is closed or no active window is available."}
+              </TooltipContent>
+            </Tooltip>
+          )}
+          <ChatPicker
+            spaceId={activeSpaceId}
+            activeConversationId={activeConversationId}
+            onSelect={(id) => setActiveConversationId(id)}
+            onNew={handleNew}
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
+          />
+          {activeConversationId && (
+            <ContextUsage conversationId={activeConversationId} compact />
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <MoreVertical className="size-3.5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-44">
+              <DropdownMenuItem onClick={handleOpenFullView}>
+                <ExternalLink className="size-3.5" />
+                Open in full view
               </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+              <DropdownMenuItem onClick={() => void openSettingsTab()}>
+                <Settings className="size-3.5" />
+                Settings
+              </DropdownMenuItem>
+              {activeConversationId && (
+                <DropdownMenuItem onClick={handleExportChat}>
+                  <Download className="size-3.5" />
+                  Export chat
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
 
-      <div className="flex-1 min-h-0">
-        <ChatView
-          conversationId={activeConversationId}
-          spaceId={activeSpaceId}
-          onNewConversation={handleNewConversation}
-          showHeader={false}
-          isPopupMode={isPopupMode}
-          isGlobalChat={isGlobalChat}
-          originWindowId={isPopupMode ? originWindowId : null}
-          originTabId={isPopupMode ? originTabId : null}
-          originUrl={isPopupMode ? originUrl : null}
-        />
+        <div className="flex-1 min-h-0">
+          <ChatView
+            conversationId={activeConversationId}
+            spaceId={activeSpaceId}
+            onNewConversation={handleNewConversation}
+            showHeader={false}
+            showWorkspaceControls
+            isPopupMode={isPopupMode}
+            isGlobalChat={isGlobalChat}
+            originWindowId={isPopupMode ? originWindowId : null}
+            originTabId={isPopupMode ? originTabId : null}
+            originUrl={isPopupMode ? originUrl : null}
+          />
+        </div>
+        {viewerFile !== null && activeConversationId && (
+          <div className="absolute inset-0 z-50 bg-background">
+            <FileViewerPanel
+              filePath={`conversations/${activeConversationId}/workspace/${viewerFile}`}
+              fileName={viewerFile.split("/").pop() ?? viewerFile}
+              onClose={() => setViewerFile(null)}
+            />
+          </div>
+        )}
       </div>
-    </div>
+    </FileSelectionContext.Provider>
   );
 }

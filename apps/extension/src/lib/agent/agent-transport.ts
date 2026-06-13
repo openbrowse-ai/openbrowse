@@ -373,19 +373,17 @@ const extensionDriver = new ExtensionDriver();
  * undefined.
  */
 /**
- * Build the browser tool set for a conversation. Extracted from
- * `createAgentTransport` so the headless scheduled-run loop can reuse the
- * exact same tool wrappers. `fsTools`/`pythonTool` are conversation-scoped,
- * so they are created here from `conversationId`. The tools resolve their
- * `ToolContext` at call time from the SDK's `experimental_context` (or the
- * module-level `agentConversationId` fallback), so this function does not
- * take a context argument.
+ * Build the browser tool set. Extracted from `createAgentTransport` so the
+ * headless scheduled-run loop can reuse the exact same tool wrappers. Every
+ * tool — including the fs and Python tools — resolves its conversation id
+ * (and the rest of its `ToolContext`) at call time from the SDK's
+ * `experimental_context` (or the module-level `agentConversationId`), so
+ * this function takes no conversation argument and the wrappers stay valid
+ * across a null→id transition (e.g. a brand-new chat) and for subagents.
  */
-export function createBrowserToolSet(
-  conversationId: string | null,
-): Record<string, ToolSet[string]> {
-  const fsTools = createFsTools(conversationId);
-  const pythonTool = createPythonTool(conversationId);
+export function createBrowserToolSet(): Record<string, ToolSet[string]> {
+  const fsTools = createFsTools();
+  const pythonTool = createPythonTool();
   return {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
     readPage: toSDKTool(readPageTool, "readPage"),
@@ -1198,7 +1196,7 @@ export async function createAgentTransport(
     }
   }
 
-  const browserTools = createBrowserToolSet(conversationId);
+  const browserTools = createBrowserToolSet();
 
   // The completion-check evaluator runs WITHOUT tools by default.
   //

@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/resizable";
 import { animatePanelResize } from "@/lib/animate-panel-resize";
 import { CoworkPanel } from "./CoworkPanel";
-import { FileViewerPanel } from "./FileViewerPanel";
+import { FileViewerPanel } from "@/components/files/FileViewerPanel";
 
 interface RightRailProps {
   conversationId: string;

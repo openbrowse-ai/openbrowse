@@ -82,7 +82,7 @@ describe("executePython approval (network-conditional)", () => {
     const { createPythonTool } = await import("@/lib/agent/tools");
     setAgentContext(CID);
     clearHeadlessRunPolicy(CID);
-    const tool = toSDKTool(createPythonTool(CID), "executePython");
+    const tool = toSDKTool(createPythonTool(), "executePython");
     const needsApproval = tool.needsApproval as (
       input: unknown,
       options: { toolCallId: string; messages: unknown[] },
@@ -118,7 +118,7 @@ describe("executePython approval (network-conditional)", () => {
     const { createPythonTool } = await import("@/lib/agent/tools");
     setAgentContext(CID);
     setHeadlessRunPolicy(CID, { autoApprove: true });
-    const tool = toSDKTool(createPythonTool(CID), "executePython");
+    const tool = toSDKTool(createPythonTool(), "executePython");
     const needsApproval = tool.needsApproval as (
       input: unknown,
       o: typeof opts,
