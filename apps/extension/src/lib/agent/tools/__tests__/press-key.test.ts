@@ -30,6 +30,13 @@ function makeMockDriver(opts: {
         opts.keyEvents.push(params ?? {});
         return {};
       }
+      if (method === "Runtime.evaluate") {
+        // Used by the post-action viewport-only snapshot path (scroll +
+        // viewport metrics).
+        return {
+          result: { value: { sx: 0, sy: 0, iw: 1280, ih: 800 } },
+        };
+      }
       return {};
     },
     getTab: async () => ({ id: TAB_ID, url: opts.url, title: "test" }),
@@ -107,15 +114,21 @@ describe("pressKey", () => {
     expect(focusedBackendNodeId).toBe(99);
   });
 
-  it("emits a non-retry note on a true no-op diff", async () => {
+  it("returns the post-action viewport snapshot in the `snapshot` field", async () => {
+    // Action tools no longer return a `diff`. They auto-attach a fresh
+    // viewport-scoped snapshot of the page state AFTER the action so the
+    // model can pick its next ref directly.
     const tree = [buttonNode()];
     const driver = makeMockDriver({ axTrees: [tree, tree], url: URL, keyEvents: [] });
     await captureSnapshot(driver, TAB_ID);
 
     const result = await pressKeyTool.execute({ tab: "t1", key: "ArrowDown" }, makeCtx(driver));
 
-    expect(result.diff).toBeNull();
-    expect(result.note).toContain("Do NOT");
-    expect(result.note).toContain("blindly repeat");
+    expect(result.pressed).toBe(true);
+    expect("diff" in result).toBe(false);
+    expect(result.snapshot).toBeDefined();
+    expect(result.snapshot).toContain('button "OK"');
+    expect(result.refCount).toBe(1);
+    expect(result.url).toBe(URL);
   });
 });

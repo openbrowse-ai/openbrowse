@@ -116,6 +116,13 @@ async function sendCommandWithRetry<T>(
     } catch (err) {
       if (allowRetry && isDetachError(err)) {
         // Stale session — drop and retry once with a fresh attach.
+        // Logged at debug; transient and self-healing, so most engineers
+        // don't need to see it. Surfaces under DevTools Verbose for the
+        // rare "flaky CUA click" investigation.
+        console.debug(
+          `[cdp-session] tab ${tabId} detached on ${domain}.enable for ` +
+            `${method}; reattaching once`,
+        );
         sessions.delete(tabId);
         return sendCommandWithRetry<T>(tabId, method, params, false);
       }
@@ -137,6 +144,13 @@ async function sendCommandWithRetry<T>(
       // command itself fell off the wire mid-flight). Drop our stale session
       // record, give Chrome a moment to settle if a navigation is happening,
       // then re-attach and retry once.
+      // Logged at debug to correlate "flaky CUA click" reports with
+      // mid-flight debugger detaches (e.g. a navigation kicked off by a
+      // previous click). Surfaces only under DevTools Verbose.
+      console.debug(
+        `[cdp-session] tab ${tabId} detached during ${method}; reattaching ` +
+          `and retrying once`,
+      );
       sessions.delete(tabId);
       await new Promise((r) => setTimeout(r, 250));
       return sendCommandWithRetry<T>(tabId, method, params, false);

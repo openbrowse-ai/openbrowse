@@ -120,11 +120,19 @@ describe("executeAndShoot", () => {
 
     await executeAndShoot(driver, 1, { kind: "click", x: 42, y: 99 }, 800, 600);
 
-    // Passthrough is enabled before the action and disabled after; the
-    // screenshot capture happens after the action; and the ripple fires LAST
-    // (after capture) so it's never baked into the image sent to the model.
+    // Order:
+    //   1. Passthrough ON  (shield → pointer-events:none)
+    //   2. Pre-dispatch diagnostic  (proves the toggle took effect at click time)
+    //   3. Post-dispatch diagnostic (still inside passthrough window, confirms
+    //      no transient element hijack between hit-test and dispatch)
+    //   4. Passthrough OFF (shield back to pointer-events:auto)
+    //   5. Screenshot capture (clean, with shield up)
+    //   6. Ripple fires LAST (after capture) so it's never baked into the
+    //      image sent to the model.
     expect(order).toEqual([
       "msg:CHAT_CUA_INPUT_PASSTHROUGH",
+      "msg:CHAT_CUA_DIAG_HIT_TEST",
+      "msg:CHAT_CUA_DIAG_HIT_TEST",
       "msg:CHAT_CUA_INPUT_PASSTHROUGH",
       "capture",
       "msg:CHAT_CUA_CLICK_RIPPLE",

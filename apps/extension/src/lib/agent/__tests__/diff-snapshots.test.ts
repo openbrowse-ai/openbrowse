@@ -13,7 +13,6 @@ const ZERO: PageStateSignals = {
   checkedCount: 0,
   dialogCount: 0,
   url: "https://example.com",
-  interactiveCount: 0,
 };
 
 describe("diffSnapshots — null cases", () => {
@@ -97,13 +96,11 @@ describe("diffSnapshots — signal-only changes (text identical)", () => {
     expect(result).toBeNull();
   });
 
-  it("reports interactive-count change", () => {
-    const result = diffSnapshots(
-      { text: "a", signals: { ...ZERO, interactiveCount: 5 } },
-      { text: "a", signals: { ...ZERO, interactiveCount: 8 } },
-    );
-    expect(result).toContain("interactive elements: 5 → 8");
-  });
+  // `interactiveCount` was removed from PageStateSignals entirely (it was
+  // mode-fragile and dead code after the diff→viewport-snapshot migration).
+  // The structural impossibility of diffing it is now the regression
+  // guarantee — no runtime test needed. See `describeSignalChanges` in
+  // snapshot-capture for context.
 
   it("joins multiple changes with semicolons", () => {
     const result = diffSnapshots(

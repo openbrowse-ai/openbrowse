@@ -330,34 +330,34 @@ export function keepOnlyLatestScreenshot(
 }
 
 /**
- * Tools whose output embeds a page accessibility snapshot (or a diff of
- * one) keyed to per-snapshot `@ref` ids. Once a NEWER snapshot of the same
- * tab exists, every earlier snapshot's text is dead weight: its refs are
- * invalid by construction (refs are reassigned on every capture), and the
- * agent is instructed to re-snapshot rather than re-read an old tree. So we
- * keep only the latest snapshot per tab alive in the model's context.
+ * Tools whose output embeds a page accessibility snapshot keyed to
+ * per-snapshot `@ref` ids. Once a NEWER snapshot of the same tab exists,
+ * every earlier snapshot's text is dead weight: its refs are invalid by
+ * construction (refs are reassigned on every capture), and the agent is
+ * instructed to re-snapshot rather than re-read an old tree. So we keep
+ * only the latest snapshot per tab alive in the model's context.
  *
  * Maps the tool name → the output field that carries the snapshot text:
  *   - `snapshot`     → `snapshot`
  *   - `navigate`     → `snapshot` (fresh tree attached on navigation)
- *   - `clickElement` → `diff`
- *   - `typeInElement`→ `diff`
- *   - `pressKey`     → `diff`
+ *   - `clickElement` → `snapshot` (auto-attached viewport snapshot post-action)
+ *   - `typeInElement`→ `snapshot` (auto-attached viewport snapshot post-action)
+ *   - `pressKey`     → `snapshot` (auto-attached viewport snapshot post-action)
  *
  * The grouping key is the tool output's `tab` field, so a multi-tab task
  * keeps the latest snapshot of EACH tab.
  */
-export const SNAPSHOT_OUTPUT_FIELDS: Record<string, "snapshot" | "diff"> = {
+export const SNAPSHOT_OUTPUT_FIELDS: Record<string, "snapshot"> = {
   snapshot: "snapshot",
   navigate: "snapshot",
-  clickElement: "diff",
-  typeInElement: "diff",
-  pressKey: "diff",
+  clickElement: "snapshot",
+  typeInElement: "snapshot",
+  pressKey: "snapshot",
 };
 
 /**
  * Keeps only the latest snapshot-bearing tool output per tab; replaces the
- * snapshot/diff text on every earlier one with a compact stub that preserves
+ * snapshot text on every earlier one with a compact stub that preserves
  * orientation metadata (tab, url, refCount) but drops the multi-kilobyte
  * accessibility tree.
  *
@@ -378,7 +378,7 @@ export function keepOnlyLatestSnapshotPerTab(
   messages: AgentUIMessage[],
 ): AgentUIMessage[] {
   // First pass: locate every live (non-stubbed) snapshot-bearing output,
-  // grouped by tab. A part is "live" when its snapshot/diff field is a
+  // grouped by tab. A part is "live" when its snapshot field is a
   // non-empty string (stubs replace it with an object).
   const locsByTab = new Map<string, Array<{ m: number; p: number }>>();
   for (let m = 0; m < messages.length; m++) {
@@ -432,7 +432,7 @@ export function keepOnlyLatestSnapshotPerTab(
       if (typeof prev.tab === "string") stub.tab = prev.tab;
       if (typeof prev.url === "string") stub.url = prev.url;
       if (typeof prev.refCount === "number") stub.refCount = prev.refCount;
-      // Drop the heavy snapshot/diff text; keep everything else small.
+      // Drop the heavy snapshot text; keep everything else small.
       const { [field]: _omit, ...rest } = prev;
       return { ...anyPart, output: { ...rest, ...stub } };
     });

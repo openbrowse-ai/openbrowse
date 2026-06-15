@@ -41,7 +41,7 @@ type Output = z.infer<typeof outputSchema>;
 export const snapshotTool: BrowserTool<Input, Output> = {
   name: "snapshot",
   description:
-    "Get a tab's accessibility tree with @refs for interactive elements. Pass `tab` (handle from the tab legend or listTabs). Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (click/type/navigate) already auto-attach diffs — call this explicitly only when you need the full tree, a scoped view, or after executeOnPage.",
+    "Get a tab's accessibility tree with @refs for interactive elements. Pass `tab` (handle from the tab legend or listTabs). Use refs with clickElement/typeInElement. On heavy pages, scope with `selector` or use `mode: 'viewport'` to see only above-the-fold elements. Action tools (clickElement, typeInElement, pressKey) already auto-attach a fresh viewport-scoped snapshot to their responses — call this explicitly only when you need the full tree, a different scope, or an opt-in `diff: true` against the previous snapshot.",
   parameters,
   outputSchema,
   execute: async ({ tab: handle, mode, selector, diff }, ctx) => {

@@ -6,6 +6,10 @@ import { executeCanonicalAction } from "./executor";
 import { captureNormalizedShot, captureRegionShot } from "./screenshot";
 import type { CuaRunConfig, CuaRunResult } from "./provider";
 import { notifyAgentStatus } from "../agent-indicator";
+import {
+  runClickDiagnostic,
+  setShieldPassthrough,
+} from "../click-diagnostic";
 
 /**
  * Plain OUTPUT value of the CUA computer tool's `execute`. Carries the
@@ -70,9 +74,58 @@ export async function executeAndShoot(
   // provably down before the CDP dispatch and back up after). No-op when no
   // overlay is present.
   const needsPassthrough = INPUT_ACTION_KINDS.has(action.kind);
+  // Diagnostic instrumentation for "agent click did nothing" reports.
+  // Logged at info; cheap; the only thing that lets us tell, after the
+  // fact, whether a click was eaten by an overlay vs. landed off-target
+  // vs. the debugger detached. The diagnostics fire INSIDE the passthrough
+  // window — see runClickDiagnostic for the timing rationale.
+  const t0 = needsPassthrough ? performance.now() : 0;
   if (needsPassthrough) await setShieldPassthrough(driver, tabId, true);
+  const t1 = needsPassthrough ? performance.now() : 0;
+  // Compute click point for diagnostics. Null for non-positional actions
+  // (key/type/wait) — those skip the diagnostic but still need passthrough.
+  const diagPoint = pointFromAction(action);
+  const runDiag =
+    diagPoint && (action.kind === "click" || action.kind === "drag");
   try {
+    if (needsPassthrough) {
+      logActionDispatch(action, tabId, t1 - t0);
+    }
+    if (runDiag && diagPoint) {
+      // Pre-dispatch: proves the shield's passthrough class actually took
+      // effect at click time. shieldPE != "none" here means the toggle
+      // didn't propagate and the click is about to be eaten.
+      await runClickDiagnostic(
+        driver,
+        tabId,
+        `cua/${action.kind}:pre`,
+        diagPoint.x,
+        diagPoint.y,
+      );
+    }
     await executeCanonicalAction(driver, tabId, action);
+    if (runDiag && diagPoint) {
+      // Post-dispatch (still inside the passthrough window): confirms the
+      // top element didn't change between hit-test and dispatch (animation,
+      // timeout, micro-task hijack).
+      await runClickDiagnostic(
+        driver,
+        tabId,
+        `cua/${action.kind}:post`,
+        diagPoint.x,
+        diagPoint.y,
+      );
+    }
+  } catch (err) {
+    // Surface a failed CDP dispatch with full context — previously this
+    // bubbled with no breadcrumb, making "click silently dropped" look
+    // identical to "click landed on overlay".
+    console.warn(
+      `[cua/loop] action ${action.kind} (tab ${String(tabId)}) failed:`,
+      err instanceof Error ? err.message : String(err),
+      pointFromAction(action),
+    );
+    throw err;
   } finally {
     if (needsPassthrough) await setShieldPassthrough(driver, tabId, false);
   }
@@ -125,19 +178,40 @@ const INPUT_ACTION_KINDS = new Set<CanonicalAction["kind"]>([
   "holdKey",
 ]);
 
-async function setShieldPassthrough(
-  driver: BrowserDriver,
-  tabId: TabId,
-  on: boolean,
-): Promise<void> {
-  try {
-    await driver.sendToContentScript(tabId, {
-      type: "CHAT_CUA_INPUT_PASSTHROUGH",
-      on,
-    });
-  } catch {
-    // No overlay / no content script — nothing to toggle.
+/** CSS-pixel point a given action targets, for diagnostic logging. Returns
+ *  null for actions that have no positional coordinate (key/type/wait/etc.). */
+function pointFromAction(
+  action: CanonicalAction,
+): { x: number; y: number } | null {
+  switch (action.kind) {
+    case "click":
+    case "drag":
+    case "move":
+    case "scroll":
+    case "mouseDown":
+    case "mouseUp":
+      return { x: action.x, y: action.y };
+    default:
+      return null;
   }
+}
+
+/** Compact one-line dispatch log for forensic correlation with content-script
+ *  diagnostics. `toggleMs` is how long the passthrough round-trip took — a
+ *  large value (>50ms) is a red flag for the race window. Logged at debug
+ *  so it stays out of the default DevTools log; flip on Verbose to see it
+ *  when investigating a click-pipeline issue. */
+function logActionDispatch(
+  action: CanonicalAction,
+  tabId: TabId,
+  toggleMs: number,
+): void {
+  const point = pointFromAction(action);
+  const coords = point ? `(${point.x},${point.y})` : "";
+  console.debug(
+    `[cua/loop] dispatch ${action.kind}${coords} tab=${String(tabId)} ` +
+      `passthroughToggle=${toggleMs.toFixed(1)}ms`,
+  );
 }
 
 /**
