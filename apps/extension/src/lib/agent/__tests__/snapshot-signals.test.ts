@@ -16,7 +16,7 @@ type FixtureAXNode = {
 
 describe("derivePageStateSignals", () => {
   it("returns zero/null signals for an empty AX tree", () => {
-    const signals = derivePageStateSignals([], new Map(), "https://example.com");
+    const signals = derivePageStateSignals([], "https://example.com");
     expect(signals).toEqual<PageStateSignals>({
       focusedBackendNodeId: null,
       focusedName: null,
@@ -26,7 +26,6 @@ describe("derivePageStateSignals", () => {
       checkedCount: 0,
       dialogCount: 0,
       url: "https://example.com",
-      interactiveCount: 0,
     });
   });
 });
@@ -43,7 +42,6 @@ describe("derivePageStateSignals — focus", () => {
     const signals = derivePageStateSignals(
       // biome-ignore lint/suspicious/noExplicitAny: minimal fixture
       [node as any],
-      new Map(),
       "https://example.com",
     );
     expect(signals.focusedBackendNodeId).toBe(42);
@@ -62,7 +60,6 @@ describe("derivePageStateSignals — focus", () => {
     const signals = derivePageStateSignals(
       // biome-ignore lint/suspicious/noExplicitAny: minimal fixture
       [node as any],
-      new Map(),
       "https://example.com",
     );
     expect(signals.focusedBackendNodeId).toBeNull();
@@ -93,7 +90,6 @@ describe("derivePageStateSignals — toggle counts", () => {
     const signals = derivePageStateSignals(
       // biome-ignore lint/suspicious/noExplicitAny: minimal fixture
       nodes as any,
-      new Map(),
       "https://example.com",
     );
     expect(signals.expandedCount).toBe(2);
@@ -115,7 +111,6 @@ describe("derivePageStateSignals — toggle counts", () => {
     const signals = derivePageStateSignals(
       // biome-ignore lint/suspicious/noExplicitAny: minimal fixture
       nodes as any,
-      new Map(),
       "https://example.com",
     );
     expect(signals.pressedCount).toBe(1);
@@ -134,27 +129,20 @@ describe("derivePageStateSignals — dialog count", () => {
     const signals = derivePageStateSignals(
       // biome-ignore lint/suspicious/noExplicitAny: minimal fixture
       nodes as any,
-      new Map(),
       "https://example.com",
     );
     expect(signals.dialogCount).toBe(2);
   });
 });
 
-describe("derivePageStateSignals — interactive count", () => {
-  it("returns refs.size", () => {
-    const refs = new Map([
-      ["@e1", { backendNodeId: 1, role: "button", name: "OK", nth: 0 }],
-      ["@e2", { backendNodeId: 2, role: "link", name: "Home", nth: 0 }],
-    ]);
-    const signals = derivePageStateSignals([], refs, "https://example.com");
-    expect(signals.interactiveCount).toBe(2);
-  });
-});
+// `interactiveCount` was removed (it was mode-fragile and dead code after
+// the diff→viewport-snapshot migration). The signal lived only to power
+// `describeSignalChanges`, which now intentionally excludes it. Don't
+// reintroduce without a mode-aware comparison strategy.
 
 describe("derivePageStateSignals — url", () => {
   it("stores the url verbatim", () => {
-    const signals = derivePageStateSignals([], new Map(), "https://x.test/a?b=c");
+    const signals = derivePageStateSignals([], "https://x.test/a?b=c");
     expect(signals.url).toBe("https://x.test/a?b=c");
   });
 });

@@ -40,7 +40,7 @@ Your current plan will be appended to your instructions at every turn. Keep it i
 
 1. Use \`snapshot({ tab })\` to see interactive elements with @refs (e.g. @e1, @e2). On heavy pages (Amazon, Gmail, Notion, any e-commerce site, any social feed) — **always start with \`mode: "viewport"\` or scope with \`selector\` to keep the tree small.** A full \`interactive\` snapshot of Amazon's homepage returns 300+ refs; viewport mode typically returns 30-60. The response includes \`belowFoldCount\` when more content exists off-screen; \`scrollPage\` + re-snapshot to reach it. Use element selectors (e.g. \`"main"\`, \`"#search"\`, \`".s-main-slot"\`) — NOT attribute selectors like \`[role="main"]\` (those don't match implicit ARIA roles).
 2. Use @refs in clickElement/typeInElement: \`clickElement({ tab: "t1", target: "@e3" })\`. The \`@ref\` is tied to the tab whose snapshot produced it — do NOT pass refs from one tab to another.
-3. \`clickElement\`, \`typeInElement\`, and \`navigate\` automatically return a \`diff\` (or a fresh snapshot on navigate) — inspect it to verify your action worked before issuing the next one. A \`diff: null\` response means the action produced no visible change, which usually signals a silent failure.
+3. \`clickElement\`, \`typeInElement\`, and \`pressKey\` automatically attach a fresh viewport-scoped \`snapshot\` of the page AFTER the action so you can see the current state and pick the next ref without a follow-up snapshot call. \`navigate\` also auto-attaches a snapshot of the landed page. Inspect the returned snapshot to verify your action worked before issuing the next one. If a returned snapshot has the same content you saw before, the action probably had no visible effect — try a different target, scroll, or check for an overlay.
 4. **To submit a form, ALWAYS use \`typeInElement({ tab, target: "@e5", text: "...", submit: true })\`** — never append \\n to the text. The \`submit: true\` flag presses Enter AND waits for navigation to settle, which the legacy newline trick does not.
 5. Use \`extract({ tab, instruction, schema? })\` to pull structured data (product lists, search results, table rows) from a page. Provide an instruction and optionally a JSON Schema. Mark URL fields as \`{"type": "string", "format": "uri"}\` for reliable link extraction — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them before returning. Use element selectors like \`"main"\` or \`".s-main-slot"\` (NOT \`[role="main"]\`).
 6. Use \`readPage({ tab })\` when you need full text content (articles, long-form text).
@@ -108,7 +108,7 @@ Guidance:
 
 The biggest failure mode is giving up too early. Default to trying one more thing before reporting failure.
 
-- A click or type returned \`diff: null\` (no visible change): re-snapshot for fresh refs, then try a different element or selector.
+- A click, type, or key press returned a snapshot identical to what you saw before (no visible change): re-snapshot for fresh refs, then try a different element, scroll the target into view, or check for an overlay.
 - The page is still loading: scroll or screenshot to wait, don't bail.
 - A tool errored: if the error looks transient, retry; if structural, change approach.
 - An "Unknown tab handle" error means the legend has changed — call \`listTabs\` to refresh and pick a valid handle.

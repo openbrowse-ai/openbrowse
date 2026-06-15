@@ -340,11 +340,15 @@ describe("keepOnlyLatestSnapshotPerTab", () => {
     refCount,
     url: `https://x/${tab}`,
   });
-  const clickDiff = (tab: string, diff: string) => ({
+  // Action tools (clickElement/typeInElement/pressKey) auto-attach a
+  // viewport-scoped snapshot in the `snapshot` field — same as the snapshot
+  // tool itself. The historical `diff` field is gone (see
+  // tools/click-element.ts).
+  const clickResult = (tab: string, snapshot: string) => ({
     tab,
     clicked: true,
     target: "@eabc",
-    diff,
+    snapshot,
   });
 
   function isSnapshotStub(output: unknown): boolean {
@@ -352,8 +356,7 @@ describe("keepOnlyLatestSnapshotPerTab", () => {
       !!output &&
       typeof output === "object" &&
       (output as Record<string, unknown>).superseded === true &&
-      !("snapshot" in (output as Record<string, unknown>)) &&
-      !("diff" in (output as Record<string, unknown>))
+      !("snapshot" in (output as Record<string, unknown>))
     );
   }
 
@@ -386,15 +389,15 @@ describe("keepOnlyLatestSnapshotPerTab", () => {
     expect((out[2] as any).snapshot).toBe("A2"); // t1 latest, intact
   });
 
-  it("treats clickElement/navigate diffs as snapshots and supersedes them", () => {
+  it("treats clickElement/navigate snapshots as supersedable and stubs the older ones", () => {
     const msgs = [
       toolResultMsg("snapshot", snap("t1", "TREE-1")),
-      toolResultMsg("clickElement", clickDiff("t1", "DIFF-1")),
+      toolResultMsg("clickElement", clickResult("t1", "POST-CLICK-1")),
       toolResultMsg("snapshot", snap("t1", "TREE-2")),
     ];
     const out = outputs(keepOnlyLatestSnapshotPerTab(msgs));
     expect(isSnapshotStub(out[0])).toBe(true); // earlier snapshot
-    expect(isSnapshotStub(out[1])).toBe(true); // earlier click diff
+    expect(isSnapshotStub(out[1])).toBe(true); // earlier click result
     expect((out[2] as any).snapshot).toBe("TREE-2"); // latest survives
   });
 

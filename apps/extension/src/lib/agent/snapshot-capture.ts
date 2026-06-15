@@ -1,7 +1,9 @@
 /**
- * Core snapshot capture logic, extracted so action tools (click/type/navigate)
- * can auto-attach post-action diffs to their responses without duplicating the
- * a11y tree logic from tools/snapshot.ts.
+ * Core snapshot capture logic, extracted so action tools (click/type/press)
+ * can auto-attach a fresh viewport-scoped snapshot to their responses without
+ * duplicating the a11y tree logic from tools/snapshot.ts. The `snapshot` tool
+ * additionally exposes an opt-in `diff: true` mode that uses `diffSnapshots`
+ * to compare the new capture against the prior one.
  *
  * All CDP I/O routes through the `BrowserDriver` passed in by callers, which
  * is what makes this module portable: in production it goes through
@@ -95,13 +97,16 @@ export interface PageStateSignals {
   checkedCount: number;
   dialogCount: number;
   url: string;
-  interactiveCount: number;
+  // Note: `interactiveCount` was removed because it was mode-fragile —
+  // capturing the same page under different modes (viewport vs full)
+  // produces wildly different counts even when nothing visible changed.
+  // See `describeSignalChanges` for the reasoning. Don't reintroduce
+  // unless paired with a mode-aware comparison strategy.
 }
 
 /**
- * Derive multi-signal page state from an already-fetched AX tree, the
- * collected refs map, and the current URL. Pure function — no I/O — so
- * it's cheap and unit-testable.
+ * Derive multi-signal page state from an already-fetched AX tree and the
+ * current URL. Pure function — no I/O — so it's cheap and unit-testable.
  *
  * Signals are intentionally counts rather than node lists: they're robust
  * (a count won't change without a real state shift) and small (no risk of
@@ -109,7 +114,6 @@ export interface PageStateSignals {
  */
 export function derivePageStateSignals(
   axNodes: AXNode[],
-  refs: Map<string, RefEntry>,
   url: string,
 ): PageStateSignals {
   let focusedBackendNodeId: number | null = null;
@@ -154,7 +158,6 @@ export function derivePageStateSignals(
     checkedCount,
     dialogCount,
     url,
-    interactiveCount: refs.size,
   };
 }
 
@@ -262,7 +265,7 @@ export async function captureSnapshot(
     // signal, so this is safe.
   }
 
-  const signals = derivePageStateSignals(axTree.nodes, refs, url);
+  const signals = derivePageStateSignals(axTree.nodes, url);
 
   setRefs(tabId, refs, snapshotText, signals);
 
@@ -305,13 +308,19 @@ export async function captureSnapshot(
 /**
  * Compute a diff between two snapshots that combines the line-level a11y
  * text diff with a multi-signal state diff. Returns a short summary suitable
- * for auto-attaching to action responses.
+ * for the `snapshot` tool's opt-in `diff: true` mode.
  *
  * Returns null ONLY when text AND all signals are identical — i.e. nothing
- * observable changed. This is intentionally narrower than the old
- * text-only set-diff: many successful interactions (focus, toggles, modal
- * opens) leave the a11y text identical, and reporting them as "no change"
- * was driving the agent into retry loops.
+ * observable changed. This is intentionally narrower than a text-only
+ * set-diff: many successful interactions (focus, toggles, modal opens)
+ * leave the a11y text identical, but signal changes still surface them.
+ *
+ * NOTE: action tools (clickElement/typeInElement/pressKey) intentionally do
+ * NOT call this — they auto-attach a fresh viewport snapshot to their
+ * responses instead of a diff, because mode-asymmetry between the prior
+ * snapshot (often viewport-scoped) and a post-action capture (full-tree by
+ * default) historically produced spurious "[+] entire below-fold tree"
+ * diffs that drove model hallucinations.
  */
 export function diffSnapshots(
   prev: { text: string; signals: PageStateSignals },
@@ -361,6 +370,13 @@ export function diffSnapshots(
 /**
  * Render per-signal change descriptions. Returns one human-readable string
  * per signal that changed; empty array means signals are identical.
+ *
+ * Historical note: `interactiveCount` used to live on PageStateSignals and
+ * be reported here. It was removed entirely because it's mode-fragile —
+ * capturing the same page under different modes (viewport vs full) yields
+ * wildly different counts. The auto-attached-diff history surfaced this
+ * as spurious "interactive elements: N → M" lines that drove model
+ * hallucinations. Don't reintroduce without a mode-aware comparison.
  */
 function describeSignalChanges(
   prev: PageStateSignals,
@@ -398,13 +414,6 @@ function describeSignalChanges(
   // real navigation — diffing against "" would emit a spurious "navigated to ".
   if (prev.url !== "" && curr.url !== "" && prev.url !== curr.url) {
     out.push(`navigated to ${curr.url}`);
-  }
-
-  // Interactive count.
-  if (prev.interactiveCount !== curr.interactiveCount) {
-    out.push(
-      `interactive elements: ${prev.interactiveCount} → ${curr.interactiveCount}`,
-    );
   }
 
   return out;

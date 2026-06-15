@@ -1,16 +1,23 @@
 import { z } from "zod";
 import { isDetachError } from "../cdp-errors";
+import {
+  runClickDiagnostic,
+  setShieldPassthrough,
+} from "../click-diagnostic";
 import type { BrowserDriver, TabId } from "../driver";
 import { resolveTabOrThrow } from "../driver";
 import {
   getRef,
-  getPreviousSnapshot,
-  getPreviousSignals,
   invalidateRefsIfNavigated,
 } from "../ref-store";
 import {
+  readElementGeometry,
+  readViewportMetrics,
+  scrollIntoViewIfNeeded,
+  waitForLayoutFlush,
+} from "../viewport";
+import {
   captureSnapshot,
-  diffSnapshots,
   findNodeByRoleNameNth,
 } from "../snapshot-capture";
 import type { BrowserTool } from "../types";
@@ -34,7 +41,14 @@ const outputSchema = z.object({
   tab: z.string(),
   clicked: z.literal(true),
   target: z.string(),
-  diff: z.string().nullable().optional(),
+  /** Viewport-scoped a11y tree of the page AFTER the click. Mirrors the
+   *  shape of `snapshot({mode: "viewport"})`. Empty when the post-action
+   *  capture failed (see `note`). */
+  snapshot: z.string().optional(),
+  refCount: z.number().optional(),
+  url: z.string().optional(),
+  belowFoldCount: z.number().optional(),
+  hint: z.string().optional(),
   note: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
@@ -42,15 +56,13 @@ type Output = z.infer<typeof outputSchema>;
 export const clickElementTool: BrowserTool<Input, Output> = {
   name: "clickElement",
   description:
-    "Click an element on a page. Pass `tab` (handle from the tab legend or listTabs) and `target` — either an @ref from a recent snapshot of THAT tab (preferred) or a CSS selector as fallback. The response automatically includes a diff of what changed on the page — use it to verify the action worked before acting again. If diff is null the click produced no visible change.",
+    "Click an element on a page. Pass `tab` (handle from the tab legend or listTabs) and `target` — either an @ref from a recent snapshot of THAT tab (preferred) or a CSS selector as fallback. The response auto-attaches a viewport-scoped accessibility snapshot of the page AFTER the click so you can see the current state and pick the next ref without a follow-up snapshot call. Call snapshot explicitly when you need the full tree, a different scope, or the section below the fold.",
   parameters,
   outputSchema,
   execute: async ({ tab: handle, target }, ctx) => {
     const tab = await resolveTabOrThrow(ctx, handle);
     const tabId = tab.id;
-
-    const previousSnapshot = getPreviousSnapshot(tabId);
-    const previousSignals = getPreviousSignals(tabId);
+    const previousUrl = tab.url ?? undefined;
 
     let hitWarning: string | undefined;
     try {
@@ -73,53 +85,58 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     await new Promise((r) => setTimeout(r, 250));
     await ctx.driver.waitForLoad(tabId, 3000).catch(() => {});
 
-    // Auto-attach diff so the agent can verify the outcome without a follow-up
-    // snapshot call. If we have no prior baseline, capture fresh and bail.
-    if (!previousSnapshot || !previousSignals) {
-      try {
-        await captureSnapshot(ctx.driver, tabId);
-      } catch {
-        // page may have navigated away / tab closed; ignore
-      }
-      return { tab: handle, clicked: true, target, ...(hitWarning && { note: hitWarning }) };
-    }
+    // If the click navigated to a different document, drop the stale ref map
+    // (incl. the carry-over pool) BEFORE the post-action snapshot's merge so
+    // old-page refs can't leak into the new page — mirrors navigate.ts.
+    // In-page re-renders (same URL) keep the content-stable carry-over.
+    await invalidateRefsIfNavigated(ctx.driver, tabId, previousUrl);
 
+    // Capture a viewport-scoped snapshot of the post-action state. We auto-
+    // attach this in place of a `diff` for two reasons:
+    //   1. Diffs hallucinated when the prior snapshot was viewport-scoped
+    //      and this post-action capture was full-tree — every below-fold
+    //      element looked "added" to the model.
+    //   2. The agent almost always needs to see the current viewport state
+    //      to pick its next move (especially after scroll-triggering
+    //      clicks like anchor links). Returning the snapshot directly is
+    //      strictly more informative than returning a diff.
+    let url = previousUrl ?? "";
     try {
-      // If the click navigated to a different document, drop the stale ref map
-      // (incl. the carry-over pool) BEFORE the post-action snapshot's merge so
-      // old-page refs can't leak into the new page — mirrors navigate.ts.
-      // In-page re-renders (same URL) keep the content-stable carry-over.
-      await invalidateRefsIfNavigated(ctx.driver, tabId, previousSignals.url);
-      const { snapshotText, signals } = await captureSnapshot(ctx.driver, tabId);
-      const diff = diffSnapshots(
-        { text: previousSnapshot, signals: previousSignals },
-        { text: snapshotText, signals },
-      );
-      if (diff === null) {
-        return {
-          tab: handle,
-          clicked: true,
-          target,
-          diff: null,
-          note:
-            (hitWarning ? hitWarning + " " : "") +
-            "Accessibility tree and element state unchanged. This may still " +
-            "have succeeded (some changes aren't reflected here). Do NOT " +
-            "blindly re-click — verify with a screenshot or by reading " +
-            "element state before retrying.",
-        };
+      const fresh = await ctx.driver.getTab(tabId);
+      url = fresh.url ?? url;
+    } catch {
+      // tab may have closed during the action — keep the stale url
+    }
+    try {
+      const cap = await captureSnapshot(ctx.driver, tabId, {
+        mode: "interactive",
+        viewportOnly: true,
+      });
+      const result: Output = {
+        tab: handle,
+        clicked: true,
+        target,
+        snapshot: cap.snapshotText,
+        refCount: cap.refs.size,
+        url,
+      };
+      if (cap.belowFoldCount > 0) {
+        result.belowFoldCount = cap.belowFoldCount;
+        result.hint = `${cap.belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`;
       }
-      return { tab: handle, clicked: true, target, diff, ...(hitWarning && { note: hitWarning }) };
+      if (hitWarning) result.note = hitWarning;
+      return result;
     } catch (err) {
       return {
         tab: handle,
         clicked: true,
         target,
+        url,
         note:
           (hitWarning ? hitWarning + " " : "") +
           `Click succeeded but post-action snapshot failed: ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          }. Call snapshot to retry.`,
       };
     }
   },
@@ -165,40 +182,205 @@ async function clickByRef(
     );
   }
 
-  const pts = boxResult;
-  const x = (pts[0] + pts[2] + pts[4] + pts[6]) / 4;
-  const y = (pts[1] + pts[3] + pts[5] + pts[7]) / 4;
+  // ── Forensic geometry pass ─────────────────────────────────────────────
+  // We capture the element's geometry FOUR ways to disambiguate the
+  // off-viewport failures the diagnostic surfaced previously:
+  //
+  //   1. Pre-scroll  getBoxModel               (DOC space)
+  //   2. Pre-scroll  getBoundingClientRect     (VIEWPORT space, atomic w/ scroll)
+  //                  ↓ scrollIntoViewIfNeeded ↓
+  //                  ↓ waitForLayoutFlush     ↓ (two rAFs — settle smooth-scroll)
+  //   3. Post-scroll getBoxModel               (DOC space)
+  //   4. Post-scroll getBoundingClientRect     (VIEWPORT space, atomic w/ scroll)
+  //
+  // Reads 2 and 4 also capture live `scrollY` and `innerHeight` IN THE SAME
+  // FRAME as the rect, eliminating the inter-call race that
+  // (getBoxModel → readViewportMetrics) was vulnerable to.
+  //
+  // The DISPATCHED click coordinates are taken from read #4 — the atomic
+  // post-scroll viewport rect — which is correct by construction. Reads
+  // 1–3 exist purely to log and confirm whether (a) scrollIntoViewIfNeeded
+  // moved the page, (b) the box-model approach agrees with gBCR, and
+  // (c) the layout-flush wait is needed.
+  const preBox = boxResult;
+  const preDocX = (preBox[0] + preBox[2] + preBox[4] + preBox[6]) / 4;
+  const preDocY = (preBox[1] + preBox[3] + preBox[5] + preBox[7]) / 4;
+  const preGeom = await readElementGeometry(driver, tabId, backendNodeId);
 
-  const warning = await verifyHitTarget(
-    driver,
-    tabId,
-    x,
-    y,
-    backendNodeId,
-    ref,
+  // Scroll the element into view. CDP `Input.dispatchMouseEvent` only
+  // dispatches into the visible viewport, so an element below the fold
+  // otherwise receives a silent no-op click. Best-effort.
+  await scrollIntoViewIfNeeded(driver, tabId, backendNodeId);
+  // Two rAFs to flush layout + commit any smooth-scroll animation. Without
+  // this wait, the post-scroll reads can return pre-scroll positions on
+  // pages with `scroll-behavior: smooth` or scroll-snap.
+  await waitForLayoutFlush(driver, tabId);
+
+  const postBox = (await getBoxModel(driver, tabId, backendNodeId)) ?? preBox;
+  const postDocX = (postBox[0] + postBox[2] + postBox[4] + postBox[6]) / 4;
+  const postDocY = (postBox[1] + postBox[3] + postBox[5] + postBox[7]) / 4;
+  const postGeom = await readElementGeometry(driver, tabId, backendNodeId);
+
+  // Pick the click point. Prefer the atomic gBCR center (read #4) because
+  // it's intrinsically scroll-consistent. Fall back to the legacy
+  // box-model − scroll path so a debugger that doesn't support
+  // `Runtime.callFunctionOn` (or a detached objectId) doesn't break clicks.
+  let x: number;
+  let y: number;
+  let coordSource: "gbcr" | "boxmodel-fallback";
+  // Resolved viewport metrics for the off-viewport guard and the dispatch
+  // log. When gBCR succeeded these come from postGeom (atomic-with-rect);
+  // when it failed we read them separately so the fallback still has truth-
+  // ful innerWidth/Height instead of postGeom's zeroed sentinels.
+  let scrollX = postGeom.scrollX;
+  let scrollY = postGeom.scrollY;
+  let innerW = postGeom.innerWidth;
+  let innerH = postGeom.innerHeight;
+  if (postGeom.ok) {
+    x = postGeom.vx + postGeom.vw / 2;
+    y = postGeom.vy + postGeom.vh / 2;
+    coordSource = "gbcr";
+  } else {
+    // gBCR failed (detached objectId, debugger doesn't support
+    // callFunctionOn, etc.). Read scroll/viewport SEPARATELY — falling
+    // back to `postGeom.scrollX/Y` is wrong because they're zeroed-out
+    // sentinels from `readElementGeometry`'s empty result, which would
+    // make us dispatch at document coords and silently miss any element
+    // that isn't at scroll(0,0). Mirrors the document↔viewport conversion
+    // the gBCR path gets atomically.
+    const vp = await readViewportMetrics(driver, tabId);
+    scrollX = vp.scrollX;
+    scrollY = vp.scrollY;
+    innerW = vp.innerWidth;
+    innerH = vp.innerHeight;
+    x = postDocX - scrollX;
+    y = postDocY - scrollY;
+    coordSource = "boxmodel-fallback";
+  }
+
+  // Off-viewport guard. After scrollIntoView + flush the element should be
+  // in view; if it still isn't, surface a clear warning instead of silently
+  // dispatching into the void. Uses the resolved viewport (from gBCR when
+  // available, else from the separate readViewportMetrics call above) so
+  // the guard works in both code paths.
+  const offViewport =
+    x < 0 ||
+    y < 0 ||
+    (innerW > 0 && x > innerW) ||
+    (innerH > 0 && y > innerH);
+  let offViewportNote: string | undefined;
+  if (offViewport) {
+    offViewportNote =
+      `Click point for ${ref} resolved to viewport (${Math.round(x)},${Math.round(y)}) ` +
+      `outside the visible viewport ${innerW}x${innerH}. ` +
+      `Pre-scroll: doc=(${Math.round(preDocX)},${Math.round(preDocY)}) ` +
+      `gBCR=(${Math.round(preGeom.vx)},${Math.round(preGeom.vy)}) ` +
+      `scroll=(${preGeom.scrollX},${preGeom.scrollY}). ` +
+      `Post-scroll: doc=(${Math.round(postDocX)},${Math.round(postDocY)}) ` +
+      `gBCR=(${Math.round(postGeom.vx)},${Math.round(postGeom.vy)}) ` +
+      `scroll=(${scrollX},${scrollY}). ` +
+      `coordSource=${coordSource}. scrollIntoViewIfNeeded did not land it ` +
+      `in view (likely a fixed-position ancestor, transform, or the ` +
+      `model's ref is stale — try snapshot then scrollPage before retrying).`;
+  }
+
+  // Verbose dispatch log. Includes pre/post snapshots so the next time we
+  // see an off-viewport failure we can tell at a glance whether
+  // scrollIntoView moved anything (compare pre vs post scroll/gBCR), and
+  // whether getBoxModel and gBCR agree (they should after settle).
+  // Logged at console.debug — hidden by default, surfaces when DevTools
+  // verbose logging is enabled. The forensic value is real but the
+  // per-click rate makes console.info too noisy for production.
+  console.debug(
+    `[click-tool] dispatch ref=${ref} dispatch=(${Math.round(x)},${Math.round(y)}) ` +
+      `src=${coordSource} ` +
+      `pre={ doc=(${Math.round(preDocX)},${Math.round(preDocY)}) ` +
+      `gbcr=(${Math.round(preGeom.vx)},${Math.round(preGeom.vy)})+(${Math.round(preGeom.vw)}x${Math.round(preGeom.vh)}) ` +
+      `scroll=(${preGeom.scrollX},${preGeom.scrollY}) ` +
+      `vp=${preGeom.innerWidth}x${preGeom.innerHeight} ok=${preGeom.ok} } ` +
+      `post={ doc=(${Math.round(postDocX)},${Math.round(postDocY)}) ` +
+      `gbcr=(${Math.round(postGeom.vx)},${Math.round(postGeom.vy)})+(${Math.round(postGeom.vw)}x${Math.round(postGeom.vh)}) ` +
+      `scroll=(${postGeom.scrollX},${postGeom.scrollY}) ` +
+      `vp=${postGeom.innerWidth}x${postGeom.innerHeight} ok=${postGeom.ok} } ` +
+      `offViewport=${offViewport} tab=${String(tabId)}` +
+      (preGeom.error ? ` preErr="${preGeom.error}"` : "") +
+      (postGeom.error ? ` postErr="${postGeom.error}"` : ""),
   );
 
-  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseMoved",
-    x,
-    y,
-  });
-  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
-    type: "mousePressed",
-    x,
-    y,
-    button: "left",
-    clickCount: 1,
-  });
-  await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseReleased",
-    x,
-    y,
-    button: "left",
-    clickCount: 1,
-  });
+  // The "agent is working" overlay's input shield (mounted by
+  // notifyAgentStatus(true) for ANY agent run, not just CUA) sits at the top
+  // of the DOM with pointer-events:auto. CDP `Input.dispatchMouseEvent`
+  // produces TRUSTED browser events that respect DOM hit-testing — so without
+  // this toggle every main-agent click lands on the shield and the page
+  // never sees it. Mirrors cua-loop.ts. Awaited so the shield is provably
+  // down before the click and back up after; no-op when no shield is mounted.
+  await setShieldPassthrough(driver, tabId, true);
+  // Two forensic diagnostics, BOTH inside the passthrough window:
+  //   pre-dispatch:  proves whether the shield's `pointer-events:none` toggle
+  //                  actually took effect at click time. If shieldPE != "none"
+  //                  here, the toggle didn't propagate and the click WILL be
+  //                  eaten — even though we asked for passthrough.
+  //   post-dispatch: confirms (or refutes) that nothing transient (animation,
+  //                  timeout, micro-task) put a different element at the
+  //                  click point between our hit-test and the dispatch.
+  // Both run inside the passthrough window so the shield is `pointer-events:
+  // none` for both reads (when the toggle is working). Earlier we ran ONLY a
+  // post-dispatch diagnostic AFTER the passthrough was toggled back off,
+  // which produced a guaranteed false-positive `OVERLAY-INTERCEPT` every
+  // single click and masked the actual signal.
+  let hitWarning: string | undefined;
+  try {
+    hitWarning = await verifyHitTarget(
+      driver,
+      tabId,
+      x,
+      y,
+      backendNodeId,
+      ref,
+    );
+    await runClickDiagnostic(driver, tabId, "tool/clickByRef:pre", x, y);
+    await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+    });
+    await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    await driver.sendCommand(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    await runClickDiagnostic(driver, tabId, "tool/clickByRef:post", x, y);
+  } finally {
+    await setShieldPassthrough(driver, tabId, false);
+  }
 
-  return { warning };
+  // Visual feedback: emit the same click ripple the CUA loop fires after a
+  // click, so a human watching the live tab sees a transient dot at the
+  // dispatch point. Mirrors cua-loop.ts. Fire-and-forget — a ripple must
+  // never fail or delay a click.
+  void driver
+    .sendToContentScript(tabId, { type: "CHAT_CUA_CLICK_RIPPLE", x, y })
+    .catch(() => {});
+
+  // Compose the final warning so the off-viewport note (if any) is surfaced
+  // alongside the hit-target warning. Off-viewport takes priority because
+  // it's a strictly more actionable signal — a hit-target mismatch is moot
+  // if the click never landed.
+  const warning = offViewportNote
+    ? hitWarning
+      ? `${offViewportNote} ${hitWarning}`
+      : offViewportNote
+    : hitWarning;
+  return warning ? { warning } : {};
 }
 
 /**
@@ -225,6 +407,14 @@ async function clickBySelector(
   tabId: TabId,
   selector: string,
 ): Promise<void> {
+  // Logged at debug to mirror clickByRef. NOTE: this path uses the content
+  // script's `el.click()` (synthetic JS click), NOT CDP — overlays do not
+  // hit-test synthetic clicks, so no post-dispatch [click-diag] is needed
+  // here. If a clickBySelector silently fails it's an `el.click()` no-op,
+  // not an overlay-interception issue.
+  console.debug(
+    `[click-tool] dispatch selector="${selector}" tab=${String(tabId)} (synthetic)`,
+  );
   const result = await driver.sendToContentScript<{
     success: boolean;
     error?: string;

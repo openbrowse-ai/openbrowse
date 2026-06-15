@@ -157,24 +157,148 @@ function getOrCreateRippleHost(): ShadowRoot {
     "position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
+  // "Dithered shockwave" click ripple — Option C from the design preview.
+  // Each click spawns a 5-child burst at the click point:
+  //
+  //   .ob-ripple-burst (positioning anchor at the click coord)
+  //     .ob-ripple-halo  (soft ambient glow, fades fast — gives the colour hit)
+  //     .ob-ripple-disc  (multi-tile dither dot grid masked into a soft circle —
+  //                        the "texture" layer that reads as a digital ripple)
+  //     .ob-ripple-ring2 (outer dashed ring expanding slow — depth + parallax)
+  //     .ob-ripple-ring1 (inner solid ring expanding fast — shockwave)
+  //     .ob-ripple-spark (tiny white-cored pip at the click coord — focal punch)
+  //
+  // Animation timing:
+  //   0ms      – spark + halo fire (immediate impact frame)
+  //   0–120ms  – disc punches in from scale(0.18) → scale(0.5)  (anticipation→impact)
+  //   120–750ms– disc + rings expand and fade  (dispersion)
+  //   ~850ms   – host torn down (cleanup, no children left)
+  //
+  // Color theming uses two complementary CSS-var families set per-burst by
+  // applyRippleGlow():
+  //   --ob-ripple-tint                  raw hex of the active space colour
+  //                                      (used by halo / rings / spark — they need
+  //                                      a saturated, punchy stroke not an alpha)
+  //   --ob-ripple-{strong,mid,soft,bg}  alpha-stepped variants (used by the
+  //                                      dither disc's gradient layers)
+  //
+  // Both fall back to CUA_DEFAULT_GLOW when no space colour is cached, mirroring
+  // applyCuaGlow's pattern for the working-overlay border so a click ripple
+  // visually matches the active space tint.
+  //
+  // Reduced-motion: collapses to a 350ms cross-fade of halo + spark only;
+  // no scale, no dither expansion. Matches WCAG SC 2.3.3 expectations.
   style.textContent = `
-    .ob-ripple {
+    .ob-ripple-burst {
       position: fixed;
-      width: 36px;
-      height: 36px;
-      margin-left: -18px;
-      margin-top: -18px;
-      border-radius: 50%;
-      background: rgba(56, 132, 255, 0.35);
-      border: 2px solid rgba(56, 132, 255, 0.9);
       pointer-events: none;
-      transform: scale(0.2);
-      opacity: 0.9;
-      animation: ob-ripple 600ms ease-out forwards;
     }
-    @keyframes ob-ripple {
-      0%   { transform: scale(0.2); opacity: 0.9; }
-      100% { transform: scale(1.6); opacity: 0; }
+    .ob-ripple-halo {
+      position: absolute;
+      width: 140px;
+      height: 140px;
+      left: -70px;
+      top: -70px;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--ob-ripple-tint) 0%, transparent 65%);
+      opacity: 0.45;
+      transform: scale(0.4);
+      animation: ob-ripple-halo 750ms ease-out forwards;
+    }
+    .ob-ripple-disc {
+      position: absolute;
+      width: 110px;
+      height: 110px;
+      left: -55px;
+      top: -55px;
+      border-radius: 50%;
+      background-image:
+        radial-gradient(circle, var(--ob-ripple-strong) 32%, transparent 34%),
+        radial-gradient(circle, var(--ob-ripple-mid) 28%, transparent 36%);
+      background-size: 4px 4px, 6px 6px;
+      background-position: 0 0, 2px 2px;
+      -webkit-mask: radial-gradient(circle, #000 22%, rgba(0,0,0,0.7) 50%, transparent 78%);
+              mask: radial-gradient(circle, #000 22%, rgba(0,0,0,0.7) 50%, transparent 78%);
+      transform: scale(0.18);
+      opacity: 1;
+      animation: ob-ripple-disc 750ms cubic-bezier(0.1, 0.85, 0.25, 1) forwards;
+    }
+    .ob-ripple-ring1,
+    .ob-ripple-ring2 {
+      position: absolute;
+      border-radius: 50%;
+    }
+    .ob-ripple-ring1 {
+      width: 50px;
+      height: 50px;
+      left: -25px;
+      top: -25px;
+      border: 1.5px solid var(--ob-ripple-tint);
+      transform: scale(0.4);
+      opacity: 1;
+      animation: ob-ripple-ring1 750ms cubic-bezier(0.2, 0.8, 0.3, 1) forwards;
+    }
+    .ob-ripple-ring2 {
+      width: 80px;
+      height: 80px;
+      left: -40px;
+      top: -40px;
+      border: 1.5px dashed var(--ob-ripple-tint);
+      transform: scale(0.5);
+      opacity: 0.7;
+      animation: ob-ripple-ring2 750ms cubic-bezier(0.25, 0.7, 0.4, 1) forwards;
+    }
+    .ob-ripple-spark {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      left: -6px;
+      top: -6px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #fff 0%, var(--ob-ripple-tint) 60%, transparent 100%);
+      transform: scale(0.5);
+      opacity: 1;
+      animation: ob-ripple-spark 240ms ease-out forwards;
+    }
+    @keyframes ob-ripple-halo {
+      0%   { opacity: 0.5; transform: scale(0.4); }
+      50%  { opacity: 0.3; }
+      100% { opacity: 0;   transform: scale(1.5); }
+    }
+    @keyframes ob-ripple-disc {
+      0%   { transform: scale(0.18); opacity: 1; }
+      16%  { transform: scale(0.5);  opacity: 1; }
+      100% { transform: scale(1.55); opacity: 0; }
+    }
+    @keyframes ob-ripple-ring1 {
+      0%   { transform: scale(0.4); opacity: 1; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+    @keyframes ob-ripple-ring2 {
+      0%   { transform: scale(0.5); opacity: 0.7; }
+      100% { transform: scale(1.8); opacity: 0; }
+    }
+    @keyframes ob-ripple-spark {
+      0%   { transform: scale(0.5); opacity: 1; }
+      100% { transform: scale(2.6); opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      /* Cross-fade only — no scale animation. Halo + spark do all the
+         signalling; the dither / rings would add motion noise without
+         providing extra information for a user who's asked us to dial
+         motion down. */
+      .ob-ripple-halo,
+      .ob-ripple-spark {
+        animation: ob-ripple-fade 350ms ease-out forwards;
+        transform: scale(1);
+      }
+      .ob-ripple-disc,
+      .ob-ripple-ring1,
+      .ob-ripple-ring2 { display: none; }
+      @keyframes ob-ripple-fade {
+        0%   { opacity: 0.7; }
+        100% { opacity: 0;   }
+      }
     }
   `;
   shadow.appendChild(style);
@@ -182,23 +306,67 @@ function getOrCreateRippleHost(): ShadowRoot {
   return shadow;
 }
 
+/** Set the ripple glow CSS variables on a host element from a hex color.
+ *  Mirrors `applyCuaGlow` for the working-overlay border so a click ripple
+ *  visually matches the active space tint.
+ *
+ *  Two complementary var families are set:
+ *    - `--ob-ripple-tint`: the raw hex (no alpha). Used by halo / rings /
+ *      spark — solid stroke colours that need to read clearly on any
+ *      background. Wrapping in rgba() is wrong here because the existing
+ *      element opacity (e.g. `.ob-ripple-halo { opacity: .45 }`) already
+ *      controls the layer's alpha.
+ *    - `--ob-ripple-{strong,mid,soft,bg}`: alpha-stepped rgba variants. Used
+ *      by the dither disc's stacked radial-gradients where individual dot
+ *      density / brightness needs separate alphas to read as halftone dither.
+ */
+function applyRippleGlow(host: HTMLElement, hex: string) {
+  host.style.setProperty("--ob-ripple-tint", hex);
+  host.style.setProperty("--ob-ripple-strong", rgba(hex, 0.95));
+  host.style.setProperty("--ob-ripple-mid", rgba(hex, 0.55));
+  host.style.setProperty("--ob-ripple-soft", rgba(hex, 0.25));
+  host.style.setProperty("--ob-ripple-bg", rgba(hex, 0.12));
+}
+
 function showClickRipple(x: number, y: number) {
   try {
     const shadow = getOrCreateRippleHost();
-    const dot = document.createElement("div");
-    dot.className = "ob-ripple";
-    dot.style.left = `${x}px`;
-    dot.style.top = `${y}px`;
-    shadow.appendChild(dot);
+    // Theme the ripple from the cached space color (set by the latest
+    // CHAT_CUA_WORKING_STATE message). Falls through to CUA_DEFAULT_GLOW
+    // when no space color is known — matches the working-overlay border
+    // fallback so a ripple before any working state still renders cleanly.
+    const tint =
+      cachedSpaceColor && parseHex(cachedSpaceColor)
+        ? cachedSpaceColor
+        : CUA_DEFAULT_GLOW;
+    const burst = document.createElement("div");
+    burst.className = "ob-ripple-burst";
+    burst.style.left = `${x}px`;
+    burst.style.top = `${y}px`;
+    // Apply per-burst so a mid-session space-color change tints the next
+    // ripple without re-creating the host.
+    applyRippleGlow(burst, tint);
+    // Children, in z-order: halo (back), disc, outer ring, inner ring, spark (front).
+    // Outer-ring-before-inner-ring on purpose — the inner solid ring should
+    // read as the "leading edge" of the shockwave, drawing on top of the
+    // dashed outer ring.
+    burst.innerHTML = `
+      <div class="ob-ripple-halo"></div>
+      <div class="ob-ripple-disc"></div>
+      <div class="ob-ripple-ring2"></div>
+      <div class="ob-ripple-ring1"></div>
+      <div class="ob-ripple-spark"></div>
+    `;
+    shadow.appendChild(burst);
     setTimeout(() => {
-      dot.remove();
-      // Tear down the host once its last ripple has finished, so the inert
+      burst.remove();
+      // Tear down the host once its last burst has finished, so the inert
       // full-viewport overlay doesn't linger on the page indefinitely after
-      // the agent stops clicking. A fresh ripple just re-creates it.
-      if (shadow.querySelectorAll(".ob-ripple").length === 0) {
+      // the agent stops clicking. A fresh burst just re-creates it.
+      if (shadow.querySelectorAll(".ob-ripple-burst").length === 0) {
         document.getElementById(RIPPLE_HOST_ID)?.remove();
       }
-    }, 650);
+    }, 850);
   } catch {
     // Never let a visual flourish break anything.
   }
@@ -371,6 +539,14 @@ let cuaScrollBlocker: ((e: Event) => void) | null = null;
 let cuaThemeMql: MediaQueryList | null = null;
 let cuaThemeListener: ((e: MediaQueryListEvent) => void) | null = null;
 
+/** Most-recent space color forwarded by `notifyAgentStatus(true, color)` via
+ *  `CHAT_CUA_WORKING_STATE`. Cached here so click ripples (which fire many
+ *  times per agent run, often outside the working-state lifecycle of any
+ *  individual message) can tint themselves to match the active space without
+ *  every ripple-sender re-piping the color. Falls back to CUA_DEFAULT_GLOW
+ *  in showClickRipple when no working state has set it yet. */
+let cachedSpaceColor: string | null = null;
+
 /** URL of the OpenBrowse logo that contrasts with the current theme's pill:
  *  white logo on the dark-mode pill, black logo on the light-mode pill. */
 function cuaLogoUrl(dark: boolean): string {
@@ -413,6 +589,18 @@ function getOrCreateCuaWorkingHost(color?: string | null): ShadowRoot {
       position: fixed;
       inset: 0;
       z-index: 2147483647;
+      /* CRITICAL: pointer-events:none on the root so trusted CDP mouse
+         events the agent dispatches can pass through to the page when
+         the shield is also pe:none. Without this, hit-testing climbs from
+         a pe:none shield to its parent (the root, default pe:auto) and
+         the click is silently eaten by the root — even though every
+         visible child (.ob-cua-shield with .ob-passthrough, .ob-cua-border,
+         .ob-cua-pill) is itself pe:none. Per the CSS pointer-events spec,
+         pe:none on a parent does NOT disable descendants with explicit
+         pe:auto, so .ob-cua-shield (default pe:auto) still catches user
+         clicks (idle state, blocking user input), and the .ob-cua-stop
+         button (explicit pe:auto) still works inside the pill. */
+      pointer-events: none;
     }
     /* Full-viewport input blocker. pointer-events toggled by the executor. */
     .ob-cua-shield {
@@ -635,12 +823,25 @@ function removeCuaWorking() {
 }
 
 /** Toggle whether the agent is mid-action (lets its CDP input through the
- *  shield + key blocker). */
+ *  shield + key blocker). Logs the effective shield state to the page
+ *  console so we can correlate page-side behavior with service-worker-side
+ *  diagnostics when investigating "agent click did nothing". */
 function setCuaPassthrough(on: boolean) {
   cuaAgentActing = on;
   const host = document.getElementById(CUA_WORKING_HOST_ID);
-  const shield = host?.shadowRoot?.querySelector(".ob-cua-shield");
+  const shield = host?.shadowRoot?.querySelector(
+    ".ob-cua-shield",
+  ) as HTMLElement | null;
   if (shield) shield.classList.toggle("ob-passthrough", on);
+  // Read the COMPUTED pointer-events synchronously — this is what hit-testing
+  // will actually see. If shield exists but pe != "none" after on=true, the
+  // CSS class isn't applying (specificity, shadow CSS not parsed, etc.).
+  // Logged at console.debug — fires twice per CDP action so console.info
+  // would drown the page console; surfaces only when DevTools Verbose is on.
+  const pe = shield ? getComputedStyle(shield).pointerEvents : "no-shield";
+  console.debug(
+    `[ob-passthrough] on=${on} hostMounted=${!!host} shieldFound=${!!shield} computedPE=${pe}`,
+  );
 }
 
 function showAgentActiveToast() {
@@ -782,6 +983,21 @@ export default defineContentScript({
             });
           } else {
             el.click();
+            // Visual feedback parity with the @ref / CUA click paths: ripple
+            // at the element's viewport-center so a human watching the live
+            // tab sees the same animation regardless of which click path
+            // resolved the target. Computed AFTER el.click() so we don't
+            // delay the synthetic dispatch; best-effort (rect read can fail
+            // for detached or zero-box elements — never let it break the
+            // click).
+            try {
+              const r = el.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) {
+                showClickRipple(r.left + r.width / 2, r.top + r.height / 2);
+              }
+            } catch {
+              // never let a visual flourish break a successful click
+            }
             sendResponse({ success: true });
           }
         } catch (err) {
@@ -839,15 +1055,85 @@ export default defineContentScript({
       }
       if (message.type === "CHAT_CUA_WORKING_STATE") {
         if (message.active) {
+          // Cache the space color so click ripples (which can fire after the
+          // working-state message has resolved) inherit the same tint as the
+          // border glow. Only update when a non-empty color was provided —
+          // some callers send `active: true` with no color and we'd rather
+          // keep the previously-known tint than blank it back to default.
+          if (typeof message.color === "string" && message.color.trim()) {
+            cachedSpaceColor = message.color.trim();
+          }
           showCuaWorking(message.color);
         } else {
           removeCuaWorking();
+          // Clear the cache on idle so a NEW agent run that doesn't re-send a
+          // color (rare, but possible) starts from the default fallback
+          // rather than a stale prior-space tint.
+          cachedSpaceColor = null;
         }
         sendResponse({ ok: true });
       }
       if (message.type === "CHAT_CUA_INPUT_PASSTHROUGH") {
         setCuaPassthrough(!!message.on);
         sendResponse({ ok: true });
+      }
+      // Diagnostic-only: at a given (x, y), report what the page would actually
+      // hit, the state of OpenBrowse's overlays, and viewport metrics. Used by
+      // the CUA loop to forensically log click failures (overlay interception,
+      // DPR/zoom mismatch, debugger detach, race window). Read-only — never
+      // mutates page state. See cua-loop.ts.
+      if (message.type === "CHAT_CUA_DIAG_HIT_TEST") {
+        try {
+          const x = Number(message.x);
+          const y = Number(message.y);
+          const describe = (el: Element | null): string => {
+            if (!el) return "null";
+            const tag = el.tagName.toLowerCase();
+            const id = el.id ? `#${el.id}` : "";
+            const cls = el.classList.length
+              ? `.${[...el.classList].slice(0, 2).join(".")}`
+              : "";
+            return `${tag}${id}${cls}`;
+          };
+          const top = document.elementFromPoint(x, y);
+          // `elementsFromPoint` returns the full hit-test stack (topmost first).
+          // This pierces past any overlay so the diagnostic shows what would
+          // have been clicked if the overlay weren't there. Cap at 6 entries
+          // to keep the log line readable.
+          const stack = (document.elementsFromPoint(x, y) ?? []).slice(0, 6);
+          const chain = stack.map(describe);
+          const cuaHost = document.getElementById(CUA_WORKING_HOST_ID);
+          const shield = cuaHost?.shadowRoot?.querySelector(
+            ".ob-cua-shield",
+          ) as HTMLElement | null;
+          const shieldPe = shield
+            ? getComputedStyle(shield).pointerEvents
+            : null;
+          const overlayHost = document.getElementById(OVERLAY_HOST_ID);
+          sendResponse({
+            ok: true,
+            x,
+            y,
+            top: describe(top),
+            chain,
+            cuaWorkingHostMounted: !!cuaHost,
+            shieldComputedPointerEvents: shieldPe,
+            cuaAgentActing,
+            searchOverlayMounted: !!overlayHost,
+            devicePixelRatio: window.devicePixelRatio,
+            innerWidth: window.innerWidth,
+            innerHeight: window.innerHeight,
+            visualViewportScale: window.visualViewport?.scale ?? null,
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            url: location.href,
+          });
+        } catch (err) {
+          sendResponse({
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     });
 

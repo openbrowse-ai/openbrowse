@@ -32,6 +32,15 @@ function makeMockDriver(opts: {
       if (method === "Target.getTargetInfo") {
         return { targetInfo: { url: opts.url } };
       }
+      if (method === "Runtime.evaluate") {
+        // Two readers route through Runtime.evaluate here:
+        //   - readViewportMetrics (viewport.ts) — reads { sx, sy, iw, ih }.
+        //   - getViewportInfo (snapshot-capture.ts) — reads { sy, vh }.
+        // The mock returns a superset so both readers see consistent data.
+        return {
+          result: { value: { sx: 0, sy: 0, iw: 1280, ih: 800, vh: 800 } },
+        };
+      }
       return {};
     },
     getTab: async () => ({ id: TAB_ID, url: opts.url, title: "test" }),
@@ -89,16 +98,18 @@ function tree(focusOnHiddenNode: boolean) {
   ];
 }
 
-describe("typeInElement signal-only diff", () => {
-  it("returns non-null diff when only the focus signal changed", async () => {
-    const before = tree(false); // no focus
-    const after = tree(true); // focus moved to the (non-rendered) node
+describe("typeInElement post-action snapshot", () => {
+  it("returns the post-action viewport snapshot in the `snapshot` field", async () => {
+    // Action tools no longer return a `diff`. They auto-attach a fresh
+    // viewport-scoped snapshot of the page state AFTER the action so the
+    // model can pick its next ref directly. See click-element.ts for the
+    // rewrite rationale (mode-asymmetric diffs were hallucinating).
+    const before = tree(false);
+    const after = tree(true);
     const driver = makeMockDriver({ axTrees: [before, after], url: URL });
 
-    // Priming capture establishes baseline (focusedBackendNodeId null).
     await captureSnapshot(driver, TAB_ID);
 
-    // The visible textbox is the single interactive node → one stable ref.
     const refs = getRefsForTab(TAB_ID);
     expect(refs?.size).toBe(1);
     const ref = [...(refs?.keys() ?? [])][0];
@@ -110,8 +121,13 @@ describe("typeInElement signal-only diff", () => {
     );
 
     expect(result.typed).toBe(true);
-    expect(result.diff).not.toBeNull();
-    expect(result.diff).toContain("focus moved");
-    expect(result.note).toBeUndefined();
+    expect("diff" in result).toBe(false);
+    expect(result.snapshot).toBeDefined();
+    // The post-action snapshot must contain the textbox (it's the only
+    // visible interactive element). Don't assert tree(after)'s focus
+    // property — that's an internal signal, not rendered text.
+    expect(result.snapshot).toContain('textbox "Email"');
+    expect(result.refCount).toBe(1);
+    expect(result.url).toBe(URL);
   });
 });
