@@ -74,13 +74,15 @@ function makeMockDriver(opts: {
         };
       }
       if (method === "Runtime.evaluate") {
-        // Two callers in scope:
+        // Three callers in scope, all routed through Runtime.evaluate:
         // - waitForLayoutFlush: awaits a rAF promise; any non-throw is fine.
-        // - viewport-only snapshot path: scroll + viewport. Returning a
-        //   uniform metrics object covers both.
+        // - readViewportMetrics (viewport.ts): reads { sx, sy, iw, ih }.
+        // - getViewportInfo (snapshot-capture.ts): reads { sy, vh }.
+        // We return a superset object so any of those readers gets all the
+        // fields it needs without per-expression branching in the mock.
         return {
           result: {
-            value: { sx: 0, sy: 0, iw: 1280, ih: 800 },
+            value: { sx: 0, sy: 0, iw: 1280, ih: 800, vh: 800 },
           },
         };
       }

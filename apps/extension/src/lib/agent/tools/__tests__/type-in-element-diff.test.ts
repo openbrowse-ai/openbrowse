@@ -33,9 +33,12 @@ function makeMockDriver(opts: {
         return { targetInfo: { url: opts.url } };
       }
       if (method === "Runtime.evaluate") {
-        // Used by the viewport-only snapshot path (scroll + viewport size).
+        // Two readers route through Runtime.evaluate here:
+        //   - readViewportMetrics (viewport.ts) — reads { sx, sy, iw, ih }.
+        //   - getViewportInfo (snapshot-capture.ts) — reads { sy, vh }.
+        // The mock returns a superset so both readers see consistent data.
         return {
-          result: { value: { sx: 0, sy: 0, iw: 1280, ih: 800 } },
+          result: { value: { sx: 0, sy: 0, iw: 1280, ih: 800, vh: 800 } },
         };
       }
       return {};

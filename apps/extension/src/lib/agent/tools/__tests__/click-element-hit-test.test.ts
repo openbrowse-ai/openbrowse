@@ -66,8 +66,15 @@ function makeMockDriver(opts: {
       if (method === "DOM.resolveNode")
         return { object: { objectId: "obj-1" } };
       if (method === "Runtime.evaluate") {
+        // Routed through Runtime.evaluate from three readers:
+        //   - waitForLayoutFlush (viewport.ts) — awaits a rAF promise.
+        //   - readViewportMetrics (viewport.ts) — reads { sx, sy, iw, ih }.
+        //   - getViewportInfo (snapshot-capture.ts) — reads { sy, vh }.
+        // We return a superset so any reader picks up its fields. `vh`
+        // mirrors `ih` so test-controlled `viewport.ih` flows to the
+        // post-action snapshot's below-fold computation too.
         const v = opts.viewport ?? { sx: 0, sy: 0, iw: 1280, ih: 800 };
-        return { result: { value: v } };
+        return { result: { value: { ...v, vh: v.ih } } };
       }
       if (method === "Runtime.callFunctionOn") {
         if (opts.failCallFunctionOn) {
