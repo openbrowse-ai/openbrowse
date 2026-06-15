@@ -1,5 +1,81 @@
 # openbrowse
 
+## 0.9.0
+
+### Minor Changes
+
+- 8959f4d: Surface the agent's plan, workspace files, and context in the side panel, and
+  fix conversation context for new chats and subagents.
+
+  The side-panel composer gains a cowork bar: a tabbed strip (Plan / Workspace
+  files / Context) with a glanceable label, click-to-expand panels, an animated
+  height, and an in-panel file viewer — so the narrow side panel gets the same
+  plan/files/context surfaces the home view has in its rail. The chat header also
+  gains the context-usage chip (token/cost radial + popover). The shared cowork
+  cards were extracted into a common module so home and side panel render from
+  one source.
+
+  Also fixes a conversation-context bug: `executePython` and the file tools
+  (Read/Write/Edit/Glob/Grep/LS) captured the conversation id in a build-time
+  closure, so a brand-new chat failed with "No conversation context" and the file
+  tools silently wrote to the wrong workspace root (a latent variant also
+  affected subagents). They now resolve the id from the call-time tool context,
+  matching the existing delegate tool.
+
+### Patch Changes
+
+- 8ae2bd0: Fix agent clicks being silently eaten by OpenBrowse's own "is working" overlay,
+  and replace post-action diffs with viewport snapshots.
+
+  Trusted CDP `Input.dispatchMouseEvent` events the agent dispatched were landing
+  on `.ob-cua-root` — the full-viewport (`position:fixed; inset:0`) shadow-DOM
+  wrapper inside the `openbrowse-cua-working-host` overlay — which had implicit
+  `pointer-events: auto`. Because hit-testing climbs from a `pe:none` shield to
+  its parent, the click never reached the page element underneath. Symptoms
+  included FAQ accordions never expanding after `clickElement`, theme toggles
+  that reported success but didn't flip, and CUA subagent clicks landing on
+  nothing. Adding `pointer-events: none` to `.ob-cua-root` lets descendants with
+  explicit `pe:auto` (the shield, the Stop button) keep working as hit-test
+  targets while letting the agent's own dispatches pass through to the page.
+
+  Also: `clickElement` / `typeInElement` / `pressKey` now auto-attach a fresh
+  viewport-scoped accessibility snapshot in their response (replacing the legacy
+  `diff` field). The diff approach hallucinated when the prior snapshot was
+  viewport-scoped and the post-action capture defaulted to full-tree — the model
+  saw every below-fold element as `[+] added`. The new shape is strictly more
+  informative: the model can pick its next ref directly from the post-action
+  state without a follow-up `snapshot` call. The `snapshot` tool keeps its
+  opt-in `diff: true` mode for callers that want it.
+
+  The click ripple now matches the active space tint, doubles in size, and uses
+  a layered "dithered shockwave" animation (halo + dithered disc + 2 parallax
+  rings + center spark) so the live tab gives clearer feedback when the agent
+  clicks.
+
+- 4854b5a: Fix Anthropic/Opus `tool_use.input: Field required` from failed tool calls.
+
+  A terminal failed tool call (e.g. a failed MCP "Updated list entry") whose
+  input was never captured was replayed on the next turn as a `tool_use` block
+  with no `input`. Anthropic rejected the request with `tool_use.input: Field
+required` (a visible "Something went wrong"); Gemini coerced it, so the bug
+  only reproduced on Opus. The send-time heal now drops these input-less errored
+  and denied calls before they reach the provider, while keeping any call that
+  has a real input or a partial `rawInput` (which the SDK fills in).
+
+- b1a17e4: Keep Attio/Stripe (and other OAuth) connectors authorized across extension
+  updates.
+
+  OAuth connectors were registered for the `authorization_code` grant only, so
+  providers refused the later `refresh_token` token call — meaning an expired
+  access token (e.g. after the service worker restarts on an extension update)
+  could not be renewed silently and the connector fell back to "needs
+  re-authorization". Now we register for the `refresh_token` grant too and
+  request `offline_access` when the provider supports it (including providers
+  like Stripe that publish no scope list but do advertise the refresh grant). An
+  interactive re-auth also re-registers, repairing connectors stored by older
+  builds without removing and re-adding them. Connectors whose tokens are
+  long-lived (e.g. Supabase) are unaffected.
+
 ## 0.8.1
 
 ### Patch Changes
