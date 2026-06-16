@@ -25,6 +25,7 @@ import {
   getOrCreateHandle,
   resolveHandle,
 } from "../tab-handles";
+import { tabRegistry, type LogicalTabId } from "../tab-registry";
 
 const CONV_A = "conv-a";
 const CONV_B = "conv-b";
@@ -34,10 +35,15 @@ async function seedConv(id: string) {
     id,
     title: id,
     spaceId: null,
-    ownedTabIds: [],
+    ownedLtids: [],
     createdAt: 0,
     updatedAt: 0,
   });
+}
+
+/** Mint an ltid for a fake ctid via the registry. */
+function ltidFor(ctid: number): LogicalTabId {
+  return tabRegistry.registerExisting(ctid);
 }
 
 describe("setAgentContext — handle-map preservation", () => {
@@ -47,6 +53,7 @@ describe("setAgentContext — handle-map preservation", () => {
     clearHandles(CONV_A);
     clearHandles(CONV_B);
     setAgentContext(null);
+    tabRegistry.__resetForTests!();
     vi.unstubAllGlobals();
     // `loadHandlesForConversation` reads chrome.tabs.get during hydration;
     // stub it so the (fire-and-forget) hydration doesn't reject in tests.
@@ -59,6 +66,7 @@ describe("setAgentContext — handle-map preservation", () => {
     clearHandles(CONV_A);
     clearHandles(CONV_B);
     setAgentContext(null);
+    tabRegistry.__resetForTests!();
     vi.unstubAllGlobals();
   });
 
@@ -67,40 +75,45 @@ describe("setAgentContext — handle-map preservation", () => {
     await seedConv(CONV_B);
 
     setAgentContext(CONV_A);
-    expect(getOrCreateHandle(CONV_A, 100)).toBe("t1");
-    expect(resolveHandle(CONV_A, "t1")).toBe(100);
+    const ltid100 = ltidFor(100);
+    expect(getOrCreateHandle(CONV_A, ltid100)).toBe("t1");
+    expect(resolveHandle(CONV_A, "t1")).toBe(ltid100);
 
     // Switch to B mid-flight (as if user navigated). A's map must
     // survive — any tool call still in-flight for A needs to keep
     // resolving its handles.
     setAgentContext(CONV_B);
-    expect(resolveHandle(CONV_A, "t1")).toBe(100);
+    expect(resolveHandle(CONV_A, "t1")).toBe(ltid100);
   });
 
   it("does not leak handles between conversations after a switch", async () => {
     await seedConv(CONV_A);
     await seedConv(CONV_B);
 
+    const ltid100 = ltidFor(100);
+    const ltid200 = ltidFor(200);
     setAgentContext(CONV_A);
-    getOrCreateHandle(CONV_A, 100); // A:t1 → 100
+    getOrCreateHandle(CONV_A, ltid100); // A:t1 → ltid100
 
     setAgentContext(CONV_B);
     // B's map starts empty regardless of A's contents.
     expect(resolveHandle(CONV_B, "t1")).toBeUndefined();
 
     // Mint a handle in B; it must not collide with A's mapping.
-    const bHandle = getOrCreateHandle(CONV_B, 200);
-    expect(resolveHandle(CONV_B, bHandle)).toBe(200);
-    expect(resolveHandle(CONV_A, "t1")).toBe(100); // A still intact.
+    const bHandle = getOrCreateHandle(CONV_B, ltid200);
+    expect(resolveHandle(CONV_B, bHandle)).toBe(ltid200);
+    expect(resolveHandle(CONV_A, "t1")).toBe(ltid100); // A still intact.
   });
 
   it("repeated switches are idempotent w.r.t. handle preservation", async () => {
     await seedConv(CONV_A);
     await seedConv(CONV_B);
 
+    const ltid100 = ltidFor(100);
+    const ltid200 = ltidFor(200);
     setAgentContext(CONV_A);
-    getOrCreateHandle(CONV_A, 100);
-    getOrCreateHandle(CONV_A, 200);
+    getOrCreateHandle(CONV_A, ltid100);
+    getOrCreateHandle(CONV_A, ltid200);
 
     setAgentContext(CONV_B);
     setAgentContext(CONV_A);
@@ -108,17 +121,18 @@ describe("setAgentContext — handle-map preservation", () => {
     setAgentContext(CONV_A);
 
     // After all the flipping, A's handles must still be there.
-    expect(resolveHandle(CONV_A, "t1")).toBe(100);
-    expect(resolveHandle(CONV_A, "t2")).toBe(200);
+    expect(resolveHandle(CONV_A, "t1")).toBe(ltid100);
+    expect(resolveHandle(CONV_A, "t2")).toBe(ltid200);
   });
 
   it("setting context to null also preserves prior maps", async () => {
     await seedConv(CONV_A);
 
     setAgentContext(CONV_A);
-    getOrCreateHandle(CONV_A, 100);
+    const ltid100 = ltidFor(100);
+    getOrCreateHandle(CONV_A, ltid100);
 
     setAgentContext(null);
-    expect(resolveHandle(CONV_A, "t1")).toBe(100);
+    expect(resolveHandle(CONV_A, "t1")).toBe(ltid100);
   });
 });

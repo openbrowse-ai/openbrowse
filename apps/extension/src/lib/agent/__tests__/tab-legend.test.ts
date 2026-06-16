@@ -42,7 +42,7 @@ describe("buildTabLegendEntries", () => {
     }));
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [1, 2, 3],
+      ownedLtids: [1, 2, 3],
       getTab,
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -61,7 +61,7 @@ describe("buildTabLegendEntries", () => {
     });
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [10, 20],
+      ownedLtids: [10, 20],
       getTab,
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: 20,
@@ -77,7 +77,7 @@ describe("buildTabLegendEntries", () => {
     };
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [1, 99, 2],
+      ownedLtids: [1, 99, 2],
       getTab,
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -97,7 +97,7 @@ describe("buildTabLegendEntries", () => {
     };
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [1, 5, 2],
+      ownedLtids: [1, 5, 2],
       getTab,
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -112,7 +112,7 @@ describe("buildTabLegendEntries", () => {
     });
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [1],
+      ownedLtids: [1],
       getTab,
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -120,10 +120,10 @@ describe("buildTabLegendEntries", () => {
     expect(entries[0].title).toBe("(untitled)");
   });
 
-  it("returns [] when ownedTabIds is empty", async () => {
+  it("returns [] when ownedLtids is empty", async () => {
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [],
+      ownedLtids: [],
       getTab: async () => ({ url: "x", title: "x" }),
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -166,7 +166,7 @@ describe("buildOpenTabsAwarenessEntries", () => {
   it("returns an empty list when no open tabs are unowned", () => {
     const { entries, truncated } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [1, 2],
+      ownedLtids: [1, 2],
       openTabs: [
         { id: 1, url: "https://a.test", title: "A", active: false },
         { id: 2, url: "https://b.test", title: "B", active: true },
@@ -180,7 +180,7 @@ describe("buildOpenTabsAwarenessEntries", () => {
   it("excludes owned tabs and internal/extension URLs", () => {
     const { entries } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [1],
+      ownedLtids: [1],
       openTabs: [
         { id: 1, url: "https://owned.test", title: "Owned", active: false },
         { id: 2, url: "https://news.test", title: "News", active: true },
@@ -203,7 +203,7 @@ describe("buildOpenTabsAwarenessEntries", () => {
   it("falls back to '(untitled)' for blank titles", () => {
     const { entries } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [],
+      ownedLtids: [],
       openTabs: [
         { id: 7, url: "https://x.test", title: "   ", active: false },
       ],
@@ -221,7 +221,7 @@ describe("buildOpenTabsAwarenessEntries", () => {
     }));
     const { entries, truncated } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [],
+      ownedLtids: [],
       openTabs,
       getOrCreateHandle: fakeGetOrCreateHandle,
     });
@@ -237,7 +237,7 @@ describe("buildOpenTabsAwarenessEntries", () => {
     ];
     const { entries, truncated } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [],
+      ownedLtids: [],
       openTabs,
       getOrCreateHandle: fakeGetOrCreateHandle,
       maxEntries: 2,
@@ -289,7 +289,7 @@ describe("prompt-injection & privacy hardening", () => {
   ): Promise<TabLegendEntry | undefined> {
     const entries = await buildTabLegendEntries({
       conversationId: CONV,
-      ownedTabIds: [1],
+      ownedLtids: [1],
       getTab: async () => ({ url, title }),
       getOrCreateHandle: fakeGetOrCreateHandle,
       activeTabId: null,
@@ -354,7 +354,7 @@ describe("prompt-injection & privacy hardening", () => {
   it("awareness block also sanitizes titles and filters by http(s) allowlist", () => {
     const { entries } = buildOpenTabsAwarenessEntries({
       conversationId: CONV,
-      ownedTabIds: [],
+      ownedLtids: [],
       openTabs: [
         { id: 1, url: "https://ok.test", title: "Line1\nLine2", active: false },
         { id: 2, url: "file:///etc/passwd", title: "leak", active: false },

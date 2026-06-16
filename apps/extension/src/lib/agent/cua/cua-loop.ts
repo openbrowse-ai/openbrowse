@@ -6,6 +6,7 @@ import { executeCanonicalAction } from "./executor";
 import { captureNormalizedShot, captureRegionShot } from "./screenshot";
 import type { CuaRunConfig, CuaRunResult } from "./provider";
 import { notifyAgentStatus } from "../agent-indicator";
+import { tabRegistry } from "../tab-registry";
 import {
   runClickDiagnostic,
   setShieldPassthrough,
@@ -259,7 +260,29 @@ export async function runCuaToolLoop(
     runAction: (action: CanonicalAction) => Promise<CuaActionOutput>;
   }) => { tools: Record<string, unknown>; providerOptions?: Record<string, unknown> },
 ): Promise<CuaRunResult> {
-  const vp = await readViewport(cfg.driver, cfg.tabId);
+  // Track the chrome tab id we're driving across the lifetime of this
+  // run. The CUA loop is long-lived (~minutes); a `chrome.tabs
+  // .onReplaced` mid-loop (Speculation Rules / prerender activation)
+  // would otherwise leave us hammering CDP commands at a dead ctid.
+  // Register the initial ctid with the registry to mint or recover an
+  // ltid, then subscribe to onReplace to swap our cached ctid in place.
+  let currentCtid: TabId = cfg.tabId;
+  let cuaLtid: string | null = null;
+  if (typeof cfg.tabId === "number") {
+    cuaLtid = tabRegistry.registerExisting(cfg.tabId);
+  }
+  const offReplace = cuaLtid
+    ? tabRegistry.onReplace((ev) => {
+        if (ev.ltid === cuaLtid) {
+          currentCtid = ev.newCtid;
+          // Refresh the working-overlay glow on the new ctid so the user
+          // gets continuous feedback across the swap.
+          notifyAgentStatus(true, undefined, ev.newCtid);
+        }
+      })
+    : () => {};
+
+  const vp = await readViewport(cfg.driver, currentCtid);
   const display = computeDisplay({
     cssWidth: vp.cssWidth,
     cssHeight: vp.cssHeight,
@@ -279,7 +302,7 @@ export async function runCuaToolLoop(
 
       executeAndShoot(
         cfg.driver,
-        cfg.tabId,
+        currentCtid,
         action,
         display.displayWidth,
         display.displayHeight,
@@ -299,7 +322,7 @@ export async function runCuaToolLoop(
   // indicator so it gets the same space-color tint + robust delivery as the
   // main agent. Best-effort; removed in the finally below so it never lingers
   // after completion/error/abort.
-  notifyAgentStatus(true, undefined, cfg.tabId as number);
+  notifyAgentStatus(true, undefined, currentCtid as number);
 
   let stepCount = 0;
 
@@ -361,7 +384,9 @@ export async function runCuaToolLoop(
   } finally {
     // Always tear down the "working on this page" overlay so it never lingers
     // after the run ends (completion, error, or abort).
-    notifyAgentStatus(false, undefined, cfg.tabId as number);
+    notifyAgentStatus(false, undefined, currentCtid as number);
+    // Unsubscribe the registry listener so the loop's closure can be GC'd.
+    offReplace();
   }
 }
 

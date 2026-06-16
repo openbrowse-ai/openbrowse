@@ -1,6 +1,23 @@
 import { chatDb } from "@/lib/chat-db";
+import { tabRegistry, type LogicalTabId } from "@/lib/agent/tab-registry";
 
-const tabOwnership = new Map<number, string>();
+/**
+ * In-memory ownership maps. As of the LogicalTabId migration:
+ *
+ *  - `tabOwnership` is keyed on `LogicalTabId` (UUID) so a `chrome.tabs
+ *    .onReplaced` (Speculation Rules / prerender activation) doesn't
+ *    silently corrupt ownership — the ltid stays the same across the
+ *    swap; only the underlying ctid changes (and that change is handled
+ *    by the registry itself).
+ *  - `groupOwnership` stays keyed on `groupId` — group ids ARE stable
+ *    across replacements (Chrome moves the new tab into the existing
+ *    group automatically).
+ *  - `userOpenedSidePanelTabs` and `agent_toast_dismissed_tabs` stay
+ *    keyed on chrome tab id: they represent UX gestures against a
+ *    specific tab right now ("the user just opened the side panel here"),
+ *    not logical agent identity.
+ */
+const tabOwnership = new Map<LogicalTabId, string>();
 const groupOwnership = new Map<number, string>();
 const sidePanelOpenByWindow = new Map<number, boolean>();
 
@@ -54,23 +71,27 @@ export async function clearToastDismissalForTab(tabId: number): Promise<void> {
 export async function clearToastDismissalForConversation(
   conversationId: string,
 ): Promise<void> {
-  const tabIds: number[] = [];
-  for (const [tabId, cid] of tabOwnership) {
-    if (cid === conversationId) tabIds.push(tabId);
+  // Resolve each owned ltid to its current ctid for the dismissal store
+  // (which is keyed on ctid by design — see tabOwnership comment above).
+  const ctids: number[] = [];
+  for (const [ltid, cid] of tabOwnership) {
+    if (cid !== conversationId) continue;
+    const ctid = tabRegistry.toChromeTabId(ltid);
+    if (ctid != null) ctids.push(ctid);
   }
-  if (tabIds.length === 0) return;
+  if (ctids.length === 0) return;
   const dismissed = await getDismissedTabs();
   let changed = false;
-  for (const tabId of tabIds) {
-    if (dismissed.delete(tabId)) changed = true;
+  for (const ctid of ctids) {
+    if (dismissed.delete(ctid)) changed = true;
   }
   if (changed) await setDismissedTabs(dismissed);
-  for (const tabId of tabIds) {
+  for (const ctid of ctids) {
     chrome.tabs
-      .get(tabId)
+      .get(ctid)
       .then((tab) => {
         if (tab.active && !isSidePanelOpenForWindow(tab.windowId!)) {
-          emitToast(tabId, true);
+          emitToast(ctid, true);
         }
       })
       .catch(() => {});
@@ -117,19 +138,34 @@ function emitFocus(windowId: number, conversationId: string | null) {
   }
 }
 
+/**
+ * Public lookup: which conversation owns the chrome tab id `tabId`?
+ *
+ * Keeps the legacy ctid-keyed signature so the dozen callers in
+ * `background/index.ts` don't have to change. Internally resolves
+ * ctid → ltid via the registry; returns `null` if the tab isn't tracked.
+ */
 export function getConversationForTab(tabId: number): string | null {
-  return tabOwnership.get(tabId) ?? null;
+  const ltid = tabRegistry.toLogicalTabId(tabId);
+  if (!ltid) return null;
+  return tabOwnership.get(ltid) ?? null;
 }
 
 /**
- * Reverse lookup: all tabIds currently owned by a conversation. Used to
- * resolve which browser window a conversation lives in (e.g. routing a
- * notification click to the correct space's side panel).
+ * Reverse lookup: all live chrome tab ids currently owned by a conversation.
+ * Used to resolve which browser window a conversation lives in (e.g.
+ * routing a notification click to the correct space's side panel).
+ *
+ * Resolves each owned ltid through the registry; ltids whose ctid the
+ * registry can't resolve are dropped (the underlying tab is gone or hasn't
+ * been re-discovered post-SW-restart).
  */
 export function getTabsForConversation(conversationId: string): number[] {
   const tabIds: number[] = [];
-  for (const [tabId, cid] of tabOwnership) {
-    if (cid === conversationId) tabIds.push(tabId);
+  for (const [ltid, cid] of tabOwnership) {
+    if (cid !== conversationId) continue;
+    const ctid = tabRegistry.toChromeTabId(ltid);
+    if (ctid != null) tabIds.push(ctid);
   }
   return tabIds;
 }
@@ -139,7 +175,9 @@ export function getConversationForGroup(groupId: number): string | null {
 }
 
 export function isTabOwned(tabId: number): boolean {
-  return tabOwnership.has(tabId);
+  const ltid = tabRegistry.toLogicalTabId(tabId);
+  if (!ltid) return false;
+  return tabOwnership.has(ltid);
 }
 
 export async function registerOwnership(
@@ -149,7 +187,8 @@ export async function registerOwnership(
 ): Promise<void> {
   groupOwnership.set(groupId, conversationId);
   for (const tabId of tabIds) {
-    tabOwnership.set(tabId, conversationId);
+    const ltid = tabRegistry.registerExisting(tabId);
+    tabOwnership.set(ltid, conversationId);
     setPanelEnabledForTab(tabId, true);
   }
 }
@@ -162,7 +201,7 @@ export function setSidePanelOpen(windowId: number, open: boolean) {
     });
   } else {
     chrome.tabs.query({ windowId, active: true }).then(([tab]) => {
-      if (tab?.id != null && tabOwnership.has(tab.id)) emitToast(tab.id, true);
+      if (tab?.id != null && isTabOwned(tab.id)) emitToast(tab.id, true);
     });
   }
 }
@@ -177,7 +216,7 @@ export function applyDesiredPanelState(tabId: number) {
   // opened it there. Otherwise, leave it unregistered so Chrome shows
   // nothing on that tab. The manifest declares no global side panel, so
   // there's no default fallback to fight against.
-  const owned = tabOwnership.has(tabId);
+  const owned = isTabOwned(tabId);
   const userOpened = userOpenedSidePanelTabs.has(tabId);
   chrome.sidePanel
     .setOptions({ tabId, path: "sidepanel.html", enabled: owned || userOpened })
@@ -200,6 +239,15 @@ async function setPanelEnabledForTab(tabId: number, enabled: boolean) {
   }
 }
 
+/**
+ * Bind a list of chrome tabs to a conversation. Mints (or recovers) a
+ * LogicalTabId for each ctid via the registry, then writes ltids to
+ * `tabOwnership` and persists them to chatDb's `ownedLtids` field.
+ *
+ * Public API keeps the ctid signature so the message-bus handlers in
+ * `background/index.ts` (which only know ctids when a tool calls
+ * `BIND_TABS_TO_CONVERSATION`) don't need to know about ltids.
+ */
 export async function bindTabsToConversation(
   conversationId: string,
   tabIds: number[],
@@ -262,33 +310,63 @@ export async function bindTabsToConversation(
   }
 
   groupOwnership.set(groupId, conversationId);
-  const newOwned = new Set(conv.ownedTabIds);
-  for (const id of ids) {
-    tabOwnership.set(id, conversationId);
-    newOwned.add(id);
-    setPanelEnabledForTab(id, true);
-    clearToastDismissalForTab(id);
+  // Mint or recover an ltid for each newly-bound ctid; merge with the
+  // conversation's existing ownedLtids set.
+  const newOwned = new Set<LogicalTabId>(conv.ownedLtids);
+  for (const ctid of ids) {
+    const ltid = tabRegistry.registerExisting(ctid);
+    tabOwnership.set(ltid, conversationId);
+    newOwned.add(ltid);
+    setPanelEnabledForTab(ctid, true);
+    clearToastDismissalForTab(ctid);
   }
 
   await chatDb.updateConversation(conversationId, {
     ownedGroupId: groupId,
-    ownedTabIds: Array.from(newOwned),
+    ownedLtids: Array.from(newOwned),
   });
 
   return { groupId, boundTabIds: ids };
 }
 
-async function clearTabOwnership(tabId: number) {
-  const convId = tabOwnership.get(tabId);
+/**
+ * Drop ownership for a single ltid. Called from the registry's `onRemove`
+ * subscription (the deduped stream — Chrome's trailing `onRemoved` after
+ * `onReplaced` is suppressed there) and from the in-process `chrome.tabs
+ * .onUpdated` group-change branch.
+ */
+async function clearTabOwnershipForLtid(ltid: LogicalTabId): Promise<void> {
+  const convId = tabOwnership.get(ltid);
   if (!convId) return;
-  tabOwnership.delete(tabId);
-  applyDesiredPanelState(tabId);
-  emitToast(tabId, false);
+  tabOwnership.delete(ltid);
+
+  // Best-effort: resolve the ltid back to its current ctid for the side-
+  // panel state and toast updates. If the registry no longer has the
+  // mapping (already dropped by `onRemove`), skip the UI updates — there's
+  // no live tab to update anyway.
+  const ctid = tabRegistry.toChromeTabId(ltid);
+  if (ctid != null) {
+    applyDesiredPanelState(ctid);
+    emitToast(ctid, false);
+  }
 
   const conv = await chatDb.getConversation(convId);
   if (!conv) return;
-  const nextOwned = conv.ownedTabIds.filter((t) => t !== tabId);
-  await chatDb.updateConversation(convId, { ownedTabIds: nextOwned });
+  const nextOwned = conv.ownedLtids.filter((l) => l !== ltid);
+  // When the last owned tab is dropped, the group is also empty; null
+  // `ownedGroupId` and clear the in-memory groupOwnership entry so a
+  // future `bindTabsToConversation` mints a fresh group rather than
+  // re-using a stale id. Without this, the conversation row could be
+  // left in an inconsistent state (`ownedGroupId: 7, ownedLtids: []`)
+  // until the next SW restart's reconciliation fixed it.
+  const updates: { ownedLtids: typeof nextOwned; ownedGroupId?: number | null } = {
+    ownedLtids: nextOwned,
+  };
+  if (nextOwned.length === 0 && conv.ownedGroupId != null) {
+    updates.ownedGroupId = null;
+    groupOwnership.delete(conv.ownedGroupId);
+  }
+  await chatDb.updateConversation(convId, updates);
 }
 
 async function clearGroupOwnership(groupId: number) {
@@ -296,11 +374,13 @@ async function clearGroupOwnership(groupId: number) {
   if (!convId) return;
   groupOwnership.delete(groupId);
 
-  for (const [tabId, cid] of tabOwnership) {
-    if (cid === convId) {
-      tabOwnership.delete(tabId);
-      applyDesiredPanelState(tabId);
-      emitToast(tabId, false);
+  for (const [ltid, cid] of tabOwnership) {
+    if (cid !== convId) continue;
+    tabOwnership.delete(ltid);
+    const ctid = tabRegistry.toChromeTabId(ltid);
+    if (ctid != null) {
+      applyDesiredPanelState(ctid);
+      emitToast(ctid, false);
     }
   }
 
@@ -308,10 +388,18 @@ async function clearGroupOwnership(groupId: number) {
   if (!conv) return;
   await chatDb.updateConversation(convId, {
     ownedGroupId: null,
-    ownedTabIds: [],
+    ownedLtids: [],
   });
 }
 
+/**
+ * SW startup reconciliation. For each conversation with an `ownedGroupId`,
+ * query Chrome for the tabs in that group and re-mint ltids via the
+ * registry. Updates `chatDb.ownedLtids` to reflect the live set, dropping
+ * ltids whose ctid is gone and adding ltids minted for newly-discovered
+ * tabs. Mirrors the legacy "rebuild from group membership" semantics but
+ * keyed on ltid.
+ */
 async function rebuildIndexesFromStorage() {
   const convs = await chatDb.listConversations();
   tabOwnership.clear();
@@ -320,11 +408,11 @@ async function rebuildIndexesFromStorage() {
   for (const conv of convs) {
     if (conv.ownedGroupId == null) continue;
     let groupExists = false;
-    let liveTabIds: number[] = [];
+    let liveCtids: number[] = [];
     try {
       const tabs = await chrome.tabs.query({ groupId: conv.ownedGroupId });
-      liveTabIds = tabs.map((t) => t.id!).filter((id) => id != null);
-      groupExists = liveTabIds.length > 0;
+      liveCtids = tabs.map((t) => t.id!).filter((id) => id != null);
+      groupExists = liveCtids.length > 0;
     } catch {
       groupExists = false;
     }
@@ -332,18 +420,24 @@ async function rebuildIndexesFromStorage() {
     if (!groupExists) {
       await chatDb.updateConversation(conv.id, {
         ownedGroupId: null,
-        ownedTabIds: [],
+        ownedLtids: [],
       });
       continue;
     }
 
     groupOwnership.set(conv.ownedGroupId, conv.id);
-    for (const tabId of liveTabIds) {
-      tabOwnership.set(tabId, conv.id);
-      setPanelEnabledForTab(tabId, true);
+    const liveLtids: LogicalTabId[] = [];
+    for (const ctid of liveCtids) {
+      const ltid = tabRegistry.registerExisting(ctid);
+      liveLtids.push(ltid);
+      tabOwnership.set(ltid, conv.id);
+      setPanelEnabledForTab(ctid, true);
     }
-    if (liveTabIds.sort().join(",") !== [...conv.ownedTabIds].sort().join(",")) {
-      await chatDb.updateConversation(conv.id, { ownedTabIds: liveTabIds });
+    // Persist if the live set differs from what's stored.
+    const stored = [...conv.ownedLtids].sort().join(",");
+    const live = [...liveLtids].sort().join(",");
+    if (stored !== live) {
+      await chatDb.updateConversation(conv.id, { ownedLtids: liveLtids });
     }
   }
 }
@@ -351,8 +445,8 @@ async function rebuildIndexesFromStorage() {
 function installListeners() {
   chrome.tabs.onActivated.addListener(async (info) => {
     applyDesiredPanelState(info.tabId);
-    
-    const convId = tabOwnership.get(info.tabId);
+
+    const convId = getConversationForTab(info.tabId);
     if (convId) {
       if (sidePanelOpenByWindow.get(info.windowId)) {
         emitFocus(info.windowId, convId);
@@ -365,26 +459,47 @@ function installListeners() {
     }
   });
 
+  // Side-panel-only ctid bookkeeping: drop the user-opened-panel record
+  // when a tab closes. The ownership/handle drops happen via the
+  // registry's deduped `onRemove` subscription below.
   chrome.tabs.onRemoved.addListener((tabId) => {
     userOpenedSidePanelTabs.delete(tabId);
-    if (!tabOwnership.has(tabId)) return;
-    clearTabOwnership(tabId);
+  });
+
+  // Registry-driven ownership cleanup. Subscribing to the registry's
+  // `onRemove` (NOT `chrome.tabs.onRemoved`) means we get the deduped
+  // stream — the trailing `onRemoved` Chrome fires for the old ctid after
+  // an `onReplaced` is suppressed, so a prerender activation no longer
+  // looks like a tab close to ownership bookkeeping.
+  tabRegistry.onRemove(({ ltid }) => {
+    if (!tabOwnership.has(ltid)) return;
+    void clearTabOwnershipForLtid(ltid);
+  });
+
+  // On replace, the ltid is unchanged but the underlying ctid changed:
+  // re-register the side panel against the NEW ctid so the user can still
+  // open the panel from the (now-replaced) tab. Without this, prerender
+  // activation silently disables the side panel on agent-owned tabs.
+  tabRegistry.onReplace(({ ltid, newCtid }) => {
+    if (!tabOwnership.has(ltid)) return;
+    void setPanelEnabledForTab(newCtid, true);
   });
 
   chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (changeInfo.pinned === true && tabOwnership.has(tabId)) {
-      await clearTabOwnership(tabId);
+    const ltid = tabRegistry.toLogicalTabId(tabId);
+    if (changeInfo.pinned === true && ltid && tabOwnership.has(ltid)) {
+      await clearTabOwnershipForLtid(ltid);
       return;
     }
-    if (changeInfo.groupId !== undefined && tabOwnership.has(tabId)) {
+    if (changeInfo.groupId !== undefined && ltid && tabOwnership.has(ltid)) {
       const newGroupId = changeInfo.groupId;
       if (newGroupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
-        await clearTabOwnership(tabId);
+        await clearTabOwnershipForLtid(ltid);
       } else {
         const ownerForNewGroup = groupOwnership.get(newGroupId);
-        const currentOwner = tabOwnership.get(tabId);
+        const currentOwner = tabOwnership.get(ltid);
         if (ownerForNewGroup !== currentOwner) {
-          await clearTabOwnership(tabId);
+          await clearTabOwnershipForLtid(ltid);
         }
       }
     }
@@ -437,10 +552,10 @@ export async function cleanupCompletedAgentTabs(opts: {
     if (!conv.lastCompletionApproved) continue;
     if (conv.taskCompletedAt == null) continue;
     if (now - conv.taskCompletedAt <= thresholdMs) continue;
-    if (conv.ownedTabIds.length === 0) continue;
+    if (conv.ownedLtids.length === 0) continue;
 
     try {
-      const undo = await closeOwnedTabs(conv.id, conv.ownedTabIds);
+      const undo = await closeOwnedTabs(conv.id, conv.ownedLtids);
       cleaned++;
       try {
         await chrome.runtime.sendMessage({
@@ -477,14 +592,27 @@ export interface CloseTabsUndo {
 /**
  * Close a set of agent-owned tabs for a conversation. Captures an undo
  * payload BEFORE removal, removes the tabs (tolerating already-closed
- * ones), then clears ownership: removes the closed ids from
- * `ownedTabIds`, and if no owned tabs remain, nulls `ownedGroupId`.
- * In-memory ownership maps are also cleared (onRemoved listeners do this
- * too, but we do it eagerly so callers see consistent state immediately).
+ * ones), then clears ownership: removes the closed ltids from
+ * `ownedLtids`, and if no owned ltids remain, nulls `ownedGroupId`.
+ * In-memory ownership maps are also cleared (the registry's `onRemove`
+ * subscription does this too, but we do it eagerly so callers see
+ * consistent state immediately).
+ *
+ * `ltids` is the conversation's `ownedLtids` array — each entry is
+ * resolved to a live ctid via the registry just before `chrome.tabs
+ * .remove`. Unresolvable ltids (the underlying tab is already gone) are
+ * silently skipped.
+ *
+ * Defensive ownership filter: each input ltid is validated against the
+ * conversation's persisted `ownedLtids` BEFORE any tab is removed. ltids
+ * that don't belong to this conversation are silently skipped — protects
+ * against a future caller passing the wrong ltid set, and also means a
+ * concurrent SW restart that wiped the conversation row degrades to a
+ * no-op rather than blindly removing tabs we no longer track.
  */
 export async function closeOwnedTabs(
   conversationId: string,
-  tabIds: number[],
+  ltids: LogicalTabId[],
 ): Promise<CloseTabsUndo> {
   const undo: CloseTabsUndo = {
     action: "reopen",
@@ -492,29 +620,38 @@ export async function closeOwnedTabs(
     tabs: [],
   };
 
-  for (const tabId of tabIds) {
-    try {
-      const tab = await chrome.tabs.get(tabId);
-      if (tab.url) {
-        undo.tabs.push({
-          url: tab.url,
-          windowId: tab.windowId,
-          pinned: !!tab.pinned,
-        });
+  // Validate ownership up front. If the conversation row is missing the
+  // function degrades to a no-op (returns the empty undo) — `ownedLtids`
+  // is the source of truth for what we're allowed to close.
+  const conv = await chatDb.getConversation(conversationId);
+  const ownedSet = new Set(conv?.ownedLtids ?? []);
+
+  for (const ltid of ltids) {
+    if (!ownedSet.has(ltid)) continue; // not ours; skip silently
+    const ctid = tabRegistry.toChromeTabId(ltid);
+    if (ctid != null) {
+      try {
+        const tab = await chrome.tabs.get(ctid);
+        if (tab.url) {
+          undo.tabs.push({
+            url: tab.url,
+            windowId: tab.windowId,
+            pinned: !!tab.pinned,
+          });
+        }
+        await chrome.tabs.remove(ctid);
+      } catch {
+        // Tab already gone; skip from undo and continue.
       }
-      await chrome.tabs.remove(tabId);
-    } catch {
-      // Tab already gone; skip from undo and continue.
     }
-    tabOwnership.delete(tabId);
+    tabOwnership.delete(ltid);
   }
 
-  const conv = await chatDb.getConversation(conversationId);
   if (conv) {
-    const closed = new Set(tabIds);
-    const remaining = conv.ownedTabIds.filter((id) => !closed.has(id));
-    const updates: { ownedTabIds: number[]; ownedGroupId?: number | null } = {
-      ownedTabIds: remaining,
+    const closed = new Set(ltids.filter((l) => ownedSet.has(l)));
+    const remaining = conv.ownedLtids.filter((l) => !closed.has(l));
+    const updates: { ownedLtids: LogicalTabId[]; ownedGroupId?: number | null } = {
+      ownedLtids: remaining,
     };
     if (remaining.length === 0) {
       updates.ownedGroupId = null;

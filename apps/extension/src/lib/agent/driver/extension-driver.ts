@@ -22,6 +22,7 @@ import {
   waitForTabLoad,
 } from "../active-tab";
 import { sendCommand as sendCdpCommand } from "../cdp-session";
+import { tabRegistry } from "../tab-registry";
 import type {
   BrowserDriver,
   BrowserTabInfo,
@@ -102,7 +103,12 @@ export class ExtensionDriver implements BrowserDriver {
   }
 
   async waitForLoad(tabId: TabId, timeoutMs?: number): Promise<void> {
-    await waitForTabLoad(tabId as number, timeoutMs);
+    // The driver receives a chrome ctid (number) from the tool layer's
+    // `resolveTabIdOrThrow` path. `waitForTabLoad` is ltid-aware
+    // post-migration so it can follow `chrome.tabs.onReplaced` mid-wait;
+    // translate ctid → ltid here (registering if not yet known).
+    const ltid = tabRegistry.registerExisting(tabId as number);
+    await waitForTabLoad(ltid, timeoutMs);
   }
 
   async closeTab(tabId: TabId): Promise<void> {

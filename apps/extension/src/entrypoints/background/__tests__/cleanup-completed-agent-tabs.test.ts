@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chatDb } from "@/lib/chat-db";
+import { tabRegistry } from "@/lib/agent/tab-registry";
 
 const NOW = 10_000_000;
 
@@ -20,6 +21,7 @@ function installChromeStub(removed: number[], sent: any[] = []) {
       query: () => Promise.resolve([]),
       ungroup: () => Promise.reject(new Error("ungroup must not be called")),
       onRemoved: { addListener: () => {} },
+      onReplaced: { addListener: () => {} },
       onUpdated: { addListener: () => {} },
       onActivated: { addListener: () => {} },
     },
@@ -28,9 +30,18 @@ function installChromeStub(removed: number[], sent: any[] = []) {
   });
 }
 
+let ltid101: string;
+let ltid102: string;
+
 async function seed(id: string, fields: Record<string, unknown>) {
+  // Mint ltids for the fixture's two ctids in the registry so
+  // cleanupCompletedAgentTabs can resolve them via tabRegistry.
+  ltid101 = tabRegistry.registerExisting(101);
+  ltid102 = tabRegistry.registerExisting(102);
   await chatDb.createConversation({
-    id, title: id, spaceId: null, ownedGroupId: 1, ownedTabIds: [101, 102], createdAt: 0, updatedAt: 0,
+    id, title: id, spaceId: null, ownedGroupId: 1,
+    ownedLtids: [ltid101, ltid102],
+    createdAt: 0, updatedAt: 0,
   });
   await chatDb.updateConversation(id, fields);
 }
@@ -39,12 +50,14 @@ describe("cleanupCompletedAgentTabs", () => {
   beforeEach(() => {
     indexedDB = new IDBFactory();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
     vi.spyOn(Date, "now").mockReturnValue(NOW);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
   });
 
   it("closes tabs for a completed, idle conversation when enabled", async () => {

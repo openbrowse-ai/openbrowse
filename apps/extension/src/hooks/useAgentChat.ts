@@ -1851,7 +1851,7 @@ export function useAgentChat({
       // tab-handle map is hydrated before tool calls run.
       // Bind the side panel's currently-shared active tab into the new
       // conversation BEFORE setAgentContext + onNewConversation. The
-      // legend block re-reads `ownedTabIds` from chatDb on every model
+      // legend block re-reads `ownedLtids` from chatDb on every model
       // call, so awaiting the bind here guarantees the auto-resume
       // sendMessage triggered by the message-load effect (after
       // `onNewConversation`) sees the shared tab in the very first

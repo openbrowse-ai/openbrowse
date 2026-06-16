@@ -45,7 +45,7 @@ describe("child-conversation helpers", () => {
       subagentStatus: "running",
       // Inherits parent's space.
       spaceId: "space-A",
-      ownedTabIds: [],
+      ownedLtids: [],
       ownedGroupId: null,
     });
   });

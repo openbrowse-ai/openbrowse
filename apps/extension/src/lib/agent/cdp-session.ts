@@ -13,6 +13,7 @@ const NO_ENABLE_DOMAINS = new Set(["Input", "Page", "DOMSnapshot", "Runtime"]);
 
 export { isDetachError } from "./cdp-errors";
 import { isDetachError } from "./cdp-errors";
+import { tabRegistry } from "./tab-registry";
 
 /**
  * Track Chrome's own detach events. Chrome auto-detaches the debugger on
@@ -177,4 +178,23 @@ export function releaseAll(): void {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   sessions.delete(tabId);
+});
+
+// Registry-driven invalidation: when a tab is replaced (Speculation Rules /
+// prerender activation), Chrome silently detaches the debugger session
+// attached to the OLD tabId. Without dropping our cached `Session` for the
+// old id, the next `sendCommand` would hit a "No tab with given id" loop.
+// Subscribing to the registry's deduped `onReplace` means we drop the old
+// session immediately; the next CDP call against the new ctid will lazy-
+// attach via the existing `attach()` path. We also subscribe to `onRemove`
+// (which the registry only emits AFTER its dedup window confirms the tab
+// truly closed, not as part of a replace) for symmetry — it strictly
+// covers cases the existing `chrome.tabs.onRemoved` listener above does
+// not, but in practice Chrome fires both for removals so this is just
+// defense-in-depth.
+tabRegistry.onReplace(({ oldCtid }) => {
+  sessions.delete(oldCtid);
+});
+tabRegistry.onRemove(({ ctid }) => {
+  sessions.delete(ctid);
 });

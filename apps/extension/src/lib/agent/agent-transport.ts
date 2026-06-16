@@ -37,6 +37,7 @@ import {
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
+import { tabRegistry } from "./tab-registry";
 import { persistCompletionMarker } from "./persist-completion-marker";
 import {
   buildTabLegendEntries,
@@ -319,33 +320,33 @@ export async function setCloseTabsAlwaysAllowed(
 }
 
 /**
- * Resolve the target tab ids for a closeTabs input against the
+ * Resolve the target ltids for a closeTabs auto-approve check against the
  * conversation's owned tabs.
  */
 async function resolveCloseTabsTargetIds(
   conversationId: string,
-  input: { target: "group" } | { target: "tabs"; tabIds: number[] },
-): Promise<number[]> {
+  input: { target: "group" } | { target: "tabs"; ltids: string[] },
+): Promise<string[]> {
   if (input.target === "group") {
     const conv = await chatDb.getConversation(conversationId);
-    return conv?.ownedTabIds ?? [];
+    return conv?.ownedLtids ?? [];
   }
-  return input.tabIds;
+  return input.ltids;
 }
 
 /**
  * True when a closeTabs call may skip approval: the global flag is on AND
- * every target tab is in the conversation's ownedTabIds. Any non-owned
+ * every target tab is in the conversation's ownedLtids. Any non-owned
  * target forces manual approval regardless of the flag.
  */
 export async function shouldAutoApproveCloseTabs(
   conversationId: string,
-  input: { target: "group" } | { target: "tabs"; tabIds: number[] },
+  input: { target: "group" } | { target: "tabs"; ltids: string[] },
 ): Promise<boolean> {
   if (!(await isCloseTabsAlwaysAllowed())) return false;
   const conv = await chatDb.getConversation(conversationId);
   if (!conv) return false;
-  const owned = new Set(conv.ownedTabIds);
+  const owned = new Set<string>(conv.ownedLtids);
   const targets = await resolveCloseTabsTargetIds(conversationId, input);
   if (targets.length === 0) return false;
   return targets.every((id) => owned.has(id));
@@ -461,9 +462,20 @@ export function buildExtensionToolContext(
         }
       },
       getOrCreateHandle: (tabId) => {
-        return pinnedConversationId
-          ? getOrCreateTabHandle(pinnedConversationId, Number(tabId))
-          : `t${Number(tabId)}`;
+        // The session API surface accepts a `TabId` (string|number) for
+        // historical reasons; post-migration the value is a LogicalTabId
+        // (string). On the extension we only ever receive strings here
+        // — tools call this with `tabRegistry.registerExisting(ctid)` for
+        // newly-discovered tabs, or with an existing ltid retrieved from
+        // a previous lookup. Defensive numeric coercion below routes a
+        // raw ctid through the registry to mint/recover an ltid; this
+        // keeps the older bench-harness call sites working unchanged.
+        if (!pinnedConversationId) return `t${tabId}`;
+        const ltid =
+          typeof tabId === "number"
+            ? tabRegistry.registerExisting(tabId)
+            : tabId;
+        return getOrCreateTabHandle(pinnedConversationId, ltid);
       },
       resolveHandle: (handle) => {
         return pinnedConversationId
@@ -473,7 +485,12 @@ export function buildExtensionToolContext(
       isAgentOwnedTab: async (tabId) => {
         if (!pinnedConversationId) return false;
         const conv = await chatDb.getConversation(pinnedConversationId);
-        return !!conv?.ownedTabIds.includes(Number(tabId));
+        // `tabId` here is the chrome.tabs.id (number) the caller has in
+        // hand. Translate to ltid via the registry to test against the
+        // conversation's ownedLtids list.
+        const ltid = tabRegistry.toLogicalTabId(Number(tabId));
+        if (ltid == null) return false;
+        return !!conv?.ownedLtids.includes(ltid);
       },
       hasOwnedTabGroup: async () => {
         if (!pinnedConversationId) return false;
@@ -498,10 +515,14 @@ export function buildExtensionToolContext(
         if (!conv) return undefined;
         // 1) Prefer the window of an existing owned tab so new tabs join
         //    the conversation's tab group rather than splitting across
-        //    windows. Probe in order and take the first live tab.
-        for (const tabId of conv.ownedTabIds ?? []) {
+        //    windows. Probe in order and take the first live tab. Each
+        //    `ownedLtids` entry is a LogicalTabId (string); resolve to a
+        //    chrome ctid via the registry before calling chrome.tabs.get.
+        for (const ltid of conv.ownedLtids ?? []) {
+          const ctid = tabRegistry.toChromeTabId(ltid);
+          if (ctid == null) continue;
           try {
-            const tab = await chrome.tabs.get(tabId);
+            const tab = await chrome.tabs.get(ctid);
             if (typeof tab.windowId === "number") return tab.windowId;
           } catch {
             // Tab gone; try the next owned id.
@@ -571,7 +592,12 @@ export function toSDKTool<TInput, TOutput>(
     if (!cid) return null;
     const handle = (input as { tab?: unknown })?.tab;
     if (typeof handle !== "string" || handle.length === 0) return null;
-    const tabId = resolveTabHandle(cid, handle);
+    const ltid = resolveTabHandle(cid, handle);
+    if (ltid == null) return null;
+    // resolveTabHandle returns a LogicalTabId; translate to a chrome ctid
+    // via the registry. Unresolvable ltids (the underlying tab is gone)
+    // bail to null so the caller falls back to "require approval".
+    const tabId = tabRegistry.toChromeTabId(ltid);
     if (tabId == null) return null;
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -599,12 +625,17 @@ export function toSDKTool<TInput, TOutput>(
             | { target: "tabs"; handles?: string[] };
           let resolved:
             | { target: "group" }
-            | { target: "tabs"; tabIds: number[] };
+            | { target: "tabs"; ltids: string[] };
           if (typed?.target === "tabs") {
-            const tabIds = (typed.handles ?? [])
+            // Tool handles → ltids via the per-conversation handle map.
+            // resolveTabHandle returns LogicalTabId post-migration; drop
+            // unresolvable handles silently (the tool itself surfaces the
+            // error message; this path only decides whether approval is
+            // required, and a missing handle defaults to "require approval").
+            const ltids = (typed.handles ?? [])
               .map((h) => resolveTabHandle(cid, h))
-              .filter((id): id is number => id != null);
-            resolved = { target: "tabs", tabIds };
+              .filter((id): id is string => typeof id === "string");
+            resolved = { target: "tabs", ltids };
           } else {
             resolved = { target: "group" };
           }
@@ -1292,7 +1323,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   }
 
   // The tab legend is intentionally NOT appended to `instructions` here.
-  // ownedTabIds and tab URLs change mid-conversation (navigate adds a tab,
+  // ownedLtids and tab URLs change mid-conversation (navigate adds a tab,
   // user closes a tab, etc.); a static legend baked at transport-construction
   // time would go stale. Instead we build it just-in-time inside `prepareCall`
   // below so every model call sees the live state.
@@ -1454,11 +1485,23 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       cfg.agentDef.custom?.kind === "cua"
     ) {
       // The attached isolation seeded the parent tab handle into this
-      // session's handle map. Resolve it to the real tab id.
+      // session's handle map. Resolve it through the registry to a live
+      // chrome tab id; the CUA loop's CDP commands take ctids.
+      //
+      // Even after the resolution here, the loop calls
+      // `tabRegistry.toChromeTabId(ltid)` immediately before each action
+      // so a `chrome.tabs.onReplaced` mid-loop is followed transparently
+      // (the ltid is stable across replacements; only the ctid changes).
       const handle = firstSeededHandle(cfg.toolContext);
-      const tabId = handle
+      const ltid = handle
         ? cfg.toolContext.session?.resolveHandle?.(handle)
         : undefined;
+      // resolveHandle returns LogicalTabId (string) post-migration. The
+      // bench harness has no session at all here.
+      const tabId =
+        typeof ltid === "string"
+          ? tabRegistry.toChromeTabId(ltid) ?? null
+          : ltid ?? null;
       if (tabId == null) {
         // Strict: never silently guess a tab. Return an actionable
         // instruction to the PARENT agent (this finalText flows back as the
@@ -1735,7 +1778,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   /**
    * Build the dynamic "## Tabs in this conversation" block plus an
    * awareness-only "## Other open tabs" block from live state. Re-reads
-   * ownedTabIds from chatDb and queries chrome.tabs each call so the
+   * ownedLtids from chatDb and queries chrome.tabs each call so the
    * agent sees the current tab set on every turn (not the snapshot
    * baked at transport-construction time).
    *
@@ -1748,16 +1791,41 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     const cid = agentConversationId;
     if (!cid) return "";
     const liveConv = await chatDb.getConversation(cid);
-    const ownedTabIds = liveConv?.ownedTabIds ?? [];
+    const ownedLtids = liveConv?.ownedLtids ?? [];
     const entries = await buildTabLegendEntries({
       conversationId: cid,
-      ownedTabIds,
-      getTab: async (tabId) => {
-        const tab = await chrome.tabs.get(Number(tabId));
+      ownedLtids,
+      // The legend keys on LogicalTabIds. Resolve each ltid to a live
+      // chrome tab id via the registry just before fetching the tab info;
+      // unresolvable ltids (the underlying tab is gone) trigger the
+      // legend renderer's "drop this entry" branch via the rejected
+      // promise.
+      getTab: async (ltid) => {
+        const ctid =
+          typeof ltid === "string" ? tabRegistry.toChromeTabId(ltid) : Number(ltid);
+        if (ctid == null) {
+          throw new Error(
+            `LogicalTabId ${String(ltid)} no longer maps to a live chrome tab`,
+          );
+        }
+        const tab = await chrome.tabs.get(ctid);
         return { url: tab.url, title: tab.title };
       },
-      getOrCreateHandle: (c, tabId) => getOrCreateTabHandle(c, Number(tabId)),
-      activeTabId: getTargetTabId(),
+      getOrCreateHandle: (c, ltid) =>
+        // ltid is already a string; pass through. Defensive Number() for
+        // the bench harness path where ids may be numeric.
+        getOrCreateTabHandle(
+          c,
+          typeof ltid === "string" ? ltid : tabRegistry.registerExisting(Number(ltid)),
+        ),
+      // `getTargetTabId` returns a live ctid; map back to the matching
+      // ltid so the legend's `active` comparison (which is `ltid === ltid`)
+      // works correctly.
+      activeTabId: (() => {
+        const activeCtid = getTargetTabId();
+        if (activeCtid == null) return null;
+        return tabRegistry.toLogicalTabId(activeCtid) ?? null;
+      })(),
     });
     const ownedBlock = renderTabLegend(entries);
 
@@ -1771,15 +1839,24 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       const { entries: awarenessEntries, truncated } =
         buildOpenTabsAwarenessEntries({
           conversationId: cid,
-          ownedTabIds,
+          ownedLtids,
+          // Convert each open tab's chrome ctid into an ltid via the
+          // registry so the awareness block keys on the same identifier
+          // namespace as the owned block. New tabs the agent hasn't
+          // bound yet get a freshly-minted ltid here (idempotent).
           openTabs: openTabs.map((t) => ({
-            id: t.id,
+            id: tabRegistry.registerExisting(Number(t.id)),
             url: t.url,
             title: t.title,
             active: !!t.active,
           })),
-          getOrCreateHandle: (c, tabId) =>
-            getOrCreateTabHandle(c, Number(tabId)),
+          getOrCreateHandle: (c, ltid) =>
+            getOrCreateTabHandle(
+              c,
+              typeof ltid === "string"
+                ? ltid
+                : tabRegistry.registerExisting(Number(ltid)),
+            ),
         });
       awarenessBlock = renderOpenTabsAwareness(awarenessEntries, truncated);
     } catch {

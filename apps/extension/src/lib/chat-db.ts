@@ -9,10 +9,19 @@ import { OPFS } from "./vfs/opfs";
  * stable identifiers the agent uses to address tabs in tool args. Backed
  * by a sync in-memory cache in `tab-handles.ts`; this field lets the cache
  * survive service-worker restarts and conversation switches.
+ *
+ * As of chat-db v15, the value type is `LogicalTabId` (a UUID minted by
+ * `tab-registry.ts`), not `chrome.tabs.id`. The registry holds the only
+ * `LogicalTabId → chrome.tabs.id` mapping in the system, and that mapping
+ * is in-memory and ephemeral by design (a chrome tab id is only meaningful
+ * within one Chrome process lifetime). Keying handles on the stable ltid
+ * makes them survive prerender activations (`chrome.tabs.onReplaced`),
+ * which silently renumber tab ids on Speculation Rules sites like Attio,
+ * Notion, and X.
  */
 export interface PersistedHandleState {
-  /** handle → chrome tab id */
-  handles: Record<string, number>;
+  /** handle → LogicalTabId (string UUID) */
+  handles: Record<string, string>;
   /** Next handle counter (1-based, monotonic per conversation). */
   counter: number;
 }
@@ -25,7 +34,17 @@ interface ChatDB extends DBSchema {
       title: string;
       spaceId: string | null;
       ownedGroupId: number | null;
-      ownedTabIds: number[];
+      /**
+       * Logical tab ids (UUIDs minted by `tab-registry.ts`) the conversation
+       * owns. As of v15, replaces the legacy `ownedTabIds: number[]` field
+       * which keyed on `chrome.tabs.id` and silently corrupted on
+       * `chrome.tabs.onReplaced` (prerender activation).
+       *
+       * The registry resolves each ltid to a live chrome tab id at SW
+       * boot via `rebuildIndexesFromStorage`; ltids whose ctid can't be
+       * recovered are dropped from this list during reconciliation.
+       */
+      ownedLtids: string[];
       todos?: TodoItem[];
       handleState?: PersistedHandleState;
       createdAt: number;
@@ -171,6 +190,11 @@ function emitConversationChange(conversationId: string): void {
 
 function getDb(): Promise<IDBPDatabase<ChatDB>> {
   if (!dbPromise) {
+    // Mutable flag the upgrade callback flips when a v15 migration is
+    // needed. Read inside the post-open `then` (which runs *after* the
+    // upgrade callback completes), so by then the flag reflects whether
+    // the synchronous upgrade actually ran the v15 hop.
+    const flags = { needsV15Fixup: false };
     // v7: migrates legacy `{ type: "compaction", auto, ... }` parts
     // to the AI SDK's DataUIPart contract:
     // `{ type: "data-compaction", data: { auto, ... } }`.
@@ -189,7 +213,14 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     // v13: adds `lastCompletionApproved` + `taskCompletedAt` on
     //      conversations for agent tab-cleanup. Optional; no backfill.
     // v14: adds the scheduledTasks object store.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 14, {
+    // v15: renames `ownedTabIds: number[]` → `ownedLtids: string[]` and
+    //      rewrites `handleState.handles` values from chrome.tabs.id
+    //      (number) to LogicalTabId (string UUID). The migration mints a
+    //      fresh ltid for each live ctid via the registry; ctids whose
+    //      `chrome.tabs.get` rejects (the tab is gone) are dropped.
+    //      Per-row try/catch — corrupt rows degrade to empty owned-state
+    //      with a console.warn rather than aborting the whole upgrade.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 15, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -239,8 +270,12 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
             while (cursor) {
               const record = cursor.value as Record<string, unknown>;
               if (record.ownedGroupId === undefined) record.ownedGroupId = null;
+              // Legacy field name `ownedTabIds` (number[]); the v15 hop
+              // renames it to `ownedLtids: string[]` after migrating values
+              // through the registry.
               if (!Array.isArray(record.ownedTabIds)) record.ownedTabIds = [];
-              cursor.update(record as ChatDB["conversations"]["value"]);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              cursor.update(record as any);
               cursor = await cursor.continue();
             }
           };
@@ -384,10 +419,149 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // small). The index is kept for future range queries.
           taskStore.createIndex("by-next-run", "nextRunAt");
         }
+
+        if (oldVersion < 15) {
+          // v15: rename `ownedTabIds: number[]` → `ownedLtids: string[]`
+          // and rewrite `handleState.handles` values from chrome.tabs.id
+          // (number) to LogicalTabId (UUID string).
+          //
+          // The actual ctid → ltid migration runs in `runV15Fixup` *outside*
+          // this upgrade transaction — IDB upgrade transactions auto-commit
+          // on the next microtask without an in-flight IDB request, so
+          // awaiting `chrome.tabs.get` (a non-IDB promise) or a dynamic
+          // `import` here would prematurely close the txn and crash the
+          // cursor loop. The synchronous part of the schema bump (the
+          // type-level rename) is a no-op at the IDB level because
+          // IndexedDB stores arbitrary values — we just need to bump the
+          // version number so the post-open fixup runs.
+          flags.needsV15Fixup = true;
+        }
       },
+    });
+    // Chain the v15 fixup pass into the open promise unconditionally; the
+    // chained handler reads `flags.needsV15Fixup` *after* the upgrade
+    // callback has finished, so it correctly reflects whether the hop ran.
+    // No-op when not needed; failures are logged but not propagated.
+    dbPromise = dbPromise.then(async (db) => {
+      if (flags.needsV15Fixup) {
+        try {
+          await runV15Fixup(db);
+        } catch (err) {
+          console.warn("[chat-db v15] fixup pass failed", err);
+        }
+      }
+      return db;
     });
   }
   return dbPromise;
+}
+
+/**
+ * Post-upgrade fixup for chat-db v15: rewrites each conversation's legacy
+ * `ownedTabIds: number[]` to `ownedLtids: string[]`, minting a LogicalTabId
+ * via `tab-registry` for each ctid that's still alive in `chrome.tabs`. Dead
+ * ctids and corrupt `handleState` values are dropped silently (with a
+ * console.warn per failed row). Per-row try/catch — a corrupt row degrades
+ * to empty owned-state rather than aborting the pass.
+ *
+ * Lives outside the upgrade transaction so we can `await` non-IDB promises
+ * (`chrome.tabs.get`, the dynamic `tab-registry` import) without IDB
+ * auto-committing the txn mid-iteration.
+ */
+async function runV15Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
+  const { tabRegistry } = await import("./agent/tab-registry");
+  const chromeRef = (globalThis as { chrome?: typeof chrome }).chrome;
+  const tabsGet = chromeRef?.tabs?.get;
+
+  // Read all conversations once, then process each in its own short
+  // readwrite transaction. Avoids long-running txn drift and keeps each
+  // row's failure isolated.
+  const all = await db.getAll("conversations");
+  for (const existing of all) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const record = existing as any;
+    // Skip already-migrated rows (defensive — the upgrade hop is the only
+    // signal but a partial previous run could leave us re-entering).
+    if (record.ownedTabIds === undefined && record.ownedLtids !== undefined) {
+      continue;
+    }
+    try {
+      const legacyTabIds: number[] = Array.isArray(record.ownedTabIds)
+        ? (record.ownedTabIds as number[])
+        : [];
+
+      const ownedLtids: string[] = [];
+      for (const ctid of legacyTabIds) {
+        if (typeof ctid !== "number") continue;
+        let alive = false;
+        if (tabsGet) {
+          try {
+            await tabsGet(ctid);
+            alive = true;
+          } catch {
+            alive = false;
+          }
+        }
+        if (alive) {
+          ownedLtids.push(tabRegistry.registerExisting(ctid));
+        }
+        // else: tab is gone since last session, drop silently
+      }
+
+      // Rewrite handle map: number values → ltid values.
+      const legacyHandleState = record.handleState as
+        | { handles?: unknown; counter?: number }
+        | undefined;
+      let newHandleState:
+        | { handles: Record<string, string>; counter: number }
+        | undefined = undefined;
+      if (
+        legacyHandleState &&
+        legacyHandleState.handles &&
+        typeof legacyHandleState.handles === "object"
+      ) {
+        const newHandles: Record<string, string> = {};
+        for (const [handle, ctid] of Object.entries(
+          legacyHandleState.handles as Record<string, unknown>,
+        )) {
+          if (typeof ctid !== "number") continue;
+          const ltid = tabRegistry.toLogicalTabId(ctid);
+          if (ltid) newHandles[handle] = ltid;
+          // else: the ctid wasn't alive when we probed above; drop the
+          // handle. The agent will re-mint as needed.
+        }
+        const counter =
+          typeof legacyHandleState.counter === "number" &&
+          legacyHandleState.counter > 0
+            ? legacyHandleState.counter
+            : 1;
+        if (Object.keys(newHandles).length > 0 || counter > 1) {
+          newHandleState = { handles: newHandles, counter };
+        }
+      }
+
+      delete record.ownedTabIds;
+      record.ownedLtids = ownedLtids;
+      if (newHandleState) {
+        record.handleState = newHandleState;
+      } else {
+        delete record.handleState;
+      }
+      await db.put("conversations", record);
+    } catch (err) {
+      console.warn("[chat-db v15] failed to migrate conversation row", err);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const degraded = existing as any;
+        delete degraded.ownedTabIds;
+        degraded.ownedLtids = [];
+        delete degraded.handleState;
+        await db.put("conversations", degraded);
+      } catch {
+        // Even the degrade write failed; leave the row alone.
+      }
+    }
+  }
 }
 
 export const chatDb = {
@@ -467,19 +641,19 @@ export const chatDb = {
   async createConversation(
     conv: Omit<
       ChatDB["conversations"]["value"],
-      "ownedGroupId" | "ownedTabIds" | "todos" | "handleState"
+      "ownedGroupId" | "ownedLtids" | "todos" | "handleState"
     > &
       Partial<
         Pick<
           ChatDB["conversations"]["value"],
-          "ownedGroupId" | "ownedTabIds" | "todos" | "handleState"
+          "ownedGroupId" | "ownedLtids" | "todos" | "handleState"
         >
       >,
   ): Promise<void> {
     const db = await getDb();
     await db.put("conversations", {
       ownedGroupId: null,
-      ownedTabIds: [],
+      ownedLtids: [],
       todos: [],
       ...conv,
     });
@@ -518,7 +692,7 @@ export const chatDb = {
     emitConversationChange(id);
     // Only broadcast for fields that materially affect conversation-list UIs.
     // Excludes high-frequency churn like `updatedAt` (per message turn),
-    // `ownedTabIds`/`ownedGroupId` (tab-scoping reconciliation), and `todos`
+    // `ownedLtids`/`ownedGroupId` (tab-scoping reconciliation), and `todos`
     // (per agent step). Same-window UIs don't refetch on those either, so
     // broadcasting them would make cross-window behavior more aggressive
     // than same-window — wrong direction.

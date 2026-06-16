@@ -8,7 +8,7 @@ describe("persistCompletionMarker", () => {
     indexedDB = new IDBFactory();
     chatDb._resetForTests();
     await chatDb.createConversation({
-      id: "c1", title: "t", spaceId: null, ownedTabIds: [], createdAt: 0, updatedAt: 0,
+      id: "c1", title: "t", spaceId: null, ownedLtids: [], createdAt: 0, updatedAt: 0,
     });
   });
   afterEach(() => chatDb._resetForTests());

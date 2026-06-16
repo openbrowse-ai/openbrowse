@@ -1034,12 +1034,12 @@ export default defineBackground({
       if (message.type === "CLOSE_AGENT_TABS") {
         (async () => {
           const { handleCloseAgentTabs } = await import("./close-agent-tabs");
-          const { conversationId, tabIds } = message as {
+          const { conversationId, ltids } = message as {
             type: string;
             conversationId: string;
-            tabIds: number[];
+            ltids: string[];
           };
-          const res = await handleCloseAgentTabs({ conversationId, tabIds });
+          const res = await handleCloseAgentTabs({ conversationId, ltids });
           if (res.ok && res.undo && res.undo.tabs.length > 0) {
             chrome.runtime
               .sendMessage({ type: "AGENT_TABS_CLOSED", conversationId, undo: res.undo })
@@ -2462,6 +2462,33 @@ export default defineBackground({
         }).catch(() => {});
       }
     });
+
+    // Re-target the working overlay AND the per-window active-tab cache
+    // across `chrome.tabs.onReplaced`. Without this, prerender activation
+    // on the agent's working tab would leave the glow stranded on the old
+    // (now-dead) ctid until the next status update, AND
+    // `activeTabByWindow` would keep pointing at the dead ctid for any
+    // window-scoped lookups that read it before Chrome's next
+    // `onActivated` event (which is non-deterministic across replace).
+    // The tab-registry deduplicates replace vs. remove and exposes a
+    // single `onReplace` event we hook here.
+    import("@/lib/agent/tab-registry").then(({ tabRegistry }) => {
+      tabRegistry.onReplace(({ oldCtid, newCtid }) => {
+        // Window-active-tab cache: rewrite any window whose active tab
+        // was the replaced ctid.
+        for (const [windowId, ctid] of activeTabByWindow) {
+          if (ctid === oldCtid) activeTabByWindow.set(windowId, newCtid);
+        }
+        if (agentWorkingTabId === oldCtid) {
+          agentWorkingTabId = newCtid;
+          import("@/lib/agent/agent-transport")
+            .then(({ notifyAgentStatus }) => {
+              notifyAgentStatus(true, agentWorkingColor, newCtid);
+            })
+            .catch(() => {});
+        }
+      });
+    }).catch(() => {});
 
     // Enforce the strip ordering invariant (pinned → favorites → regular)
     // when a tab is moved — whether dragged manually in Chrome's tab strip

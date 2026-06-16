@@ -90,10 +90,14 @@ describe("executeOnPage allowlist integration (Always allow repro)", () => {
       await import("@/lib/agent/agent-transport");
     const { executeOnPageTool } = await import("@/lib/agent/tools");
     const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
 
     // Bind the active conversation + a live tab handle, like a real run.
     setAgentContext(CID);
-    const handle = getOrCreateHandle(CID, TAB_ID);
+    // Mint an ltid for the test ctid via the registry; getOrCreateHandle
+    // takes ltids post-migration.
+    const ltid = tabRegistry.registerExisting(TAB_ID);
+    const handle = getOrCreateHandle(CID, ltid);
 
     // Simulate clicking "Always allow on bookface.ycombinator.com" on an
     // earlier call: persist the grant for the executeOnPage tool + origin.
