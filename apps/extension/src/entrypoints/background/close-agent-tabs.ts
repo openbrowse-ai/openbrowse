@@ -2,7 +2,13 @@ import { closeOwnedTabs, type CloseTabsUndo } from "./tab-scoping";
 
 export interface CloseAgentTabsRequest {
   conversationId: string;
-  tabIds: number[];
+  /**
+   * LogicalTabIds to close. The background handler resolves each ltid
+   * back to a live `chrome.tabs.id` via `tab-registry` just before
+   * `chrome.tabs.remove`. ltids whose ctid is no longer resolvable are
+   * silently skipped (the underlying tab is already gone).
+   */
+  ltids: string[];
 }
 
 export interface CloseAgentTabsResponse {
@@ -18,11 +24,11 @@ export interface CloseAgentTabsResponse {
 export async function handleCloseAgentTabs(
   req: CloseAgentTabsRequest,
 ): Promise<CloseAgentTabsResponse> {
-  if (!req.conversationId || !Array.isArray(req.tabIds) || req.tabIds.length === 0) {
+  if (!req.conversationId || !Array.isArray(req.ltids) || req.ltids.length === 0) {
     return { ok: false, error: "No tabs to close" };
   }
   try {
-    const undo = await closeOwnedTabs(req.conversationId, req.tabIds);
+    const undo = await closeOwnedTabs(req.conversationId, req.ltids);
     return { ok: true, undo };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

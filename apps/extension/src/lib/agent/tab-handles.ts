@@ -1,7 +1,14 @@
 /**
  * Per-conversation handle map. Handles (`t1`, `t2`, ...) are stable agent-
- * facing identifiers that map to chrome tab ids. Tools take a handle in
- * their `tab` arg; the session resolves it back to a real tab id.
+ * facing identifiers that map to LogicalTabIds (UUIDs). Tools take a handle
+ * in their `tab` arg; the session resolves it to an ltid, and the
+ * `tab-registry` resolves the ltid to a live chrome tab id at the very last
+ * moment (immediately before each CDP call).
+ *
+ * Keying on ltid rather than chrome.tabs.id is what makes handles survive
+ * `chrome.tabs.onReplaced` (Speculation Rules / prerender activation), which
+ * would otherwise silently renumber the tab id mid-flow and break the
+ * agent's grip on the page.
  *
  * State is split:
  *   - In-memory (`maps`): fast sync access used by the tools' execute path
@@ -20,15 +27,16 @@
  */
 
 import { chatDb, type PersistedHandleState } from "@/lib/chat-db";
+import { tabRegistry, type LogicalTabId } from "./tab-registry";
 
 export interface TabHandle {
   handle: string;
-  chromeTabId: number;
+  ltid: LogicalTabId;
 }
 
 interface HandleMap {
-  handleToTab: Map<string, number>;
-  tabToHandle: Map<number, string>;
+  handleToLtid: Map<string, LogicalTabId>;
+  ltidToHandle: Map<LogicalTabId, string>;
   counter: number;
 }
 
@@ -54,7 +62,7 @@ const persistChains = new Map<string, Promise<void>>();
 const persistDirty = new Set<string>();
 
 function emptyMap(): HandleMap {
-  return { handleToTab: new Map(), tabToHandle: new Map(), counter: 1 };
+  return { handleToLtid: new Map(), ltidToHandle: new Map(), counter: 1 };
 }
 
 function getMap(conversationId: string): HandleMap {
@@ -68,17 +76,17 @@ function getMap(conversationId: string): HandleMap {
 
 /**
  * Project the in-memory map to a chatDb-shaped record, including only
- * handles whose tabId is in `ownedSet`. Non-owned handles (e.g. minted
+ * handles whose ltid is in `ownedSet`. Non-owned handles (e.g. minted
  * while enumerating `listTabs` for the user's other tabs) stay in memory
  * but don't bloat chatDb across SW lifetimes.
  */
 function snapshotOwned(
   map: HandleMap,
-  ownedSet: Set<number>,
+  ownedSet: Set<LogicalTabId>,
 ): PersistedHandleState {
-  const handles: Record<string, number> = {};
-  for (const [h, id] of map.handleToTab) {
-    if (ownedSet.has(id)) handles[h] = id;
+  const handles: Record<string, LogicalTabId> = {};
+  for (const [h, ltid] of map.handleToLtid) {
+    if (ownedSet.has(ltid)) handles[h] = ltid;
   }
   return { handles, counter: map.counter };
 }
@@ -86,16 +94,16 @@ function snapshotOwned(
 function restore(state: PersistedHandleState | undefined): HandleMap {
   if (!state) return emptyMap();
   const map = emptyMap();
-  for (const [h, id] of Object.entries(state.handles)) {
-    map.handleToTab.set(h, id);
-    map.tabToHandle.set(id, h);
+  for (const [h, ltid] of Object.entries(state.handles)) {
+    map.handleToLtid.set(h, ltid);
+    map.ltidToHandle.set(ltid, h);
   }
   // Defensive: clamp the stored counter to a finite positive integer (in
   // case chatDb was tampered with or partially written). If somehow lower
   // than the highest seen handle suffix, advance it so newly-minted
   // handles can't collide.
   let maxSeen = 0;
-  for (const h of map.handleToTab.keys()) {
+  for (const h of map.handleToLtid.keys()) {
     const m = h.match(/^t(\d+)$/);
     if (m) maxSeen = Math.max(maxSeen, Number(m[1]));
   }
@@ -110,7 +118,7 @@ function restore(state: PersistedHandleState | undefined): HandleMap {
  * Fire-and-forget; failures are swallowed. Writes are chained per
  * conversation so concurrent calls serialize (and so tests can
  * deterministically await `flushPersistsForTests`). Only handles whose
- * tabId is in the conversation's `ownedTabIds` are written; ephemeral
+ * ltid is in the conversation's `ownedLtids` are written; ephemeral
  * handles minted by `listTabs` for non-owned tabs stay in memory only.
  *
  * Calls are coalesced: if a write is already queued (pending), additional
@@ -141,7 +149,7 @@ function persist(conversationId: string): void {
       // while we were suspended.
       const liveMap = maps.get(conversationId);
       if (!liveMap) return;
-      const ownedSet = new Set(conv?.ownedTabIds ?? []);
+      const ownedSet = new Set<LogicalTabId>(conv?.ownedLtids ?? []);
       const state = snapshotOwned(liveMap, ownedSet);
       // Last guard before the write — chatDb may have been reset between
       // the read and the write (only happens in tests, but trivially safe
@@ -176,8 +184,9 @@ export function flushPersistsForTests(
 
 /**
  * Hydrate the in-memory handle map for a conversation from chatDb. Drops
- * any persisted handle whose tab no longer exists. Idempotent: subsequent
- * calls return the same in-flight promise until it settles.
+ * any persisted ltid the registry can't currently resolve to a chrome tab
+ * (the SW restart killed the tab). Idempotent: subsequent calls return
+ * the same in-flight promise until it settles.
  *
  * Merges restored state into any existing in-memory map for the
  * conversation rather than replacing it, so handles minted between
@@ -203,27 +212,15 @@ export function loadHandlesForConversation(
       const conv = await chatDb.getConversation(conversationId);
       const restored = restore(conv?.handleState);
 
-      // Prune dead tabs so a stale handle can't resolve to a closed tab.
-      const tabIds = Array.from(restored.tabToHandle.keys());
-      const liveness = await Promise.all(
-        tabIds.map((id) => {
-          // `chrome` is a free identifier on extension globals; in tests
-          // / non-extension contexts it may be undefined entirely. Use a
-          // typeof guard before any property access.
-          const chromeRef =
-            typeof chrome !== "undefined" ? chrome : undefined;
-          if (!chromeRef?.tabs?.get) {
-            // No chrome.tabs available (tests / non-extension context).
-            // Treat all persisted handles as live; tests can override
-            // per case via vi.stubGlobal.
-            return Promise.resolve(true);
-          }
-          return chromeRef.tabs
-            .get(id)
-            .then(() => true)
-            .catch(() => false);
-        }),
-      );
+      // Prune handles whose ltid the registry can't resolve. Resolution is
+      // a sync `Map.get` — far cheaper than the legacy `chrome.tabs.get`
+      // round-trip per handle. An ltid resolves only when the registry
+      // has either minted it in this SW lifetime (via `registerExisting`,
+      // typically during `rebuildIndexesFromStorage`) or migrated it from
+      // chatDb v15 at startup. Unresolvable ltids are treated as dead
+      // tabs — the upstream conversation reconciliation will already
+      // have removed them from `ownedLtids`.
+      const ltids = Array.from(restored.ltidToHandle.keys());
 
       // If we were cleared mid-flight, abort: the new state owns the
       // conversation now and we shouldn't repopulate maps with stale
@@ -236,23 +233,24 @@ export function loadHandlesForConversation(
       // promise settling.
       const live = getMap(conversationId);
       let pruned = false;
-      tabIds.forEach((id, i) => {
-        if (!liveness[i]) {
+      for (const ltid of ltids) {
+        const resolvable = tabRegistry.toChromeTabId(ltid) !== undefined;
+        if (!resolvable) {
           pruned = true;
-          return;
+          continue;
         }
-        const handle = restored.tabToHandle.get(id)!;
+        const handle = restored.ltidToHandle.get(ltid)!;
         // Only adopt the restored binding if neither side is already
         // claimed in-memory (the live map wins).
-        if (live.handleToTab.has(handle)) return;
-        if (live.tabToHandle.has(id)) return;
-        live.handleToTab.set(handle, id);
-        live.tabToHandle.set(id, handle);
-      });
+        if (live.handleToLtid.has(handle)) continue;
+        if (live.ltidToHandle.has(ltid)) continue;
+        live.handleToLtid.set(handle, ltid);
+        live.ltidToHandle.set(ltid, handle);
+      }
       live.counter = Math.max(live.counter, restored.counter);
 
       // If we pruned anything, write the pruned snapshot back so the
-      // next cold-start doesn't re-pay the liveness round-trip on dead ids.
+      // next cold-start doesn't re-pay the resolve work on dead ltids.
       if (pruned) persist(conversationId);
     } catch (err) {
       console.warn("[tab-handles] hydrate failed", err);
@@ -268,17 +266,26 @@ export function loadHandlesForConversation(
   return token;
 }
 
+/**
+ * Mint or retrieve the handle for a conversation+ltid pair. Returns the
+ * existing handle if one is already bound; otherwise mints `t<counter>`
+ * and increments. Either way, schedules a persist.
+ *
+ * `ltid` is the stable LogicalTabId from `tab-registry`. Tools that have a
+ * raw chrome tab id should resolve it via `tabRegistry.registerExisting(ctid)`
+ * (idempotent) before calling this.
+ */
 export function getOrCreateHandle(
   conversationId: string,
-  tabId: number,
+  ltid: LogicalTabId,
 ): string {
   const map = getMap(conversationId);
-  const existing = map.tabToHandle.get(tabId);
+  const existing = map.ltidToHandle.get(ltid);
   if (existing) {
     // Re-persist on every access. Cheap (the coalesce in `persist()`
     // collapses N calls in a tick to 1 chatDb write) and necessary: a
     // handle minted ephemerally — e.g. by `listTabs` for a tab that was
-    // not yet in `ownedTabIds` — gets filtered out by `snapshotOwned()`
+    // not yet in `ownedLtids` — gets filtered out by `snapshotOwned()`
     // at mint time. If `selectTab` later binds that tab into the
     // conversation, we need a chance to re-snapshot so the handle lands
     // in chatDb. Without this re-persist, that ephemeral handle would
@@ -288,8 +295,8 @@ export function getOrCreateHandle(
   }
 
   const handle = `t${map.counter++}`;
-  map.handleToTab.set(handle, tabId);
-  map.tabToHandle.set(tabId, handle);
+  map.handleToLtid.set(handle, ltid);
+  map.ltidToHandle.set(ltid, handle);
   persist(conversationId);
   return handle;
 }
@@ -297,8 +304,8 @@ export function getOrCreateHandle(
 export function resolveHandle(
   conversationId: string,
   handle: string,
-): number | undefined {
-  return maps.get(conversationId)?.handleToTab.get(handle);
+): LogicalTabId | undefined {
+  return maps.get(conversationId)?.handleToLtid.get(handle);
 }
 
 /**
@@ -314,36 +321,44 @@ export function clearHandles(conversationId: string): void {
 }
 
 /**
- * List the live `{handle, tabId}` pairs for a conversation. Used by the
+ * List the live `{handle, ltid}` pairs for a conversation. Used by the
  * system-prompt tab-legend renderer. Reads only from the in-memory map —
  * call `loadHandlesForConversation` first if you need post-restart state.
  */
 export function listHandles(
   conversationId: string,
-): { handle: string; tabId: number }[] {
+): { handle: string; ltid: LogicalTabId }[] {
   const map = maps.get(conversationId);
   if (!map) return [];
-  return Array.from(map.handleToTab, ([handle, tabId]) => ({ handle, tabId }));
+  return Array.from(map.handleToLtid, ([handle, ltid]) => ({ handle, ltid }));
 }
 
 /**
- * Drop a single handle (e.g. when its tab is closed). Idempotent.
+ * Drop a single handle (e.g. when its underlying tab is closed). Takes
+ * the ltid, not the chrome tab id — the registry is the only place that
+ * translates between them. Idempotent.
  */
-export function dropTab(tabId: number): void {
+export function dropLtid(ltid: LogicalTabId): void {
   for (const [conversationId, map] of maps) {
-    const handle = map.tabToHandle.get(tabId);
+    const handle = map.ltidToHandle.get(ltid);
     if (handle) {
-      map.handleToTab.delete(handle);
-      map.tabToHandle.delete(tabId);
+      map.handleToLtid.delete(handle);
+      map.ltidToHandle.delete(ltid);
       persist(conversationId);
     }
   }
 }
 
-// Auto-cleanup when chrome closes a tab. Best-effort; in non-extension
-// contexts (tests) `chrome.tabs` is undefined and we no-op.
-if (typeof chrome !== "undefined" && chrome.tabs?.onRemoved?.addListener) {
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    dropTab(tabId);
-  });
-}
+// Subscribe to the registry's onRemove event (which is the deduped stream
+// — Chrome's trailing onRemoved after onReplaced is already filtered out).
+// Replaces the legacy `chrome.tabs.onRemoved` listener that keyed on ctid
+// directly (and silently dropped agent handles every time a Speculation
+// Rules site like Attio activated a prerender).
+//
+// `onReplace` is intentionally not subscribed: handles key on ltid, which
+// the registry does NOT change on replace. The new ctid is still
+// addressable through the same ltid; nothing in the handle map needs to
+// move.
+tabRegistry.onRemove(({ ltid }) => {
+  dropLtid(ltid);
+});

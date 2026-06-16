@@ -3,6 +3,7 @@ import { ScrollText, Trash2, Bot } from "lucide-react";
 import { OPFS } from "@/lib/vfs/opfs";
 import { vfsEvents } from "@/lib/vfs/events";
 import { chatDb } from "@/lib/chat-db";
+import { tabRegistry } from "@/lib/agent/tab-registry";
 import { UPLOADS_DIR } from "@/lib/uploads-dir";
 import {
   Tooltip,
@@ -26,11 +27,12 @@ interface ContextTab {
   title: string;
   favicon: string;
   /**
-   * Conversation that owns this tab in `tab-scoping` (whose `ownedTabIds`
-   * the tab id lives in). For tabs created by the parent agent this is
-   * the parent's id; for tabs created by a subagent this is the child
-   * conversation's id. Cleanup must close tabs against their owner so
-   * the owner's `ownedTabIds` gets cleared (see `closeOwnedTabs`).
+   * Conversation that owns this tab in `tab-scoping` (whose `ownedLtids`
+   * the tab's LogicalTabId lives in). For tabs created by the parent
+   * agent this is the parent's id; for tabs created by a subagent this
+   * is the child conversation's id. Cleanup must close tabs against
+   * their owner so the owner's `ownedLtids` gets cleared (see
+   * `closeOwnedTabs`).
    */
   owningConversationId: string;
   /**
@@ -62,7 +64,7 @@ export function ContextCard({
   const [connectors, setConnectors] = useState<DerivedConnector[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
 
-  // Poll: tabs (from ownedTabIds) + connectors/skills (from message parts).
+  // Poll: tabs (from ownedLtids) + connectors/skills (from message parts).
   useEffect(() => {
     let isMounted = true;
 
@@ -86,17 +88,24 @@ export function ContextCard({
           subagent?: { label: string };
         };
         const ownedRefs: OwnedRef[] = [];
-        for (const id of conv?.ownedTabIds ?? []) {
-          ownedRefs.push({ tabId: id, owningConversationId: conversationId });
+        // ownedLtids holds LogicalTabIds (UUIDs); resolve to a live chrome
+        // ctid via the registry. Unresolvable ltids (the tab is gone or
+        // hasn't been re-discovered post-SW-restart) are dropped.
+        for (const ltid of conv?.ownedLtids ?? []) {
+          const ctid = tabRegistry.toChromeTabId(ltid);
+          if (ctid == null) continue;
+          ownedRefs.push({ tabId: ctid, owningConversationId: conversationId });
         }
         for (const child of children) {
           const label =
             child.subagentTraceTitle ??
             child.subagentSlug ??
             "Subagent";
-          for (const id of child.ownedTabIds ?? []) {
+          for (const ltid of child.ownedLtids ?? []) {
+            const ctid = tabRegistry.toChromeTabId(ltid);
+            if (ctid == null) continue;
             ownedRefs.push({
-              tabId: id,
+              tabId: ctid,
               owningConversationId: child.id,
               subagent: { label },
             });
@@ -203,7 +212,7 @@ export function ContextCard({
     setIsCleaningTabs(true);
     try {
       // Tabs owned by a subagent live in the *child* conversation's
-      // `ownedTabIds`; closing them against the parent id wouldn't
+      // `ownedLtids`; closing them against the parent id wouldn't
       // clear the child row. Group by owning conversation id so each
       // owner's list is cleaned up correctly. `closeOwnedTabs`
       // (background) closes the tabs, clears ownership, and broadcasts

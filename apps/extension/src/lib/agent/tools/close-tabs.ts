@@ -48,10 +48,10 @@ export const closeTabsTool: BrowserTool<Input, Output> = {
       return { closed: 0, error: "No active conversation." };
     }
 
-    let tabIds: number[];
+    let ltidsToClose: string[];
     if (input.target === "group") {
       const conv = await chatDb.getConversation(cid);
-      tabIds = conv?.ownedTabIds ?? [];
+      ltidsToClose = conv?.ownedLtids ?? [];
     } else {
       // input.target === "tabs"
       if (!input.handles || input.handles.length === 0) {
@@ -60,19 +60,19 @@ export const closeTabsTool: BrowserTool<Input, Output> = {
           error: "target 'tabs' requires a non-empty 'handles' array.",
         };
       }
-      tabIds = [];
+      ltidsToClose = [];
       for (const handle of input.handles) {
-        const id = ctx.session?.resolveHandle?.(handle);
-        if (id == null) {
+        const ltid = ctx.session?.resolveHandle?.(handle);
+        if (ltid == null) {
           throw new Error(
             `Tab handle "${handle}" not found. Use listTabs to see available tabs.`,
           );
         }
-        tabIds.push(id as number);
+        ltidsToClose.push(ltid as string);
       }
     }
 
-    if (tabIds.length === 0) {
+    if (ltidsToClose.length === 0) {
       return {
         closed: 0,
         note: "No tabs to close — the conversation has no open owned tabs.",
@@ -83,12 +83,15 @@ export const closeTabsTool: BrowserTool<Input, Output> = {
       const res = (await chrome.runtime.sendMessage({
         type: "CLOSE_AGENT_TABS",
         conversationId: cid,
-        tabIds,
+        // Send ltids over the wire. The background handler resolves each
+        // ltid back to a live ctid via the registry just before
+        // `chrome.tabs.remove`.
+        ltids: ltidsToClose,
       })) as { ok: boolean; undo?: Output["undo"]; error?: string };
       if (!res?.ok) {
         return { closed: 0, error: res?.error ?? "Close failed." };
       }
-      return { closed: res.undo?.tabs.length ?? tabIds.length, undo: res.undo };
+      return { closed: res.undo?.tabs.length ?? ltidsToClose.length, undo: res.undo };
     } catch (err) {
       return { closed: 0, error: err instanceof Error ? err.message : String(err) };
     }

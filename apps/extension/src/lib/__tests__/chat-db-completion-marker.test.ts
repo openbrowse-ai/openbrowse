@@ -11,7 +11,7 @@ describe("chatDb completion marker fields", () => {
 
   it("persists lastCompletionApproved and taskCompletedAt", async () => {
     await chatDb.createConversation({
-      id: "c1", title: "t", spaceId: null, ownedTabIds: [], createdAt: 0, updatedAt: 0,
+      id: "c1", title: "t", spaceId: null, ownedLtids: [], createdAt: 0, updatedAt: 0,
     });
     await chatDb.updateConversation("c1", {
       lastCompletionApproved: true,
@@ -24,7 +24,7 @@ describe("chatDb completion marker fields", () => {
 
   it("defaults to undefined on fresh conversations", async () => {
     await chatDb.createConversation({
-      id: "c2", title: "t", spaceId: null, ownedTabIds: [], createdAt: 0, updatedAt: 0,
+      id: "c2", title: "t", spaceId: null, ownedLtids: [], createdAt: 0, updatedAt: 0,
     });
     const conv = await chatDb.getConversation("c2");
     expect(conv?.lastCompletionApproved).toBeUndefined();

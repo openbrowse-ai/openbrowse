@@ -110,7 +110,13 @@ export interface Conversation {
   title: string;
   spaceId: string | null;
   ownedGroupId: number | null;
-  ownedTabIds: number[];
+  /**
+   * Logical tab ids (UUIDs minted by `tab-registry.ts`) the conversation
+   * owns. As of chat-db v15, replaces the legacy `ownedLtids: number[]`
+   * field which keyed on `chrome.tabs.id` and silently corrupted on
+   * `chrome.tabs.onReplaced` (prerender activation).
+   */
+  ownedLtids: string[];
   todos?: TodoItem[];
   createdAt: number;
   updatedAt: number;

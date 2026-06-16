@@ -27,8 +27,10 @@ if (typeof (globalThis as { chrome?: unknown }).chrome === "undefined") {
     },
     tabs: {
       onRemoved: { addListener: noop, removeListener: noop },
+      onReplaced: { addListener: noop, removeListener: noop },
       onUpdated: { addListener: noop, removeListener: noop },
       onActivated: { addListener: noop, removeListener: noop },
+      onCreated: { addListener: noop, removeListener: noop },
       get: () => Promise.reject(new Error("chrome.tabs.get not stubbed")),
       query: () => Promise.resolve([] as never[]),
       sendMessage: () => Promise.resolve(undefined),

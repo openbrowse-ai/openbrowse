@@ -17,7 +17,7 @@ import type { TabId } from "./driver";
 
 export interface TabLegendInput {
   conversationId: string;
-  ownedTabIds: TabId[];
+  ownedLtids: TabId[];
   /**
    * Per-tab info fetcher. Should resolve with the live tab info, or reject
    * if the tab no longer exists (the legend renderer treats rejection as
@@ -91,7 +91,7 @@ export async function buildTabLegendEntries(
   input: TabLegendInput,
 ): Promise<TabLegendEntry[]> {
   const entries: TabLegendEntry[] = [];
-  for (const tabId of input.ownedTabIds) {
+  for (const tabId of input.ownedLtids) {
     let url: string | undefined;
     let title: string | undefined;
     try {
@@ -149,7 +149,7 @@ export function renderTabLegend(entries: TabLegendEntry[]): string {
 export interface OpenTabsAwarenessInput {
   conversationId: string;
   /** Tab ids already in the conversation (omit from the awareness list). */
-  ownedTabIds: TabId[];
+  ownedLtids: TabId[];
   /** All open tabs in the current window. Internal/extension URLs filtered. */
   openTabs: { id: TabId; url: string; title: string; active: boolean }[];
   getOrCreateHandle: (conversationId: string, tabId: TabId) => string;
@@ -169,7 +169,7 @@ export interface OpenTabsAwarenessEntry {
 export function buildOpenTabsAwarenessEntries(
   input: OpenTabsAwarenessInput,
 ): { entries: OpenTabsAwarenessEntry[]; truncated: number } {
-  const owned = new Set<TabId>(input.ownedTabIds);
+  const owned = new Set<TabId>(input.ownedLtids);
   const cap = input.maxEntries ?? MAX_AWARENESS_ENTRIES;
   const result: OpenTabsAwarenessEntry[] = [];
   let truncated = 0;

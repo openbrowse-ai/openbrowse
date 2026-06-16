@@ -111,7 +111,7 @@ The biggest failure mode is giving up too early. Default to trying one more thin
 - A click, type, or key press returned a snapshot identical to what you saw before (no visible change): re-snapshot for fresh refs, then try a different element, scroll the target into view, or check for an overlay.
 - The page is still loading: scroll or screenshot to wait, don't bail.
 - A tool errored: if the error looks transient, retry; if structural, change approach.
-- An "Unknown tab handle" error means the legend has changed — call \`listTabs\` to refresh and pick a valid handle.
+- An "Unknown tab handle" error means the tab the handle pointed to was closed — call \`listTabs\` to refresh the legend and pick a valid handle, or \`navigate\` to open a new one. Page refreshes, prerender activations, and other in-place navigations preserve handles automatically.
 - Don't retry the same exact tool call with the same input more than 2-3 times.
 
 ## Delegation (subagents)

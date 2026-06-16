@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chatDb } from "../../chat-db";
+import { tabRegistry } from "../tab-registry";
 
 const CID = "conv-close-allow";
 
@@ -18,8 +19,10 @@ function installChromeStub() {
     },
     tabs: {
       onRemoved: { addListener: () => {}, removeListener: () => {} },
+      onReplaced: { addListener: () => {}, removeListener: () => {} },
       onUpdated: { addListener: () => {}, removeListener: () => {} },
       onActivated: { addListener: () => {}, removeListener: () => {} },
+      onCreated: { addListener: () => {}, removeListener: () => {} },
       get: (id: number) => Promise.resolve({ id, url: `https://x/${id}` }),
       query: () => Promise.resolve([]),
       sendMessage: () => Promise.resolve(undefined),
@@ -49,17 +52,26 @@ function installChromeStub() {
 }
 
 describe("closeTabs ownership-scoped always-allow", () => {
+  let ltid101: string;
+  let ltid102: string;
+
   beforeEach(async () => {
     installChromeStub();
     indexedDB = new IDBFactory();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
+    ltid101 = tabRegistry.registerExisting(101);
+    ltid102 = tabRegistry.registerExisting(102);
     await chatDb.createConversation({
-      id: CID, title: "t", spaceId: null, ownedGroupId: 1, ownedTabIds: [101, 102], createdAt: 0, updatedAt: 0,
+      id: CID, title: "t", spaceId: null, ownedGroupId: 1,
+      ownedLtids: [ltid101, ltid102],
+      createdAt: 0, updatedAt: 0,
     });
   });
   afterEach(() => {
     vi.unstubAllGlobals();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
   });
 
   it("defaults to not-allowed (approval required)", async () => {
@@ -77,13 +89,19 @@ describe("closeTabs ownership-scoped always-allow", () => {
     const { setCloseTabsAlwaysAllowed, shouldAutoApproveCloseTabs } = await import("../agent-transport");
     await setCloseTabsAlwaysAllowed(true);
     expect(await shouldAutoApproveCloseTabs(CID, { target: "group" })).toBe(true);
-    expect(await shouldAutoApproveCloseTabs(CID, { target: "tabs", tabIds: [101] })).toBe(true);
+    expect(
+      await shouldAutoApproveCloseTabs(CID, { target: "tabs", ltids: [ltid101] }),
+    ).toBe(true);
   });
 
   it("does NOT auto-approve when a target is not owned, even with flag on", async () => {
     const { setCloseTabsAlwaysAllowed, shouldAutoApproveCloseTabs } = await import("../agent-transport");
     await setCloseTabsAlwaysAllowed(true);
-    expect(await shouldAutoApproveCloseTabs(CID, { target: "tabs", tabIds: [999] })).toBe(false);
+    // A synthetic ltid that the conversation doesn't own.
+    const ltid999 = tabRegistry.registerExisting(999);
+    expect(
+      await shouldAutoApproveCloseTabs(CID, { target: "tabs", ltids: [ltid999] }),
+    ).toBe(false);
   });
 
   it("does NOT auto-approve when flag is off", async () => {

@@ -26,6 +26,7 @@ import {
   clearHandles,
   getOrCreateHandle,
 } from "../tab-handles";
+import { tabRegistry, type LogicalTabId } from "../tab-registry";
 import { todoWriteTool } from "../tools/todowrite";
 
 const CONV_A = "conv-a";
@@ -34,7 +35,7 @@ const CONV_B = "conv-b";
 async function seedConv(
   id: string,
   opts: {
-    ownedTabIds?: number[];
+    ownedLtids?: LogicalTabId[];
     ownedGroupId?: number | null;
     todos?: import("../../types").TodoItem[];
   } = {},
@@ -43,12 +44,17 @@ async function seedConv(
     id,
     title: id,
     spaceId: null,
-    ownedTabIds: opts.ownedTabIds ?? [],
+    ownedLtids: opts.ownedLtids ?? [],
     ownedGroupId: opts.ownedGroupId ?? null,
     todos: opts.todos ?? [],
     createdAt: 0,
     updatedAt: 0,
   });
+}
+
+/** Mint an ltid for a fake ctid via the registry. */
+function ltidFor(ctid: number): LogicalTabId {
+  return tabRegistry.registerExisting(ctid);
 }
 
 describe("buildExtensionToolContext (per-call cid pinning)", () => {
@@ -58,6 +64,7 @@ describe("buildExtensionToolContext (per-call cid pinning)", () => {
     clearHandles(CONV_A);
     clearHandles(CONV_B);
     setAgentContext(null);
+    tabRegistry.__resetForTests!();
     vi.unstubAllGlobals();
     // Tests that touch tab-binding helpers need a chrome stub so the
     // helper's `chrome.runtime.sendMessage` doesn't blow up.
@@ -70,6 +77,7 @@ describe("buildExtensionToolContext (per-call cid pinning)", () => {
     clearHandles(CONV_A);
     clearHandles(CONV_B);
     setAgentContext(null);
+    tabRegistry.__resetForTests!();
     vi.unstubAllGlobals();
   });
 
@@ -220,8 +228,15 @@ describe("buildExtensionToolContext (per-call cid pinning)", () => {
 
   describe("isAgentOwnedTab / hasOwnedTabGroup", () => {
     it("isAgentOwnedTab targets pinned cid", async () => {
-      await seedConv(CONV_A, { ownedTabIds: [42] });
-      await seedConv(CONV_B, { ownedTabIds: [99] });
+      // Mint ltids for two synthetic ctids and seed each conversation
+      // with its own ltid. isAgentOwnedTab takes a chrome ctid (the
+      // session API surface predates the migration); internally it
+      // resolves ctid → ltid via the registry to test the conversation's
+      // ownedLtids set.
+      const ltid42 = ltidFor(42);
+      const ltid99 = ltidFor(99);
+      await seedConv(CONV_A, { ownedLtids: [ltid42] });
+      await seedConv(CONV_B, { ownedLtids: [ltid99] });
 
       const ctxA = buildExtensionToolContext(CONV_A);
       setAgentContext(CONV_B);
@@ -256,15 +271,19 @@ describe("buildExtensionToolContext (per-call cid pinning)", () => {
       await seedConv(CONV_A);
       await seedConv(CONV_B);
 
-      // Pre-populate B's handle map; A's is empty.
-      getOrCreateHandle(CONV_B, 500);
+      // Pre-populate B's handle map; A's is empty. The direct
+      // tab-handles `getOrCreateHandle` takes an ltid (string), so we
+      // mint one for the synthetic ctid 500 first.
+      getOrCreateHandle(CONV_B, ltidFor(500));
 
       const ctxA = buildExtensionToolContext(CONV_A);
       // Even with global flipped to B, ctxA's helper must mint into A.
       setAgentContext(CONV_B);
+      // The session helper accepts a ctid (number) and routes through
+      // the registry to mint/recover an ltid.
       const aHandle = ctxA.session!.getOrCreateHandle!(123);
       expect(aHandle).toBe("t1");
-      // B's map is unchanged for tabId 123.
+      // B's map is unchanged for tab 123.
       const ctxB = buildExtensionToolContext(CONV_B);
       const bHandle = ctxB.session!.getOrCreateHandle!(123);
       // tab 123 is new for B → first available counter slot.
@@ -274,13 +293,16 @@ describe("buildExtensionToolContext (per-call cid pinning)", () => {
     it("resolveHandle uses pinned cid's handle map", async () => {
       await seedConv(CONV_A);
       await seedConv(CONV_B);
-      getOrCreateHandle(CONV_A, 100); // A:t1 → 100
-      getOrCreateHandle(CONV_B, 200); // B:t1 → 200
+      const ltid100 = ltidFor(100);
+      const ltid200 = ltidFor(200);
+      getOrCreateHandle(CONV_A, ltid100); // A:t1 → ltid100
+      getOrCreateHandle(CONV_B, ltid200); // B:t1 → ltid200
 
       const ctxA = buildExtensionToolContext(CONV_A);
       setAgentContext(CONV_B);
 
-      expect(ctxA.session!.resolveHandle!("t1")).toBe(100);
+      // resolveHandle returns the LogicalTabId, not the ctid.
+      expect(ctxA.session!.resolveHandle!("t1")).toBe(ltid100);
     });
 
     it("falls back to t<id> when pinned cid is null", () => {

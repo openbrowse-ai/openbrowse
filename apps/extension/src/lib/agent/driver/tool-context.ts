@@ -13,10 +13,24 @@
  * Tools that need extras beyond browser primitives + conversation state
  * should NOT extend this type. Extras belong in the extension wrapper layer
  * (`agent-transport.ts`), not in the portable tool surface.
+ *
+ * Logical tab ids
+ * ===============
+ * As of the LogicalTabId migration, the session's `resolveHandle` returns
+ * a `LogicalTabId` (a UUID), not a `chrome.tabs.id` (a number). Tools that
+ * call `resolveTabIdOrThrow` get a logical id back and must translate to
+ * a chrome ctid via `tabRegistry.toChromeTabId(ltid)` before any driver
+ * call (the driver's CDP / chrome.tabs methods take ctids).
+ *
+ * `TabId` (the driver-facing type) stays `number | string` so the bench
+ * harness's Playwright driver — which uses opaque string ids — keeps
+ * working unchanged. The extension's `ExtensionDriver` always sees
+ * numbers; the tool layer is responsible for the translation.
  */
 
 import type { BrowserDriver, BrowserTabInfo, TabId } from "./browser-driver";
 import type { TodoItem } from "../../types";
+import { tabRegistry } from "../tab-registry";
 
 export interface ToolSession {
   /** The active conversation id, or null when running outside a conversation. */
@@ -124,13 +138,33 @@ export interface ToolContext {
 /**
  * Convenience: derive a stable handle for a tab id, falling back to the
  * default `t<id>` format when no session-level handle map is available.
+ *
+ * `tabId` here is the driver's `TabId` — for the extension this is the
+ * `chrome.tabs.id` (number), which we register/lookup in the registry to
+ * get the LogicalTabId the session's `getOrCreateHandle` then maps to a
+ * stable `t<n>` handle. For the bench harness's PlaywrightDriver, `TabId`
+ * is a string and the session is undefined, so we just stringify.
  */
 export function handleForTab(ctx: ToolContext, tabId: TabId): string {
-  return ctx.session?.getOrCreateHandle?.(tabId) ?? `t${tabId}`;
+  if (!ctx.session?.getOrCreateHandle) return `t${tabId}`;
+  // Extension path: ctid (number) → ltid (via registry) → handle.
+  // Bench path: TabId is already a string; pass through.
+  if (typeof tabId === "number") {
+    const ltid = tabRegistry.registerExisting(tabId);
+    return ctx.session.getOrCreateHandle(ltid);
+  }
+  return ctx.session.getOrCreateHandle(tabId);
 }
 
 /**
- * Resolve a `tab` arg (a stable handle like `t1`) to a concrete tab id.
+ * Resolve a `tab` arg (a stable handle like `t1`) to a driver-addressable
+ * tab id (a `chrome.tabs.id` number on the extension; an opaque string in
+ * the bench harness).
+ *
+ * The session's `resolveHandle` returns a LogicalTabId (string) on the
+ * extension; we translate to ctid via the registry. Returns whatever the
+ * session returned otherwise (bench harness path, where the session is
+ * undefined or returns the driver's native id).
  *
  * This is the canonical entry point for every tab-interacting tool's
  * execute(): tools never pick a tab via the driver's "active" notion any
@@ -150,13 +184,29 @@ export function resolveTabIdOrThrow(
   ctx: ToolContext,
   handle: string,
 ): TabId {
-  const tabId = ctx.session?.resolveHandle?.(handle);
-  if (tabId == null) {
+  const sessionResult = ctx.session?.resolveHandle?.(handle);
+  if (sessionResult == null) {
     throw new ToolTabResolutionError(
       `Unknown tab handle "${handle}". Call listTabs to see available handles, or navigate to open a new tab.`,
     );
   }
-  return tabId;
+  // Extension path: session returns LogicalTabId (string); translate via
+  // the registry to a ctid (number) for the driver.
+  if (typeof sessionResult === "string") {
+    const ctid = tabRegistry.toChromeTabId(sessionResult);
+    if (ctid == null) {
+      // ltid is in the handle map but the registry can't resolve to a
+      // live ctid — the underlying tab is gone (closed) but the handle
+      // map's `dropLtid` cleanup hasn't fired yet, OR an SW restart
+      // hasn't re-registered the ltid. Treat as resolution failure.
+      throw new ToolTabResolutionError(
+        `Tab handle "${handle}" no longer points to an open tab. Call listTabs to refresh handles, or navigate to open a new one.`,
+      );
+    }
+    return ctid;
+  }
+  // Bench harness path: pass through whatever the session returned.
+  return sessionResult;
 }
 
 export async function resolveTabOrThrow(
@@ -180,13 +230,15 @@ export async function resolveTabOrThrow(
  * appears in the tab legend and can be addressed by subsequent tool calls.
  *
  * Resolution order mirrors `selectTab`:
- *   1. The session handle map (`resolveHandle`).
+ *   1. The session handle map (`resolveHandle`) — returns a LogicalTabId
+ *      (string) on the extension; the registry then resolves to a ctid.
  *   2. A numeric fallback — the raw `chrome.tabs` id, for tabs the agent
  *      hasn't bound yet (e.g. user-opened tabs surfaced by `listTabs`).
  * The tab is verified to exist via `driver.listTabs()` before binding.
  *
- * Returns the bound tab id, or `null` if the handle could not be resolved
- * to a live tab. Does NOT change the user's visible tab.
+ * Returns the driver-addressable tab id (a ctid number on the extension),
+ * or `null` if the handle could not be resolved to a live tab. Does NOT
+ * change the user's visible tab.
  *
  * Shared by the `selectTab` tool and the `delegate` tool's auto-bind path
  * for `attached` (CUA) subagents.
@@ -195,7 +247,16 @@ export async function bindTabByHandle(
   ctx: ToolContext,
   handle: string,
 ): Promise<TabId | null> {
-  let tabId = ctx.session?.resolveHandle?.(handle);
+  const sessionResult = ctx.session?.resolveHandle?.(handle);
+  let tabId: TabId | null = null;
+
+  if (typeof sessionResult === "string") {
+    // Extension path: ltid → ctid via registry.
+    const ctid = tabRegistry.toChromeTabId(sessionResult);
+    tabId = ctid ?? null;
+  } else if (sessionResult != null) {
+    tabId = sessionResult;
+  }
 
   // Fallback: a user-opened tab may appear in listTabs under its numeric
   // chrome id before it is bound to the conversation. Only accept a strictly

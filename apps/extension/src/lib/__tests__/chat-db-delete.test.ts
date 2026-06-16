@@ -9,7 +9,7 @@ async function seedConv(id: string = CONV) {
     id,
     title: id,
     spaceId: null,
-    ownedTabIds: [],
+    ownedLtids: [],
     createdAt: 0,
     updatedAt: 0,
   });
@@ -106,7 +106,7 @@ describe("chatDb.deleteMessagesFrom", () => {
       id: "other",
       title: "other",
       spaceId: null,
-      ownedTabIds: [],
+      ownedLtids: [],
       createdAt: 0,
       updatedAt: 0,
     });

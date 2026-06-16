@@ -13,6 +13,7 @@
  */
 
 import "fake-indexeddb/auto";
+import { tabRegistry } from "../tab-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chatDb } from "../../chat-db";
 import type { ToolContext } from "../driver";
@@ -161,29 +162,40 @@ function makeChromeStub(opts: {
 
 async function seedConv(
   id: string,
-  opts: { ownedTabIds?: number[]; spaceId?: string | null } = {},
+  opts: { ownedLtids?: string[]; spaceId?: string | null } = {},
 ) {
   await chatDb.createConversation({
     id,
     title: id,
     spaceId: opts.spaceId ?? null,
     ownedGroupId: null,
-    ownedTabIds: opts.ownedTabIds ?? [],
+    ownedLtids: opts.ownedLtids ?? [],
     createdAt: 0,
     updatedAt: 0,
   });
+}
+
+/**
+ * Mint an ltid via the registry for a fake ctid; used by tests below
+ * that drive `resolveNewTabWindowId`, which now resolves `ownedLtids`
+ * through the registry to live ctids before consulting `chrome.tabs.get`.
+ */
+function ltidFor(ctid: number): string {
+  return tabRegistry.registerExisting(ctid);
 }
 
 describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
   beforeEach(() => {
     indexedDB = new IDBFactory();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
     vi.unstubAllGlobals();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
   });
 
   it("returns the window of the first live owned tab", async () => {
@@ -191,7 +203,7 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
       "chrome",
       makeChromeStub({ tabs: { 101: { windowId: 3 }, 102: { windowId: 9 } } }),
     );
-    await seedConv("c1", { ownedTabIds: [101, 102] });
+    await seedConv("c1", { ownedLtids: [ltidFor(101), ltidFor(102)] });
     const ctx = buildExtensionToolContext("c1");
     expect(await ctx.session?.resolveNewTabWindowId?.()).toBe(3);
   });
@@ -201,7 +213,10 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
       "chrome",
       makeChromeStub({ tabs: { 102: { windowId: 9 } } }), // 101 is gone
     );
-    await seedConv("c1", { ownedTabIds: [101, 102] });
+    // Mint ltids for BOTH ctids in the registry — the registry maps
+    // ltid → ctid; whether the ctid is alive in chrome is checked via
+    // the chrome.tabs.get probe.
+    await seedConv("c1", { ownedLtids: [ltidFor(101), ltidFor(102)] });
     const ctx = buildExtensionToolContext("c1");
     expect(await ctx.session?.resolveNewTabWindowId?.()).toBe(9);
   });
@@ -215,7 +230,7 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
         spaces: [{ id: "s1", name: "S", windowId: 8, favorites: [] }],
       }),
     );
-    await seedConv("c1", { ownedTabIds: [], spaceId: "s1" });
+    await seedConv("c1", { ownedLtids: [], spaceId: "s1" });
     const ctx = buildExtensionToolContext("c1");
     expect(await ctx.session?.resolveNewTabWindowId?.()).toBe(8);
   });
@@ -229,14 +244,14 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
         spaces: [{ id: "s1", name: "S", windowId: 8, favorites: [] }],
       }),
     );
-    await seedConv("c1", { ownedTabIds: [], spaceId: "s1" });
+    await seedConv("c1", { ownedLtids: [], spaceId: "s1" });
     const ctx = buildExtensionToolContext("c1");
     expect(await ctx.session?.resolveNewTabWindowId?.()).toBeUndefined();
   });
 
   it("returns undefined when there are no owned tabs and no space", async () => {
     vi.stubGlobal("chrome", makeChromeStub({ tabs: {} }));
-    await seedConv("c1", { ownedTabIds: [], spaceId: null });
+    await seedConv("c1", { ownedLtids: [], spaceId: null });
     const ctx = buildExtensionToolContext("c1");
     expect(await ctx.session?.resolveNewTabWindowId?.()).toBeUndefined();
   });
