@@ -353,7 +353,20 @@ async function clearTabOwnershipForLtid(ltid: LogicalTabId): Promise<void> {
   const conv = await chatDb.getConversation(convId);
   if (!conv) return;
   const nextOwned = conv.ownedLtids.filter((l) => l !== ltid);
-  await chatDb.updateConversation(convId, { ownedLtids: nextOwned });
+  // When the last owned tab is dropped, the group is also empty; null
+  // `ownedGroupId` and clear the in-memory groupOwnership entry so a
+  // future `bindTabsToConversation` mints a fresh group rather than
+  // re-using a stale id. Without this, the conversation row could be
+  // left in an inconsistent state (`ownedGroupId: 7, ownedLtids: []`)
+  // until the next SW restart's reconciliation fixed it.
+  const updates: { ownedLtids: typeof nextOwned; ownedGroupId?: number | null } = {
+    ownedLtids: nextOwned,
+  };
+  if (nextOwned.length === 0 && conv.ownedGroupId != null) {
+    updates.ownedGroupId = null;
+    groupOwnership.delete(conv.ownedGroupId);
+  }
+  await chatDb.updateConversation(convId, updates);
 }
 
 async function clearGroupOwnership(groupId: number) {
@@ -589,6 +602,13 @@ export interface CloseTabsUndo {
  * resolved to a live ctid via the registry just before `chrome.tabs
  * .remove`. Unresolvable ltids (the underlying tab is already gone) are
  * silently skipped.
+ *
+ * Defensive ownership filter: each input ltid is validated against the
+ * conversation's persisted `ownedLtids` BEFORE any tab is removed. ltids
+ * that don't belong to this conversation are silently skipped — protects
+ * against a future caller passing the wrong ltid set, and also means a
+ * concurrent SW restart that wiped the conversation row degrades to a
+ * no-op rather than blindly removing tabs we no longer track.
  */
 export async function closeOwnedTabs(
   conversationId: string,
@@ -600,7 +620,14 @@ export async function closeOwnedTabs(
     tabs: [],
   };
 
+  // Validate ownership up front. If the conversation row is missing the
+  // function degrades to a no-op (returns the empty undo) — `ownedLtids`
+  // is the source of truth for what we're allowed to close.
+  const conv = await chatDb.getConversation(conversationId);
+  const ownedSet = new Set(conv?.ownedLtids ?? []);
+
   for (const ltid of ltids) {
+    if (!ownedSet.has(ltid)) continue; // not ours; skip silently
     const ctid = tabRegistry.toChromeTabId(ltid);
     if (ctid != null) {
       try {
@@ -620,9 +647,8 @@ export async function closeOwnedTabs(
     tabOwnership.delete(ltid);
   }
 
-  const conv = await chatDb.getConversation(conversationId);
   if (conv) {
-    const closed = new Set(ltids);
+    const closed = new Set(ltids.filter((l) => ownedSet.has(l)));
     const remaining = conv.ownedLtids.filter((l) => !closed.has(l));
     const updates: { ownedLtids: LogicalTabId[]; ownedGroupId?: number | null } = {
       ownedLtids: remaining,

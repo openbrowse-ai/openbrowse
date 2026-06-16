@@ -384,10 +384,12 @@ function buildChildToolContext(args: {
         const conv = await chatDb.getConversation(childConvId);
         // Translate ctid → ltid via the registry; the conversation row
         // stores ownedLtids (strings), not chrome.tabs.id (numbers).
-        const ltid =
-          typeof tabId === "string"
-            ? tabId
-            : tabRegistry.toLogicalTabId(Number(tabId));
+        // Mirrors the parent's `isAgentOwnedTab` (agent-transport.ts) so
+        // both paths handle a ctid argument identically: coerce through
+        // Number() and look up via the registry. Stringified-numeric
+        // arguments like "42" go through the same code path; non-numeric
+        // strings fail closed (toLogicalTabId returns undefined for NaN).
+        const ltid = tabRegistry.toLogicalTabId(Number(tabId));
         if (ltid == null) return false;
         return !!conv?.ownedLtids.includes(ltid);
       },

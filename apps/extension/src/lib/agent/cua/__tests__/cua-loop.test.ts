@@ -1,11 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserDriver } from "../../driver";
 import { cuaToModelOutput, detectNoChange, executeAndShoot, runCuaToolLoop } from "../cua-loop";
 import type { CuaRunConfig } from "../provider";
+import type { CanonicalAction } from "../actions";
 
 // Controls how the mocked ToolLoopAgent behaves per test.
 let mockSteps = 0;
 let mockFinalText = "";
+
+// Bridge for the new "follows onReplaced mid-loop" test: when the
+// FakeToolLoopAgent runs each step it invokes `capturedRunAction` (set
+// by `fakeBuildCapturing`) with a default no-op-ish CanonicalAction.
+// `mockBetweenSteps` lets the test inject a side effect between steps,
+// e.g. firing `tabRegistry.__handleReplaceForTests` to swap the ctid.
+let capturedRunAction:
+  | ((action: CanonicalAction) => Promise<unknown>)
+  | null = null;
+let mockBetweenSteps: ((stepIndex: number) => void | Promise<void>) | null =
+  null;
 
 // Mock the `ai` module so we can drive `onStepFinish` and the streamed
 // UIMessages without a live model. `runCuaToolLoop` constructs
@@ -18,7 +30,22 @@ vi.mock("ai", () => {
       this.onStepFinish = config.onStepFinish;
     }
     async stream() {
-      for (let i = 0; i < mockSteps; i++) this.onStepFinish?.();
+      for (let i = 0; i < mockSteps; i++) {
+        // If a test wired a captured runAction (via fakeBuildCapturing),
+        // invoke it once per step with a `wait`-kind action. `wait` is
+        // the cheapest action: it only `setTimeout`s in
+        // `executeCanonicalAction` and then funnels into the screenshot
+        // + getTab calls, all of which the test driver mocks. The `tabId`
+        // passed into those driver calls is the loop's `currentCtid`,
+        // which the test asserts against.
+        if (capturedRunAction) {
+          await capturedRunAction({ kind: "wait", ms: 0 });
+        }
+        if (mockBetweenSteps) {
+          await mockBetweenSteps(i);
+        }
+        this.onStepFinish?.();
+      }
       return {
         toUIMessageStream: () => ({}) as never,
       };
@@ -80,6 +107,16 @@ function fakeRunConfig(maxSteps: number): CuaRunConfig {
 function fakeBuild() {
   return () => ({ tools: {} as Record<string, unknown> });
 }
+
+// Reset the per-test mock state between cases so a test that captures
+// `runAction` / wires `mockBetweenSteps` can't leak its hooks into a
+// later test that doesn't expect them to fire.
+beforeEach(() => {
+  mockSteps = 0;
+  mockFinalText = "";
+  capturedRunAction = null;
+  mockBetweenSteps = null;
+});
 
 describe("executeAndShoot", () => {
   it("runs the action and returns { imageDataUrl, currentUrl } OUTPUT", async () => {
@@ -301,24 +338,104 @@ describe("runCuaToolLoop — onReplaced retargeting", () => {
     tabRegistry.__resetForTests!();
     mockSteps = 0;
     mockFinalText = "ok";
+    capturedRunAction = null;
+    mockBetweenSteps = null;
     await runCuaToolLoop(fakeRunConfig(3), fakeBuild());
     // After registerExisting(1), the registry should have a mapping.
     expect(tabRegistry.toLogicalTabId(1)).toBeTruthy();
   });
 
   it("follows onReplaced mid-loop: subsequent actions land on the new ctid", async () => {
-    // We can't easily intercept the loop's internal closure tracking
-    // post-stream, so instead we directly test the documented behavior
-    // via the registry: register the tab, fire onReplaced, then verify
-    // the registry exposes the new ctid for the same ltid.
     const { tabRegistry } = await import("../../tab-registry");
     tabRegistry.__resetForTests!();
-    const ltid = tabRegistry.registerExisting(1);
 
-    tabRegistry.__handleReplaceForTests!(2, 1);
+    // Build a config whose driver records every (method, tabId) call.
+    // The cua loop's per-step `executeAndShoot` funnels through this
+    // driver; the `tabId` argument of every call is the loop's live
+    // `currentCtid`. By asserting on these args before and after an
+    // injected onReplaced we validate that the loop actually retargets,
+    // not just that the registry stores the right mapping.
+    const cdpCalls: { method: string; tabId: unknown }[] = [];
+    const getTabCalls: unknown[] = [];
+    const driver = {
+      sendCommand: vi.fn(async (tabId: unknown, method: string) => {
+        cdpCalls.push({ method, tabId });
+        if (method === "Page.captureScreenshot") return { data: "QUJD" };
+        if (method === "Runtime.evaluate") {
+          return { result: { value: { w: 800, h: 600, dpr: 1 } } };
+        }
+        return {};
+      }),
+      sendToContentScript: vi.fn(async () => ({})),
+      getTab: vi.fn(async (tabId: unknown) => {
+        getTabCalls.push(tabId);
+        return { id: 1, url: "https://example.com", title: "" };
+      }),
+      updateTabUrl: vi.fn(async () => {}),
+      waitForLoad: vi.fn(async () => {}),
+    } as unknown as BrowserDriver;
 
-    expect(tabRegistry.toChromeTabId(ltid)).toBe(2);
-    expect(tabRegistry.toLogicalTabId(1)).toBeUndefined();
-    expect(tabRegistry.toLogicalTabId(2)).toBe(ltid);
+    const cfg: CuaRunConfig = {
+      model: {} as never,
+      driver,
+      tabId: 100 as never,
+      modelId: "claude-sonnet-4-6",
+      task: "do a thing",
+      systemPrompt: "be helpful",
+      maxSteps: 3,
+    };
+
+    // Capture runAction so the FakeToolLoopAgent can fire one action
+    // per step. We use `fakeBuildCapturing` to bridge.
+    mockSteps = 2;
+    mockFinalText = "ok";
+    capturedRunAction = null;
+    mockBetweenSteps = async (stepIndex) => {
+      // Between step 0 and step 1, fire onReplaced(200, 100) so the
+      // loop's currentCtid swaps from 100 to 200.
+      if (stepIndex === 0) {
+        tabRegistry.__handleReplaceForTests!(200, 100);
+      }
+    };
+
+    await runCuaToolLoop(cfg, fakeBuildCapturing());
+
+    // The first step's screenshot must have hit ctid 100; the second
+    // step's screenshot must have hit ctid 200. (Other tabIds may
+    // appear too — readViewport runs at startup, getTab fires for
+    // currentUrl per step — but the tabIds we care about are the
+    // captureScreenshot calls inside executeAndShoot.)
+    const screenshotTabs = cdpCalls
+      .filter((c) => c.method === "Page.captureScreenshot")
+      .map((c) => c.tabId);
+    expect(screenshotTabs.length).toBeGreaterThanOrEqual(2);
+    expect(screenshotTabs[0]).toBe(100);
+    expect(screenshotTabs[screenshotTabs.length - 1]).toBe(200);
+
+    // Same shape via getTab (per-step currentUrl probe): first call on
+    // 100, last on 200.
+    expect(getTabCalls[0]).toBe(100);
+    expect(getTabCalls[getTabCalls.length - 1]).toBe(200);
+
+    // Registry agrees: the ltid now resolves to 200.
+    const ltid = tabRegistry.toLogicalTabId(200);
+    expect(ltid).toBeTruthy();
+    expect(tabRegistry.toLogicalTabId(100)).toBeUndefined();
   });
 });
+
+/**
+ * Like `fakeBuild` but stashes the loop's `runAction` so the
+ * FakeToolLoopAgent.stream() above can invoke it once per step. Used
+ * only by the onReplaced retargeting test below.
+ */
+function fakeBuildCapturing() {
+  return ({
+    runAction,
+  }: {
+    runAction: (action: CanonicalAction) => Promise<unknown>;
+  }) => {
+    capturedRunAction = runAction;
+    return { tools: {} as Record<string, unknown> };
+  };
+}

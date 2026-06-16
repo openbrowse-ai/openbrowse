@@ -201,7 +201,12 @@ function handleReplace(addedCtid: ChromeTabId, removedCtid: ChromeTabId): void {
   // Best-effort URL for telemetry. Logged async so the synchronous emit
   // above never has to wait on a CDP round-trip; readers correlating logs
   // to events should match on `ltid`.
-  const tabsApi = (globalThis as { chrome?: { tabs?: { get?: (id: number) => Promise<chrome.tabs.Tab> } } })
+  //
+  // The chrome.tabs.get shape is inlined as a minimal `{ url?: string }`
+  // rather than `chrome.tabs.Tab` so this module typechecks in
+  // `packages/bench` (which imports from `apps/extension/src/lib` without
+  // pulling in `@types/chrome`).
+  const tabsApi = (globalThis as { chrome?: { tabs?: { get?: (id: number) => Promise<{ url?: string } | undefined> } } })
     .chrome?.tabs?.get;
   if (tabsApi) {
     Promise.resolve(tabsApi(addedCtid))
@@ -289,9 +294,26 @@ export const tabRegistry = {
 
 // Wire chrome's tab lifecycle events to the registry. This block runs at
 // module load. Guarded so non-extension contexts (vitest with the minimal
-// test-setup mock) don't crash on undefined APIs; tests drive the registry
-// via the `__handle*ForTests` seams instead.
-const chromeRef = (globalThis as { chrome?: typeof chrome }).chrome;
+// test-setup mock, or `packages/bench` imports) don't crash on undefined
+// APIs; tests drive the registry via the `__handle*ForTests` seams instead.
+//
+// The chrome global shape is inlined as a structural type rather than
+// `typeof chrome` so this module typechecks in `packages/bench` (no
+// `@types/chrome` there). The structural shape covers exactly the listeners
+// we need.
+interface ChromeTabsLifecycleShape {
+  tabs?: {
+    onReplaced?: {
+      addListener?: (
+        cb: (addedTabId: number, removedTabId: number) => void,
+      ) => void;
+    };
+    onRemoved?: {
+      addListener?: (cb: (tabId: number) => void) => void;
+    };
+  };
+}
+const chromeRef = (globalThis as { chrome?: ChromeTabsLifecycleShape }).chrome;
 if (chromeRef?.tabs?.onReplaced?.addListener) {
   chromeRef.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
     handleReplace(addedTabId, removedTabId);

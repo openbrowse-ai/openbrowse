@@ -102,21 +102,46 @@ describe("closeOwnedTabs", () => {
     expect(conv?.ownedGroupId).toBe(7);
   });
 
-  it("tolerates a tab that is already gone", async () => {
+  it("silently skips ltids that are not owned by the conversation", async () => {
     const removed: number[] = [];
     installChromeStub(removed);
-    const prev = chrome.tabs.get;
-    (chrome.tabs as { get: typeof prev }).get = (id: number) =>
-      id === 999 ? Promise.reject(new Error("no tab")) : prev(id);
 
-    // Synthesize an ltid that maps to ctid 999 in the registry, so the
-    // closeOwnedTabs resolution path actually attempts a chrome.tabs.get.
+    // ltid999 is registered with the registry but NEVER added to
+    // conv-1's ownedLtids — closeOwnedTabs's defensive filter must
+    // skip it, leaving only the legitimately-owned ltid101 closed.
     const ltid999 = tabRegistry.registerExisting(999);
     const { closeOwnedTabs } = await import("../tab-scoping");
 
     const undo = await closeOwnedTabs("conv-1", [ltid101, ltid999]);
 
-    expect(removed).toContain(101);
+    expect(removed).toEqual([101]); // ONLY 101 closed; 999 was filtered
     expect(undo.tabs.map((t) => t.url)).toEqual(["https://a.com/x"]);
+    // 999 is NOT recorded as a closed tab in the conversation's owned
+    // list because it was never owned in the first place.
+    const conv = await chatDb.getConversation("conv-1");
+    expect(conv?.ownedLtids).toEqual([ltid102]);
+  });
+
+  it("tolerates an owned tab whose ctid is already gone in chrome", async () => {
+    const removed: number[] = [];
+    installChromeStub(removed);
+    // Override chrome.tabs.get for ctid 102 so it rejects (the tab is
+    // gone), but leave 101 alive. Both are owned by conv-1.
+    const prev = chrome.tabs.get;
+    (chrome.tabs as { get: typeof prev }).get = (id: number) =>
+      id === 102 ? Promise.reject(new Error("no tab")) : prev(id);
+
+    const { closeOwnedTabs } = await import("../tab-scoping");
+
+    const undo = await closeOwnedTabs("conv-1", [ltid101, ltid102]);
+
+    // 101 closed cleanly; 102 was owned but the chrome.tabs.get rejected
+    // so it's omitted from the undo (nothing to reopen) and chrome.tabs
+    // .remove never fires for it. Both ltids are still removed from the
+    // conversation's ownedLtids since they were both passed in.
+    expect(removed).toEqual([101]);
+    expect(undo.tabs.map((t) => t.url)).toEqual(["https://a.com/x"]);
+    const conv = await chatDb.getConversation("conv-1");
+    expect(conv?.ownedLtids).toEqual([]);
   });
 });

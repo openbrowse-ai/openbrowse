@@ -436,7 +436,7 @@ async function runTrialInner(
     const driverForLegend = driver;
     const legendEntries = await buildTabLegendEntries({
       conversationId: "bench",
-      ownedTabIds: [initialTabId],
+      ownedLtids: [initialTabId],
       getTab: async (tabId) => {
         const info = await driverForLegend.getTab(tabId).catch(() => null);
         return { url: info?.url, title: info?.title };

@@ -2463,14 +2463,22 @@ export default defineBackground({
       }
     });
 
-    // Re-target the working overlay across `chrome.tabs.onReplaced`.
-    // Without this, prerender activation on the agent's working tab
-    // would leave the glow stranded on the old (now-dead) ctid until
-    // the next status update — visible flicker for the user. The
-    // tab-registry deduplicates replace vs. remove and exposes a
+    // Re-target the working overlay AND the per-window active-tab cache
+    // across `chrome.tabs.onReplaced`. Without this, prerender activation
+    // on the agent's working tab would leave the glow stranded on the old
+    // (now-dead) ctid until the next status update, AND
+    // `activeTabByWindow` would keep pointing at the dead ctid for any
+    // window-scoped lookups that read it before Chrome's next
+    // `onActivated` event (which is non-deterministic across replace).
+    // The tab-registry deduplicates replace vs. remove and exposes a
     // single `onReplace` event we hook here.
     import("@/lib/agent/tab-registry").then(({ tabRegistry }) => {
       tabRegistry.onReplace(({ oldCtid, newCtid }) => {
+        // Window-active-tab cache: rewrite any window whose active tab
+        // was the replaced ctid.
+        for (const [windowId, ctid] of activeTabByWindow) {
+          if (ctid === oldCtid) activeTabByWindow.set(windowId, newCtid);
+        }
         if (agentWorkingTabId === oldCtid) {
           agentWorkingTabId = newCtid;
           import("@/lib/agent/agent-transport")
