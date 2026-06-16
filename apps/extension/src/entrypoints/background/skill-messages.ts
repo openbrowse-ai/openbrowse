@@ -44,6 +44,35 @@ export async function handleSkillMessage(
         sendResponse({ success: true, installed });
         break;
       }
+      case "SKILL_UPSERT_SITE": {
+        const { name, description, body, scripts } = message;
+        const installed = await backgroundSkillRegistry.upsertSite(
+          name,
+          description,
+          body,
+          scripts,
+        );
+        sendResponse({ success: true, installed });
+        break;
+      }
+      case "SKILL_PATCH_SITE": {
+        const { name, description, body, upsertScripts, deleteScripts } =
+          message;
+        const installed = await backgroundSkillRegistry.patchSite(name, {
+          description,
+          body,
+          upsertScripts,
+          deleteScripts,
+        });
+        sendResponse({ success: true, installed });
+        break;
+      }
+      case "SKILL_DELETE_SITE": {
+        const { name } = message;
+        await backgroundSkillRegistry.deleteSite(name);
+        sendResponse({ success: true });
+        break;
+      }
       case "SKILL_UNINSTALL": {
         const { name } = message;
         await backgroundSkillRegistry.uninstall(name);

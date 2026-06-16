@@ -45,12 +45,14 @@ import {
   buildOpenTabsAwarenessEntries,
   renderOpenTabsAwareness,
 } from "./tab-legend";
+import { renderSiteSkillsBlock } from "@/lib/skills/site-skill-catalog";
 import {
   clickElementTool,
   closeTabsTool,
   createScheduledTaskTool,
   createSkillTool,
   deleteMemoryTool,
+  deleteSiteSkillTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
@@ -71,6 +73,7 @@ import {
   typeInElementTool,
   updateMemoryTool,
   updateScheduledTaskTool,
+  patchSiteSkillTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
 import { createFsTools } from "./tools/fs";
@@ -79,6 +82,21 @@ import { setTaskTitleTool } from "./tools/set-task-title";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
+
+// TEMP: when true, prepareCall logs the fully-assembled system prompt (base
+// instructions + tab legend + site-skill catalog) to the service-worker
+// console before each model call. Used to verify site-skill catalog injection;
+// remove once the catalog behavior is confirmed.
+const DEBUG_SYSTEM_PROMPT = true;
+
+// Load-time beacon: confirms the RUNNING service worker actually has the
+// instrumented build (service workers persist old code across reloads). If you
+// don't see this after reloading the extension, the SW is stale — fully reload
+// it from chrome://extensions. TEMP — remove with the rest of the debug code.
+if (DEBUG_SYSTEM_PROMPT) {
+  console.error("[system-prompt] INSTRUMENTED BUILD LOADED");
+}
+
 
 const MEMORY_INSTRUCTIONS = `
 
@@ -98,13 +116,12 @@ You have persistent memory across conversations. The index below shows saved mem
 - User corrects your behavior → save as feedback type
 - User confirms a non-obvious approach → save as feedback type
 - You learn about their role or preferences → save as user type
-- You learn per-site knowledge (navigation patterns, quirks) → save as site type
 - You learn where external information lives → save as reference type
+- (Per-site knowledge — navigation patterns, selectors, quirks — goes in that domain's SITE SKILL via update_site_skill, NOT a memory.)
 
 ### Memory types
 - **user**: Role, preferences, expertise. Free-form content.
 - **feedback**: Behavior corrections or confirmations. Structure: rule, then **Why:** and **How to apply:** lines.
-- **site**: Per-domain knowledge. Set the domain field. Free-form content.
 - **reference**: Where to find things externally. Free-form content.
 
 ### Scoping: user vs. space memories
@@ -113,7 +130,6 @@ Memories are either global (user-level) or scoped to a specific space.
 **Save as user memory (no spaceId)** when it applies everywhere:
 - Identity, name, role, company
 - Universal preferences and behavior corrections
-- General site knowledge (e.g. "on GitHub, go to files-changed first")
 
 **Save as space memory (with spaceId)** when it's relevant to that space's purpose:
 - Project-specific context: repos, tools, workflows for that space's domain
@@ -403,6 +419,8 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    patch_site_skill: toSDKTool(patchSiteSkillTool, "patch_site_skill"),
+    delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill"),
     executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
@@ -427,6 +445,7 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     Glob: toSDKTool(fsTools.globTool, "Glob"),
     Grep: toSDKTool(fsTools.grepTool, "Grep"),
     LS: toSDKTool(fsTools.lsTool, "LS"),
+    Delete: toSDKTool(fsTools.deleteTool, "Delete"),
   };
 }
 
@@ -607,6 +626,32 @@ export function toSDKTool<TInput, TOutput>(
     }
   };
 
+  /**
+   * Generic approval gate for a tab-interacting tool: consult the per-site
+   * "Always allow on <site>" allowlist for the tool's target tab; require a
+   * prompt otherwise.
+   *
+   * The AI SDK calls `needsApproval(input, options)` — `input` is the first
+   * positional arg (the tool's parsed input), NOT `{ input }`. (A prior bug
+   * destructured `{ input }`, read `input.input` (undefined), so the handle
+   * never resolved and approval was ALWAYS required — the allowlist was never
+   * consulted, so "Always allow on <site>" never took effect.) Capture cid
+   * once at entry — see resolveTabFromInput's contract.
+   */
+  const tabToolNeedsApproval = async (input: unknown): Promise<boolean> => {
+    const cid = agentConversationId;
+    const resolved = await resolveTabFromInput(cid, input);
+    if (resolved?.tab.url) {
+      try {
+        const origin = new URL(resolved.tab.url).origin;
+        const allowlist = await getToolSiteAllowlist();
+        const allowed = allowlist[toolKey] ?? [];
+        if (allowed.includes(origin)) return false;
+      } catch {}
+    }
+    return true;
+  };
+
   const needsApproval =
     approvalRequired && toolKey === "executePython"
       ? // Python only needs human approval when it requests outbound network
@@ -641,27 +686,20 @@ export function toSDKTool<TInput, TOutput>(
           }
           return !(await shouldAutoApproveCloseTabs(cid, resolved));
         }
+      : approvalRequired && toolKey === "executeOnPage"
+      ? // A `scriptRef` run executes an ALREADY-SAVED script from one of the
+        // agent's own site skills (authored via update_site_skill) — no prompt,
+        // same trust basis as the no-approval site-skill create/update/delete.
+        // This also removes the model's incentive to `Read` the body before
+        // running (to make an opaque approval legible), which would defeat
+        // run-by-reference. Inline `code` is arbitrary new JS → normal gate.
+        async (input: unknown) => {
+          const typed = input as { scriptRef?: unknown; code?: unknown };
+          if (typed?.scriptRef != null && typed.code == null) return false;
+          return tabToolNeedsApproval(input);
+        }
       : approvalRequired && isTabTool
-        ? async (input: unknown) => {
-            // The AI SDK calls `needsApproval(input, options)` — `input` is the
-            // first positional arg (the tool's parsed input), NOT `{ input }`.
-            // Destructuring `{ input }` here (the onInputAvailable shape) read
-            // `input.input` (undefined), so the tab handle never resolved and
-            // approval was ALWAYS required — the allowlist was never consulted,
-            // so "Always allow on <site>" never took effect for later calls.
-            // Capture cid once at entry — see resolveTabFromInput's contract.
-            const cid = agentConversationId;
-            const resolved = await resolveTabFromInput(cid, input);
-            if (resolved?.tab.url) {
-              try {
-                const origin = new URL(resolved.tab.url).origin;
-                const allowlist = await getToolSiteAllowlist();
-                const allowed = allowlist[toolKey] ?? [];
-                if (allowed.includes(origin)) return false;
-              } catch {}
-            }
-            return true;
-          }
+        ? (input: unknown) => tabToolNeedsApproval(input)
         : approvalRequired;
 
   /**
@@ -1410,8 +1448,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   await getSkillsRegistry().init();
   const skillsState = getSkillsRegistry().getState();
 
-  // Apply global enabled flag + per-space allow/deny override
+  // Apply global enabled flag + per-space allow/deny override. Site skills are
+  // EXCLUDED here — they're per-domain and surfaced in the auto-injected
+  // "## Site skills for open tabs" legend block (only for currently-open
+  // domains), not in the always-on general skills catalog.
   const availableSkills = skillsState.skills.filter((skill) => {
+    if (skill.kind === "site") return false;
     // Global toggle (defaults to enabled if undefined for backward compat)
     if (skill.enabled === false) return false;
     const spaceConfig = skillsState.spaceConfigs.find(
@@ -1750,6 +1792,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         "closeTabs",
         "executeOnPage",
         "updateMemory",
+        "Delete",
         "install_skill",
         "create_skill",
       ]) {
@@ -1832,10 +1875,17 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // Awareness block: enumerate user's other open tabs in the current
     // window. Reuses the driver's listTabs (already filters internal
     // URLs and scopes to current window). Errors here must not break
-    // the legend — fall back to the owned-only block.
+    // the legend — fall back to the owned-only block. We also collect the
+    // open-tab URLs here so the site-skill catalog below can consider the
+    // domain of the tab the user is actually looking at — which is typically
+    // an UNOWNED/awareness tab ("go to my LinkedIn"), not one we navigated to.
     let awarenessBlock = "";
+    const openTabUrls: string[] = [];
     try {
       const openTabs = await extensionDriver.listTabs();
+      for (const t of openTabs) {
+        if (t.url) openTabUrls.push(t.url);
+      }
       const { entries: awarenessEntries, truncated } =
         buildOpenTabsAwarenessEntries({
           conversationId: cid,
@@ -1863,7 +1913,26 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // No window / chrome.tabs unavailable; skip awareness block.
     }
 
-    return [ownedBlock, awarenessBlock].filter(Boolean).join("\n\n");
+    // Domain-aware context: for each unique domain among ALL open tabs (owned
+    // + the user's other open tabs), surface its site skill if one exists, or
+    // a "no site skill yet" bootstrap line if not, so the reuse/save loop is
+    // visible. Owned URLs alone are insufficient — the active tab is usually
+    // unowned. Best-effort — never break the legend over a registry hiccup.
+    let domainBlock = "";
+    try {
+      await getSkillsRegistry().init();
+      const siteSkills = getSkillsRegistry()
+        .getState()
+        .skills.filter((s) => s.kind === "site");
+      domainBlock = renderSiteSkillsBlock(
+        [...entries.map((e) => e.url), ...openTabUrls],
+        siteSkills,
+      );
+    } catch {
+      // leave domainBlock empty
+    }
+
+    return [ownedBlock, awarenessBlock, domainBlock].filter(Boolean).join("\n\n");
   }
 
   const agent = new ToolLoopAgent({
@@ -1883,12 +1952,30 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // mid-conversation.
     prepareCall: async (callArgs) => {
       const legend = await buildLegendBlock();
-      const baseInstructions = callArgs.instructions ?? "";
+      const baseInstructions =
+        typeof callArgs.instructions === "string" ? callArgs.instructions : "";
+      const finalInstructions = legend
+        ? `${baseInstructions}\n\n${legend}`
+        : baseInstructions;
+      // TEMP INSTRUMENTATION — confirm what system prompt actually ships per
+      // model call (esp. whether the "## Site skills for open tabs" block is
+      // injected). Flip DEBUG_SYSTEM_PROMPT to false / delete this block once
+      // the site-skill catalog behavior is verified. Logged to the extension
+      // service-worker console.
+      if (DEBUG_SYSTEM_PROMPT) {
+        const hasSiteBlock = finalInstructions.includes(
+          "## Site skills for open tabs",
+        );
+        console.error(
+          `[system-prompt] prepareCall conv=${agentConversationId ?? "?"} chars=${finalInstructions.length} siteSkillsBlock=${hasSiteBlock} legendChars=${legend.length}`,
+        );
+        console.error("[system-prompt] >>> BEGIN FULL INSTRUCTIONS >>>");
+        console.error(finalInstructions);
+        console.error("[system-prompt] <<< END FULL INSTRUCTIONS <<<");
+      }
       return {
         ...callArgs,
-        instructions: legend
-          ? `${baseInstructions}\n\n${legend}`
-          : baseInstructions,
+        instructions: finalInstructions,
       };
     },
     onStepFinish: (stepResult) => {

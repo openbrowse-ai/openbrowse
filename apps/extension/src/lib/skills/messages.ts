@@ -45,6 +45,25 @@ export function sendSkillMessage(message: {
   body: string;
   references?: { path: string; content: string }[];
 }): Promise<{ success: boolean; installed: InstalledSkill }>;
+export function sendSkillMessage(message: {
+  type: "SKILL_UPSERT_SITE";
+  name: string;
+  description: string;
+  body: string;
+  scripts?: { path: string; content: string }[];
+}): Promise<{ success: boolean; installed: InstalledSkill }>;
+export function sendSkillMessage(message: {
+  type: "SKILL_PATCH_SITE";
+  name: string;
+  description?: string;
+  body?: string;
+  upsertScripts?: { path: string; content: string }[];
+  deleteScripts?: string[];
+}): Promise<{ success: boolean; installed: InstalledSkill }>;
+export function sendSkillMessage(message: {
+  type: "SKILL_DELETE_SITE";
+  name: string;
+}): Promise<{ success: boolean }>;
 
 export async function sendSkillMessage(message: any): Promise<any> {
   return new Promise((resolve, reject) => {

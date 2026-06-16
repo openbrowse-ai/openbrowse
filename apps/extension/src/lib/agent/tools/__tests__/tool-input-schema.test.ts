@@ -21,6 +21,7 @@ import { clickElementTool } from "../click-element";
 import { closeTabsTool } from "../close-tabs";
 import { createSkillTool } from "../create-skill";
 import { deleteMemoryTool } from "../delete-memory";
+import { deleteSiteSkillTool } from "../delete-site-skill";
 import { executeCodeTool } from "../execute-code";
 import { executeOnPageTool } from "../execute-on-page";
 import { createPythonTool } from "../execute-python";
@@ -40,6 +41,7 @@ import { snapshotTool } from "../snapshot";
 import { todoWriteTool } from "../todowrite";
 import { typeInElementTool } from "../type-in-element";
 import { updateMemoryTool } from "../update-memory";
+import { patchSiteSkillTool } from "../patch-site-skill";
 
 const fsTools = createFsTools();
 const pythonTool = createPythonTool();
@@ -63,6 +65,8 @@ const allTools = [
   ["deleteMemory", deleteMemoryTool],
   ["executeCode", executeCodeTool],
   ["executeOnPage", executeOnPageTool],
+  ["patch_site_skill", patchSiteSkillTool],
+  ["delete_site_skill", deleteSiteSkillTool],
   ["executePython", pythonTool],
   ["extract", extractTool],
   ["todoWrite", todoWriteTool],
@@ -75,6 +79,7 @@ const allTools = [
   ["Glob", fsTools.globTool],
   ["Grep", fsTools.grepTool],
   ["LS", fsTools.lsTool],
+  ["Delete", fsTools.deleteTool],
 ] as const;
 
 describe("tool input schemas (Anthropic compatibility)", () => {

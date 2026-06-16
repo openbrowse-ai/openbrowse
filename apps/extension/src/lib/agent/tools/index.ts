@@ -14,6 +14,8 @@ export { deleteMemoryTool } from "./delete-memory";
 export { recallMemoryTool } from "./recall-memory";
 export { executeCodeTool } from "./execute-code";
 export { executeOnPageTool } from "./execute-on-page";
+export { patchSiteSkillTool } from "./patch-site-skill";
+export { deleteSiteSkillTool } from "./delete-site-skill";
 export { createPythonTool, warmupPython } from "./execute-python";
 export { extractTool } from "./extract";
 export { todoWriteTool } from "./todowrite";
