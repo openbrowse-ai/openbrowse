@@ -81,6 +81,11 @@ export function addedByForSkill(
     return "OpenBrowse";
   }
 
+  // Site skills are authored automatically by OpenBrowse's background curator
+  // from your browsing activity. The internal source string is "site-skill";
+  // surface OpenBrowse as the author rather than that raw token.
+  if (source === "site-skill") return "OpenBrowse";
+
   // Prefer YAML `author` if the skill explicitly set one.
   const author = metadata?.author;
   if (typeof author === "string" && author.trim()) return author;

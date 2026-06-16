@@ -103,6 +103,12 @@ export interface AgentSettings {
    * falls back to the `cua` agent definition's `defaultModel`.
    */
   cuaModel?: string;
+  /**
+   * Model used by the background site-skill curator. Compound
+   * "providerId:modelId". When unset, falls back to the foreground agent's
+   * model.
+   */
+  curatorModel?: string;
 }
 
 export interface Conversation {

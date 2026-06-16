@@ -5,11 +5,11 @@ import type { BrowserTool } from "../types";
 const parameters = z.object({
   title: z.string().describe("Short name for the memory (used as lookup key)"),
   description: z.string().describe("One-line summary shown in the memory index — be specific so future-you can judge relevance"),
-  type: z.enum(["user", "feedback", "site", "reference"]).describe(
-    "user = preferences/role, feedback = behavior corrections, site = per-domain knowledge, reference = where to find things"
+  type: z.enum(["user", "feedback", "reference"]).describe(
+    "user = preferences/role, feedback = behavior corrections, reference = where to find things. (Per-site knowledge belongs in a site skill — authored automatically by the background curator — not a memory.)"
   ),
   content: z.string().describe("The full memory content. For feedback types, structure as: rule/fact, then Why: and How to apply: lines"),
-  domain: z.string().optional().describe("Domain this memory applies to (e.g. 'github.com'). Only for site type."),
+  domain: z.string().optional().describe("Optional domain this memory applies to (e.g. 'github.com')."),
   spaceId: z.string().optional().describe("Space ID to scope this memory to. Omit for global memories."),
 });
 
