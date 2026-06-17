@@ -767,13 +767,15 @@ function collectRefs(root: TreeNode): Map<string, RefEntry> {
 }
 
 /**
- * Result of a frame-aware AX-tree fetch. Concatenates `getFullAXTree` nodes
- * from every frame the debugger could safely walk, and surfaces a `note`
- * naming any frames we excluded (currently only cross-extension iframes —
- * 1Password, LastPass, etc. — which Chrome refuses to expose to a
- * cross-extension debugger). Snapshots are still actionable on the
- * remaining frames; the note is propagated up to the agent so it knows
- * the snapshot isn't whole-tree.
+ * Result of a frame-aware AX-tree fetch. The fetch follows a two-tier
+ * strategy (see `fetchAxNodesAvoidingForeignFrames` for details):
+ *   - Tier 1: a single `Accessibility.getFullAXTree()` whole-tree call.
+ *   - Tier 2 (only on cross-extension rejection): main-frame-only walk
+ *     after a `Page.getFrameTree` pre-pass.
+ *
+ * On the Tier 2 path, an optional `note` names the cross-extension frames
+ * we couldn't see (1Password, LastPass, etc.) so the agent knows the
+ * snapshot doesn't cover the whole frame tree.
  */
 interface AxFetchResult {
   nodes: AXNode[];
@@ -805,56 +807,130 @@ function getOwnExtensionUrlPrefix(): string | undefined {
 }
 
 /**
- * Walk a `Page.getFrameTree` result and bucket frames into "safe to AX-walk"
- * vs "foreign chrome-extension://". The bench harness and tests omit the
- * own-extension prefix, in which case all `chrome-extension://` frames are
- * conservatively bucketed as foreign.
+ * Walk a `Page.getFrameTree` result and collect the URLs of frames served
+ * from a `chrome-extension://` URL belonging to a DIFFERENT extension.
+ * Used purely to populate the descriptive `note` on the Tier 2 fallback —
+ * the actual AX walk in Tier 2 only ever runs on the main frame.
  */
-function classifyFrames(
+function collectForeignExtensionUrls(
   root: FrameNode,
   ownPrefix: string | undefined,
-): { safe: { id: string; url: string | undefined }[]; foreignUrls: string[] } {
-  const safe: { id: string; url: string | undefined }[] = [];
-  const foreignUrls: string[] = [];
+): string[] {
+  const out: string[] = [];
   function visit(node: FrameNode): void {
     const url = node.frame.url;
-    const isExtUrl = !!url && url.startsWith("chrome-extension://");
-    const isOurOwn = !!url && !!ownPrefix && url.startsWith(ownPrefix);
-    if (isExtUrl && !isOurOwn) {
-      foreignUrls.push(url ?? "(unknown)");
-    } else {
-      safe.push({ id: node.frame.id, url });
+    if (url && url.startsWith("chrome-extension://")) {
+      if (!ownPrefix || !url.startsWith(ownPrefix)) {
+        out.push(url);
+      }
     }
     for (const child of node.childFrames ?? []) visit(child);
   }
   visit(root);
-  return { safe, foreignUrls };
+  return out;
 }
 
 /**
- * Fetch the page's AX nodes in a way that doesn't blow up on cross-extension
- * iframes (e.g. password-manager content scripts). Strategy:
+ * Format the agent-facing note for the Tier 2 fallback. `foreignUrls` are
+ * frames the pre-pass identified as belonging to a different extension —
+ * those are reliably attributable. `racedFrameIds` are frames whose AX
+ * walk threw cross-extension after the pre-pass — we can't tell whether
+ * Chrome's classifier is rejecting THAT frame or some descendant, so we
+ * surface only opaque frame ids and don't make claims about which
+ * extension owns them.
  *
- *   1. Pre-pass `Page.getFrameTree` to enumerate frames.
- *   2. Bucket frames by URL: foreign `chrome-extension://` frames are skipped
- *      preemptively, all others are walked individually with
- *      `Accessibility.getFullAXTree({frameId})` and concatenated.
- *   3. If a per-frame walk *itself* raises `isCrossExtensionFrameError`
- *      (race: an iframe was injected between the frameTree pre-pass and the
- *      AX call), skip that frame too and add it to the note.
- *   4. If `Page.getFrameTree` itself fails (older Chrome, or a target type
- *      that doesn't enable Page domain), fall back to the legacy whole-tree
- *      `getFullAXTree()` call so the snapshot still works on benign pages.
+ * Soft language: when only foreign frames are excluded, the main page is
+ * actionable as expected. When raced frames are also present (the page
+ * mutated mid-walk and we couldn't enumerate cleanly), some frames are
+ * missing and the agent should be prepared to retry.
+ */
+function buildExclusionNote(
+  foreignUrls: string[],
+  racedFrameIds: string[],
+): string | undefined {
+  if (foreignUrls.length === 0 && racedFrameIds.length === 0) return undefined;
+
+  const parts: string[] = [];
+  if (foreignUrls.length > 0) {
+    const sample = foreignUrls
+      .slice(0, 3)
+      .map((u) => {
+        const m = u.match(/^chrome-extension:\/\/([a-p]+)\//i);
+        return m ? `chrome-extension://${m[1]}/…` : u.slice(0, 80);
+      })
+      .join(", ");
+    const more =
+      foreignUrls.length > 3 ? ` (+${foreignUrls.length - 3} more)` : "";
+    parts.push(
+      `Snapshot excluded ${foreignUrls.length} frame${foreignUrls.length === 1 ? "" : "s"} ` +
+        `belonging to other Chrome extensions (e.g. password managers): ${sample}${more}.`,
+    );
+  }
+  if (racedFrameIds.length > 0) {
+    parts.push(
+      `${racedFrameIds.length} additional frame${racedFrameIds.length === 1 ? "" : "s"} ` +
+        `errored mid-walk and ${racedFrameIds.length === 1 ? "is" : "are"} missing from this snapshot — ` +
+        `retry if expected content is missing.`,
+    );
+  }
+  if (foreignUrls.length > 0 && racedFrameIds.length === 0) {
+    parts.push("Interactive elements in the main page are unaffected.");
+  }
+  return parts.join(" ");
+}
+
+/**
+ * Fetch the page's AX nodes resiliently to cross-extension iframes (e.g.
+ * password-manager content scripts). Two-tier strategy:
  *
- * Returns the concatenated AX nodes plus an optional note describing any
- * excluded frames. Throws only if EVERY safe frame's AX walk fails for a
- * non-cross-extension reason — callers can then decide whether to retry,
- * surface the error, or degrade to no AX tree at all.
+ *   - **Tier 1 (primary)**: a single `Accessibility.getFullAXTree()` with
+ *     no `frameId`. Chrome stitches the whole frame tree on its end and
+ *     returns one connected AX forest with each child-frame node tagged
+ *     with `frameId`. On benign pages and on most pages with foreign
+ *     extension iframes that aren't actively *attached* to the page,
+ *     this succeeds and we return the legacy whole-tree result with no
+ *     additional CDP round-trips.
+ *
+ *   - **Tier 2 (fallback)**: triggered only when Tier 1 throws
+ *     `isCrossExtensionFrameError`. We then run `Page.getFrameTree` to
+ *     enumerate frames (so we can attribute the failure in the agent
+ *     note) and call `Accessibility.getFullAXTree({frameId: <main>})` to
+ *     get just the main frame's tree. Legitimate child-frame content
+ *     (Stripe, YouTube, etc.) is unavailable in this mode; the agent is
+ *     informed via `note`.
+ *
+ * Why not "always per-frame"? Per-frame walks return one RootWebArea per
+ * frame with no parent linkage between them. Concatenating produces
+ * multiple parentless roots and `buildTree` would silently drop all but
+ * one — turning legitimate iframe content into hidden content. Tier 1
+ * preserves Chrome's frame-stitching exactly, paying only a single
+ * extra CDP call's worth of latency on the rare hostile-frame path.
+ *
+ * Returns the AX nodes plus an optional `note`. Re-throws non-cross-ext
+ * errors from Tier 1 unchanged so the existing detach/retry path in
+ * `cdp-session` can handle them.
  */
 async function fetchAxNodesAvoidingForeignFrames(
   driver: BrowserDriver,
   tabId: TabId,
 ): Promise<AxFetchResult> {
+  // Tier 1: whole-tree walk. The common case on every page — benign and
+  // hostile alike — when the cross-extension iframe isn't being actively
+  // included in the AX walk. Re-throws non-cross-ext errors so the cdp-
+  // session retry path keeps its semantics.
+  try {
+    const tree = await driver.sendCommand<{ nodes: AXNode[] }>(
+      tabId,
+      "Accessibility.getFullAXTree",
+    );
+    return { nodes: tree.nodes ?? [] };
+  } catch (err) {
+    if (!isCrossExtensionFrameError(err)) throw err;
+    // Fall through to Tier 2.
+  }
+
+  // Tier 2: enumerate frames (best-effort, for the note), then walk only
+  // the main frame.
   let frameTree: FrameNode | undefined;
   try {
     const result = await driver.sendCommand<{ frameTree?: FrameNode }>(
@@ -863,76 +939,49 @@ async function fetchAxNodesAvoidingForeignFrames(
     );
     frameTree = result.frameTree;
   } catch {
-    // Page domain unavailable (rare). Fall through to legacy whole-tree.
+    // Page domain unavailable (rare). We have no main-frame id to walk
+    // by — return empty with a generic note.
   }
 
   if (!frameTree) {
-    const tree = await driver.sendCommand<{ nodes: AXNode[] }>(
-      tabId,
-      "Accessibility.getFullAXTree",
-    );
-    return { nodes: tree.nodes ?? [] };
+    return {
+      nodes: [],
+      note:
+        "Snapshot blocked by a cross-extension iframe and the frame tree " +
+        "could not be enumerated. Retry, or interact with elements you can " +
+        "see via screenshot.",
+    };
   }
 
   const ownPrefix = getOwnExtensionUrlPrefix();
-  const { safe, foreignUrls } = classifyFrames(frameTree, ownPrefix);
+  const foreignUrls = collectForeignExtensionUrls(frameTree, ownPrefix);
+  const mainFrameId = frameTree.frame.id;
 
-  const allNodes: AXNode[] = [];
-  const racedFrames: string[] = [];
-  let lastNonClassifiedError: unknown = null;
-  let anySucceeded = false;
-
-  for (const frame of safe) {
-    try {
-      const tree = await driver.sendCommand<{ nodes: AXNode[] }>(
-        tabId,
-        "Accessibility.getFullAXTree",
-        { frameId: frame.id },
-      );
-      if (tree.nodes && tree.nodes.length > 0) {
-        for (const n of tree.nodes) allNodes.push(n);
-      }
-      anySucceeded = true;
-    } catch (err) {
-      if (isCrossExtensionFrameError(err)) {
-        // Race: a cross-extension iframe was injected between getFrameTree
-        // and the per-frame AX call. Record and continue.
-        racedFrames.push(frame.url ?? frame.id);
-        continue;
-      }
-      // Real error from this frame. Keep going so a single broken frame
-      // can't kill the whole snapshot, but remember the last error in case
-      // every frame fails (then we re-throw at the end).
-      lastNonClassifiedError = err;
+  const racedFrameIds: string[] = [];
+  let mainNodes: AXNode[] = [];
+  try {
+    const tree = await driver.sendCommand<{ nodes: AXNode[] }>(
+      tabId,
+      "Accessibility.getFullAXTree",
+      { frameId: mainFrameId },
+    );
+    mainNodes = tree.nodes ?? [];
+  } catch (err) {
+    if (isCrossExtensionFrameError(err)) {
+      // Even the main frame's walk failed (e.g. an extension iframe is
+      // attached to <body> and Chrome considers it part of the main
+      // frame's AX scope). Surface as a raced frame so the note
+      // describes it accurately.
+      racedFrameIds.push(mainFrameId);
+    } else {
+      throw err;
     }
   }
 
-  if (!anySucceeded && lastNonClassifiedError) {
-    throw lastNonClassifiedError;
-  }
-
-  const excluded = [...foreignUrls, ...racedFrames];
-  if (excluded.length === 0) {
-    return { nodes: allNodes };
-  }
-
-  // Compact, agent-actionable note. Truncate URLs because chrome-extension
-  // ones can be very long; the host id is the useful part.
-  const sample = excluded
-    .slice(0, 3)
-    .map((u) => {
-      const m = u.match(/^chrome-extension:\/\/([a-z]+)\//i);
-      return m ? `chrome-extension://${m[1]}/…` : u.slice(0, 80);
-    })
-    .join(", ");
-  const more =
-    excluded.length > 3 ? ` (+${excluded.length - 3} more)` : "";
-  const note =
-    `Snapshot excluded ${excluded.length} frame${excluded.length === 1 ? "" : "s"} ` +
-    `belonging to other Chrome extensions (e.g. password managers): ${sample}${more}. ` +
-    `Interactive elements in the main page are unaffected.`;
-
-  return { nodes: allNodes, note };
+  return {
+    nodes: mainNodes,
+    note: buildExclusionNote(foreignUrls, racedFrameIds),
+  };
 }
 
 /**
