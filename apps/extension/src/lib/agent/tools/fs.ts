@@ -250,5 +250,33 @@ export function createFsTools() {
     }
   };
 
-  return { readTool, writeTool, editTool, globTool, grepTool, lsTool };
+  const deleteTool: BrowserTool<{ path: string }, string> = {
+    name: "Delete",
+    description:
+      "Deletes a file or directory (recursively) from your workspace. Use to prune obsolete files. Requires user approval. The read-only `/skills/` directory and user-attached `/.uploads/` files cannot be deleted. (To remove a site skill, use delete_site_skill instead.)",
+    parameters: z.object({
+      path: z.string().describe("Path to delete (file or directory)."),
+    }),
+    approval: { required: true },
+    execute: async ({ path }, ctx) => {
+      const conversationId = ctx.session?.conversationId ?? null;
+      if (path.startsWith('/skills/')) {
+        return `Error: Permission denied. Cannot delete files in the global skills directory.`;
+      }
+      if (isUploadsPath(path)) {
+        return `Error: Permission denied. Files under /.uploads/ are user-attached and cannot be deleted.`;
+      }
+      try {
+        const fullPath = resolveVfsPath(conversationId, path);
+        // Recursive so a whole folder can go in one call. OPFS.rm treats a
+        // missing path as a no-op success.
+        await OPFS.rm(fullPath, { recursive: true });
+        return `Deleted ${path}.`;
+      } catch (e) {
+        return `Error deleting: ${(e as Error).message}`;
+      }
+    }
+  };
+
+  return { readTool, writeTool, editTool, globTool, grepTool, lsTool, deleteTool };
 }

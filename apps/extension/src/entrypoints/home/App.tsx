@@ -23,6 +23,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -40,14 +44,17 @@ import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
 import {
+  Clock,
+  CopyIcon,
   Download,
   Ellipsis,
+  FileDown,
   PanelRight,
   Pencil,
   Trash2,
-  Clock,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
 import { RightRail } from "./components/RightRail";
@@ -273,8 +280,8 @@ export default function App() {
     };
   }, []);
 
-  const handleExportChat = useCallback(async () => {
-    if (!activeConversationId) return;
+  const buildChatMarkdown = useCallback(async () => {
+    if (!activeConversationId) return null;
     const [conv, messages] = await Promise.all([
       chatDb.getConversation(activeConversationId),
       chatDb.getMessages(activeConversationId),
@@ -288,14 +295,31 @@ export default function App() {
       })
       .filter(Boolean);
     const markdown = `# ${conv?.title ?? "Chat"}\n\n${lines.join("\n\n---\n\n")}`;
-    const blob = new Blob([markdown], { type: "text/markdown" });
+    return { markdown, title: conv?.title ?? "chat" };
+  }, [activeConversationId]);
+
+  const handleCopyChatMarkdown = useCallback(async () => {
+    const built = await buildChatMarkdown();
+    if (!built) return;
+    try {
+      await navigator.clipboard.writeText(built.markdown);
+      toast.success("Chat copied as markdown");
+    } catch {
+      toast.error("Failed to copy chat");
+    }
+  }, [buildChatMarkdown]);
+
+  const handleExportChat = useCallback(async () => {
+    const built = await buildChatMarkdown();
+    if (!built) return;
+    const blob = new Blob([built.markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${conv?.title ?? "chat"}.md`;
+    a.download = `${built.title}.md`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [activeConversationId]);
+  }, [buildChatMarkdown]);
 
   const [renameTarget, setRenameTarget] = useState<{
     id: string;
@@ -520,10 +544,27 @@ export default function App() {
                         <Pencil className="size-3.5" />
                         Rename
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={handleExportChat}>
-                        <Download className="size-3.5" />
-                        Export chat
-                      </DropdownMenuItem>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <Download className="size-3.5" />
+                          Export chat
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuPortal>
+                          <DropdownMenuSubContent
+                            sideOffset={4}
+                            className="min-w-44"
+                          >
+                            <DropdownMenuItem onClick={handleCopyChatMarkdown}>
+                              <CopyIcon className="size-3.5" />
+                              Copy markdown
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={handleExportChat}>
+                              <FileDown className="size-3.5" />
+                              Export as .md
+                            </DropdownMenuItem>
+                          </DropdownMenuSubContent>
+                        </DropdownMenuPortal>
+                      </DropdownMenuSub>
                       <DropdownMenuItem
                         onClick={handleDeleteChat}
                         className="text-destructive focus:text-destructive"

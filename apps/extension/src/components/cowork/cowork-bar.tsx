@@ -30,13 +30,15 @@ type Panel = "plan" | "files" | "context";
  * long list never crowds out the input). In-panel headers are suppressed
  * (`showHeader={false}`) since the strip label already names the panel.
  *
- * Folder / Context tabs only render when `showWorkspaceControls` is set
- * (the side panel); the home view keeps the bar plan-only because its
- * RightRail already renders the Working folder and Context cards.
+ * The bar is side-panel-only: it renders only when `showWorkspaceControls`
+ * is set. The home view suppresses it entirely because its RightRail
+ * already renders the Plan / Working folder / Context cards, so a second
+ * surface above the composer would be redundant.
  *
- * The whole bar is hidden until there's something to show — i.e. the agent
- * has written a plan (todoWrite) or the workspace contains any file. Mount
- * with `key={conversationId}` so open state resets on conversation switch.
+ * Within the side panel, the bar is hidden until there's something to
+ * show — i.e. the agent has written a plan (todoWrite) or the workspace
+ * contains any file. Mount with `key={conversationId}` so open state
+ * resets on conversation switch.
  */
 export function CoworkBar({
   conversationId,
@@ -65,7 +67,6 @@ export function CoworkBar({
     activePanel === "plan" && !hasPlan && showWorkspaceControls
       ? "files"
       : activePanel;
-
   // Animate the expanded region's height in pixels. `fr`/`auto` heights
   // don't transition when the *content* changes (only on explicit
   // open/close keyframes), so we drive an explicit `height` measured from
@@ -92,7 +93,8 @@ export function CoworkBar({
 
   const visible =
     Boolean(conversationId) &&
-    (hasPlan || (showWorkspaceControls && hasWorkspaceContent));
+    showWorkspaceControls &&
+    (hasPlan || hasWorkspaceContent);
 
   // Escape collapses the expanded region.
   useEffect(() => {
