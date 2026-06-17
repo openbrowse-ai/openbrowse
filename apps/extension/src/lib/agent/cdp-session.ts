@@ -12,7 +12,7 @@ const pendingAttach = new Map<number, Promise<Session>>();
 const NO_ENABLE_DOMAINS = new Set(["Input", "Page", "DOMSnapshot", "Runtime"]);
 
 export { isDetachError } from "./cdp-errors";
-import { isDetachError } from "./cdp-errors";
+import { isCrossExtensionFrameError, isDetachError } from "./cdp-errors";
 import { tabRegistry } from "./tab-registry";
 
 /**
@@ -115,6 +115,15 @@ async function sendCommandWithRetry<T>(
       await chrome.debugger.sendCommand({ tabId }, `${domain}.enable`);
       session.enabledDomains.add(domain);
     } catch (err) {
+      // Cross-extension frame access errors do not mean the session is dead
+      // — the debugger is still attached, only the specific call walked into
+      // a chrome-extension:// frame from a different extension (commonly a
+      // password manager iframe). Bail without touching the session map; the
+      // caller (snapshot-capture) catches via isCrossExtensionFrameError and
+      // falls back to a per-frame walk that excludes the offending frame.
+      if (isCrossExtensionFrameError(err)) {
+        throw err;
+      }
       if (allowRetry && isDetachError(err)) {
         // Stale session — drop and retry once with a fresh attach.
         // Logged at debug; transient and self-healing, so most engineers
@@ -140,6 +149,12 @@ async function sendCommandWithRetry<T>(
     );
     return result as T;
   } catch (err) {
+    // Same bail-early rationale as the .enable branch above: cross-extension
+    // frame access is a per-call failure, not a session failure. Don't drop
+    // the session, don't retry — let the caller pick a degraded path.
+    if (isCrossExtensionFrameError(err)) {
+      throw err;
+    }
     if (allowRetry && isDetachError(err)) {
       // The debugger detached between attach() and sendCommand (or the
       // command itself fell off the wire mid-flight). Drop our stale session

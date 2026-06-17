@@ -124,7 +124,11 @@ export const clickElementTool: BrowserTool<Input, Output> = {
         result.belowFoldCount = cap.belowFoldCount;
         result.hint = `${cap.belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`;
       }
-      if (hitWarning) result.note = hitWarning;
+      // Merge per-call notes. `hitWarning` (overlay-intercept) and `cap.note`
+      // (cross-extension frames excluded from the snapshot) are both
+      // information the agent benefits from; concatenate when both fire.
+      const notes = [hitWarning, cap.note].filter(Boolean);
+      if (notes.length > 0) result.note = notes.join(" ");
       return result;
     } catch (err) {
       return {

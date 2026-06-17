@@ -35,6 +35,7 @@ const outputSchema = z.object({
   url: z.string(),
   belowFoldCount: z.number().optional(),
   hint: z.string().optional(),
+  note: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
 
@@ -52,12 +53,19 @@ export const snapshotTool: BrowserTool<Input, Output> = {
     const viewportOnly = mode === "viewport";
     const captureMode = mode === "viewport" ? "interactive" : mode;
 
-    const { snapshotText, refs, previous, signals, previousSignals, belowFoldCount } =
-      await captureSnapshot(ctx.driver, tabId, {
-        mode: captureMode,
-        selector,
-        viewportOnly,
-      });
+    const {
+      snapshotText,
+      refs,
+      previous,
+      signals,
+      previousSignals,
+      belowFoldCount,
+      note,
+    } = await captureSnapshot(ctx.driver, tabId, {
+      mode: captureMode,
+      selector,
+      viewportOnly,
+    });
 
     const baseResult: Output = {
       tab: handle,
@@ -78,6 +86,7 @@ export const snapshotTool: BrowserTool<Input, Output> = {
         ? `${belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`
         : `${belowFoldCount} of the returned refs are below the fold — scrolling may reveal additional interactive elements beyond the current tree.`;
     }
+    if (note) baseResult.note = note;
 
     return baseResult;
   },

@@ -123,6 +123,9 @@ export const pressKeyTool: BrowserTool<Input, Output> = {
         result.belowFoldCount = cap.belowFoldCount;
         result.hint = `${cap.belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`;
       }
+      // Surface cross-extension frame exclusion (e.g. password-manager
+      // iframes) so the agent knows the snapshot isn't whole-tree.
+      if (cap.note) result.note = cap.note;
       return result;
     } catch (err) {
       return {

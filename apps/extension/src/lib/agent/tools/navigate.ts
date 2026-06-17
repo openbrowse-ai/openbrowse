@@ -100,13 +100,16 @@ export const navigateTool: BrowserTool<Input, Output> = {
     // Auto-attach initial snapshot so the agent can act on the new page
     // without a follow-up snapshot call.
     try {
-      const { snapshotText, refs } = await captureSnapshot(ctx.driver, tabId);
+      const cap = await captureSnapshot(ctx.driver, tabId);
       return {
         navigated: true,
         url,
         tab: resolvedHandle,
-        snapshot: snapshotText,
-        refCount: refs.size,
+        snapshot: cap.snapshotText,
+        refCount: cap.refs.size,
+        // Surface cross-extension frame exclusion (e.g. password-manager
+        // iframes) so the agent knows the snapshot isn't whole-tree.
+        ...(cap.note ? { note: cap.note } : {}),
       };
     } catch (err) {
       return {
