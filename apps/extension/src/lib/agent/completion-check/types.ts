@@ -18,11 +18,24 @@
  *    unused today but live on the type so adding them later is
  *    non-breaking.
  *  - Concerns are dimension-tagged so the executor's rejection feedback
- *    can be partitioned ("completeness: ..." vs "evidenceGrounding:
- *    ...") rather than a single opaque rejection string. This is the
+ *    can be partitioned ("completeness: ..." vs "planClosure: ...")
+ *    rather than a single opaque rejection string. This is the
  *    "binary verdict + structured concerns" hybrid chosen over pure
  *    binary or full numeric scoring; see the SOTA research synthesis
  *    for rationale.
+ *
+ * History note: earlier revisions also shipped `evidenceGrounding` and
+ * `surfaceAccuracy` dimensions. Both produced too many false rejections
+ * — `evidenceGrounding` because it asked the evaluator to reason about
+ * absence-of-evidence in heavily-truncated tool-call traces (every
+ * snapshot/extract output is hard-truncated to 800 chars before reaching
+ * the evaluator, so verbatim quotes the executor saw on the live page
+ * routinely don't appear in the trace); `surfaceAccuracy` because it
+ * required the evaluator to run its own verification tool calls, which
+ * was a latency disaster and rarely fired in practice. The remaining
+ * three dimensions are all judged against something concrete in-context:
+ * the original request text (completeness, noPrematureHandoff) or the
+ * todo list (planClosure).
  */
 
 /**
@@ -46,23 +59,11 @@ export type ConcernDimension =
    */
   | "planClosure"
   /**
-   * A factual claim in the drafted response (price, count, page content,
-   * URL, etc.) is not supported by any tool observation produced this turn.
-   * The executor either invented the fact or carried it from stale context.
-   */
-  | "evidenceGrounding"
-  /**
    * The response punts work back to the user that was within the original
    * scope. Phrases like "you can now do X yourself" when X was the asked-for
    * outcome.
    */
-  | "noPrematureHandoff"
-  /**
-   * The response describes the page state but the evaluator's own snapshot
-   * disagrees. Only populated when the evaluator chose to ground via
-   * read-only tool calls.
-   */
-  | "surfaceAccuracy";
+  | "noPrematureHandoff";
 
 /**
  * A single concern raised by the evaluator. Each rejection verdict typically
@@ -100,7 +101,7 @@ export interface Concern {
    *  - No prescriptive verbs ("should", "needs to", "must"). Frame as
    *    observations, not commands.
    *  - No internal jargon: don't surface dimension names
-   *    ("completeness", "evidenceGrounding"), tool names, snapshot
+   *    ("completeness", "planClosure"), tool names, snapshot
    *    references, etc.
    *  - One sentence per concern. Soft cap ~25 words. Hard cap 180
    *    chars (Zod-enforced).

@@ -244,9 +244,9 @@ describe("runEvaluator (real, mocked LLM)", () => {
           evidence: "draft mentions Logitech MX, Keychron K2",
         },
         {
-          dimension: "evidenceGrounding",
-          detail: "Price $149 not present in any tool call this turn.",
-          userSummary: "The price ($149) wasn't verified on any page.",
+          dimension: "planClosure",
+          detail: "Two pending todos remain unclosed at completion.",
+          userSummary: "Two items on your plan are still open.",
         },
       ],
       reasoning: "Two specific gaps.",
@@ -263,7 +263,7 @@ describe("runEvaluator (real, mocked LLM)", () => {
     expect(v.concerns).toHaveLength(2);
     expect(v.concerns[0].dimension).toBe("completeness");
     expect(v.concerns[0].evidence).toContain("Logitech");
-    expect(v.concerns[1].dimension).toBe("evidenceGrounding");
+    expect(v.concerns[1].dimension).toBe("planClosure");
     expect(v.concerns[1].evidence).toBeUndefined();
   });
 
@@ -338,23 +338,23 @@ describe("runEvaluator (real, mocked LLM)", () => {
   });
 
   it("threads userSummary through from the parsed verdict", async () => {
-    const summary = "Hours might be off — site shows different hours.";
+    const summary = "Three items on your plan are still open.";
     const model = mockEvaluatorModel({
       decision: "reject",
       concerns: [
         {
-          dimension: "surfaceAccuracy",
-          detail: "Drafted hours conflict with site hours.",
+          dimension: "planClosure",
+          detail: "Three pending todos remain unclosed at completion.",
           userSummary: summary,
-          evidence: "site shows 8pm",
+          evidence: "todos[1..3] still pending",
         },
       ],
-      reasoning: "Hours mismatch.",
+      reasoning: "Plan not closed.",
       confidence: 0.85,
     });
     const v = await runEvaluator({
-      originalRequest: "find a cafe",
-      draftedResponse: "Open until 7pm.",
+      originalRequest: "do these three things",
+      draftedResponse: "Done.",
       todos: [],
       toolCallTrace: [],
       model,
@@ -380,183 +380,23 @@ describe("runEvaluator (real, mocked LLM)", () => {
     expect(v.reasoning).toContain("From global model");
   });
 
-  it("with-tools mode: routes through generateText + Output.object and parses verdict", async () => {
-    const verdict = {
+  it("rejects unknown dimensions at the schema layer", async () => {
+    // Retired dimensions (`evidenceGrounding`, `surfaceAccuracy`) and
+    // any other free-form string must be rejected by the verdict schema.
+    // The AI SDK retries internally a few times; we just observe that
+    // the throw eventually propagates.
+    const model = mockEvaluatorModel({
       decision: "reject",
       concerns: [
         {
           dimension: "evidenceGrounding",
-          detail: "Price $149 not in any tool output.",
-          userSummary: "The price ($149) wasn't verified on any page.",
+          detail: "Some claim wasn't in trace.",
+          userSummary: "A claim wasn't verified.",
         },
       ],
-      reasoning: "Could not ground the price claim.",
-      confidence: 0.85,
-    };
-    const verdictText = JSON.stringify(verdict);
-
-    // generateText uses doGenerate. Note V3 finishReason shape:
-    // `{ unified, raw }` rather than a plain string. The earlier
-    // generateObject tests work with the plain string because the
-    // generateObject path tolerates both forms; generateText is
-    // strict about the V3 shape.
-    const model = new MockLanguageModelV3({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doGenerate: (async () => ({
-        content: [{ type: "text", text: verdictText }],
-        finishReason: { unified: "stop", raw: "stop" },
-        usage: {
-          inputTokens: { total: 10 },
-          outputTokens: { total: 10 },
-          totalTokens: { total: 20 },
-        },
-        warnings: [],
-      })) as never,
-    }) as unknown as LanguageModel;
-
-    const v = await runEvaluator({
-      originalRequest: "find cheapest keyboard",
-      draftedResponse: "Cheapest is Logitech MX at $149.",
-      todos: [],
-      toolCallTrace: [],
-      model,
-      allowTools: true,
-      tools: {
-        // Cast to any: the structural Tool shape has many required
-        // fields; the mock model never actually invokes the tool, so
-        // this stub suffices for routing the with-tools branch.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        snapshot: { description: "stub", parameters: {} } as any,
-      },
-      maxSteps: 3,
+      reasoning: "Retired dimension; should fail schema.",
+      confidence: 0.8,
     });
-    expect(v.decision).toBe("reject");
-    expect(v.concerns).toHaveLength(1);
-    expect(v.concerns[0].dimension).toBe("evidenceGrounding");
-  });
-
-  it("with-tools mode is skipped when tools map is empty (no-tools fast path)", async () => {
-    const model = mockEvaluatorModel({
-      decision: "approve",
-      concerns: [],
-      reasoning: "ok",
-      confidence: 0.9,
-    });
-    // allowTools: true but tools is empty → no-tools generateObject
-    // path. The mock above is configured for generateObject (doGenerate),
-    // not generateText (doStream). If routing fell through to with-tools
-    // we'd hit a runtime error.
-    const v = await runEvaluator({
-      originalRequest: "do X",
-      draftedResponse: "did X",
-      todos: [],
-      toolCallTrace: [],
-      model,
-      allowTools: true,
-      tools: {},
-    });
-    expect(v.decision).toBe("approve");
-  });
-
-  it("with-tools mode: two-stage fallback when first stage hits step cap without committing", async () => {
-    // Simulate the production failure mode: generateText finishes its
-    // last step with finishReason='tool-calls' (model wanted more
-    // tools but stopWhen capped it), so result.output throws
-    // NoOutputGeneratedError. The evaluator should catch that and run
-    // a second-stage generateObject call to commit a verdict from the
-    // accumulated work.
-    const finalVerdict = {
-      decision: "approve",
-      concerns: [],
-      reasoning: "Committed via second-stage fallback.",
-      confidence: 0.7,
-    };
-
-    let callCount = 0;
-    const model = new MockLanguageModelV3({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doGenerate: (async () => {
-        callCount++;
-        if (callCount === 1) {
-          // First call: generateText. Return a non-'stop' finishReason
-          // so the SDK never invokes parseCompleteOutput, leaving
-          // result.output undefined → throws NoOutputGeneratedError.
-          return {
-            content: [{ type: "text", text: "thinking..." }],
-            finishReason: { unified: "length", raw: "length" },
-            usage: {
-              inputTokens: { total: 10 },
-              outputTokens: { total: 5 },
-              totalTokens: { total: 15 },
-            },
-            warnings: [],
-          };
-        }
-        // Second call: generateObject second-stage commit. Return a
-        // valid verdict so the fallback succeeds.
-        return {
-          content: [{ type: "text", text: JSON.stringify(finalVerdict) }],
-          finishReason: { unified: "stop", raw: "stop" },
-          usage: {
-            inputTokens: { total: 10 },
-            outputTokens: { total: 10 },
-            totalTokens: { total: 20 },
-          },
-          warnings: [],
-        };
-      }) as never,
-    }) as unknown as LanguageModel;
-
-    const v = await runEvaluator({
-      originalRequest: "do X",
-      draftedResponse: "did X",
-      todos: [],
-      toolCallTrace: [],
-      model,
-      allowTools: true,
-      tools: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        snapshot: { description: "stub", parameters: {} } as any,
-      },
-      maxSteps: 1,
-    });
-
-    // Assert both calls happened: first stage (generateText) + second
-    // stage (generateObject commit).
-    expect(callCount).toBe(2);
-    expect(v.decision).toBe("approve");
-    expect(v.reasoning).toContain("second-stage");
-    expect(v.confidence).toBeCloseTo(0.7);
-  });
-
-  it("with-tools mode: schema-validation errors are NOT caught by the fallback", async () => {
-    // Distinct from NoOutputGeneratedError: if the model commits valid
-    // text that doesn't match the schema, we want that to surface
-    // (real bug) rather than silently fall through to second-stage.
-    const badJson = JSON.stringify({
-      decision: "approve",
-      concerns: "not-an-array", // schema violation
-      reasoning: "x",
-      confidence: 0.5,
-    });
-    let callCount = 0;
-    const model = new MockLanguageModelV3({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doGenerate: (async () => {
-        callCount++;
-        return {
-          content: [{ type: "text", text: badJson }],
-          finishReason: { unified: "stop", raw: "stop" },
-          usage: {
-            inputTokens: { total: 10 },
-            outputTokens: { total: 10 },
-            totalTokens: { total: 20 },
-          },
-          warnings: [],
-        };
-      }) as never,
-    }) as unknown as LanguageModel;
-
     await expect(
       runEvaluator({
         originalRequest: "do X",
@@ -564,48 +404,36 @@ describe("runEvaluator (real, mocked LLM)", () => {
         todos: [],
         toolCallTrace: [],
         model,
-        allowTools: true,
-        tools: {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          snapshot: { description: "stub", parameters: {} } as any,
-        },
-        maxSteps: 1,
       }),
     ).rejects.toThrow();
-    // Only one call should have happened — the fallback didn't trigger.
-    expect(callCount).toBe(1);
   });
 });
 
 describe("buildEvaluatorSystemPrompt", () => {
   it("includes every concern dimension by name", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
-    for (const dim of [
-      "completeness",
-      "planClosure",
-      "evidenceGrounding",
-      "noPrematureHandoff",
-      "surfaceAccuracy",
-    ]) {
+    const p = buildEvaluatorSystemPrompt();
+    for (const dim of ["completeness", "planClosure", "noPrematureHandoff"]) {
       expect(p).toContain(`**${dim}**`);
     }
   });
 
-  it("differs by hasTools", () => {
-    const a = buildEvaluatorSystemPrompt({ hasTools: false });
-    const b = buildEvaluatorSystemPrompt({ hasTools: true });
-    expect(a).not.toBe(b);
-    expect(b).toMatch(/read-only|snapshot|extract/i);
-    expect(a).toContain("no tools available");
+  it("does not mention retired dimensions", () => {
+    const p = buildEvaluatorSystemPrompt();
+    // `evidenceGrounding` and `surfaceAccuracy` were removed because
+    // they produced too many false rejections from absence-of-evidence
+    // in truncated traces. They must not appear anywhere in the prompt
+    // (no dimension entry, no example, no rule referring to them).
+    expect(p).not.toContain("evidenceGrounding");
+    expect(p).not.toContain("surfaceAccuracy");
   });
 
   it("instructs to default to skepticism", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    const p = buildEvaluatorSystemPrompt();
     expect(p.toLowerCase()).toContain("skeptic");
   });
 
   it("documents the userSummary field with observation-voice rules", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    const p = buildEvaluatorSystemPrompt();
     // Mentions both fields the evaluator must produce.
     expect(p).toContain("`detail`");
     expect(p).toContain("`userSummary`");
@@ -622,7 +450,7 @@ describe("buildEvaluatorSystemPrompt", () => {
   });
 
   it("instructs not to reject reasonable interpretations of ambiguous requests", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    const p = buildEvaluatorSystemPrompt();
     // Dedicated guidance section exists.
     expect(p).toContain("## Ambiguous requests");
     // Establishes that a best-effort reading of a vague request is
@@ -637,27 +465,25 @@ describe("buildEvaluatorSystemPrompt", () => {
   });
 
   it("forbids rejecting on the evaluator's own world knowledge / hallucinated facts", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
+    const p = buildEvaluatorSystemPrompt();
     // Dedicated time-sensitive section exists.
     expect(p).toContain("## Current and time-sensitive facts");
     // Names the failure mode explicitly so the model can't rationalize it.
     expect(p.toLowerCase()).toContain("knowledge cutoff");
     expect(p.toLowerCase()).toContain("in the future");
     expect(p.toLowerCase()).toContain(`doesn't exist`);
-    // The trace/page outranks the evaluator's memory.
-    expect(p.toLowerCase()).toContain("source of truth");
-    expect(p.toLowerCase()).toContain("the observation wins");
     // Unfamiliarity is not fabrication.
     expect(p.toLowerCase()).toContain("unfamiliarity is not evidence of fabrication");
   });
 
-  it("frames evidenceGrounding as contradicted-or-absent, not 'unverifiable by the evaluator'", () => {
-    const p = buildEvaluatorSystemPrompt({ hasTools: false });
-    // The dimension description now keys off the trace, not belief.
-    expect(p).toMatch(/CONTRADICTED by the tool-call trace/);
-    // Both the no-tools guidance and the dimension forbid belief-based rejects.
-    const noTools = buildEvaluatorSystemPrompt({ hasTools: false });
-    expect(noTools.toLowerCase()).toContain("never reject a claim on the basis of your own knowledge");
+  it("instructs not to reject merely because a claim isn't verbatim in the truncated trace", () => {
+    const p = buildEvaluatorSystemPrompt();
+    // The prompt must explicitly tell the evaluator that absence of a
+    // verbatim quote in the trace is NOT grounds for rejection. This
+    // is the specific failure mode that motivated retiring the
+    // `evidenceGrounding` dimension.
+    expect(p.toLowerCase()).toContain("truncated");
+    expect(p.toLowerCase()).toContain("verbatim");
   });
 });
 
@@ -765,15 +591,17 @@ describe("buildEvaluatorUserPrompt", () => {
     expect(out).toContain("did not complete");
   });
 
-  it("preface tells the evaluator the trace includes outputs", () => {
+  it("preface tells the evaluator the trace is truncated, not exhaustive", () => {
     const out = buildEvaluatorUserPrompt({
       originalRequest: "x",
       draftedResponse: "y",
       todos: [],
       toolCallTrace: [],
     });
-    // The preface is what nudges the evaluator NOT to re-call tools.
-    expect(out.toLowerCase()).toContain("captured outputs");
+    // The preface is what nudges the evaluator NOT to reject claims
+    // just because they don't appear verbatim in the truncated trace.
+    expect(out.toLowerCase()).toContain("truncated");
+    expect(out.toLowerCase()).toContain("not as an exhaustive");
   });
 });
 
@@ -844,7 +672,7 @@ describe("completionCheckTelemetry", () => {
         concerns: [
           { dimension: "completeness", detail: "x", userSummary: "x." },
           {
-            dimension: "evidenceGrounding",
+            dimension: "planClosure",
             detail: "y",
             userSummary: "y.",
           },
@@ -867,8 +695,8 @@ describe("completionCheckTelemetry", () => {
     expect(agg.byOutcome.rejected).toBe(1);
     expect(agg.byOutcome.skipped).toBe(1);
     expect(agg.byDimension.completeness).toBe(1);
-    expect(agg.byDimension.evidenceGrounding).toBe(1);
-    expect(agg.byDimension.planClosure).toBe(0);
+    expect(agg.byDimension.planClosure).toBe(1);
+    expect(agg.byDimension.noPrematureHandoff).toBe(0);
   });
 
   it("aggregate respects sinceMs filter", async () => {
@@ -1439,10 +1267,10 @@ describe("buildCompletionCheckFeedbackMessage", () => {
         decision: "reject",
         concerns: [
           {
-            dimension: "evidenceGrounding",
-            detail: "price unverified",
-            userSummary: "Price isn't verified.",
-            evidence: "draft says $149",
+            dimension: "planClosure",
+            detail: "two pending todos remain",
+            userSummary: "Two items on your plan are still open.",
+            evidence: "todos[1..2] still pending",
           },
           {
             dimension: "completeness",
@@ -1456,7 +1284,7 @@ describe("buildCompletionCheckFeedbackMessage", () => {
       2,
     );
     const text = (m.parts[0] as { type: "text"; text: string }).text;
-    expect(text).toContain("Evidence: draft says $149");
+    expect(text).toContain("Evidence: todos[1..2] still pending");
     // No "Evidence:" line for concerns without one
     const completenessLineIdx = text.indexOf("completeness: missing 3rd item");
     const tail = text.slice(completenessLineIdx);

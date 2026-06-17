@@ -1350,23 +1350,11 @@ export async function createAgentTransport(
 
   const browserTools = createBrowserToolSet();
 
-  // The completion-check evaluator runs WITHOUT tools by default.
-  //
-  // Earlier we handed it a read-only browser/filesystem subset so it
-  // could make its own verification calls to ground factual claims.
-  // In practice that turned every gate into a multi-step agentic loop
-  // (`generateText` + `stepCountIs`, plus an occasional second-stage
-  // commit), which dominated end-of-turn latency. The tool-call trace
-  // already includes the captured output of every tool the executor
-  // ran this turn, so the evaluator can ground the vast majority of
-  // claims from context alone. Dropping tools routes the evaluator
-  // down its single-shot `generateObject` path (one round-trip) and
-  // cuts the perceived "Refining answer" delay dramatically.
-  //
-  // The evaluator still SUPPORTS tools (see completion-check/evaluator.ts);
-  // we simply don't wire any here. To re-enable grounded verification,
-  // pass a read-only tool subset as `evaluatorTools` in
-  // `buildCompletionCheckInput` below.
+  // The completion-check evaluator runs WITHOUT tools — single-shot
+  // `generateObject` against the conversation context and the captured
+  // tool-call trace. The earlier with-tools mode was removed (it
+  // dominated end-of-turn latency, and the dimensions that benefited
+  // from it have since been retired). See `completion-check/evaluator.ts`.
 
   const mcpTools = getMcpRegistry().toSDKTools();
 
@@ -1417,11 +1405,9 @@ When you receive a \`[Completion check]\` message, treat it as a continuation di
 Concerns are tagged by dimension:
 - **completeness**: the response did not fulfill the original request end-to-end.
 - **planClosure**: open todos contradict the claim of completion.
-- **evidenceGrounding**: a factual claim is not supported by tool observations from this turn.
 - **noPrematureHandoff**: the response punts work back to the user that was within scope.
-- **surfaceAccuracy**: the page state described in the response disagrees with what a verification call observed.
 
-To minimize wasted rejection rounds: before producing a final response, re-read the original request, verify each factual claim was actually observed via a tool call this turn, and confirm your todo list is fully closed out.`;
+To minimize wasted rejection rounds: before producing a final response, re-read the original request and confirm your todo list is fully closed out (or that every still-open todo has an explicit reason to remain open).`;
 
   // Inject current todo plan into system prompt
   const conv = agentConversationId
@@ -2212,11 +2198,6 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         // Threaded once at transport build; null means "fall back to
         // the executor's current model" inside the evaluator.
         evaluatorModel: evaluatorLanguageModel,
-        // Intentionally no `evaluatorTools`: the evaluator runs as a
-        // single-shot `generateObject` against the conversation context
-        // and tool-call trace. See the comment at the
-        // `evaluatorReadOnlyTools` removal above for the latency
-        // rationale and how to re-enable grounded verification.
       };
     },
     onCompletionCheckApproved: (cid, now) => {

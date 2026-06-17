@@ -85,13 +85,7 @@ describe("selectHeading", () => {
   });
 
   it("never includes evaluator-internal jargon (dimension names)", () => {
-    const tokens = [
-      "completeness",
-      "evidenceGrounding",
-      "surfaceAccuracy",
-      "planClosure",
-      "noPrematureHandoff",
-    ];
+    const tokens = ["completeness", "planClosure", "noPrematureHandoff"];
     for (const t of tokens) {
       expect(selectHeading("refining", 1)).not.toContain(t);
       expect(selectHeading("force-emit", 1)).not.toContain(t);
