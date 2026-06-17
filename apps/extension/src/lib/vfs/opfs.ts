@@ -9,6 +9,21 @@ function randSuffix(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * Strip leading and trailing `/` characters in linear time. Replaces the
+ * previous `path.replace(/^\/+|\/+$/g, "")` pattern, which CodeQL flags
+ * as a polynomial regex (the `+` quantifier with alternation can backtrack
+ * on adversarial input). Two index walks and one slice — O(n), no
+ * regex engine involvement.
+ */
+function trimSlashes(path: string): string {
+  let start = 0;
+  while (start < path.length && path.charCodeAt(start) === 47) start++;
+  let end = path.length;
+  while (end > start && path.charCodeAt(end - 1) === 47) end--;
+  return start === 0 && end === path.length ? path : path.slice(start, end);
+}
+
 export class OPFS {
   /**
    * Resolves a path to a directory handle.
@@ -19,7 +34,7 @@ export class OPFS {
   ): Promise<FileSystemDirectoryHandle> {
     const root = await navigator.storage.getDirectory();
     // Normalize path by removing leading/trailing slashes
-    const cleanPath = path.replace(/^\/+|\/+$/g, "");
+    const cleanPath = trimSlashes(path);
     if (!cleanPath) return root;
 
     const parts = cleanPath.split("/");
@@ -209,7 +224,7 @@ export class OPFS {
   }
 
   static async exists(path: string): Promise<boolean> {
-    const cleanPath = path.replace(/^\/+|\/+$/g, "");
+    const cleanPath = trimSlashes(path);
     if (!cleanPath) return true;
 
     const parts = cleanPath.split("/");
@@ -235,7 +250,7 @@ export class OPFS {
     path: string,
     options?: { recursive?: boolean },
   ): Promise<void> {
-    const cleanPath = path.replace(/^\/+|\/+$/g, "");
+    const cleanPath = trimSlashes(path);
     if (!cleanPath) throw new Error("Cannot remove root directory");
 
     const parts = cleanPath.split("/");
@@ -260,7 +275,7 @@ export class OPFS {
    * Helper to recursively walk a directory and yield all file paths.
    */
   static async *walk(dirPath: string): AsyncGenerator<string> {
-    const cleanPath = dirPath.replace(/^\/+|\/+$/g, "");
+    const cleanPath = trimSlashes(dirPath);
     let handle;
     try {
       handle = await this.getDirHandle(cleanPath);
@@ -293,7 +308,7 @@ export class OPFS {
   static async uniquePath(dirPath: string, filename: string): Promise<string> {
     const dir = await this.getDirHandle(dirPath, true);
     const unique = await uniqueNameInDir(dir, filename);
-    const cleanDir = dirPath.replace(/^\/+|\/+$/g, "");
+    const cleanDir = trimSlashes(dirPath);
     return cleanDir ? `${cleanDir}/${unique}` : unique;
   }
 }

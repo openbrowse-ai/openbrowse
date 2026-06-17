@@ -1,5 +1,5 @@
-import { OPFS } from "@/lib/vfs/opfs";
-import { isUploadsPath } from "@/lib/uploads-dir";
+import { OPFS } from "../../vfs/opfs";
+import { isUploadsPath } from "../../uploads-dir";
 
 /**
  * Per-conversation workspace root in OPFS. Mirrors the convention used by
