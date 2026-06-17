@@ -10,6 +10,7 @@
  * agent-transport ↔ cua import boundary can use it without creating a cycle.
  */
 import { getTargetTabId, sendToContentScript } from "./active-tab";
+import { startCapture } from "./cdp-capture";
 
 /** The space color used to tint the overlay glow. Set by the chat hook via
  *  agent-transport's `setAgentSpaceColor`; read here as the default tint. */
@@ -95,6 +96,9 @@ export function notifyAgentStatus(
           }).catch(() => {});
         }
         lastIndicatorTabId = targetTabId;
+        // Begin network/console capture on the worked tab (eager). Fire-and-
+        // forget — capture is best-effort and must not delay the overlay.
+        void startCapture(targetTabId).catch(() => {});
         await sendToContentScript(targetTabId, {
           type: "CHAT_CUA_WORKING_STATE",
           active: true,

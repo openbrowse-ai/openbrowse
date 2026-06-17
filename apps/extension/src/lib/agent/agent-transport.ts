@@ -166,6 +166,8 @@ import {
   setAgentSpaceColor,
   getAgentSpaceColor,
 } from "./agent-indicator";
+import { startCapture } from "./cdp-capture";
+import { releaseAll as releaseAllSessions } from "./cdp-session";
 
 export { notifyAgentStatus, setAgentSpaceColor };
 
@@ -824,6 +826,20 @@ export function toSDKTool<TInput, TOutput>(
         });
       }
       notifyAgentStatus(true, getAgentSpaceColor(), resolved?.tabId ?? null);
+      // Eagerly arm CDP capture for the worked tab BEFORE the tool runs,
+      // so any network/console events the tool itself triggers (or the
+      // page issues during the tool's wait) land in the buffer.
+      // `startCapture` is idempotent: a no-op when the tab is already
+      // tracked (which it is for every tool call after the first against
+      // a given tab in an agent run). Awaiting matters because
+      // `chrome.debugger.attach + Network.enable` is async — without the
+      // await, the very first tool call against a tab races the attach
+      // and misses its own events. (`agent-indicator.notifyAgentStatus`
+      // ALSO calls `startCapture` fire-and-forget as a backstop for
+      // non-tab-tool turns; this awaited call wins on tab-tool calls.)
+      if (resolved?.tabId != null) {
+        await startCapture(resolved.tabId).catch(() => {});
+      }
     }
     try {
       // Threaded ToolContext from the SDK's experimental_context channel.
@@ -873,6 +889,36 @@ export function toSDKTool<TInput, TOutput>(
               title: resolved.tab.title ?? "",
               favIconUrl: resolved.tab.favIconUrl,
             });
+          }
+          // Some tab tools produce a *new* tab (e.g. `navigate` called
+          // without `tab` opens a fresh background tab; popup-creating
+          // clicks may surface a new handle). Without this branch, the
+          // pre-execute startCapture wouldn't have run (no input.tab to
+          // resolve), so the new tab's page-load network/console events
+          // would be missed entirely until the agent's NEXT tool call
+          // against it. Arm capture for the result handle now.
+          //
+          // We gate on absence of `error` because failed tools may still
+          // echo the input handle back; capture for an existing tab is a
+          // no-op via idempotency, but we don't want to attach to a tab
+          // a fresh failed-navigation may have left in a half-loaded state.
+          //
+          // Resolution is via the same path as resolveTabFromInput: handle
+          // → ltid → ctid. If it doesn't resolve (stale handle, registry
+          // miss), we silently skip — capture remains best-effort.
+          const r = result as { tab?: unknown; error?: unknown } | null | undefined;
+          if (
+            r &&
+            typeof r === "object" &&
+            typeof r.tab === "string" &&
+            r.error === undefined &&
+            cid
+          ) {
+            const ltid = resolveTabHandle(cid, r.tab);
+            const producedTabId = ltid != null ? tabRegistry.toChromeTabId(ltid) : null;
+            if (producedTabId != null) {
+              await startCapture(producedTabId).catch(() => {});
+            }
           }
         }
         return result;
@@ -995,6 +1041,13 @@ export function resetAgentIndicator() {
     ac.abort();
   }
   activeToolAbortControllers.clear();
+  // Detach the debugger from every attached tab. cdp-session is the single
+  // owner of debugger state (capture runs on top of it), so a single
+  // releaseAll here tears down both. Order matters: aborts ran BEFORE this
+  // detach so any tool mid-flight in cdp-session unwinds cleanly first.
+  // (cdp-session's sendCommand has its own self-healing retry on detach
+  // mid-flight, so even a race here is recoverable.)
+  releaseAllSessions();
 }
 
 
