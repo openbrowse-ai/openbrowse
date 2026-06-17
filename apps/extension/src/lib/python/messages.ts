@@ -13,7 +13,6 @@
 export interface PythonExecuteRequest {
   conversationId: string;
   code: string;
-  input?: string;
   timeoutMs?: number;
   resetState?: boolean;
   allowNetwork?: boolean;

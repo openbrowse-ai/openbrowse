@@ -179,15 +179,6 @@ window.addEventListener("message", async (e) => {
 
     pyodide.FS.chdir("/workspace");
 
-    let parsedInput = null;
-    if (msg.input != null) {
-      try {
-        parsedInput = JSON.parse(msg.input);
-      } catch {
-        parsedInput = msg.input;
-      }
-    }
-
     if (msg.resetState) {
       await pyodide.runPythonAsync(`
 import sys as _sys
@@ -200,7 +191,6 @@ del _sys, _g, _keep
 `);
     }
 
-    pyodide.globals.set("__input", parsedInput);
     allowNetworkForCurrentCall = !!msg.allowNetwork;
 
     let result;
@@ -210,7 +200,6 @@ del _sys, _g, _keep
       }
       result = await pyodide.runPythonAsync(msg.code);
     } finally {
-      pyodide.globals.delete("__input");
       allowNetworkForCurrentCall = false;
     }
 

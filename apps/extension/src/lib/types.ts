@@ -293,7 +293,6 @@ export type MessageType =
       type: "PYTHON_EXECUTE";
       conversationId: string;
       code: string;
-      input?: string;
       timeoutMs?: number;
       resetState?: boolean;
       allowNetwork?: boolean;

@@ -9,7 +9,7 @@ const TIMEOUT_MS = 30000;
 const MAX_OUTPUT_BYTES = 1048576;
 
 window.addEventListener("message", async (e) => {
-  const { id, code, input } = e.data;
+  const { id, code, input, unboundedOutput } = e.data;
   if (!id || !code) return;
 
   let timeoutId = null;
@@ -43,15 +43,23 @@ window.addEventListener("message", async (e) => {
     console.warn = origWarn;
     console.info = origInfo;
 
-    try {
-      const serialized = JSON.stringify(result);
-      if (serialized && serialized.length > MAX_OUTPUT_BYTES) {
-        reply({ error: "Output exceeds 1MB limit", logs: __logs });
+    // The 1 MB output cap exists to keep huge tool results from blowing up
+    // the chat context. When `unboundedOutput` is set (the tool layer does
+    // this for `saveAs` calls), the result is going straight to /workspace
+    // and never enters chat, so the cap is counterproductive — it would
+    // block exactly the case `saveAs` was built for. We still verify the
+    // result is structured-cloneable below by letting `postMessage` do it.
+    if (!unboundedOutput) {
+      try {
+        const serialized = JSON.stringify(result);
+        if (serialized && serialized.length > MAX_OUTPUT_BYTES) {
+          reply({ error: "Output exceeds 1MB limit", logs: __logs });
+          return;
+        }
+      } catch {
+        reply({ error: "Result not serializable", logs: __logs });
         return;
       }
-    } catch {
-      reply({ error: "Result not serializable", logs: __logs });
-      return;
     }
 
     reply({ result, logs: __logs });

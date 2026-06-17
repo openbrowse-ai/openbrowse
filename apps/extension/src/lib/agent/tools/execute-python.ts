@@ -12,17 +12,9 @@ const parameters = z.object({
     .string()
     .describe(
       "Python source. Workspace files are at /workspace (cwd, read/write). " +
-        "Skills are at /skills (read-only). The variable __input is the " +
-        "parsed JSON of `input` if provided. Code runs at module level: " +
+        "Skills are at /skills (read-only). Code runs at module level: " +
         "DO NOT use `return`; the value of the last expression is returned. " +
         "Top-level `await` is supported (e.g. `await micropip.install('X')`).",
-    ),
-  input: z
-    .string()
-    .optional()
-    .describe(
-      "JSON-encoded data made available as the Python global __input. If not " +
-        "valid JSON, it's passed as a raw string.",
     ),
   timeout_ms: z
     .number()
@@ -75,7 +67,7 @@ export function createPythonTool(): BrowserTool<Input, Output> {
     parameters,
     approval: { required: true },
     execute: async (
-      { code, input, timeout_ms, reset_state, allow_network },
+      { code, timeout_ms, reset_state, allow_network },
       ctx,
     ) => {
       // Resolve the conversation id from the per-call ToolContext, not a
@@ -98,7 +90,6 @@ export function createPythonTool(): BrowserTool<Input, Output> {
         const res = await executePythonRPC({
           conversationId,
           code,
-          input,
           timeoutMs: timeout_ms,
           resetState: reset_state,
           allowNetwork: allow_network,

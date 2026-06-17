@@ -74,7 +74,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return getPyodideManager().runPython({
           conversationId: message.conversationId,
           code: message.code,
-          input: message.input,
           timeoutMs: message.timeoutMs,
           resetState: message.resetState,
           allowNetwork: message.allowNetwork,

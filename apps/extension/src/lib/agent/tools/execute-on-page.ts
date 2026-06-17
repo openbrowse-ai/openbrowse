@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { BrowserTool } from "../types";
 import { resolveTabOrThrow } from "../driver";
 import { invalidateRefs } from "../ref-store";
+import { persistReturnValue } from "./save-as";
 
 const TIMEOUT_MS = 30_000;
 
@@ -14,12 +15,23 @@ const parameters = z.object({
   code: z
     .string()
     .describe(
-      "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable.",
+      "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return either a string (written as text) or `{ __binary_b64: \"...\" }` for binary content.",
     ),
   args: z
     .string()
     .optional()
     .describe("JSON-encoded data passed to the code, accessible as `args` (auto-parsed)"),
+  saveAs: z
+    .string()
+    .optional()
+    .describe(
+      "If set, write the script's return value to this path under /workspace " +
+        "instead of returning the value to the chat. The script must return a " +
+        "string (written as text) or an object of shape { __binary_b64: string } " +
+        "(base64-decoded and written as bytes). On success the tool returns " +
+        "{ tab, path, bytes, sha256 } — the data itself is NOT echoed back. " +
+        "Use this for any payload larger than a few KB to keep chat context clean.",
+    ),
 });
 
 type Input = z.infer<typeof parameters>;
@@ -27,17 +39,20 @@ const outputSchema = z.object({
   tab: z.string(),
   result: z.unknown().optional(),
   error: z.string().optional(),
+  path: z.string().optional(),
+  bytes: z.number().optional(),
+  sha256: z.string().optional(),
 });
 type Output = z.infer<typeof outputSchema>;
 
 export const executeOnPageTool: BrowserTool<Input, Output> = {
   name: "executeOnPage",
   description:
-    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs). Requires user approval before each execution. Use when you need complex DOM manipulation or access to page JavaScript variables/state beyond what readPage/clickElement/typeInElement provide.",
+    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs). Requires user approval before each execution. Use when you need complex DOM manipulation or access to page JavaScript variables/state beyond what readPage/clickElement/typeInElement provide. For payloads larger than a few KB, set `saveAs` to write directly to /workspace instead of round-tripping through the chat.",
   parameters,
   outputSchema,
   approval: { required: true },
-  execute: async ({ tab: handle, code, args }, ctx) => {
+  execute: async ({ tab: handle, code, args, saveAs }, ctx) => {
     const tab = await resolveTabOrThrow(ctx, handle);
     if (tab.id == null) {
       return { tab: handle, error: "Tab id missing" };
@@ -85,6 +100,37 @@ export const executeOnPageTool: BrowserTool<Input, Output> = {
     // refs so the agent re-snapshots before acting; stable ids will be
     // recomputed from the new tree.
     invalidateRefs(tab.id);
-    return { tab: handle, result: evalResult.result?.value ?? null };
+
+    const returnValue = evalResult.result?.value ?? null;
+
+    if (saveAs) {
+      const conversationId = ctx.session?.conversationId ?? null;
+      if (!conversationId) {
+        return {
+          tab: handle,
+          error:
+            "saveAs requires an active conversation; none was bound to this tool call.",
+        };
+      }
+      const persisted = await persistReturnValue({
+        conversationId,
+        saveAs,
+        returnValue,
+        source: "executeOnPage",
+      });
+      if (!persisted.ok) {
+        return { tab: handle, error: persisted.error };
+      }
+      // IMPORTANT: do NOT include the data in the result — the whole point
+      // of saveAs is to keep large payloads out of the chat context.
+      return {
+        tab: handle,
+        path: persisted.path,
+        bytes: persisted.bytes,
+        sha256: persisted.sha256,
+      };
+    }
+
+    return { tab: handle, result: returnValue };
   },
 };
