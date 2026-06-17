@@ -176,6 +176,9 @@ export const typeInElementTool: BrowserTool<Input, Output> = {
         baseResult.belowFoldCount = cap.belowFoldCount;
         baseResult.hint = `${cap.belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`;
       }
+      // Surface cross-extension frame exclusion (e.g. password-manager
+      // iframes) so the agent knows the snapshot isn't whole-tree.
+      if (cap.note) baseResult.note = cap.note;
       return baseResult;
     } catch (err) {
       return {
