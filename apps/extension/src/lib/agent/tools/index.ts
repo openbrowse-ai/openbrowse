@@ -26,3 +26,5 @@ export { closeTabsTool } from "./close-tabs";
 export { createScheduledTaskTool } from "./create-scheduled-task";
 export { listScheduledTasksTool } from "./list-scheduled-tasks";
 export { updateScheduledTaskTool } from "./update-scheduled-task";
+export { readNetworkRequestsTool } from "./read-network-requests";
+export { readConsoleMessagesTool } from "./read-console-messages";

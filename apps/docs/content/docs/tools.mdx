@@ -34,6 +34,8 @@ The agent navigates the web and interacts with elements just like a human user. 
 | `scrollPage` | `{ tab, direction, amount? }`. Scroll up or down. |
 | `clickElement` | `{ tab, target }`. Click a specific element by its `@ref` (from a snapshot of THAT tab) or CSS selector. |
 | `typeInElement` | `{ tab, target, text, clearFirst?, submit? }`. Type into an input. `submit: true` presses Enter and waits for navigation. |
+| `read_network_requests` | `{ tab, urlPattern?, limit?, clear? }`. Read HTTP requests (XHR, Fetch, documents, images) a tab has made — metadata only (url, method, type, status), no response bodies. Captured continuously while the agent works the tab; cleared on cross-domain navigation. Useful for reverse-engineering the API behind a list/feed. |
+| `read_console_messages` | `{ tab, pattern?, onlyErrors?, limit?, clear? }`. Read console output (log/info/warn/error) and uncaught exceptions from a tab. Pass a `pattern` to filter noise. Cleared on cross-domain navigation. |
 
 ## Tab Management
 

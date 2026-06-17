@@ -65,6 +65,8 @@ import {
   listTabsTool,
   navigateTool,
   pressKeyTool,
+  readConsoleMessagesTool,
+  readNetworkRequestsTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
@@ -182,6 +184,8 @@ const TAB_INTERACTING_TOOLS = new Set([
   "snapshot",
   "executeOnPage",
   "extract",
+  "read_network_requests",
+  "read_console_messages",
 ]);
 
 let agentActive = false;
@@ -456,6 +460,8 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    read_network_requests: toSDKTool(readNetworkRequestsTool, "read_network_requests"),
+    read_console_messages: toSDKTool(readConsoleMessagesTool, "read_console_messages"),
     patch_site_skill: toSDKTool(guardedPatchSiteSkill, "patch_site_skill"),
     delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill"),
     executePython: toSDKTool(pythonTool, "executePython"),

@@ -30,6 +30,8 @@ import { createFsTools } from "../fs";
 import { installSkillTool } from "../install-skill";
 import { listTabsTool } from "../list-tabs";
 import { navigateTool } from "../navigate";
+import { readConsoleMessagesTool } from "../read-console-messages";
+import { readNetworkRequestsTool } from "../read-network-requests";
 import { readPageTool } from "../read-page";
 import { recallMemoryTool } from "../recall-memory";
 import { saveMemoryTool } from "../save-memory";
@@ -65,6 +67,8 @@ const allTools = [
   ["deleteMemory", deleteMemoryTool],
   ["executeCode", executeCodeTool],
   ["executeOnPage", executeOnPageTool],
+  ["read_network_requests", readNetworkRequestsTool],
+  ["read_console_messages", readConsoleMessagesTool],
   ["patch_site_skill", patchSiteSkillTool],
   ["delete_site_skill", deleteSiteSkillTool],
   ["executePython", pythonTool],

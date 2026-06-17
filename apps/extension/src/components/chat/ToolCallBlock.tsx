@@ -151,6 +151,8 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
+  read_network_requests: { pending: "Reading network...", done: "Read network" },
+  read_console_messages: { pending: "Reading console...", done: "Read console" },
 
   // Memory tools
   saveMemory: { pending: "Saving memory...", done: "Saved memory" },
@@ -193,6 +195,8 @@ const TAB_TOOLS = new Set([
   "selectTab",
   "executeOnPage",
   "snapshot",
+  "read_network_requests",
+  "read_console_messages",
 ]);
 
 export function TabBadge({ toolCallId }: { toolCallId: string }) {
