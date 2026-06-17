@@ -131,3 +131,61 @@ describe("executeOnPage allowlist integration (Always allow repro)", () => {
     expect(requiresApproval).toBe(false);
   });
 });
+
+describe("executeOnPage scriptRef approval (trusted saved-script runs)", () => {
+  beforeEach(() => {
+    installChromeStub();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function needsApprovalFor(input: unknown): Promise<boolean | undefined> {
+    const { toSDKTool, setAgentContext } = await import(
+      "@/lib/agent/agent-transport"
+    );
+    const { executeOnPageTool } = await import("@/lib/agent/tools");
+    const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
+    setAgentContext(CID);
+    getOrCreateHandle(CID, tabRegistry.registerExisting(TAB_ID));
+    const tool = toSDKTool(executeOnPageTool, "executeOnPage");
+    const fn = tool.needsApproval as (
+      i: unknown,
+      o: { toolCallId: string; messages: unknown[] },
+    ) => Promise<boolean> | boolean;
+    return fn(input, { toolCallId: "c", messages: [] });
+  }
+
+  it("skips approval for a scriptRef run (no inline code), even with no allowlist grant", async () => {
+    const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
+    const handle = getOrCreateHandle(CID, tabRegistry.registerExisting(TAB_ID));
+    const out = await needsApprovalFor({
+      tab: handle,
+      scriptRef: { domain: "bookface.ycombinator.com", name: "extract" },
+    });
+    expect(out).toBe(false);
+  });
+
+  it("still requires approval for inline code on a non-allowlisted origin", async () => {
+    const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
+    const handle = getOrCreateHandle(CID, tabRegistry.registerExisting(TAB_ID));
+    const out = await needsApprovalFor({ tab: handle, code: "return 1" });
+    expect(out).toBe(true);
+  });
+
+  it("requires approval when BOTH code and scriptRef are present (treats as inline)", async () => {
+    const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
+    const handle = getOrCreateHandle(CID, tabRegistry.registerExisting(TAB_ID));
+    const out = await needsApprovalFor({
+      tab: handle,
+      code: "return 1",
+      scriptRef: { domain: "bookface.ycombinator.com", name: "x" },
+    });
+    expect(out).toBe(true);
+  });
+});

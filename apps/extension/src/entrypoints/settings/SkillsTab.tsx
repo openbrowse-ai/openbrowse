@@ -463,22 +463,12 @@ export function SkillsTab({
 
               <DescriptionBlock description={activeSkill.description} />
 
-              {/* Source link (non-bundled) */}
+              {/* Source link (non-bundled). Site skills are omitted — the
+                  "Added by OpenBrowse" line already conveys authorship and
+                  there's no upstream repo to link. */}
               {activeSkill.source !== "bundled" &&
+                activeSkill.kind !== "site" &&
                 (() => {
-                  // Site skills are authored automatically by OpenBrowse's
-                  // background curator from your browsing activity — show that
-                  // rather than the raw internal "site-skill" source string.
-                  if (activeSkill.kind === "site") {
-                    return (
-                      <div className="text-xs text-muted-foreground">
-                        Source:{" "}
-                        <span className="text-foreground">
-                          Authored by OpenBrowse
-                        </span>
-                      </div>
-                    );
-                  }
                   const parsed = parseSkillSource(activeSkill.source);
                   if (!parsed) {
                     return (

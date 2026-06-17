@@ -59,9 +59,18 @@ export function parseSkillFrontmatter(content: string): { frontmatter: SkillFron
   if (typeof frontmatter.name !== 'string' || !frontmatter.name) {
     throw new Error("Skill frontmatter must include a 'name' field");
   }
-  
-  if (!/^[a-z0-9-]+$/.test(frontmatter.name)) {
-    throw new Error("Skill name must contain only lowercase letters, numbers, and hyphens");
+
+  // `kind: site` skills are keyed by their registrable domain (e.g.
+  // "linkedin.com"), so their names legitimately contain dots. Regular skills
+  // keep the strict lowercase-alnum-hyphen slug rule.
+  const isSite = frontmatter.kind === "site";
+  const namePattern = isSite ? /^[a-z0-9.-]+$/ : /^[a-z0-9-]+$/;
+  if (!namePattern.test(frontmatter.name)) {
+    throw new Error(
+      isSite
+        ? "Site skill name must be a domain (lowercase letters, numbers, dots, hyphens)"
+        : "Skill name must contain only lowercase letters, numbers, and hyphens",
+    );
   }
 
   if (frontmatter.name.length > 64) {
