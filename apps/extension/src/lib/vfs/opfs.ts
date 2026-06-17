@@ -1,5 +1,14 @@
 import { emitVfsChange } from "./events";
 
+/** Short random suffix for atomic-write tmp filenames. */
+function randSuffix(): string {
+  // 64 bits of entropy in hex; collisions are not a correctness concern,
+  // only a "two atomic writes to the same path race" nuisance.
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export class OPFS {
   /**
    * Resolves a path to a directory handle.
@@ -84,6 +93,103 @@ export class OPFS {
     // The runtime accepts all of these.
     await writable.write(content);
     await writable.close();
+    emitVfsChange(path);
+  }
+
+  /**
+   * Atomically write `content` to `path`. Implementation: write to a
+   * sibling `.tmp-<rand>` file, and only after that close cleanly do we
+   * overwrite the destination. If content production (or the tmp write)
+   * fails, the destination is untouched.
+   *
+   * Caveats:
+   * - OPFS has no native `rename`, so the final overwrite of `path` is
+   *   itself a `createWritable + write + close` sequence. If the *runtime*
+   *   crashes between truncating `path` and finishing the write, the
+   *   destination can still end up empty. The tmp file is left in place
+   *   in that case (`<path>.tmp-<rand>`) so the caller can recover.
+   * - For the common failure mode (producer throws while serializing) this
+   *   is fully atomic: the destination is never opened until the producer
+   *   has successfully finished writing tmp.
+   */
+  static async writeFileAtomic(path: string, content: string): Promise<void> {
+    const tmpPath = `${path}.tmp-${randSuffix()}`;
+    // Phase 1: write tmp. If this throws, destination untouched.
+    const tmpHandle = await this.getFileHandle(tmpPath, true);
+    // @ts-ignore
+    const tmpWritable = await tmpHandle.createWritable();
+    try {
+      await tmpWritable.write(content);
+      await tmpWritable.close();
+    } catch (e) {
+      try { await this.rm(tmpPath); } catch { /* best effort */ }
+      throw e;
+    }
+    // Phase 2: copy tmp → final by replaying `content` against a fresh
+    // writable on the destination. Reusing `content` (rather than reading
+    // tmp back via getFile()) avoids one needless decode round-trip; tmp's
+    // only job at this point is to prove that producing+writing the bytes
+    // succeeded.
+    try {
+      const finalHandle = await this.getFileHandle(path, true);
+      // @ts-ignore
+      const finalWritable = await finalHandle.createWritable();
+      await finalWritable.write(content);
+      await finalWritable.close();
+    } catch (e) {
+      // Tmp is left in place — caller can recover its bytes from there.
+      throw new Error(
+        `writeFileAtomic: destination write failed; tmp left at ${tmpPath}. Original error: ${(e as Error).message}`,
+      );
+    }
+    // Phase 3: cleanup tmp.
+    try { await this.rm(tmpPath); } catch { /* best effort */ }
+    emitVfsChange(path);
+  }
+
+  /**
+   * Binary counterpart to `writeFileAtomic`. Same atomicity story.
+   *
+   * `Blob` inputs are materialized to an `ArrayBuffer` upfront so the bytes
+   * are pinned for both phases; without this, a Blob whose backing store
+   * is invalidated between phase 1 and phase 2 (e.g. an `objectURL` that
+   * gets revoked) would fail the destination write after tmp succeeded.
+   */
+  static async writeFileBytesAtomic(
+    path: string,
+    content: Blob | ArrayBuffer | Uint8Array,
+  ): Promise<void> {
+    let pinned: ArrayBuffer | Uint8Array;
+    if (content instanceof Blob) {
+      pinned = await content.arrayBuffer();
+    } else {
+      pinned = content;
+    }
+    const tmpPath = `${path}.tmp-${randSuffix()}`;
+    const tmpHandle = await this.getFileHandle(tmpPath, true);
+    // @ts-ignore
+    const tmpWritable = await tmpHandle.createWritable();
+    try {
+      // @ts-ignore -- see writeFileBytes for the type ignore rationale.
+      await tmpWritable.write(pinned);
+      await tmpWritable.close();
+    } catch (e) {
+      try { await this.rm(tmpPath); } catch { /* best effort */ }
+      throw e;
+    }
+    try {
+      const finalHandle = await this.getFileHandle(path, true);
+      // @ts-ignore
+      const finalWritable = await finalHandle.createWritable();
+      // @ts-ignore
+      await finalWritable.write(pinned);
+      await finalWritable.close();
+    } catch (e) {
+      throw new Error(
+        `writeFileBytesAtomic: destination write failed; tmp left at ${tmpPath}. Original error: ${(e as Error).message}`,
+      );
+    }
+    try { await this.rm(tmpPath); } catch { /* best effort */ }
     emitVfsChange(path);
   }
 

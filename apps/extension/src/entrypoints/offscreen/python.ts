@@ -24,7 +24,6 @@ const MAX_TIMEOUT_MS = 5 * 60 * 1000;
 export interface RunPythonOptions {
   conversationId: string;
   code: string;
-  input?: string;
   timeoutMs?: number;
   resetState?: boolean;
   allowNetwork?: boolean;
@@ -234,7 +233,6 @@ export class PyodideSandboxManager {
           type: "RUN",
           id,
           code: opts.code,
-          input: opts.input,
           allowNetwork: opts.allowNetwork,
           resetState: opts.resetState,
           workspaceFiles,

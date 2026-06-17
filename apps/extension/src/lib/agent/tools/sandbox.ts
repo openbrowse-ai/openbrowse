@@ -19,6 +19,7 @@ function ensureSandbox(): HTMLIFrameElement {
 export function executeInSandbox(
   code: string,
   input?: unknown,
+  options?: { unboundedOutput?: boolean },
 ): Promise<ExecuteCodeResult> {
   if (!code) {
     return Promise.resolve({ error: "No code provided", logs: [] });
@@ -57,9 +58,16 @@ export function executeInSandbox(
       safeResolve({ error: "Execution timed out after 30s", logs: [] });
     }, 32_000);
 
-    // Wait for iframe to load if needed, then post message
+    // Wait for iframe to load if needed, then post message.
+    // `unboundedOutput` suppresses the sandbox's 1 MB JSON-output cap. The
+    // tool layer sets it when `saveAs` is in play — the result is going
+    // straight to /workspace, never into chat context, so the cap that
+    // exists to protect chat from huge tool results is counterproductive.
     const send = () => {
-      frame.contentWindow?.postMessage({ id, code, input }, "*");
+      frame.contentWindow?.postMessage(
+        { id, code, input, unboundedOutput: !!options?.unboundedOutput },
+        "*",
+      );
     };
 
     if (frame.contentWindow && frame.getAttribute("data-ready")) {

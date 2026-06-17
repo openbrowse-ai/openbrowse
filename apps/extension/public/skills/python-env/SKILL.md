@@ -17,7 +17,7 @@ You are running CPython 3 inside a WebAssembly sandbox (Pyodide) in the user's b
     *   `/workspace` (read/write, persistent) - This is your current working directory. Read/write user files here.
     *   `/skills` (read-only) - Files bundled with skills.
     *   Everything else is a temporary in-memory filesystem that resets.
-*   **Data pass-in:** The `input` parameter passed to the tool is available as the global variable `__input`. If `input` was valid JSON, `__input` is already parsed into a Python dict/list.
+*   **Getting data into `/workspace` from a page or JS sandbox:** Don't pass large payloads through tool results. `executeOnPage` and `executeCode` both accept a `saveAs: "<path>"` parameter that writes their return value directly to `/workspace`, so Python can `open()` it on the next call. See the `data-plumbing` skill for the canonical recipe.
 
 ## 2. Package Availability
 
