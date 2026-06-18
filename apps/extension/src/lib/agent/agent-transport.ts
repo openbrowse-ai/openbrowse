@@ -46,6 +46,7 @@ import {
   buildOpenTabsAwarenessEntries,
   renderOpenTabsAwareness,
 } from "./tab-legend";
+import { buildWorkspaceFilesBlock } from "./workspace-legend";
 import {
   renderSiteSkillsBlock,
   urlToDomain,
@@ -2130,13 +2131,22 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // mid-conversation.
     prepareCall: async (callArgs) => {
       const legend = await buildLegendBlock();
+      // Workspace-files block: enumerate /workspace per turn so the agent
+      // sees its own artifacts (saveAs outputs, executePython writes,
+      // Write tool files) even after long-conversation compaction prunes
+      // the original tool-result messages. Symmetric to the tab legend
+      // and site-skill catalog blocks injected here. Empty for fresh
+      // conversations (no agent-written files yet).
+      const cid = agentConversationId;
+      const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
       const baseInstructions =
         typeof callArgs.instructions === "string" ? callArgs.instructions : "";
+      // Append both blocks; either or both can be empty. Use double-newline
+      // separators between blocks so they render as distinct sections.
+      const tail = [legend, wsBlock].filter(Boolean).join("\n\n");
       return {
         ...callArgs,
-        instructions: legend
-          ? `${baseInstructions}\n\n${legend}`
-          : baseInstructions,
+        instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,
       };
     },
     onStepFinish: (stepResult) => {
