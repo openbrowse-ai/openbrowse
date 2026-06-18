@@ -87,18 +87,24 @@ describe("executeOnPage with saveAs", () => {
     expect(opfs.writeFileAtomic).not.toHaveBeenCalled();
   });
 
-  it("rejects non-string / non-binary return values", async () => {
+  it("auto-stringifies object return values into pretty JSON", async () => {
+    // Previously rejected; now flows through persistReturnValue's JSON
+    // branch so paginated scrapes that `return { count, entries }`
+    // succeed without the agent having to remember to JSON.stringify.
     const ctx = ctxWith("conv-A");
-    // The default mock returns a string. Override sendCommand to return an object.
     (ctx.driver.sendCommand as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       result: { type: "object", value: { not: "a string" } },
     });
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return {}", saveAs: "x.txt" },
+      { tab: "t1", code: "return { not: 'a string' }", saveAs: "x.json" },
       ctx,
     );
-    expect(r.error).toMatch(/script return value must be/);
-    expect(opfs.writeFileAtomic).not.toHaveBeenCalled();
+    expect(r.error).toBeUndefined();
+    expect(r.path).toBe("x.json");
+    expect(opfs.writeFileAtomic).toHaveBeenCalledWith(
+      "conversations/conv-A/workspace/x.json",
+      '{\n  "not": "a string"\n}',
+    );
   });
 
   it("preserves original behavior without saveAs", async () => {

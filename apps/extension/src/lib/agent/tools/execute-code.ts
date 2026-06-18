@@ -18,11 +18,13 @@ const parameters = z.object({
     .optional()
     .describe(
       "If set, write the script's return value to this path under /workspace " +
-        "instead of returning it to the chat. The script must return a string " +
-        "(written as text) or { __binary_b64: string } (base64-decoded and written " +
-        "as bytes). On success the tool returns { logs, path, bytes, sha256 } — " +
-        "the data itself is NOT echoed back. Use this for any payload larger than " +
-        "a few KB to keep chat context clean.",
+        "instead of returning it to the chat. Accepted return shapes: a " +
+        "string (written as text), any JSON-serializable value " +
+        "(object/array/number/boolean/null — pretty-printed JSON), or " +
+        "{ __binary_b64: string } (base64-decoded and written as bytes). " +
+        "On success the tool returns { logs, path, bytes, sha256 } — the " +
+        "data itself is NOT echoed back. Use this for any payload larger " +
+        "than a few KB to keep chat context clean.",
     ),
 });
 

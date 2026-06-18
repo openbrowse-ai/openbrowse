@@ -17,7 +17,7 @@ const parameters = z.object({
     .string()
     .optional()
     .describe(
-      "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return either a string (written as text) or `{ __binary_b64: \"...\" }` for binary content. Provide EITHER `code` or `scriptRef`, not both.",
+      "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return any JSON-serializable value (auto-stringified) or `{ __binary_b64: \"...\" }` for binary content. Provide EITHER `code` or `scriptRef`, not both.",
     ),
   scriptRef: z
     .object({
@@ -41,11 +41,13 @@ const parameters = z.object({
     .optional()
     .describe(
       "If set, write the script's return value to this path under /workspace " +
-        "instead of returning the value to the chat. The script must return a " +
-        "string (written as text) or an object of shape { __binary_b64: string } " +
-        "(base64-decoded and written as bytes). On success the tool returns " +
-        "{ tab, path, bytes, sha256 } — the data itself is NOT echoed back. " +
-        "Use this for any payload larger than a few KB to keep chat context clean.",
+        "instead of returning the value to the chat. Accepted return shapes: " +
+        "a string (written as text), any JSON-serializable value " +
+        "(object/array/number/boolean/null — pretty-printed JSON), or " +
+        "{ __binary_b64: string } (base64-decoded and written as bytes). " +
+        "On success the tool returns { tab, path, bytes, sha256 } — the data " +
+        "itself is NOT echoed back. Use this for any payload larger than a " +
+        "few KB to keep chat context clean.",
     ),
 });
 

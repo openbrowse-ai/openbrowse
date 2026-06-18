@@ -125,13 +125,24 @@ function decodeBase64(b64: string): Uint8Array {
 /**
  * Persist a sandbox-script return value to /workspace/<saveAs>.
  *
- * Accepted return shapes:
+ * Accepted return shapes (checked in order):
  * - `string` — written as text via `OPFS.writeFileAtomic`.
  * - `{ __binary_b64: string }` — base64-decoded and written via
  *   `OPFS.writeFileBytesAtomic`.
+ * - `Uint8Array` / `ArrayBuffer` — written as bytes (executeCode only;
+ *   CDP's executeOnPage strips typed-array-ness in transit).
+ * - any other JSON-serializable value (object, array, number, boolean,
+ *   null) — `JSON.stringify`'d with 2-space indent and written as text.
+ *   This is the common case for paginated-scrape results; auto-
+ *   serializing here saves the agent from having to remember to
+ *   `JSON.stringify` inside the script body (a frequent footgun whose
+ *   recovery cost is re-running the entire scrape).
  *
- * Anything else is rejected — we won't silently coerce numbers, objects,
- * etc., because that almost always indicates a script bug.
+ * Rejected:
+ * - `undefined`, `function`, `symbol` — JSON.stringify would yield
+ *   `undefined`, which we surface as a script bug.
+ * - any value that throws on `JSON.stringify` (circular references,
+ *   BigInt) — the error message includes a recovery hint.
  */
 export async function persistReturnValue(args: {
   conversationId: string;
@@ -204,11 +215,71 @@ export async function persistReturnValue(args: {
     };
   }
 
+  // Plain JSON-able value (object, array, number, boolean, null) →
+  // JSON.stringify with 2-space indent and write as text.
+  //
+  // The most common saveAs use case is "the script computed a structured
+  // result, persist it for later Python-side analysis." The previous
+  // contract rejected non-string returns, forcing the agent to call
+  // JSON.stringify inside the script body. When it forgot, the script
+  // (often a paginated scrape that took 10+ seconds) had to be re-run.
+  // Auto-serialization here removes that footgun.
+  //
+  // Order matters: this branch comes AFTER the binary-envelope and
+  // typed-array branches above so binary writes are not accidentally
+  // converted to JSON literals like "[object ArrayBuffer]".
+  //
+  // `null` is `typeof === "object"` in JS, but `JSON.stringify(null)`
+  // correctly emits the literal "null", so it flows through fine.
+  if (
+    returnValue === null ||
+    typeof returnValue === "number" ||
+    typeof returnValue === "boolean" ||
+    typeof returnValue === "object"
+  ) {
+    let serialized: string | undefined;
+    try {
+      serialized = JSON.stringify(returnValue, null, 2);
+    } catch (e) {
+      return {
+        ok: false,
+        error:
+          `saveAs from ${source}: return value could not be JSON-serialized ` +
+          `(${(e as Error).message}). Common cause: circular references or ` +
+          `BigInt values. Stringify manually inside the script with a ` +
+          `custom replacer if needed.`,
+      };
+    }
+    // JSON.stringify returns undefined when the input is purely a value
+    // not representable in JSON (function, symbol, undefined). Surface
+    // that as a script bug rather than writing the literal string
+    // "undefined".
+    if (serialized === undefined) {
+      return {
+        ok: false,
+        error:
+          `saveAs from ${source}: return value contained a value not ` +
+          `representable in JSON (function, undefined, or symbol). ` +
+          `Strip those before returning, or wrap them in a serializable ` +
+          `shape.`,
+      };
+    }
+    await OPFS.writeFileAtomic(fullPath, serialized);
+    const bytes = new TextEncoder().encode(serialized);
+    return {
+      ok: true,
+      path: stripWorkspacePrefix(conversationId, fullPath),
+      bytes: bytes.length,
+      sha256: await sha256Hex(bytes),
+    };
+  }
+
   return {
     ok: false,
     error:
-      `saveAs from ${source}: script return value must be a string or ` +
-      "{ __binary_b64: string }; got " +
+      `saveAs from ${source}: script return value must be a string, ` +
+      "JSON-serializable value (object/array/number/boolean/null), or " +
+      "{ __binary_b64: string } envelope; got " +
       describeValue(returnValue),
   };
 }
