@@ -2,10 +2,8 @@
 "openbrowse": patch
 ---
 
-Tighten the completion check to focus on plan and task completion.
+Fewer false "let me try again" moments at the end of a task.
 
-The "Refining answer" gate now judges only whether the executor actually finished the user's request and closed out its plan. The two dimensions that produced most of the false rejections — `evidenceGrounding` (claim-not-in-trace) and `surfaceAccuracy` (page-state-disagrees) — have been retired. Both relied on absence-of-evidence reasoning over heavily truncated tool-call traces; the executor often observed something on the live page that didn't survive the 800-character output truncation, and the evaluator would interpret that absence as fabrication and reject a correct answer.
+OpenBrowse runs a quick "did the agent actually finish?" check before handing the answer to you. That check used to second-guess the agent on things it had no good way to verify — like whether the agent's claim was backed up by the (heavily truncated) tool-call log. When the agent saw something on the live page that the log later cut off, the check would treat the missing evidence as fabrication and bounce the agent back to keep working. The result: completed tasks getting unnecessarily redone.
 
-The remaining concern dimensions are `completeness`, `planClosure`, and `noPrematureHandoff` — each judged against in-context material (the original request text, the todo list) rather than the trace's truncated tail. The evaluator's anti-hallucination guardrails are unchanged: it still defaults to skepticism, still won't reject on its own world knowledge, and still defers to what the executor saw.
-
-The evaluator's optional with-tools / verification-call mode has been removed in the same pass — it existed primarily to ground the dimensions we're retiring, and the no-tools path was already production default.
+The check now focuses on what it can actually judge: did the agent address what you asked for, did it close out its own plan, and did it stop short instead of finishing? The fabrication- and page-state-checking dimensions are gone. The check still defaults to skeptical and still defers to what the agent saw — it just stops rejecting answers based on absent evidence.
