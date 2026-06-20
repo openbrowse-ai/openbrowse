@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { ChatPicker } from "@/components/chat/ChatPicker";
 import { SpaceSwitcher } from "./components/SpaceSwitcher";
-import { Download, ExternalLink, MessageSquarePlus, MoreVertical, Settings, PictureInPicture, PanelRight } from "lucide-react";
+import { CopyIcon, Download, ExternalLink, FileDown, MessageSquarePlus, MoreVertical, Settings, PictureInPicture, PanelRight } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -18,12 +18,17 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { ContextUsage } from "@/components/chat/ContextUsage";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
 import { FileSelectionContext } from "@/lib/file-selection-context";
+import { toast } from "sonner";
 
 function readPopupParams() {
   if (typeof window === "undefined") {
@@ -289,8 +294,8 @@ export default function App() {
     });
   }, [activeConversationId, isPopupMode, originWindowId]);
 
-  const handleExportChat = useCallback(async () => {
-    if (!activeConversationId) return;
+  const buildChatMarkdown = useCallback(async () => {
+    if (!activeConversationId) return null;
     const [conv, messages] = await Promise.all([
       chatDb.getConversation(activeConversationId),
       chatDb.getMessages(activeConversationId),
@@ -302,14 +307,31 @@ export default function App() {
       return `## ${role}\n\n${content}`;
     }).filter(Boolean);
     const markdown = `# ${conv?.title ?? "Chat"}\n\n${lines.join("\n\n---\n\n")}`;
-    const blob = new Blob([markdown], { type: "text/markdown" });
+    return { markdown, title: conv?.title ?? "chat" };
+  }, [activeConversationId]);
+
+  const handleCopyChatMarkdown = useCallback(async () => {
+    const built = await buildChatMarkdown();
+    if (!built) return;
+    try {
+      await navigator.clipboard.writeText(built.markdown);
+      toast.success("Chat copied as markdown");
+    } catch {
+      toast.error("Failed to copy chat");
+    }
+  }, [buildChatMarkdown]);
+
+  const handleExportChat = useCallback(async () => {
+    const built = await buildChatMarkdown();
+    if (!built) return;
+    const blob = new Blob([built.markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${conv?.title ?? "chat"}.md`;
+    a.download = `${built.title}.md`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [activeConversationId]);
+  }, [buildChatMarkdown]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -535,10 +557,27 @@ export default function App() {
                 Settings
               </DropdownMenuItem>
               {activeConversationId && (
-                <DropdownMenuItem onClick={handleExportChat}>
-                  <Download className="size-3.5" />
-                  Export chat
-                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Download className="size-3.5" />
+                    Export chat
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent
+                      sideOffset={4}
+                      className="min-w-44"
+                    >
+                      <DropdownMenuItem onClick={handleCopyChatMarkdown}>
+                        <CopyIcon className="size-3.5" />
+                        Copy markdown
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleExportChat}>
+                        <FileDown className="size-3.5" />
+                        Export as .md
+                      </DropdownMenuItem>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
+                </DropdownMenuSub>
               )}
             </DropdownMenuContent>
           </DropdownMenu>

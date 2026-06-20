@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isDetachError } from "../cdp-errors";
+import { readNetwork } from "../cdp-capture";
 import {
   runClickDiagnostic,
   setShieldPassthrough,
@@ -64,6 +65,17 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     const tabId = tab.id;
     const previousUrl = tab.url ?? undefined;
 
+    // Effect-detection mark: capture a "before" timestamp BEFORE the click
+    // dispatches so we can later filter the cdp-capture network buffer
+    // down to "requests caused by THIS click." Used below to suppress the
+    // soft `hitWarning` (overlay-intercept) when we have positive evidence
+    // the click had an effect (URL change or any network activity), since
+    // that warning is a frequent false positive on synthetic-component
+    // sites where the click landed on a wrapper but the intended handler
+    // still fired. Date.now() is fine here — `cdp-capture` stamps every
+    // entry with the same wall-clock source.
+    const preTs = Date.now();
+
     let hitWarning: string | undefined;
     try {
       if (target.startsWith("@e")) {
@@ -107,6 +119,57 @@ export const clickElementTool: BrowserTool<Input, Output> = {
     } catch {
       // tab may have closed during the action — keep the stale url
     }
+
+    // Effect detection: did the click do anything observable?
+    //
+    // The hit-test `hitWarning` is a soft "the click point was on a
+    // different element" signal. It's a frequent false positive on
+    // sites that wrap interactive controls in a presentational div
+    // (most React/Vue/stencil component trees, modal backdrops that
+    // overlap the trigger after the modal opens). Without a counter-
+    // signal the agent treats the warning as a probable failure and
+    // either re-screenshots or invents a workaround — wasting a turn
+    // even though the click landed correctly.
+    //
+    // Counter-signals (any one suppresses the warning):
+    //   - URL change: the click navigated.
+    //   - Network activity post-`preTs`: the click triggered a request.
+    //     Reuses the always-on cdp-capture ring buffer that the agent-
+    //     transport pre-execute hook arms for every tab tool, so the
+    //     check is free (no extra Chrome attach).
+    //
+    // When NEITHER fires AND the hit-test mismatched, we keep the
+    // warning AND tighten its wording: now we have evidence the click
+    // had no effect, so the agent should treat the note as actionable.
+    //
+    // (We deliberately don't use refCount/snapshot diff as a signal:
+    // it'd require a pre-click snapshot, which we don't have, and
+    // post-click DOM presence doesn't prove EFFECT — the page may have
+    // been there before too. URL + network is sufficient.)
+    const navigated = previousUrl !== undefined && previousUrl !== url;
+    let networkActive = false;
+    try {
+      // `tabId` is the opaque BrowserDriver `TabId` (number | string).
+      // cdp-capture's ring buffer keys on chrome ctids (numbers); the
+      // extension driver always passes numbers here. Same cast pattern
+      // used by the read_* tools for the same reason.
+      const buf = readNetwork(tabId as number, { limit: 200 });
+      networkActive = buf.captured && buf.requests.some((r) => r.ts >= preTs);
+    } catch {
+      // capture buffer unavailable — degrade silently. URL signal still applies.
+    }
+    const hadEffect = navigated || networkActive;
+    // hitWarning gating:
+    //   - had effect → drop the warning (false positive).
+    //   - no effect AND warning present → keep, but tighten wording so
+    //     the agent treats it as actionable rather than defensive noise.
+    //   - no warning to begin with → nothing to emit.
+    let effectiveHitWarning: string | undefined;
+    if (hitWarning) {
+      effectiveHitWarning = hadEffect
+        ? undefined
+        : `${hitWarning} (No URL change or network activity detected after the click — the click likely had no effect.)`;
+    }
     try {
       const cap = await captureSnapshot(ctx.driver, tabId, {
         mode: "interactive",
@@ -124,10 +187,11 @@ export const clickElementTool: BrowserTool<Input, Output> = {
         result.belowFoldCount = cap.belowFoldCount;
         result.hint = `${cap.belowFoldCount} more interactive element(s) are below the fold. Use scrollPage + snapshot to see them.`;
       }
-      // Merge per-call notes. `hitWarning` (overlay-intercept) and `cap.note`
-      // (cross-extension frames excluded from the snapshot) are both
-      // information the agent benefits from; concatenate when both fire.
-      const notes = [hitWarning, cap.note].filter(Boolean);
+      // Merge per-call notes. `effectiveHitWarning` (overlay-intercept,
+      // post-effect-detection) and `cap.note` (cross-extension frames
+      // excluded from the snapshot) are both information the agent benefits
+      // from; concatenate when both fire.
+      const notes = [effectiveHitWarning, cap.note].filter(Boolean);
       if (notes.length > 0) result.note = notes.join(" ");
       return result;
     } catch (err) {
@@ -137,7 +201,7 @@ export const clickElementTool: BrowserTool<Input, Output> = {
         target,
         url,
         note:
-          (hitWarning ? hitWarning + " " : "") +
+          (effectiveHitWarning ? effectiveHitWarning + " " : "") +
           `Click succeeded but post-action snapshot failed: ${
             err instanceof Error ? err.message : String(err)
           }. Call snapshot to retry.`,

@@ -10,6 +10,7 @@ import type {
 import { ToolLoopAgent, readUIMessageStream, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
+import { waitForAssistantPersist as waitForAssistantPersistImpl } from "./curator/wait-for-persist";
 import { storage } from "../storage";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
@@ -34,6 +35,7 @@ import {
 } from "./subagents/persist-stream";
 import {
   getOrCreateHandle as getOrCreateTabHandle,
+  listHandles as listTabHandles,
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
@@ -45,12 +47,18 @@ import {
   buildOpenTabsAwarenessEntries,
   renderOpenTabsAwareness,
 } from "./tab-legend";
+import { buildWorkspaceFilesBlock } from "./workspace-legend";
+import {
+  renderSiteSkillsBlock,
+  urlToDomain,
+} from "@/lib/skills/site-skill-catalog";
 import {
   clickElementTool,
   closeTabsTool,
   createScheduledTaskTool,
   createSkillTool,
   deleteMemoryTool,
+  deleteSiteSkillTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
@@ -59,6 +67,8 @@ import {
   listTabsTool,
   navigateTool,
   pressKeyTool,
+  readConsoleMessagesTool,
+  readNetworkRequestsTool,
   readPageTool,
   recallMemoryTool,
   saveMemoryTool,
@@ -71,6 +81,7 @@ import {
   typeInElementTool,
   updateMemoryTool,
   updateScheduledTaskTool,
+  patchSiteSkillTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
 import { createFsTools } from "./tools/fs";
@@ -79,6 +90,29 @@ import { setTaskTitleTool } from "./tools/set-task-title";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
+
+/**
+ * When true, the background site-skill curator logs each pipeline stage to the
+ * service-worker console with a `[curator]` prefix (gate passed → candidate
+ * counts → enqueue → drain → per-job). This pipeline runs fire-and-forget and
+ * is otherwise silent on the happy path. Off in production; flip back to true
+ * locally if you need to validate the pipeline end-to-end.
+ */
+const DEBUG_CURATOR = false;
+
+// Load-time beacon: confirms the RUNNING service worker actually has the
+// curator-instrumented build. Service workers persist old code across HMR, so
+// if you DON'T see this line after reloading the extension, the SW is stale —
+// fully reload it from chrome://extensions. Remove with the rest of the debug
+// code once the curator is validated.
+if (DEBUG_CURATOR) {
+  const ctx =
+    typeof window !== "undefined"
+      ? `window:${(globalThis as { location?: { href?: string } }).location?.href ?? "?"}`
+      : "service-worker";
+  console.error(`[curator] INSTRUMENTED BUILD LOADED (context=${ctx})`);
+}
+
 
 const MEMORY_INSTRUCTIONS = `
 
@@ -98,13 +132,12 @@ You have persistent memory across conversations. The index below shows saved mem
 - User corrects your behavior → save as feedback type
 - User confirms a non-obvious approach → save as feedback type
 - You learn about their role or preferences → save as user type
-- You learn per-site knowledge (navigation patterns, quirks) → save as site type
 - You learn where external information lives → save as reference type
+ - (Per-site knowledge — navigation patterns, selectors, quirks — goes in that domain's SITE SKILL, authored automatically after the task, NOT a memory.)
 
 ### Memory types
 - **user**: Role, preferences, expertise. Free-form content.
 - **feedback**: Behavior corrections or confirmations. Structure: rule, then **Why:** and **How to apply:** lines.
-- **site**: Per-domain knowledge. Set the domain field. Free-form content.
 - **reference**: Where to find things externally. Free-form content.
 
 ### Scoping: user vs. space memories
@@ -113,7 +146,6 @@ Memories are either global (user-level) or scoped to a specific space.
 **Save as user memory (no spaceId)** when it applies everywhere:
 - Identity, name, role, company
 - Universal preferences and behavior corrections
-- General site knowledge (e.g. "on GitHub, go to files-changed first")
 
 **Save as space memory (with spaceId)** when it's relevant to that space's purpose:
 - Project-specific context: repos, tools, workflows for that space's domain
@@ -138,6 +170,8 @@ import {
   setAgentSpaceColor,
   getAgentSpaceColor,
 } from "./agent-indicator";
+import { startCapture } from "./cdp-capture";
+import { releaseAll as releaseAllSessions } from "./cdp-session";
 
 export { notifyAgentStatus, setAgentSpaceColor };
 
@@ -152,6 +186,8 @@ const TAB_INTERACTING_TOOLS = new Set([
   "snapshot",
   "executeOnPage",
   "extract",
+  "read_network_requests",
+  "read_console_messages",
 ]);
 
 let agentActive = false;
@@ -385,6 +421,29 @@ const extensionDriver = new ExtensionDriver();
 export function createBrowserToolSet(): Record<string, ToolSet[string]> {
   const fsTools = createFsTools();
   const pythonTool = createPythonTool();
+  // Foreground self-heal guard: the main agent authors nothing from scratch
+  // (the background curator does that). It may only patch an EXISTING site
+  // skill — typically to fix a scriptRef it just ran and judged deficient.
+  // (The curator wraps the raw patchSiteSkillTool directly, bypassing this.)
+  const guardedPatchSiteSkill: typeof patchSiteSkillTool = {
+    ...patchSiteSkillTool,
+    execute: async (input, ctx) => {
+      try {
+        await getSkillsRegistry().init();
+        const exists = getSkillsRegistry()
+          .getState()
+          .skills.some((s) => s.kind === "site" && s.name === input.domain);
+        if (!exists) {
+          return {
+            error: `No site skill exists for "${input.domain}" yet. The background curator authors new site skills after the task ends — you only read and self-heal existing ones. Proceed without saving.`,
+          };
+        }
+      } catch {
+        // If the registry check fails, fall through and let the patch attempt.
+      }
+      return patchSiteSkillTool.execute(input, ctx);
+    },
+  };
   return {
     snapshot: toSDKTool(snapshotTool, "snapshot"),
     readPage: toSDKTool(readPageTool, "readPage"),
@@ -403,6 +462,10 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
     executeCode: toSDKTool(executeCodeTool, "executeCode"),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
+    read_network_requests: toSDKTool(readNetworkRequestsTool, "read_network_requests"),
+    read_console_messages: toSDKTool(readConsoleMessagesTool, "read_console_messages"),
+    patch_site_skill: toSDKTool(guardedPatchSiteSkill, "patch_site_skill"),
+    delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill"),
     executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
@@ -427,6 +490,7 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     Glob: toSDKTool(fsTools.globTool, "Glob"),
     Grep: toSDKTool(fsTools.grepTool, "Grep"),
     LS: toSDKTool(fsTools.lsTool, "LS"),
+    Delete: toSDKTool(fsTools.deleteTool, "Delete"),
   };
 }
 
@@ -481,6 +545,16 @@ export function buildExtensionToolContext(
         return pinnedConversationId
           ? resolveTabHandle(pinnedConversationId, handle)
           : undefined;
+      },
+      listHandles: () => {
+        // Used by tab-resolution error messages to inline the legend so
+        // the agent can recover from a stale handle without a separate
+        // listTabs round-trip. tool-context.ts threads this through;
+        // bench's session leaves it undefined and falls back to the
+        // no-summary error wording.
+        return pinnedConversationId
+          ? listTabHandles(pinnedConversationId)
+          : [];
       },
       isAgentOwnedTab: async (tabId) => {
         if (!pinnedConversationId) return false;
@@ -607,6 +681,32 @@ export function toSDKTool<TInput, TOutput>(
     }
   };
 
+  /**
+   * Generic approval gate for a tab-interacting tool: consult the per-site
+   * "Always allow on <site>" allowlist for the tool's target tab; require a
+   * prompt otherwise.
+   *
+   * The AI SDK calls `needsApproval(input, options)` — `input` is the first
+   * positional arg (the tool's parsed input), NOT `{ input }`. (A prior bug
+   * destructured `{ input }`, read `input.input` (undefined), so the handle
+   * never resolved and approval was ALWAYS required — the allowlist was never
+   * consulted, so "Always allow on <site>" never took effect.) Capture cid
+   * once at entry — see resolveTabFromInput's contract.
+   */
+  const tabToolNeedsApproval = async (input: unknown): Promise<boolean> => {
+    const cid = agentConversationId;
+    const resolved = await resolveTabFromInput(cid, input);
+    if (resolved?.tab.url) {
+      try {
+        const origin = new URL(resolved.tab.url).origin;
+        const allowlist = await getToolSiteAllowlist();
+        const allowed = allowlist[toolKey] ?? [];
+        if (allowed.includes(origin)) return false;
+      } catch {}
+    }
+    return true;
+  };
+
   const needsApproval =
     approvalRequired && toolKey === "executePython"
       ? // Python only needs human approval when it requests outbound network
@@ -641,27 +741,20 @@ export function toSDKTool<TInput, TOutput>(
           }
           return !(await shouldAutoApproveCloseTabs(cid, resolved));
         }
+      : approvalRequired && toolKey === "executeOnPage"
+      ? // A `scriptRef` run executes an ALREADY-SAVED script from one of the
+        // agent's own site skills (authored by the background curator) — no prompt,
+        // same trust basis as the no-approval site-skill patch/delete.
+        // This also removes the model's incentive to `Read` the body before
+        // running (to make an opaque approval legible), which would defeat
+        // run-by-reference. Inline `code` is arbitrary new JS → normal gate.
+        async (input: unknown) => {
+          const typed = input as { scriptRef?: unknown; code?: unknown };
+          if (typed?.scriptRef != null && typed.code == null) return false;
+          return tabToolNeedsApproval(input);
+        }
       : approvalRequired && isTabTool
-        ? async (input: unknown) => {
-            // The AI SDK calls `needsApproval(input, options)` — `input` is the
-            // first positional arg (the tool's parsed input), NOT `{ input }`.
-            // Destructuring `{ input }` here (the onInputAvailable shape) read
-            // `input.input` (undefined), so the tab handle never resolved and
-            // approval was ALWAYS required — the allowlist was never consulted,
-            // so "Always allow on <site>" never took effect for later calls.
-            // Capture cid once at entry — see resolveTabFromInput's contract.
-            const cid = agentConversationId;
-            const resolved = await resolveTabFromInput(cid, input);
-            if (resolved?.tab.url) {
-              try {
-                const origin = new URL(resolved.tab.url).origin;
-                const allowlist = await getToolSiteAllowlist();
-                const allowed = allowlist[toolKey] ?? [];
-                if (allowed.includes(origin)) return false;
-              } catch {}
-            }
-            return true;
-          }
+        ? (input: unknown) => tabToolNeedsApproval(input)
         : approvalRequired;
 
   /**
@@ -751,6 +844,20 @@ export function toSDKTool<TInput, TOutput>(
         });
       }
       notifyAgentStatus(true, getAgentSpaceColor(), resolved?.tabId ?? null);
+      // Eagerly arm CDP capture for the worked tab BEFORE the tool runs,
+      // so any network/console events the tool itself triggers (or the
+      // page issues during the tool's wait) land in the buffer.
+      // `startCapture` is idempotent: a no-op when the tab is already
+      // tracked (which it is for every tool call after the first against
+      // a given tab in an agent run). Awaiting matters because
+      // `chrome.debugger.attach + Network.enable` is async — without the
+      // await, the very first tool call against a tab races the attach
+      // and misses its own events. (`agent-indicator.notifyAgentStatus`
+      // ALSO calls `startCapture` fire-and-forget as a backstop for
+      // non-tab-tool turns; this awaited call wins on tab-tool calls.)
+      if (resolved?.tabId != null) {
+        await startCapture(resolved.tabId).catch(() => {});
+      }
     }
     try {
       // Threaded ToolContext from the SDK's experimental_context channel.
@@ -800,6 +907,36 @@ export function toSDKTool<TInput, TOutput>(
               title: resolved.tab.title ?? "",
               favIconUrl: resolved.tab.favIconUrl,
             });
+          }
+          // Some tab tools produce a *new* tab (e.g. `navigate` called
+          // without `tab` opens a fresh background tab; popup-creating
+          // clicks may surface a new handle). Without this branch, the
+          // pre-execute startCapture wouldn't have run (no input.tab to
+          // resolve), so the new tab's page-load network/console events
+          // would be missed entirely until the agent's NEXT tool call
+          // against it. Arm capture for the result handle now.
+          //
+          // We gate on absence of `error` because failed tools may still
+          // echo the input handle back; capture for an existing tab is a
+          // no-op via idempotency, but we don't want to attach to a tab
+          // a fresh failed-navigation may have left in a half-loaded state.
+          //
+          // Resolution is via the same path as resolveTabFromInput: handle
+          // → ltid → ctid. If it doesn't resolve (stale handle, registry
+          // miss), we silently skip — capture remains best-effort.
+          const r = result as { tab?: unknown; error?: unknown } | null | undefined;
+          if (
+            r &&
+            typeof r === "object" &&
+            typeof r.tab === "string" &&
+            r.error === undefined &&
+            cid
+          ) {
+            const ltid = resolveTabHandle(cid, r.tab);
+            const producedTabId = ltid != null ? tabRegistry.toChromeTabId(ltid) : null;
+            if (producedTabId != null) {
+              await startCapture(producedTabId).catch(() => {});
+            }
           }
         }
         return result;
@@ -922,6 +1059,13 @@ export function resetAgentIndicator() {
     ac.abort();
   }
   activeToolAbortControllers.clear();
+  // Detach the debugger from every attached tab. cdp-session is the single
+  // owner of debugger state (capture runs on top of it), so a single
+  // releaseAll here tears down both. Order matters: aborts ran BEFORE this
+  // detach so any tool mid-flight in cdp-session unwinds cleanly first.
+  // (cdp-session's sendCommand has its own self-healing retry on detach
+  // mid-flight, so even a race here is recoverable.)
+  releaseAllSessions();
 }
 
 
@@ -1227,25 +1371,61 @@ export async function createAgentTransport(
     }
   }
 
+  // Resolve the curator model lazily on first use: settings.curatorModel
+  // overrides; otherwise the background curator reuses this transport's
+  // foreground model. Cached after first resolution.
+  let curatorModelCache: LanguageModel | undefined;
+  async function resolveCuratorModel(): Promise<LanguageModel> {
+    if (curatorModelCache) return curatorModelCache;
+    const id = agentSettings.curatorModel;
+    if (!id) {
+      curatorModelCache = model;
+      return model;
+    }
+    try {
+      const [cProviderId, ...cIdParts] = id.split(":");
+      const cActualModelId = cIdParts.length > 0 ? cIdParts.join(":") : id;
+      const cProvider =
+        (cIdParts.length > 0
+          ? providers.find((p) => p.id === cProviderId)
+          : undefined) ??
+        providers.find((p) => p.models.some((m) => m.id === cActualModelId));
+      if (cProvider) {
+        const cConfig = settings.providerConfigs[cProvider.id] ?? {};
+        const cRequired =
+          cProvider.configSchema?.filter((f) => f.required) ?? [];
+        if (cRequired.every((f) => !!cConfig[f.key])) {
+          curatorModelCache = await cProvider.createLanguageModel(
+            cConfig,
+            cActualModelId,
+          );
+          return curatorModelCache;
+        }
+        console.warn(
+          `[curator] model override ${id} is not configured (missing required fields); falling back to foreground model`,
+        );
+      } else {
+        console.warn(
+          `[curator] model override ${id} did not resolve to a known provider; falling back to foreground model`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        "[curator] failed to construct model override; falling back to foreground model:",
+        err,
+      );
+    }
+    curatorModelCache = model;
+    return model;
+  }
+
   const browserTools = createBrowserToolSet();
 
-  // The completion-check evaluator runs WITHOUT tools by default.
-  //
-  // Earlier we handed it a read-only browser/filesystem subset so it
-  // could make its own verification calls to ground factual claims.
-  // In practice that turned every gate into a multi-step agentic loop
-  // (`generateText` + `stepCountIs`, plus an occasional second-stage
-  // commit), which dominated end-of-turn latency. The tool-call trace
-  // already includes the captured output of every tool the executor
-  // ran this turn, so the evaluator can ground the vast majority of
-  // claims from context alone. Dropping tools routes the evaluator
-  // down its single-shot `generateObject` path (one round-trip) and
-  // cuts the perceived "Refining answer" delay dramatically.
-  //
-  // The evaluator still SUPPORTS tools (see completion-check/evaluator.ts);
-  // we simply don't wire any here. To re-enable grounded verification,
-  // pass a read-only tool subset as `evaluatorTools` in
-  // `buildCompletionCheckInput` below.
+  // The completion-check evaluator runs WITHOUT tools — single-shot
+  // `generateObject` against the conversation context and the captured
+  // tool-call trace. The earlier with-tools mode was removed (it
+  // dominated end-of-turn latency, and the dimensions that benefited
+  // from it have since been retired). See `completion-check/evaluator.ts`.
 
   const mcpTools = getMcpRegistry().toSDKTools();
 
@@ -1296,11 +1476,9 @@ When you receive a \`[Completion check]\` message, treat it as a continuation di
 Concerns are tagged by dimension:
 - **completeness**: the response did not fulfill the original request end-to-end.
 - **planClosure**: open todos contradict the claim of completion.
-- **evidenceGrounding**: a factual claim is not supported by tool observations from this turn.
 - **noPrematureHandoff**: the response punts work back to the user that was within scope.
-- **surfaceAccuracy**: the page state described in the response disagrees with what a verification call observed.
 
-To minimize wasted rejection rounds: before producing a final response, re-read the original request, verify each factual claim was actually observed via a tool call this turn, and confirm your todo list is fully closed out.`;
+To minimize wasted rejection rounds: before producing a final response, re-read the original request and confirm your todo list is fully closed out (or that every still-open todo has an explicit reason to remain open).`;
 
   // Inject current todo plan into system prompt
   const conv = agentConversationId
@@ -1410,8 +1588,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   await getSkillsRegistry().init();
   const skillsState = getSkillsRegistry().getState();
 
-  // Apply global enabled flag + per-space allow/deny override
+  // Apply global enabled flag + per-space allow/deny override. Site skills are
+  // EXCLUDED here — they're per-domain and surfaced in the auto-injected
+  // "## Site skills for open tabs" legend block (only for currently-open
+  // domains), not in the always-on general skills catalog.
   const availableSkills = skillsState.skills.filter((skill) => {
+    if (skill.kind === "site") return false;
     // Global toggle (defaults to enabled if undefined for backward compat)
     if (skill.enabled === false) return false;
     const spaceConfig = skillsState.spaceConfigs.find(
@@ -1750,6 +1932,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         "closeTabs",
         "executeOnPage",
         "updateMemory",
+        "Delete",
         "install_skill",
         "create_skill",
       ]) {
@@ -1774,6 +1957,44 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   // step-boundary behavior). Cleared at the start of each `sendMessages`
   // by the wrapper transport so a previous turn's signal doesn't leak.
   let needsMidStreamCompaction = false;
+
+  // Site-skill catalog snapshot, refreshed each turn in buildLegendBlock and
+  // read by the curator-enqueue in onCompletionCheckApproved. `lastActiveUrl`
+  // attributes candidates to a domain; `lastCatalogDomains` gates extraction.
+  let lastCatalogDomains: string[] = [];
+  let lastActiveUrl: string | undefined;
+  let lastTurnConversationId: string | null = null;
+  // Persisted-message count captured at gate time (before this turn's
+  // assistant message is written to chat-db). The curator-enqueue uses it as a
+  // baseline to wait for the assistant message to land before reading the full,
+  // untruncated UIMessages from chat-db — the only source carrying complete
+  // executeOnPage tool inputs/outputs. The completion-check builder's
+  // `sendMessages` are the *input* messages (just the user turn on turn 1), and
+  // the tool-call trace is hard-truncated, so neither can reconstruct a
+  // reusable script.
+  let lastTurnBaselineCount = 0;
+
+  /**
+   * Wait until this turn's assistant message lands in chat-db (count exceeds
+   * `lastTurnBaselineCount`), bound to the live `chatDb` pubsub. Delegates to
+   * the unit-tested `waitForAssistantPersist` helper. See its module doc for
+   * why the curator must wait before reading persisted messages.
+   */
+  function waitForAssistantPersist(
+    cid: string,
+    baselineCount: number,
+    timeoutMs = 5000,
+  ): Promise<number> {
+    return waitForAssistantPersistImpl(
+      {
+        getMessageCount: (c) => chatDb.getMessageCount(c),
+        subscribeMessageChange: (l) => chatDb.subscribeMessageChange(l),
+      },
+      cid,
+      baselineCount,
+      timeoutMs,
+    );
+  }
 
   /**
    * Build the dynamic "## Tabs in this conversation" block plus an
@@ -1832,10 +2053,22 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // Awareness block: enumerate user's other open tabs in the current
     // window. Reuses the driver's listTabs (already filters internal
     // URLs and scopes to current window). Errors here must not break
-    // the legend — fall back to the owned-only block.
+    // the legend — fall back to the owned-only block. We also collect the
+    // open-tab URLs here so the site-skill catalog below can consider the
+    // domain of the tab the user is actually looking at — which is typically
+    // an UNOWNED/awareness tab ("go to my LinkedIn"), not one we navigated to.
     let awarenessBlock = "";
+    const openTabUrls: string[] = [];
+    let activeOpenUrl: string | undefined;
     try {
       const openTabs = await extensionDriver.listTabs();
+      for (const t of openTabs) {
+        if (t.url) openTabUrls.push(t.url);
+        // Track the user's ACTIVE tab URL specifically — the curator attributes
+        // candidates to this domain. listTabs() order is not active-first, so
+        // we must read the `active` flag rather than assume openTabUrls[0].
+        if (t.active && t.url) activeOpenUrl = t.url;
+      }
       const { entries: awarenessEntries, truncated } =
         buildOpenTabsAwarenessEntries({
           conversationId: cid,
@@ -1863,7 +2096,33 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // No window / chrome.tabs unavailable; skip awareness block.
     }
 
-    return [ownedBlock, awarenessBlock].filter(Boolean).join("\n\n");
+    // Domain-aware context: for each unique domain among ALL open tabs (owned
+    // + the user's other open tabs), surface its site skill if one exists, or
+    // a "no site skill yet" bootstrap line if not, so the reuse/save loop is
+    // visible. Owned URLs alone are insufficient — the active tab is usually
+    // unowned. Best-effort — never break the legend over a registry hiccup.
+    const allOpenUrls = [...entries.map((e) => e.url), ...openTabUrls];
+    // Stash the catalog snapshot for the curator-enqueue
+    // (onCompletionCheckApproved). Computed OUTSIDE the registry try-clause
+    // below so a registry hiccup can't wipe it. `lastActiveUrl` is the user's
+    // actual active tab (not openTabUrls[0]); fall back to first owned only if
+    // no active tab was found.
+    lastCatalogDomains = allOpenUrls
+      .map((u) => urlToDomain(u))
+      .filter((d): d is string => !!d);
+    lastActiveUrl = activeOpenUrl ?? entries[0]?.url;
+    let domainBlock = "";
+    try {
+      await getSkillsRegistry().init();
+      const siteSkills = getSkillsRegistry()
+        .getState()
+        .skills.filter((s) => s.kind === "site");
+      domainBlock = renderSiteSkillsBlock(allOpenUrls, siteSkills);
+    } catch {
+      // leave domainBlock empty
+    }
+
+    return [ownedBlock, awarenessBlock, domainBlock].filter(Boolean).join("\n\n");
   }
 
   const agent = new ToolLoopAgent({
@@ -1883,12 +2142,22 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // mid-conversation.
     prepareCall: async (callArgs) => {
       const legend = await buildLegendBlock();
-      const baseInstructions = callArgs.instructions ?? "";
+      // Workspace-files block: enumerate /workspace per turn so the agent
+      // sees its own artifacts (saveAs outputs, executePython writes,
+      // Write tool files) even after long-conversation compaction prunes
+      // the original tool-result messages. Symmetric to the tab legend
+      // and site-skill catalog blocks injected here. Empty for fresh
+      // conversations (no agent-written files yet).
+      const cid = agentConversationId;
+      const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
+      const baseInstructions =
+        typeof callArgs.instructions === "string" ? callArgs.instructions : "";
+      // Append both blocks; either or both can be empty. Use double-newline
+      // separators between blocks so they render as distinct sections.
+      const tail = [legend, wsBlock].filter(Boolean).join("\n\n");
       return {
         ...callArgs,
-        instructions: legend
-          ? `${baseInstructions}\n\n${legend}`
-          : baseInstructions,
+        instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,
       };
     },
     onStepFinish: (stepResult) => {
@@ -1921,6 +2190,14 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     agent,
     onSendStart: () => {
       needsMidStreamCompaction = false;
+      // Reset the curator turn-snapshot so a turn where buildLegendBlock /
+      // buildCompletionCheckInput don't repopulate them (e.g. a transient,
+      // non-persisted run) can't enqueue a curator job off a prior turn's
+      // stale data. They're repopulated below during this turn if applicable.
+      lastTurnConversationId = null;
+      lastTurnBaselineCount = 0;
+      lastCatalogDomains = [];
+      lastActiveUrl = undefined;
     },
     // Capture the active cid synchronously at the top of every
     // `sendMessages`. The transport pins it for the duration of the loop
@@ -1938,6 +2215,19 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     }) => {
       const cid = pinnedConversationId;
       if (!cid) return undefined;
+
+      // Stash this turn's baseline for the curator-enqueue, which runs in
+      // onCompletionCheckApproved (same turn, after this builder). Captured
+      // here because the approval callback only receives (cid, now). The
+      // baseline is the persisted message count *before* this turn's assistant
+      // message is written, so the enqueue can wait for it to land and then
+      // read the full UIMessages (with executeOnPage tool parts) from chat-db.
+      lastTurnConversationId = cid;
+      try {
+        lastTurnBaselineCount = await chatDb.getMessageCount(cid);
+      } catch {
+        lastTurnBaselineCount = 0;
+      }
 
       // Last user-role message in the SDK message list is the original
       // request that drove this turn. Bail if for any reason there is
@@ -1988,15 +2278,136 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         // Threaded once at transport build; null means "fall back to
         // the executor's current model" inside the evaluator.
         evaluatorModel: evaluatorLanguageModel,
-        // Intentionally no `evaluatorTools`: the evaluator runs as a
-        // single-shot `generateObject` against the conversation context
-        // and tool-call trace. See the comment at the
-        // `evaluatorReadOnlyTools` removal above for the latency
-        // rationale and how to re-enable grounded verification.
       };
     },
     onCompletionCheckApproved: (cid, now) => {
       void persistCompletionMarker(cid, "approved", now);
+      // Fire-and-forget: extract reusable site-skill candidates from this
+      // turn and enqueue a background curator job. Never blocks the user's
+      // response; failures are swallowed.
+      //
+      // Capture the turn-snapshot locals BEFORE the first await. The
+      // module-level `lastCatalogDomains` / `lastActiveUrl` /
+      // `lastTurnBaselineCount` are overwritten by the next turn's
+      // `prepareCall`; without snapshotting, a slow curator closure would
+      // see turn N+1's values and misattribute candidates from turn N to
+      // the wrong domain. (Same shape of bug the wait-for-persist fix
+      // resolved one layer up, but on the variables instead of the
+      // message stream.)
+      const turnConvId = lastTurnConversationId;
+      const turnCatalogDomains = lastCatalogDomains.slice();
+      const turnActiveUrl = lastActiveUrl;
+      const turnBaseline = lastTurnBaselineCount;
+      void (async () => {
+        try {
+          if (turnConvId !== cid) {
+            if (DEBUG_CURATOR)
+              console.warn(
+                "[curator] skip: conversation-id mismatch (stale turn snapshot)",
+              );
+            return;
+          }
+          // Wait for this turn's assistant message (carrying the executeOnPage
+          // tool parts) to persist, then read the full, untruncated UIMessages
+          // from chat-db. This is the only source with complete tool
+          // inputs/outputs — the completion-check `sendMessages` are pre-turn
+          // input only, and the tool-call trace is hard-truncated.
+          await waitForAssistantPersist(cid, turnBaseline);
+          const persisted = await chatDb.getMessages(cid);
+          const allMessages = persisted as unknown as {
+            role: string;
+            parts?: unknown[];
+          }[];
+          // Slice from the captured baseline so we ONLY pass this turn's
+          // messages to the extractor. Without the slice, a long-running
+          // conversation would re-extract every prior turn's executeOnPage
+          // parts on every approval, attributing old work to the current
+          // domain.
+          const messages = allMessages.slice(turnBaseline);
+          if (DEBUG_CURATOR) {
+            console.error(
+              `[curator] approved conv=${cid} catalogDomains=[${turnCatalogDomains.join(",")}] activeUrl=${turnActiveUrl ?? "?"} baseline=${turnBaseline} persisted=${allMessages.length} turnSlice=${messages.length}`,
+            );
+          }
+          if (!messages.length) {
+            if (DEBUG_CURATOR)
+              console.warn("[curator] skip: no persisted messages for turn");
+            return;
+          }
+          const { extractSiteSkillCandidates, detectNotableActivityDomain } =
+            await import("@/lib/skills/site-skill-candidates");
+          const candidates = extractSiteSkillCandidates({
+            messages,
+            catalogDomains: turnCatalogDomains,
+            activeUrl: turnActiveUrl,
+          });
+          // Notes-only trigger: even with no reusable script, a turn that hit
+          // friction (errored/timed-out tool calls) on a catalog domain is
+          // worth curating a durable site note for.
+          const notableDomain = detectNotableActivityDomain({
+            messages,
+            catalogDomains: turnCatalogDomains,
+            activeUrl: turnActiveUrl,
+          });
+          if (DEBUG_CURATOR)
+            console.warn(
+              `[curator] extracted ${candidates.length} candidate(s)${candidates.length ? ` for ${[...new Set(candidates.map((c) => c.domain))].join(",")}` : ""}${notableDomain ? ` notableActivity=${notableDomain}` : ""}`,
+            );
+          if (candidates.length === 0 && !notableDomain) return;
+          const { enqueueCuratorJob } = await import("./curator/queue");
+          const { drainCuratorQueue, runCuratorJob } = await import(
+            "./curator/runner"
+          );
+          // Group candidates by domain (one job per domain). Seed the map with
+          // the notable-activity domain so a notes-only job is enqueued even
+          // when that domain produced no script candidate.
+          const byDomain = new Map<string, typeof candidates>();
+          if (notableDomain) byDomain.set(notableDomain, []);
+          for (const c of candidates) {
+            const arr = byDomain.get(c.domain) ?? [];
+            arr.push(c);
+            byDomain.set(c.domain, arr);
+          }
+          const toolHistory = JSON.stringify(
+            messages.flatMap((m) => (m.parts ?? []) as unknown[]),
+          ).slice(0, 20000);
+          for (const [domain, cands] of byDomain) {
+            await enqueueCuratorJob({
+              conversationId: cid,
+              domain,
+              candidates: cands,
+              toolHistory,
+            });
+          }
+          if (DEBUG_CURATOR)
+            console.warn(
+              `[curator] enqueued ${byDomain.size} job(s) for [${[...byDomain.keys()].join(",")}]`,
+            );
+          // Build the curator's replay-only toolset: Read (scoped to /skills/)
+          // + the RAW patch_site_skill (curator authors from scratch, so it
+          // bypasses the foreground self-heal guard).
+          const curatorFsTools = createFsTools();
+          const curatorTools: ToolSet = {
+            Read: toSDKTool(curatorFsTools.readTool, "Read"),
+            patch_site_skill: toSDKTool(
+              patchSiteSkillTool,
+              "patch_site_skill",
+            ),
+          };
+          const curatorModel = await resolveCuratorModel();
+          void drainCuratorQueue({
+            debug: DEBUG_CURATOR,
+            runAgent: (jobToRun) =>
+              runCuratorJob(jobToRun, {
+                model: curatorModel,
+                tools: curatorTools,
+                debug: DEBUG_CURATOR,
+              }),
+          });
+        } catch (err) {
+          console.warn("[curator] enqueue/drain failed:", err);
+        }
+      })();
     },
   });
 }

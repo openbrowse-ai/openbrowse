@@ -80,7 +80,7 @@ Rules:
 export const extractTool: BrowserTool<Input, Output> = {
   name: "extract",
   description:
-    "Extract structured data from a tab using its accessibility tree. Pass `tab` (handle from the tab legend or listTabs), an `instruction` (what to extract), optionally a JSON Schema (output shape) and a CSS selector (subtree scope). Preferred over raw DOM-scraping via executeOnPage for text-based data like search results, product lists, table rows, or article content. For URL fields in the schema, use {type: 'string', format: 'uri'} — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them automatically.",
+    "Extract structured data from a tab using its accessibility tree, via an LLM pass. Pass `tab` (handle from the tab legend or listTabs), an `instruction` (what to extract), optionally a JSON Schema (output shape) and a CSS selector (subtree scope). For URL fields in the schema, use {type: 'string', format: 'uri'} — the tool substitutes URLs with numeric IDs to prevent hallucination and rehydrates them automatically. LAST-RESORT FALLBACK: use `extract` only when `executeOnPage` can't derive the data (unknown/unstable DOM, or you genuinely can't write a selector). On any domain you'll revisit, a saved site-skill script run via `executeOnPage` is more reliable and cheaper over time — prefer `executeOnPage` for enumerable structured reads (lists, rows, cards, comments, profile fields) — those scripts are saved as reusable site skills automatically after the task.",
   parameters,
   execute: async ({ tab: handle, instruction, selector, schema }, ctx) => {
     const model = getCurrentAgentModel();

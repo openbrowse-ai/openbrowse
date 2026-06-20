@@ -96,7 +96,7 @@ export function SkillsTab({
     [skills, selectedSkillName],
   );
 
-  const { personalSkills, builtInSkills } = useMemo(() => {
+  const { siteSkills, personalSkills, builtInSkills } = useMemo(() => {
     const filter = (s: InstalledSkill) => {
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
@@ -106,11 +106,12 @@ export function SkillsTab({
       );
     };
     return {
+      siteSkills: skills.filter((s) => s.kind === "site").filter(filter),
       personalSkills: skills
-        .filter((s) => s.source !== "bundled")
+        .filter((s) => s.kind !== "site" && s.source !== "bundled")
         .filter(filter),
       builtInSkills: skills
-        .filter((s) => s.source === "bundled")
+        .filter((s) => s.kind !== "site" && s.source === "bundled")
         .filter(filter),
     };
   }, [skills, searchQuery]);
@@ -294,6 +295,16 @@ export function SkillsTab({
               </div>
             ) : (
               <>
+                {siteSkills.length > 0 && (
+                  <SkillGroup
+                    label="Site skills"
+                    skills={siteSkills}
+                    selectedSkillName={selectedSkillName}
+                    selectedFilePath={selectedFilePath}
+                    onSelectSkill={handleSelectSkill}
+                    onSelectFile={handleSelectFile}
+                  />
+                )}
                 {personalSkills.length > 0 && (
                   <SkillGroup
                     label="Personal skills"
@@ -452,8 +463,11 @@ export function SkillsTab({
 
               <DescriptionBlock description={activeSkill.description} />
 
-              {/* Source link (non-bundled) */}
+              {/* Source link (non-bundled). Site skills are omitted — the
+                  "Added by OpenBrowse" line already conveys authorship and
+                  there's no upstream repo to link. */}
               {activeSkill.source !== "bundled" &&
+                activeSkill.kind !== "site" &&
                 (() => {
                   const parsed = parseSkillSource(activeSkill.source);
                   if (!parsed) {
@@ -480,15 +494,26 @@ export function SkillsTab({
                   );
                 })()}
 
-              {/* Scripts warning */}
-              {activeSkill.hasScripts && (
-                <div className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 rounded-md p-3 text-xs">
-                  <strong>Contains scripts:</strong> This skill includes
-                  executable scripts ({activeSkill.scriptTypes.join(", ")}).
-                  OpenBrowse runs in the browser and cannot execute them — the
-                  agent will read them as context only.
-                </div>
-              )}
+              {/* Scripts notice */}
+              {activeSkill.hasScripts &&
+                (activeSkill.kind === "site" ? (
+                  // Site-skill scripts ARE executable: the agent runs them in
+                  // the page via executeOnPage + scriptRef (no approval, body
+                  // never enters context).
+                  <div className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30 rounded-md p-3 text-xs">
+                    <strong>Runnable scripts:</strong> The agent runs these
+                    page scripts ({activeSkill.scriptTypes.join(", ")}) directly
+                    in the browser tab to act on this site faster, without
+                    re-deriving the steps each time.
+                  </div>
+                ) : (
+                  <div className="bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/30 rounded-md p-3 text-xs">
+                    <strong>Contains scripts:</strong> This skill includes
+                    executable scripts ({activeSkill.scriptTypes.join(", ")}).
+                    OpenBrowse runs in the browser and cannot execute them — the
+                    agent will read them as context only.
+                  </div>
+                ))}
 
               {/* SKILL.md preview card */}
               <div className="border border-border rounded-lg bg-muted/30 overflow-hidden relative">

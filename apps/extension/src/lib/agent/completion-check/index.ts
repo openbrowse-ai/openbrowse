@@ -17,7 +17,7 @@
  * verdict and record telemetry."
  */
 
-import type { LanguageModel, ToolSet } from "ai";
+import type { LanguageModel } from "ai";
 import type { TodoItem } from "../../types";
 import { runEvaluator } from "./evaluator";
 import { completionCheckTelemetry } from "./telemetry";
@@ -119,19 +119,6 @@ export interface RunCompletionCheckInput {
    */
   evaluatorModel?: LanguageModel | null;
   /**
-   * Read-only tool subset the evaluator may use to ground factual
-   * claims. When undefined or empty, the evaluator runs without tools
-   * (pure context-based judgment). When set, the gate enables
-   * with-tools mode in the evaluator.
-   */
-  evaluatorTools?: ToolSet;
-  /**
-   * Hard cap on evaluator research steps when tools are enabled.
-   * Each step is one LLM round-trip plus optional tool calls. Default
-   * is in the evaluator (5).
-   */
-  evaluatorMaxSteps?: number;
-  /**
    * Abort signal for the evaluator call. Threading the agent's outer
    * abort signal here ensures a user-initiated stop also cancels the
    * evaluator.
@@ -174,9 +161,6 @@ export async function runCompletionCheck(
 
   let verdict: EvaluatorVerdict;
   try {
-    const hasTools =
-      !!input.evaluatorTools &&
-      Object.keys(input.evaluatorTools).length > 0;
     verdict = await runEvaluator({
       originalRequest: input.originalRequest,
       draftedResponse: input.draftedResponse,
@@ -186,13 +170,6 @@ export async function runCompletionCheck(
       })),
       toolCallTrace: input.toolCallTrace,
       model: input.evaluatorModel,
-      // With-tools mode activates when the caller explicitly provided a
-      // tool subset. The evaluator does its own no-op-if-empty check
-      // but we predicate `allowTools` on the caller's intent so the
-      // system prompt branches correctly.
-      allowTools: hasTools,
-      tools: hasTools ? input.evaluatorTools : undefined,
-      maxSteps: input.evaluatorMaxSteps,
       abortSignal: input.abortSignal,
     });
   } catch (err) {

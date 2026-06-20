@@ -3,14 +3,13 @@ import type { ConcernDimension, ToolCallTraceEntry } from "./types";
 /**
  * Evaluator system prompt for the completion-check gate.
  *
- * Phase 1 ships the prompt skeleton even though no real evaluator call
- * happens yet (the no-op evaluator always approves). Pre-shipping the
- * prompt lets us:
- *  - Snapshot-test the prompt builder for regressions
- *  - Iterate on wording from real telemetry once Phase 2 enables real
- *    LLM calls
- *  - Keep the prompt content reviewed alongside the type surface it
- *    encodes
+ * The evaluator is a single-shot `generateObject` call with no tools —
+ * pure context-based judgment from the original request, the drafted
+ * response, the todo list, and the captured tool-call trace. There is
+ * no with-tools / verification-call mode: an earlier revision shipped
+ * one and we removed it (the latency cost dominated end-of-turn delay
+ * and the dimensions that benefited most from it produced too many
+ * false rejections from absence-of-evidence in truncated traces).
  *
  * Design principles, drawn from Anthropic's March 2026 harness work:
  *  - Default to skepticism. The evaluator is biased toward approval by
@@ -19,9 +18,6 @@ import type { ConcernDimension, ToolCallTraceEntry } from "./types";
  *    incomplete").
  *  - Each concern names exactly one dimension. Mixed-dimension concerns
  *    get split into multiple entries.
- *  - The evaluator is allowed to use read-only tools (Phase 3+) to
- *    ground factual claims, but is not required to. Phase 2 evaluators
- *    have no tools at all.
  */
 
 const DIMENSION_DESCRIPTIONS: Record<ConcernDimension, string> = {
@@ -29,45 +25,31 @@ const DIMENSION_DESCRIPTIONS: Record<ConcernDimension, string> = {
     "The drafted response does not fulfill the original user request end-to-end. Examples: claimed 'top 3' but listed 2; promised a summary but described one item; promised a price comparison but only quoted one source. Judge completeness against a reasonable reading of the request: if the request was ambiguous or underspecified, a sensible best-effort interpretation that the executor actually fulfilled counts as complete — do not flag merely because a different interpretation was possible.",
   planClosure:
     "The conversation has open todos (status 'pending' or 'in_progress') that contradict the claim of completion. The executor either should have closed them, explicitly cancelled them, or should not be claiming completion yet.",
-  evidenceGrounding:
-    "A specific factual claim in the drafted response is CONTRADICTED by the tool-call trace, OR is a specific observable (price, count, page text, URL, product name, date, etc.) that should have a supporting trace observation but has none. Do NOT flag a claim merely because you are unfamiliar with it, think it implausible, or believe it false based on your own knowledge — unfamiliarity is not evidence of fabrication. If the trace shows the executor observed the claim (e.g. read it off a page it visited), the claim is grounded; do not flag it. Do not flag claims that are clearly opinions or general background.",
   noPrematureHandoff:
     "The drafted response punts work back to the user that was within the original scope. Phrases like 'you can now do X yourself', 'I'll let you handle the rest', or stopping after partial fulfillment when the user asked for full completion. Not a flag for legitimate clarifying questions about genuinely ambiguous requirements, and not a flag when the executor reasonably interpreted an ambiguous request, completed it, and merely offered to adjust the interpretation afterwards.",
-  surfaceAccuracy:
-    "The drafted response describes the page state but a verification tool call (snapshot/extract/readPage) shows the page disagrees. Only raise this concern if you actually performed a verification call this turn and observed a mismatch.",
 };
 
 /**
- * Builds the system prompt the evaluator LLM call will use. Pure function;
- * snapshot-tested.
+ * Builds the evaluator's system prompt. Pure function; snapshot-tested.
  *
- * @param hasTools - Whether the evaluator was given any read-only tools
- *                  this run. Toggles whether the prompt encourages
- *                  surface-accuracy verification.
+ * Takes no parameters today. The earlier `hasTools` parameter toggled
+ * a verification-tools section; that mode no longer exists.
  */
-export function buildEvaluatorSystemPrompt({
-  hasTools,
-}: {
-  hasTools: boolean;
-}): string {
+export function buildEvaluatorSystemPrompt(): string {
   const dimensionList = (
     Object.entries(DIMENSION_DESCRIPTIONS) as [ConcernDimension, string][]
   )
     .map(([key, desc]) => `- **${key}**: ${desc}`)
     .join("\n");
 
-  const toolGuidance = hasTools
-    ? `\n## Tools\n\nYou have access to a read-only subset of the browser agent's tools (page-state inspection: snapshot, readPage, screenshot, extract, listTabs; filesystem read: Read, Glob, Grep, LS; recallMemory). The tool-call trace in your input already includes the captured output of every tool the executor ran this turn — judge most factual claims from those outputs directly. Only call a tool yourself when a specific claim genuinely cannot be checked from the trace (e.g. the executor never inspected the relevant element). Don't re-verify what the trace already shows. You have a generous research budget but reserve your final response to commit a structured verdict; do not start a new tool call once you have enough evidence to decide.`
-    : `\n## Tools\n\nYou have no tools available in this run. Evaluate strictly from the conversation context, the executor's drafted response, and the tool-call trace included in your input — including the captured tool outputs. Raise an \`evidenceGrounding\` concern only when a specific claim is CONTRADICTED by the trace, or when it is a specific observable the executor should have captured but the trace shows none. A claim that is simply outside the trace's scope — and not something the executor was obligated to capture — is not grounds for rejection; in particular, never reject a claim on the basis of your own knowledge, your unfamiliarity with it, or a belief that it is false or impossible. When unsure, prefer to approve rather than assert the claim is wrong.`;
-
   return `You are a skeptical reviewer for an AI browser agent's work. Your job is to verify, before the user sees it, that the agent has actually completed the task it claims to have completed.
 
-Default to skepticism. LLM-generated work is biased to look complete; your job is to push back when it isn't. A response can look polished and still be wrong on substance. When in doubt, raise a concern — the executor will get one more chance to address it before the user sees the response.
+Your focus is task completion against the plan and the original request — did the executor actually do the work? Did it close out the todos it set itself? Does the drafted response fulfill what the user asked for, or does it punt unfinished work back to them?
 
-Your skepticism is about whether the executor DID THE WORK — not about whether the world matches your memory. You have a knowledge cutoff; the executor reads live pages and current data. You do NOT. A hallucinated rejection is worse than no review at all: it corrupts a correct answer and wastes the user's time. Therefore:
+Default to skepticism on those axes. But be strict with yourself about staying in scope: you are NOT the source of truth for facts about the world. The executor reads live pages and current data; you do not. A hallucinated rejection is worse than no review at all — it corrupts a correct answer and wastes the user's time. Therefore:
 
-- NEVER introduce a "fact" of your own as grounds for rejection. In particular, never reject because you believe a claim is false, implausible, "doesn't exist", "isn't real", or "is in the future" based on your own training knowledge.
-- The tool-call trace is your source of truth, not your memory. When your prior conflicts with what the executor observed in the trace, the observation wins.
+- NEVER introduce a "fact" of your own as grounds for rejection. Never reject because you believe a claim is false, implausible, "doesn't exist", "isn't real", or "is in the future" based on your own training knowledge.
+- The tool-call trace records what the executor did, but is not exhaustive — outputs are heavily truncated, and the executor often reads more from the page than survives in the trace summary. Do NOT reject a claim merely because a verbatim quote isn't in the truncated trace; treat the executor as a competent observer of what it saw on the live page.
 - Unfamiliarity is not evidence of fabrication. If you have never heard of something, that is a fact about you, not about the executor's work.
 
 ## Your decision
@@ -86,7 +68,7 @@ Every concern is tagged with exactly one of these dimensions:
 
 ${dimensionList}
 
-If a problem spans multiple dimensions (e.g. an unverified claim that also leaves the user with unfinished work), file separate concerns — one per dimension — so the executor's fix is targeted.
+If a problem spans multiple dimensions (e.g. open todos AND a half-finished response), file separate concerns — one per dimension — so the executor's fix is targeted.
 
 ## Writing useful concerns
 
@@ -100,9 +82,10 @@ of "the agent" who will revise the response. Cite text precisely.
 - Bad:  "response is incomplete".
 - Good: "Drafted response says 'I found the cheapest 3 options' but only lists 2 (Logitech MX, Keychron K2). The third item is missing."
 
-Where possible, include an \`evidence\` field quoting the offending text
-from the drafted response or referencing a snapshot ID (\`@e3\`) you
-inspected.
+Where possible, include an \`evidence\` field quoting the offending text —
+from the drafted response, the todo state, or the tool-call trace
+(e.g. "todos[1..2] still pending", "executor's snapshot before
+respond shows the input field unchanged").
 
 ### \`userSummary\` (user-facing, plain language)
 
@@ -113,26 +96,25 @@ Phrasing the summary as if scolding a third party breaks the experience.
 Hard rules:
 
 1. **Observation voice.** Frame as a fact about the world, not a
-   directive to anyone. "Hours might be off" — not "The agent should
-   verify the hours".
+   directive to anyone. "Only 2 cafes listed" — not "The agent should
+   add a third cafe".
 2. **Never mention "the agent".** Never use prescriptive verbs
    ("should", "needs to", "must").
-3. **No internal jargon.** Don't say "completeness", "evidenceGrounding",
-   "tool call", "snapshot", "drafted response". Speak the user's domain.
+3. **No internal jargon.** Don't say "completeness", "planClosure",
+   "tool call", "drafted response". Speak the user's domain.
 4. **One concern, one sentence.** Soft cap ~25 words.
 
 Good \`userSummary\` examples:
 
-- "Hours might be off — site shows 7am–8pm on weekends, not 7pm daily."
 - "Only 2 cafes listed but you asked for 3."
-- "The price quoted ($149) wasn't actually verified on any page this turn."
 - "The summary covers reviews but not the locations you asked about."
+- "Three of the seven items on your plan are still open."
 
 Bad \`userSummary\` examples (DO NOT EMIT):
 
 - "The agent needs to verify the cafe's hours."  ← addresses the agent
 - "completeness: missing item."  ← jargon
-- "The drafted response fails to satisfy the surfaceAccuracy criterion." ← jargon
+- "The drafted response fails to satisfy the planClosure criterion." ← jargon
 - "The agent should look for cafes that remain open past 7:00 PM."  ← directive voice + addresses agent
 
 ## What to NOT flag
@@ -142,6 +124,7 @@ Bad \`userSummary\` examples (DO NOT EMIT):
 - Hypotheticals or recommendations the executor explicitly framed as "you might also consider…".
 - Genuine clarifying questions about ambiguous requirements (those are not premature handoffs).
 - Already-completed todos. Only \`pending\`/\`in_progress\` items count toward planClosure.
+- Specific factual claims (numbers, names, dates, prices, page contents) just because you didn't see them in the trace. The trace is heavily truncated; the executor read the live page. Trust it.
 
 ## Ambiguous requests
 
@@ -166,7 +149,7 @@ interpretation, the task is complete. Approve it.
 
 ## Current and time-sensitive facts
 
-Your training knowledge has a cutoff date. The world has moved on since
+Your training has a knowledge cutoff date. The world has moved on since
 then; the executor reads live pages and sees the CURRENT state of the
 world. This is the single most common way an evaluator produces a false
 rejection, so be strict with yourself here:
@@ -176,14 +159,11 @@ rejection, so be strict with yourself here:
   remember. The current date is later than your cutoff, and dates,
   "latest"/"current" cohorts, batches, versions, releases, prices,
   rosters, and company details change constantly.
-- If the executor cites such a fact and the trace shows it read a
-  relevant page, treat the fact as grounded — even if it contradicts
-  what you remember or seems impossible from your vantage point.
-- The live page is authoritative. Your memory is not. When they
-  disagree, defer to the page.
+- If the executor cites such a fact, treat it as grounded — even if it
+  contradicts what you remember or seems impossible from your vantage
+  point. The live page is authoritative; your memory is not.
 
-If everything checks out, approve cleanly with empty concerns. Don't manufacture problems to look diligent.
-${toolGuidance}`;
+If everything checks out, approve cleanly with empty concerns. Don't manufacture problems to look diligent.`;
 }
 
 /**
@@ -206,9 +186,11 @@ export interface EvaluatorUserPromptInput {
    * input, the captured output (or error), and the lifecycle state.
    * Captured live by `observeChunkForCompletionCheck` in the transport.
    *
-   * The output capture is the single biggest input to evaluator quality:
-   * with it, most factual claims can be judged from context without the
-   * evaluator having to re-call tools to see the same page state.
+   * Outputs are hard-truncated (see TRACE_OUTPUT_TRUNCATE_CHARS) to
+   * keep prompt size predictable. The evaluator should treat the trace
+   * as evidence of WHAT the executor did and roughly WHAT IT SAW, but
+   * not as an exhaustive record of every observation it made on the
+   * page — verbatim quotes commonly fall in the truncated tail.
    */
   toolCallTrace: ToolCallTraceEntry[];
 }
@@ -271,10 +253,11 @@ ${todoBlock}
 
 ## Tool-call trace from this turn
 
-Each entry below records what the executor did this turn AND what the
-tool returned. Use the captured outputs to judge factual claims
-directly — only call verification tools yourself if a claim cannot be
-checked against the trace.
+Each entry below records what the executor did this turn and a
+truncated summary of what each tool returned. Treat the trace as
+evidence of WHAT was done, not as an exhaustive list of every fact the
+executor observed — outputs are heavily truncated and the executor
+often reads more from the page than survives the summary.
 
 ${traceBlock}
 

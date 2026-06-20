@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 
 export interface Memory {
   id: string;
-  type: "user" | "feedback" | "site" | "reference";
+  type: "user" | "feedback" | "reference";
   title: string;
   description: string;
   content: string;

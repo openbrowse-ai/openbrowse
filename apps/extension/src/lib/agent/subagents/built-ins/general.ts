@@ -21,6 +21,8 @@ export const generalAgent: AgentDefinition = {
     "screenshot",
     "extract",
     "executeOnPage",
+    "read_network_requests",
+    "read_console_messages",
     "executePython",
     "scrollPage",
     "selectTab",

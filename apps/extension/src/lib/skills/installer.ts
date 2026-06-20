@@ -4,6 +4,47 @@ import { parseSource } from "./source-parser";
 import type { InstalledSkill } from "./types";
 import { parseSkillFrontmatter } from "./yaml-frontmatter";
 
+/**
+ * Normalize a script-relative path and reject any attempt to escape the
+ * skill directory.
+ *
+ * The previous implementation was `input.replace(/^\/+/, "").replace(/\.\.\//g, "")`,
+ * a single-pass character-class strip that CodeQL flagged as
+ * "Incomplete multi-character sanitization" (rule js/incomplete-sanitization,
+ * GHSA pattern matched). The bug: a single regex pass over `....//x`
+ * matches the first `../`, removes it, and leaves `../x` standing — the
+ * very thing the strip was trying to prevent. Same shape as the classic
+ * `<scrip<script>t>` pattern in HTML sanitizers.
+ *
+ * This helper splits the input into segments, drops `.` and empty
+ * segments, and throws on any `..` segment (rather than silently
+ * stripping or collapsing). The agent gets a clean error and learns;
+ * silent stripping would mean its requested path differs from what gets
+ * written, which is harder to debug.
+ *
+ * Examples:
+ *   safeRelPath("foo/bar.js")     → "foo/bar.js"
+ *   safeRelPath("/foo/bar.js")    → "foo/bar.js"
+ *   safeRelPath("./foo")          → "foo"
+ *   safeRelPath("../etc/passwd")  → throws
+ *   safeRelPath("....//etc")      → throws (segment "..")
+ *   safeRelPath("foo/../bar")     → throws (any `..` is rejected)
+ *
+ * Throws a descriptive Error so the patchSiteSkill / upsertSiteSkill
+ * callers can surface it to the agent directly.
+ */
+function safeRelPath(input: string): string {
+  const parts = input.split("/").filter((p) => p.length > 0 && p !== ".");
+  for (const p of parts) {
+    if (p === "..") {
+      throw new Error(
+        `Path traversal not allowed: "${input}". Script paths must stay within the skill directory.`,
+      );
+    }
+  }
+  return parts.join("/");
+}
+
 export interface SkillPreview {
   name: string;
   description: string;
@@ -234,6 +275,7 @@ export async function installSkill(
     description: preview.description,
     source: preview.source,
     metadata: preview.metadata,
+    kind: preview.metadata.kind === "site" ? "site" : "regular",
     hasScripts: preview.hasScripts,
     scriptTypes: preview.scriptTypes,
     fileIndex: preview.filePaths,
@@ -290,3 +332,119 @@ export async function uninstallSkill(name: string): Promise<void> {
   await OPFS.rm(`skills/${name}`, { recursive: true });
   await skillsDb.delete(name);
 }
+
+const SCRIPT_EXT_TO_TYPE: Record<string, string> = {
+  ".js": "javascript",
+  ".sh": "bash",
+  ".py": "python",
+  ".rb": "ruby",
+};
+
+/**
+ * Create or fully overwrite a `kind: "site"` skill (the agent's per-domain,
+ * no-approval reusable-script store). `name` is the registrable domain
+ * (e.g. "linkedin.com"). Writes `SKILL.md` (with `kind: site` frontmatter)
+ * plus any page-script files under the skill directory, then indexes them in
+ * the DB. A full overwrite keeps the on-disk dir and `fileIndex` consistent —
+ * the agent re-sends the complete script set each update.
+ */
+export async function upsertSiteSkill(
+  name: string,
+  description: string,
+  body: string,
+  scripts?: { path: string; content: string }[],
+): Promise<InstalledSkill> {
+  await OPFS.rm(`skills/${name}`, { recursive: true });
+
+  const frontmatter = `---\nname: ${name}\ndescription: ${description}\nkind: site\n---\n`;
+  await OPFS.writeFile(`skills/${name}/SKILL.md`, frontmatter + body);
+
+  const filePaths = ["SKILL.md"];
+  const scriptTypes = new Set<string>();
+  for (const s of scripts ?? []) {
+    // Confine to the skill dir; reject path traversal. See safeRelPath
+    // header for why a regex strip alone is unsound.
+    const rel = safeRelPath(s.path);
+    await OPFS.writeFile(`skills/${name}/${rel}`, s.content);
+    filePaths.push(rel);
+    const ext = rel.slice(rel.lastIndexOf("."));
+    if (SCRIPT_EXT_TO_TYPE[ext]) scriptTypes.add(SCRIPT_EXT_TO_TYPE[ext]);
+  }
+
+  const installedSkill: InstalledSkill = {
+    name,
+    description,
+    source: "site-skill",
+    metadata: { name, description, kind: "site" },
+    kind: "site",
+    hasScripts: scriptTypes.size > 0,
+    scriptTypes: [...scriptTypes],
+    fileIndex: filePaths,
+    installedAt: Date.now(),
+  };
+
+  await skillsDb.save(installedSkill);
+  return installedSkill;
+}
+
+export interface SiteSkillPatch {
+  description?: string;
+  body?: string;
+  upsertScripts?: { path: string; content: string }[];
+  deleteScripts?: string[];
+}
+
+/**
+ * Apply a script-granular patch to a site skill (read-modify-write over
+ * `upsertSiteSkill`). Creates the skill if it doesn't exist yet. Only the
+ * fields/scripts named in `patch` change; everything else is preserved.
+ */
+export async function patchSiteSkill(
+  name: string,
+  patch: SiteSkillPatch,
+): Promise<InstalledSkill> {
+  const existing = await skillsDb.get(name).catch(() => undefined);
+
+  // Recover current description + body + scripts (empty when creating new).
+  let description = existing?.description ?? "";
+  let body = "";
+  const scripts = new Map<string, string>();
+
+  if (existing && existing.kind === "site") {
+    try {
+      const md = await OPFS.readFile(`skills/${name}/SKILL.md`);
+      body = md.replace(/^---\n[\s\S]*?\n---\n/, "");
+    } catch {
+      body = "";
+    }
+    for (const rel of existing.fileIndex ?? []) {
+      if (rel === "SKILL.md" || rel.includes("/")) continue;
+      try {
+        scripts.set(rel, await OPFS.readFile(`skills/${name}/${rel}`));
+      } catch {
+        // skip missing script file
+      }
+    }
+  }
+
+  if (patch.description !== undefined) description = patch.description;
+  if (patch.body !== undefined) body = patch.body;
+  for (const s of patch.upsertScripts ?? []) {
+    const rel = safeRelPath(s.path);
+    scripts.set(rel, s.content);
+  }
+  for (const p of patch.deleteScripts ?? []) {
+    const rel = safeRelPath(p);
+    scripts.delete(rel);
+  }
+
+  return upsertSiteSkill(
+    name,
+    description,
+    body,
+    [...scripts.entries()].map(([path, content]) => ({ path, content })),
+  );
+}
+
+/** Test-only export: not part of the module's public surface. */
+export const _internals = { safeRelPath };

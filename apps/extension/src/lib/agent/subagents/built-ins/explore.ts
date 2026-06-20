@@ -21,6 +21,8 @@ export const exploreAgent: AgentDefinition = {
     "snapshot",
     "screenshot",
     "extract",
+    "read_network_requests",
+    "read_console_messages",
     "scrollPage",
     "selectTab",
     "listTabs",

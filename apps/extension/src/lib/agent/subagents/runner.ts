@@ -367,6 +367,12 @@ function buildChildToolContext(args: {
       ...(cuaTabHandle && { cuaTabHandle }),
       getOrCreateHandle: getOrCreateChildHandle,
       resolveHandle: (h: string) => tabIdByHandle.get(h),
+      // listHandles is intentionally not wired for subagents: their handle
+      // map stores chrome ctids directly (not LogicalTabIds), so the
+      // summary helper's `tabRegistry.toChromeTabId(ltid)` step would drop
+      // every entry. Subagent tab-resolution errors fall back to the
+      // no-summary wording — acceptable since subagent handle maps are
+      // small (typically 1 tab for CUA) and stale-handle events are rare.
 
       // Override conversation-bound helpers so the subagent's tool
       // calls bind tabs / read todos / check ownership on the CHILD

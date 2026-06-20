@@ -26,8 +26,8 @@ import type {
  *    from the conversation, so an append-only log is straightforward.
  *  - We store the verdict as a denormalized blob. It's small (~few KB
  *    worst case) and avoids cross-store joins for analysis.
- *  - We extract concern dimensions into an indexed array so common
- *    queries ("how often did we reject for evidenceGrounding?") don't
+  *  - We extract concern dimensions into an indexed array so common
+ *    queries ("how often did we reject for planClosure?") don't
  *    scan every row.
  */
 
@@ -208,14 +208,22 @@ export const completionCheckTelemetry = {
     const byDimension: Record<ConcernDimension, number> = {
       completeness: 0,
       planClosure: 0,
-      evidenceGrounding: 0,
       noPrematureHandoff: 0,
-      surfaceAccuracy: 0,
     };
     for (const row of filtered) {
       byOutcome[row.outcomeKind] = (byOutcome[row.outcomeKind] ?? 0) + 1;
       for (const d of row.concernDimensions) {
-        byDimension[d] = (byDimension[d] ?? 0) + 1;
+        // Old persisted rows may carry retired dimensions
+        // (`evidenceGrounding`, `surfaceAccuracy` from earlier
+        // revisions). Skip unknown keys silently rather than letting
+        // them pollute the aggregation as dynamically-created fields.
+        // Use Object.hasOwn so prototype-chain keys (`constructor`,
+        // `toString`) supplied by an attacker-influenced row don't
+        // satisfy the guard and overwrite a function reference with
+        // a numeric value.
+        if (Object.hasOwn(byDimension, d)) {
+          byDimension[d] = (byDimension[d] ?? 0) + 1;
+        }
       }
     }
     return {

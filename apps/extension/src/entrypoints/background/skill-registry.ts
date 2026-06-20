@@ -79,6 +79,51 @@ class BackgroundSkillRegistry {
     await this.refreshFromDb();
   }
 
+  /**
+   * Create or overwrite a `kind: "site"` skill (per-domain reusable-script
+   * store). Routed through the installer so OPFS + DB stay consistent.
+   */
+  async upsertSite(
+    name: string,
+    description: string,
+    body: string,
+    scripts?: { path: string; content: string }[],
+  ): Promise<InstalledSkill> {
+    const { upsertSiteSkill } = await import("@/lib/skills/installer");
+    const skill = await upsertSiteSkill(name, description, body, scripts);
+    await this.refreshFromDb();
+    return skill;
+  }
+
+  /**
+   * Apply a script-granular patch to a `kind: "site"` skill (create-or-update
+   * named scripts / body / description without resending the whole skill).
+   * Routed through the installer so OPFS + DB stay consistent.
+   */
+  async patchSite(
+    name: string,
+    patch: import("@/lib/skills/installer").SiteSkillPatch,
+  ): Promise<InstalledSkill> {
+    const { patchSiteSkill } = await import("@/lib/skills/installer");
+    const skill = await patchSiteSkill(name, patch);
+    await this.refreshFromDb();
+    return skill;
+  }
+
+  /**
+   * Delete a `kind: "site"` skill. Refuses non-site skills so the agent's
+   * no-approval delete tool can't remove user-installed/regular skills.
+   */
+  async deleteSite(name: string): Promise<void> {
+    const skill = await skillsDb.get(name);
+    if (!skill) throw new Error(`Site skill "${name}" not found`);
+    if (skill.kind !== "site") {
+      throw new Error(`"${name}" is not a site skill; refusing to delete.`);
+    }
+    await uninstallSkill(name);
+    await this.refreshFromDb();
+  }
+
   async setSpaceState(
     spaceId: string,
     skillName: string,

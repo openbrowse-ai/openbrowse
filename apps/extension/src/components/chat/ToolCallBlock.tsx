@@ -11,6 +11,7 @@ import { AlertCircle, ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { CodeResult } from "./tool-results/execute-code";
+import { PageScriptResult } from "./tool-results/page-script";
 import { PythonResult } from "./tool-results/execute-python";
 import { DelegateResult } from "./tool-results/delegate";
 import {
@@ -61,9 +62,14 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     <NavigateResult args={args} result={result} />
   ),
   executeCode: ({ args, result }) => <CodeResult args={args} result={result} />,
-  executeOnPage: ({ args, result }) => (
-    <CodeResult args={args} result={result} />
-  ),
+  executeOnPage: ({ args, result }) =>
+    // A run that referenced a saved script gets a distinct card (no inline
+    // code to show); ad-hoc inline `code` falls back to CodeResult.
+    args.scriptRef ? (
+      <PageScriptResult args={args} result={result} />
+    ) : (
+      <CodeResult args={args} result={result} />
+    ),
   executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
   selectTab: ({ result, toolCallId }) => (
     <SelectTabResult result={result} toolCallId={toolCallId} />
@@ -140,10 +146,13 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   Glob: { pending: "Finding files...", done: "Found files" },
   Grep: { pending: "Searching...", done: "Searched" },
   LS: { pending: "Listing folder...", done: "Listed folder" },
+  Delete: { pending: "Deleting...", done: "Deleted" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
+  read_network_requests: { pending: "Reading network...", done: "Read network" },
+  read_console_messages: { pending: "Reading console...", done: "Read console" },
 
   // Memory tools
   saveMemory: { pending: "Saving memory...", done: "Saved memory" },
@@ -155,6 +164,8 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   skill: { pending: "Loading skill...", done: "Loaded skill" },
   create_skill: { pending: "Creating skill...", done: "Created skill" },
   install_skill: { pending: "Installing skill...", done: "Installed skill" },
+  patch_site_skill: { pending: "Updating site skill...", done: "Updated site skill" },
+  delete_site_skill: { pending: "Deleting site skill...", done: "Deleted site skill" },
 
   // Scheduled task tools
   create_scheduled_task: {
@@ -184,6 +195,8 @@ const TAB_TOOLS = new Set([
   "selectTab",
   "executeOnPage",
   "snapshot",
+  "read_network_requests",
+  "read_console_messages",
 ]);
 
 export function TabBadge({ toolCallId }: { toolCallId: string }) {
@@ -371,6 +384,64 @@ export function scheduledTaskLabels(
   return fallback;
 }
 
+/**
+ * Refine the `Delete` label with the target's basename so the collapsed row
+ * shows what's being removed (e.g. "Deleting `extract-comments`..." / "Deleted
+ * `extract-comments`") instead of the generic "Deleting...".
+ */
+export function deleteLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const path = typeof args.path === "string" ? args.path.trim() : "";
+  if (!path) return fallback;
+  const base = (path.replace(/\/+$/, "").split("/").pop() || path).replace(
+    /\.js$/,
+    "",
+  );
+  if (!base) return fallback;
+  return {
+    pending: `Deleting \`${base}\`...`,
+    done: `Deleted \`${base}\``,
+  };
+}
+
+/**
+ * Refine the `patch_site_skill` / `delete_site_skill` labels with the domain
+ * so the collapsed row reads e.g. "Updated site skill `linkedin.com`".
+ */
+export function siteSkillLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const domain = typeof args.domain === "string" ? args.domain.trim() : "";
+  if (!domain) return fallback;
+  // fallback.done is "Updated site skill" / "Deleted site skill"; splice in the
+  // domain after the verb phrase.
+  return {
+    pending: `${fallback.pending.replace(/\.\.\.$/, "")} \`${domain}\`...`,
+    done: `${fallback.done} \`${domain}\``,
+  };
+}
+
+/**
+ * Refine the `executeOnPage` label so a by-reference run of a SAVED script
+ * reads as "Ran `<name>`" (the script name in code style) instead of the
+ * generic "Ran code". Ad-hoc inline `code` runs keep the fallback.
+ */
+export function executeOnPageLabels(
+  args: Record<string, unknown>,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const ref = args.scriptRef as { script?: unknown } | undefined;
+  const script = typeof ref?.script === "string" ? ref.script.trim() : "";
+  if (!script) return fallback;
+  return {
+    pending: `Running \`${script}\`...`,
+    done: `Ran \`${script}\``,
+  };
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -408,7 +479,14 @@ export function ToolCallBlock({
           : toolName === "create_scheduled_task" ||
               toolName === "update_scheduled_task"
             ? scheduledTaskLabels(toolName, args, labels)
-            : labels;
+            : toolName === "Delete"
+              ? deleteLabels(args, labels)
+              : toolName === "executeOnPage"
+                ? executeOnPageLabels(args, labels)
+                : toolName === "patch_site_skill" ||
+                    toolName === "delete_site_skill"
+                  ? siteSkillLabels(args, labels)
+                  : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

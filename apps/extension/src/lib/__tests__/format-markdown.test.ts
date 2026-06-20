@@ -35,9 +35,9 @@ describe("formatPartAsMarkdown — completion-check parts", () => {
           evidence: "draft mentions only 2 items",
         },
         {
-          dimension: "evidenceGrounding",
-          detail: "Price $149 not present in any tool call this turn.",
-          userSummary: "The price ($149) wasn't verified on any page.",
+          dimension: "planClosure",
+          detail: "Two pending todos remain unclosed at completion.",
+          userSummary: "Two items on your plan are still open.",
         },
       ],
       forceEmittedNext: false,
@@ -54,7 +54,7 @@ describe("formatPartAsMarkdown — completion-check parts", () => {
     expect(out).toContain("> - **completeness**: Asked for top 3 but listed 2.");
     expect(out).toContain(">   _Evidence:_ draft mentions only 2 items");
     expect(out).toContain(
-      "> - **evidenceGrounding**: Price $149 not present in any tool call this turn.",
+      "> - **planClosure**: Two pending todos remain unclosed at completion.",
     );
   });
 

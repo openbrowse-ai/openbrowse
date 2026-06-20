@@ -6,6 +6,8 @@ import {
   extractTool,
   listTabsTool,
   navigateTool,
+  readConsoleMessagesTool,
+  readNetworkRequestsTool,
   readPageTool,
   scrollPageTool,
   screenshotTool,
@@ -25,6 +27,8 @@ describe("tab-arg schemas", () => {
     const cases: Array<{ name: string; tool: { parameters: unknown }; extra?: Record<string, unknown> }> = [
       { name: "snapshot", tool: snapshotTool },
       { name: "readPage", tool: readPageTool },
+      { name: "read_network_requests", tool: readNetworkRequestsTool },
+      { name: "read_console_messages", tool: readConsoleMessagesTool },
       { name: "screenshot", tool: screenshotTool },
       { name: "scrollPage", tool: scrollPageTool, extra: { direction: "down" } },
       {

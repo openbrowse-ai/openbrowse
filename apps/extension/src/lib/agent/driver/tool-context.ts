@@ -32,6 +32,25 @@ import type { BrowserDriver, BrowserTabInfo, TabId } from "./browser-driver";
 import type { TodoItem } from "../../types";
 import { tabRegistry } from "../tab-registry";
 
+/**
+ * Structural shape of `chrome.tabs.get` we depend on for the inline
+ * handle summary. Inlined as a minimal type rather than `chrome.tabs.Tab`
+ * so this module typechecks in `packages/bench` (which imports from
+ * `apps/extension/src/lib` without pulling in `@types/chrome`). Mirrors
+ * the same pattern used in `tab-registry.ts`. Resolved lazily so vitest's
+ * `vi.stubGlobal("chrome", …)` in beforeEach takes effect.
+ */
+interface ChromeTabsGetShape {
+  tabs?: {
+    get?: (
+      id: number,
+    ) => Promise<{ url?: string; title?: string } | undefined>;
+  };
+}
+function getChrome(): ChromeTabsGetShape | undefined {
+  return (globalThis as { chrome?: ChromeTabsGetShape }).chrome;
+}
+
 export interface ToolSession {
   /** The active conversation id, or null when running outside a conversation. */
   conversationId: string | null;
@@ -53,6 +72,19 @@ export interface ToolSession {
   getOrCreateHandle?: (tabId: TabId) => string;
   /** Reverse-lookup a handle → real tab id. */
   resolveHandle?: (handle: string) => TabId | undefined;
+  /**
+   * Enumerate the conversation's currently-bound `(handle, ltid)` pairs.
+   * Used by tab-resolution error messages to inline the legend so the
+   * agent can recover from a stale handle without a separate `listTabs`
+   * round-trip. Optional: bench's session leaves it undefined, in which
+   * case `summarizeBoundHandles` falls back to the no-summary error
+   * wording. Extension wires it to `tab-handles.listHandles`.
+   *
+   * The indirection (rather than a direct import in `tool-context.ts`)
+   * keeps `tab-handles.ts` and its `chat-db` dependency out of bench's
+   * compile graph.
+   */
+  listHandles?: () => { handle: string; ltid: string }[];
   /**
    * True when the conversation owns the given tab (so the agent should
    * reuse it for subsequent navigations rather than spawning new ones).
@@ -180,14 +212,111 @@ export class ToolTabResolutionError extends Error {
   }
 }
 
-export function resolveTabIdOrThrow(
+/** Cap on inline handle entries embedded in tab-resolution error messages.
+ *  Keeps the error short on conversations with many tabs while still
+ *  giving the agent enough signal to pick a replacement without a
+ *  separate `listTabs` round-trip. Overflow becomes "…and N more". */
+const HANDLE_SUMMARY_CAP = 5;
+
+/**
+ * Build a compact summary of currently-bound handles for inclusion in
+ * tab-resolution error messages. The agent often recovers from a stale
+ * handle by calling `listTabs`; inlining the legend here saves the
+ * round-trip when there's a single obvious replacement (e.g. the
+ * conversation's only tab got a new handle id after a target
+ * replacement, which the production trace showed costing one wasted
+ * tool call to recover).
+ *
+ * Format per handle: `t<n> ("<title>" — <url>)`. Capped at
+ * HANDLE_SUMMARY_CAP entries, with "…and N more" when truncated.
+ *
+ * Returns `""` when the conversation has no resolvable handles (fresh
+ * conversation, or every handle's underlying tab is gone). The caller
+ * uses the empty string as a signal to fall back to the original
+ * (no-summary) error wording — emitting a "Currently bound: " label
+ * with nothing after would be noise.
+ *
+ * Best-effort: drops handles whose ltid no longer resolves to a live
+ * chrome tab (registry stale OR the tab was just closed) and swallows
+ * `chrome.tabs.get` rejections per-handle, so one dead tab cannot
+ * blank the entire summary. Never throws — a top-level catch
+ * (defensive) returns `""` so the original error is never masked by
+ * a summary-helper failure.
+ */
+async function summarizeBoundHandles(ctx: ToolContext): Promise<string> {
+  try {
+    const cid = ctx.session?.conversationId;
+    if (!cid) return "";
+    // ToolSession owns handle-map enumeration so this module doesn't
+    // need a static import of `tab-handles` (which transitively pulls
+    // chat-db into bench's compile graph). Bench's session leaves
+    // `listHandles` undefined → empty summary, matches the no-handles
+    // fallback wording.
+    const enumerate = ctx.session?.listHandles;
+    if (!enumerate) return "";
+    const entries = enumerate();
+    if (entries.length === 0) return "";
+
+    // Resolve handle → ltid → ctid → tab info, keeping only entries
+    // whose chain succeeds. Run the per-handle lookups in parallel:
+    // each is one cheap `chrome.tabs.get`, and failures are
+    // independent (one stale entry shouldn't block fresh ones).
+    const tabsGet = getChrome()?.tabs?.get;
+    if (!tabsGet) return "";
+    const resolved = await Promise.all(
+      entries.map(async (e) => {
+        try {
+          const ctid = tabRegistry.toChromeTabId(e.ltid);
+          if (ctid == null) return null;
+          const tab = await tabsGet(ctid);
+          if (!tab) return null;
+          return {
+            handle: e.handle,
+            url: tab.url ?? "",
+            title: tab.title ?? "",
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const live = resolved.filter(
+      (x): x is { handle: string; url: string; title: string } => x !== null,
+    );
+    if (live.length === 0) return "";
+
+    const head = live.slice(0, HANDLE_SUMMARY_CAP);
+    const overflow = live.length - head.length;
+    const parts = head.map(
+      (e) => `${e.handle} (${JSON.stringify(e.title)} — ${e.url})`,
+    );
+    if (overflow > 0) parts.push(`…and ${overflow} more`);
+    return parts.join(", ");
+  } catch {
+    // Defensive: any unexpected failure here must NOT mask the
+    // caller's original ToolTabResolutionError. Return empty so the
+    // throw site falls back to the no-summary suffix.
+    return "";
+  }
+}
+
+/** Build the recovery-hint suffix for a tab-resolution error, with
+ *  inline handle summary when available. */
+function recoverySuffix(summary: string): string {
+  return summary
+    ? `Currently bound: ${summary}. Call listTabs for full info, or navigate to open a new tab.`
+    : "Call listTabs to see available handles, or navigate to open a new tab.";
+}
+
+export async function resolveTabIdOrThrow(
   ctx: ToolContext,
   handle: string,
-): TabId {
+): Promise<TabId> {
   const sessionResult = ctx.session?.resolveHandle?.(handle);
   if (sessionResult == null) {
+    const summary = await summarizeBoundHandles(ctx);
     throw new ToolTabResolutionError(
-      `Unknown tab handle "${handle}". Call listTabs to see available handles, or navigate to open a new tab.`,
+      `Unknown tab handle "${handle}". ${recoverySuffix(summary)}`,
     );
   }
   // Extension path: session returns LogicalTabId (string); translate via
@@ -199,8 +328,9 @@ export function resolveTabIdOrThrow(
       // live ctid — the underlying tab is gone (closed) but the handle
       // map's `dropLtid` cleanup hasn't fired yet, OR an SW restart
       // hasn't re-registered the ltid. Treat as resolution failure.
+      const summary = await summarizeBoundHandles(ctx);
       throw new ToolTabResolutionError(
-        `Tab handle "${handle}" no longer points to an open tab. Call listTabs to refresh handles, or navigate to open a new one.`,
+        `Tab handle "${handle}" no longer points to an open tab. ${recoverySuffix(summary)}`,
       );
     }
     return ctid;
@@ -213,14 +343,15 @@ export async function resolveTabOrThrow(
   ctx: ToolContext,
   handle: string,
 ): Promise<BrowserTabInfo> {
-  const tabId = resolveTabIdOrThrow(ctx, handle);
+  const tabId = await resolveTabIdOrThrow(ctx, handle);
   try {
     return await ctx.driver.getTab(tabId);
   } catch (err) {
+    const summary = await summarizeBoundHandles(ctx);
     throw new ToolTabResolutionError(
       `Tab ${handle} (id=${String(tabId)}) is no longer available: ${
         err instanceof Error ? err.message : String(err)
-      }. Call listTabs to refresh handles.`,
+      }. ${recoverySuffix(summary)}`,
     );
   }
 }

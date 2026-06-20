@@ -142,16 +142,37 @@ describe("executeCode with saveAs", () => {
     expect(opfs.writeFileBytesAtomic).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects non-string / non-binary return values", async () => {
+  it("auto-stringifies object return values into pretty JSON", async () => {
+    // Previously: rejected non-string/non-binary returns, forcing the
+    // agent to JSON.stringify inside the script body. Now: any JSON-able
+    // value is auto-serialized so the common paginated-scrape pattern
+    // (`return { count, entries }`) works without re-running on failure.
     sandbox.executeInSandbox.mockResolvedValueOnce({
       result: { not: "a string" },
       logs: [],
     });
     const r = await executeCodeTool.execute(
-      { code: "return {}", saveAs: "x.txt" },
+      { code: "return { not: 'a string' }", saveAs: "x.json" },
       ctxWith("conv-A"),
     );
-    expect(r.error).toMatch(/script return value must be/);
+    expect(r.error).toBeUndefined();
+    expect(r.path).toBe("x.json");
+    expect(opfs.writeFileAtomic).toHaveBeenCalledWith(
+      "conversations/conv-A/workspace/x.json",
+      '{\n  "not": "a string"\n}',
+    );
+  });
+
+  it("still rejects truly non-JSONable returns (function, undefined)", async () => {
+    sandbox.executeInSandbox.mockResolvedValueOnce({
+      result: undefined,
+      logs: [],
+    });
+    const r = await executeCodeTool.execute(
+      { code: "return undefined", saveAs: "x.txt" },
+      ctxWith("conv-A"),
+    );
+    expect(r.error).toMatch(/not representable in JSON|must be a string/);
     expect(opfs.writeFileAtomic).not.toHaveBeenCalled();
   });
 

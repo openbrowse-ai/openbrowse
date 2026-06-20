@@ -5,12 +5,29 @@
 <script>
 "use strict";
 
-const TIMEOUT_MS = 30000;
+const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_TIMEOUT_MS = 120000;
 const MAX_OUTPUT_BYTES = 1048576;
 
+// AsyncFunction has no globally-named constructor; reach it via an instance
+// of an async arrow. Using AsyncFunction (not the synchronous Function ctor)
+// lets the agent's body use TOP-LEVEL `await` directly — the V8 parser
+// only allows `await` inside an async function body, and `new Function(...)`
+// produces a sync function. Sync `Function` was the source of the
+// "await is only valid in async functions" error agents kept hitting.
+const AsyncFunction = (async () => {}).constructor;
+
 window.addEventListener("message", async (e) => {
-  const { id, code, input, unboundedOutput } = e.data;
+  const { id, code, input, unboundedOutput, timeoutMs } = e.data;
   if (!id || !code) return;
+
+  // Clamp timeout: caller-supplied value is bounded by [1ms, MAX_TIMEOUT_MS].
+  // The host (`sandbox.ts`) also clamps before sending; the cap here is
+  // belt-and-suspenders against a stale or malicious sender.
+  const effectiveTimeoutMs = Math.min(
+    Math.max(typeof timeoutMs === "number" ? timeoutMs : DEFAULT_TIMEOUT_MS, 1),
+    MAX_TIMEOUT_MS,
+  );
 
   let timeoutId = null;
   let resolved = false;
@@ -23,8 +40,8 @@ window.addEventListener("message", async (e) => {
   }
 
   timeoutId = setTimeout(() => {
-    reply({ error: "Execution timed out after 30s", logs: [] });
-  }, TIMEOUT_MS);
+    reply({ error: "Execution timed out after " + effectiveTimeoutMs + "ms", logs: [] });
+  }, effectiveTimeoutMs);
 
   const __logs = [];
   const origLog = console.log;
@@ -36,7 +53,7 @@ window.addEventListener("message", async (e) => {
   console.info = (...args) => __logs.push("[info] " + args.map(fmt).join(" "));
 
   try {
-    const fn = new Function("__input", code);
+    const fn = new AsyncFunction("__input", code);
     const result = await fn(input);
 
     console.log = origLog;

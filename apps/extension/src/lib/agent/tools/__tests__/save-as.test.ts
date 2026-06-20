@@ -103,24 +103,73 @@ describe("persistReturnValue", () => {
     expect(new TextDecoder().decode(written)).toBe("hello");
   });
 
-  it("rejects non-string, non-binary return values", async () => {
-    const cases: unknown[] = [
-      { foo: "bar" },
-      42,
-      null,
-      [1, 2, 3],
-      undefined,
-      true,
+  it("auto-stringifies JSON-serializable objects, arrays, numbers, booleans, null", async () => {
+    // The previous contract rejected non-string returns; we now accept
+    // any JSON-able value and write it as pretty-printed JSON. This is
+    // the common case for paginated-scrape results where the agent
+    // forgot to JSON.stringify inside the script body — re-running the
+    // scrape every time was the worst kind of friction.
+    const cases: { input: unknown; expected: string }[] = [
+      { input: { foo: "bar" }, expected: '{\n  "foo": "bar"\n}' },
+      { input: [1, 2, 3], expected: "[\n  1,\n  2,\n  3\n]" },
+      { input: 42, expected: "42" },
+      { input: null, expected: "null" },
+      { input: true, expected: "true" },
+      { input: false, expected: "false" },
     ];
-    for (const v of cases) {
+    for (const c of cases) {
+      writes.length = 0;
+      const r = await persistReturnValue({
+        conversationId: "conv-A",
+        saveAs: "x.json",
+        returnValue: c.input,
+        source: "executeOnPage",
+      });
+      expect(r.ok).toBe(true);
+      expect(writes.length).toBe(1);
+      expect(writes[0].content).toBe(c.expected);
+      if (r.ok) expect(r.bytes).toBe(new TextEncoder().encode(c.expected).length);
+    }
+  });
+
+  it("rejects undefined and other non-JSON-able primitives with a helpful error", async () => {
+    // JSON.stringify(undefined) === undefined → we treat that as a
+    // script bug rather than silently writing the literal string.
+    // `function` and `symbol` go down the same path.
+    const cases: { input: unknown; label: string }[] = [
+      { input: undefined, label: "undefined" },
+      { input: () => 1, label: "function" },
+      { input: Symbol("x"), label: "symbol" },
+    ];
+    for (const c of cases) {
+      writes.length = 0;
       const r = await persistReturnValue({
         conversationId: "conv-A",
         saveAs: "x.txt",
-        returnValue: v,
+        returnValue: c.input,
         source: "executeOnPage",
       });
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toMatch(/script return value must be/);
+      if (!r.ok) {
+        expect(r.error).toMatch(/not representable in JSON|must be a string/);
+      }
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("rejects circular references with a helpful recovery hint", async () => {
+    const obj: { self?: unknown } = {};
+    obj.self = obj;
+    const r = await persistReturnValue({
+      conversationId: "conv-A",
+      saveAs: "x.json",
+      returnValue: obj,
+      source: "executeOnPage",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toMatch(/could not be JSON-serialized/);
+      expect(r.error).toMatch(/circular references|BigInt/);
     }
     expect(writes).toEqual([]);
   });
