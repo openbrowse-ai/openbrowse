@@ -18,7 +18,11 @@ interface MarkdownProps {
   isStreaming?: boolean;
 }
 
-export function Markdown({ source, className, isStreaming = false }: MarkdownProps) {
+export function Markdown({
+  source,
+  className,
+  isStreaming = false,
+}: MarkdownProps) {
   return (
     <Streamdown
       className={cn(

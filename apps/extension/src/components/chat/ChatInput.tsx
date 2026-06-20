@@ -1,42 +1,42 @@
 import { NoAutoLink } from "@/components/tiptap/link-extension";
 import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
 import {
-  extractSlashCommands,
-  stripSlashCommandNodes,
+    extractSlashCommands,
+    stripSlashCommandNodes,
 } from "@/components/tiptap/slash-command-extract";
 import { TabMention } from "@/components/tiptap/tab-mention-extension";
-import { Kbd } from "@/components/ui/kbd";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+    isGemini3Model,
+    isGeminiFlashModel,
+    resolveThinkingVendor,
+} from "@/lib/agent/thinking";
 import { getImageSizeLimit } from "@/lib/agent/vision-limits";
 import {
-  resolveThinkingVendor,
-  isGemini3Model,
-  isGeminiFlashModel,
-} from "@/lib/agent/thinking";
-import { openSettingsTab } from "@/lib/open-settings";
-import {
-  countLines,
-  formatBytes,
-  getTypeBadge,
-  isTextFile,
+    countLines,
+    formatBytes,
+    getTypeBadge,
+    isTextFile,
 } from "@/lib/chat/attachment-meta";
-import { cn } from "@/lib/utils";
 import type { Attachment } from "@/lib/chat/types";
+import { openSettingsTab } from "@/lib/open-settings";
 import type { ThinkingConfig } from "@/lib/types";
+import { cn } from "@/lib/utils";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -44,21 +44,21 @@ import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
-  ArrowUp,
-  BrainIcon,
-  Paperclip,
-  Plus,
-  Square,
-  X,
+    ArrowUp,
+    BrainIcon,
+    Paperclip,
+    Plus,
+    Square,
+    X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 import { computeButtonMode } from "./chat-input-mode";
 import {
-  ModelPicker,
-  type ModelOption,
-  type ProviderModels,
+    ModelPicker,
+    type ModelOption,
+    type ProviderModels,
 } from "./ModelPicker";
 
 // Derived alias kept for back-compat with call sites that destructure
@@ -115,7 +115,7 @@ interface ChatInputProps {
    * forced to "Save" mode regardless of `isLoading`, and Enter commits
    * via `onSubmit` instead of branching into queue/stop.
    *
-   * The Cmd+Shift+Backspace stop hotkey is preserved (it reads
+   * The Esc-Esc stop hotkey is preserved (it reads
    * `isLoading` directly), so a user mid-edit can still abort the
    * agent's in-flight turn from the keyboard if they really want to.
    */
@@ -141,7 +141,7 @@ export interface TabMentionAttrs {
   favicon: string;
 }
 
-export type { ImagePreview, Attachment };
+export type { Attachment, ImagePreview };
 
 export function extractTabMentions(json: JSONContent): TabMentionAttrs[] {
   const mentions: TabMentionAttrs[] = [];
@@ -565,12 +565,6 @@ export function ChatInput({
       HardBreak.extend({
         addKeyboardShortcuts() {
           return {
-            "Mod-Shift-Backspace": () => {
-              if (isLoadingRef.current && onStopRef.current) {
-                onStopRef.current();
-              }
-              return true;
-            },
             "Shift-Enter": () => this.editor.commands.setHardBreak(),
             Enter: () => {
               const text = this.editor.getMarkdown().trim();
@@ -708,15 +702,66 @@ export function ChatInput({
     queueWithMentions,
   ]);
 
+  // Press Esc twice within ~500ms to stop in-flight generation. A single
+  // Escape is left alone so it can keep its default behavior (e.g. blurring
+  // the Tiptap editor or dismissing popovers); only the second tap fires
+  // `onStop`. Works in form fields and inside the chat editor's
+  // contenteditable thanks to the flags below.
+  //
+  // While armed (between the two presses) we also surface a transient
+  // "Press Esc again to interrupt" pill — see `escArmed` rendering below.
+  // We mirror the state into a ref so the hotkey callback can read the
+  // latest value without re-registering.
+  const [escArmed, setEscArmed] = useState(false);
+  const escArmedRef = useRef(false);
+  escArmedRef.current = escArmed;
+  const escArmTimerRef = useRef<number | null>(null);
+  const disarmEsc = useCallback(() => {
+    if (escArmTimerRef.current != null) {
+      window.clearTimeout(escArmTimerRef.current);
+      escArmTimerRef.current = null;
+    }
+    setEscArmed(false);
+  }, []);
   useHotkeys(
-    "mod+shift+backspace",
+    "escape",
     () => {
-      if (isLoadingRef.current && onStopRef.current) {
-        onStopRef.current();
+      // Only arm/fire while there's something to interrupt. This keeps a
+      // single Escape press a no-op while idle, preserving default
+      // browser/editor behavior.
+      if (!isLoadingRef.current) {
+        if (escArmedRef.current) disarmEsc();
+        return;
       }
+      if (escArmedRef.current) {
+        disarmEsc();
+        onStopRef.current?.();
+        return;
+      }
+      setEscArmed(true);
+      escArmTimerRef.current = window.setTimeout(() => {
+        escArmTimerRef.current = null;
+        setEscArmed(false);
+      }, 500);
     },
-    { enableOnFormTags: true },
+    { enableOnFormTags: true, enableOnContentEditable: true },
   );
+
+  // If the agent finishes (or is otherwise no longer loading) while we're
+  // armed, disarm so the hint disappears immediately and a stray second
+  // Escape doesn't fire `onStop` against a non-loading state.
+  useEffect(() => {
+    if (!isLoading && escArmed) disarmEsc();
+  }, [isLoading, escArmed, disarmEsc]);
+
+  // Clean up the pending timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (escArmTimerRef.current != null) {
+        window.clearTimeout(escArmTimerRef.current);
+      }
+    };
+  }, []);
 
   useHotkeys(
     "mod+u",
@@ -798,6 +843,19 @@ export function ChatInput({
           : "border-border",
       )}
     >
+      {/* Transient hint shown after the first Esc press while the agent
+          is streaming. Floats just above the composer, centered, so it
+          reads naturally regardless of where focus is. Auto-dismisses
+          with the armed state (~500ms or as soon as we stop / fire onStop). */}
+      {escArmed && isLoading && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute -top-7 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-md bg-foreground/90 px-2 py-1 text-[11px] text-background shadow-sm animate-in fade-in-0 slide-in-from-bottom-1 duration-150"
+        >
+          Press <Kbd>Esc</Kbd> again to interrupt
+        </div>
+      )}
       {/* Attachments — animates from 0 to natural height via the
           grid-rows trick so the input box grows smoothly when files
           are added (and shrinks when the last one is removed). */}
@@ -997,7 +1055,9 @@ export function ChatInput({
               {buttonMode === "stop" && (
                 <>
                   Stop
-                  <Kbd>⌘⇧⌫</Kbd>
+                  <KbdGroup>
+                    <Kbd>Esc</Kbd>
+                  </KbdGroup>
                 </>
               )}
               {buttonMode === "queue" && (
