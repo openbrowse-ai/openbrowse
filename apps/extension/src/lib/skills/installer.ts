@@ -4,6 +4,47 @@ import { parseSource } from "./source-parser";
 import type { InstalledSkill } from "./types";
 import { parseSkillFrontmatter } from "./yaml-frontmatter";
 
+/**
+ * Normalize a script-relative path and reject any attempt to escape the
+ * skill directory.
+ *
+ * The previous implementation was `input.replace(/^\/+/, "").replace(/\.\.\//g, "")`,
+ * a single-pass character-class strip that CodeQL flagged as
+ * "Incomplete multi-character sanitization" (rule js/incomplete-sanitization,
+ * GHSA pattern matched). The bug: a single regex pass over `....//x`
+ * matches the first `../`, removes it, and leaves `../x` standing — the
+ * very thing the strip was trying to prevent. Same shape as the classic
+ * `<scrip<script>t>` pattern in HTML sanitizers.
+ *
+ * This helper splits the input into segments, drops `.` and empty
+ * segments, and throws on any `..` segment (rather than silently
+ * stripping or collapsing). The agent gets a clean error and learns;
+ * silent stripping would mean its requested path differs from what gets
+ * written, which is harder to debug.
+ *
+ * Examples:
+ *   safeRelPath("foo/bar.js")     → "foo/bar.js"
+ *   safeRelPath("/foo/bar.js")    → "foo/bar.js"
+ *   safeRelPath("./foo")          → "foo"
+ *   safeRelPath("../etc/passwd")  → throws
+ *   safeRelPath("....//etc")      → throws (segment "..")
+ *   safeRelPath("foo/../bar")     → throws (any `..` is rejected)
+ *
+ * Throws a descriptive Error so the patchSiteSkill / upsertSiteSkill
+ * callers can surface it to the agent directly.
+ */
+function safeRelPath(input: string): string {
+  const parts = input.split("/").filter((p) => p.length > 0 && p !== ".");
+  for (const p of parts) {
+    if (p === "..") {
+      throw new Error(
+        `Path traversal not allowed: "${input}". Script paths must stay within the skill directory.`,
+      );
+    }
+  }
+  return parts.join("/");
+}
+
 export interface SkillPreview {
   name: string;
   description: string;
@@ -321,8 +362,9 @@ export async function upsertSiteSkill(
   const filePaths = ["SKILL.md"];
   const scriptTypes = new Set<string>();
   for (const s of scripts ?? []) {
-    // Confine to the skill dir; reject path traversal.
-    const rel = s.path.replace(/^\/+/, "").replace(/\.\.\//g, "");
+    // Confine to the skill dir; reject path traversal. See safeRelPath
+    // header for why a regex strip alone is unsound.
+    const rel = safeRelPath(s.path);
     await OPFS.writeFile(`skills/${name}/${rel}`, s.content);
     filePaths.push(rel);
     const ext = rel.slice(rel.lastIndexOf("."));
@@ -388,11 +430,11 @@ export async function patchSiteSkill(
   if (patch.description !== undefined) description = patch.description;
   if (patch.body !== undefined) body = patch.body;
   for (const s of patch.upsertScripts ?? []) {
-    const rel = s.path.replace(/^\/+/, "").replace(/\.\.\//g, "");
+    const rel = safeRelPath(s.path);
     scripts.set(rel, s.content);
   }
   for (const p of patch.deleteScripts ?? []) {
-    const rel = p.replace(/^\/+/, "").replace(/\.\.\//g, "");
+    const rel = safeRelPath(p);
     scripts.delete(rel);
   }
 
@@ -403,3 +445,6 @@ export async function patchSiteSkill(
     [...scripts.entries()].map(([path, content]) => ({ path, content })),
   );
 }
+
+/** Test-only export: not part of the module's public surface. */
+export const _internals = { safeRelPath };

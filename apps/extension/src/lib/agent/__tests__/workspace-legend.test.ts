@@ -134,12 +134,30 @@ describe("buildWorkspaceFilesBlock", () => {
   });
 
   it("returns empty when OPFS.walk throws (workspace doesn't exist yet)", async () => {
-    vi.spyOn(OPFS, "walk").mockImplementation(async function* () {
-      throw new Error("not a directory");
-      // unreachable yield to satisfy AsyncGenerator type
-      // eslint-disable-next-line no-unreachable
-      yield "";
-    });
+    // Construct an AsyncIterableIterator that rejects on the first
+    // .next() call. Avoids the previous `async function* () { throw ...; yield "" }`
+    // pattern which CodeQL flagged for unreachable code (the yield was
+    // a no-op kept only to satisfy the AsyncGenerator return type).
+    vi.spyOn(OPFS, "walk").mockImplementation(
+      () =>
+        ({
+          [Symbol.asyncIterator]() {
+            return this;
+          },
+          [Symbol.asyncDispose]() {
+            return Promise.resolve();
+          },
+          next() {
+            return Promise.reject(new Error("not a directory"));
+          },
+          return() {
+            return Promise.resolve({ value: undefined, done: true });
+          },
+          throw(e: unknown) {
+            return Promise.reject(e);
+          },
+        }) as AsyncGenerator<string>,
+    );
     const out = await buildWorkspaceFilesBlock("conv-A", NOW);
     expect(out).toBe("");
   });
