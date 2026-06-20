@@ -108,7 +108,7 @@ beforeAll(() => {
 describe("patchSiteSkill", () => {
   beforeEach(async () => {
     await OPFS.rm("skills/example.com", { recursive: true }).catch(() => {});
-    await (skillsDb as { remove?: (name: string) => Promise<void> }).remove?.("example.com").catch(() => {});
+    await (skillsDb as { delete?: (name: string) => Promise<void> }).delete?.("example.com").catch(() => {});
   });
 
   it("creates a new skill when none exists", async () => {

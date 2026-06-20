@@ -11,6 +11,7 @@ const parameters = z.object({
     ),
   description: z
     .string()
+    .max(1024)
     .optional()
     .describe(
       "Replace the skill's description (when to load it; max 1024 chars). Omit to leave unchanged.",
