@@ -35,6 +35,7 @@ import {
 } from "./subagents/persist-stream";
 import {
   getOrCreateHandle as getOrCreateTabHandle,
+  listHandles as listTabHandles,
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
@@ -544,6 +545,16 @@ export function buildExtensionToolContext(
         return pinnedConversationId
           ? resolveTabHandle(pinnedConversationId, handle)
           : undefined;
+      },
+      listHandles: () => {
+        // Used by tab-resolution error messages to inline the legend so
+        // the agent can recover from a stale handle without a separate
+        // listTabs round-trip. tool-context.ts threads this through;
+        // bench's session leaves it undefined and falls back to the
+        // no-summary error wording.
+        return pinnedConversationId
+          ? listTabHandles(pinnedConversationId)
+          : [];
       },
       isAgentOwnedTab: async (tabId) => {
         if (!pinnedConversationId) return false;

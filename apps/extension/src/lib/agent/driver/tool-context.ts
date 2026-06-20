@@ -31,7 +31,25 @@
 import type { BrowserDriver, BrowserTabInfo, TabId } from "./browser-driver";
 import type { TodoItem } from "../../types";
 import { tabRegistry } from "../tab-registry";
-import { listHandles } from "../tab-handles";
+
+/**
+ * Structural shape of `chrome.tabs.get` we depend on for the inline
+ * handle summary. Inlined as a minimal type rather than `chrome.tabs.Tab`
+ * so this module typechecks in `packages/bench` (which imports from
+ * `apps/extension/src/lib` without pulling in `@types/chrome`). Mirrors
+ * the same pattern used in `tab-registry.ts`. Resolved lazily so vitest's
+ * `vi.stubGlobal("chrome", …)` in beforeEach takes effect.
+ */
+interface ChromeTabsGetShape {
+  tabs?: {
+    get?: (
+      id: number,
+    ) => Promise<{ url?: string; title?: string } | undefined>;
+  };
+}
+function getChrome(): ChromeTabsGetShape | undefined {
+  return (globalThis as { chrome?: ChromeTabsGetShape }).chrome;
+}
 
 export interface ToolSession {
   /** The active conversation id, or null when running outside a conversation. */
@@ -54,6 +72,19 @@ export interface ToolSession {
   getOrCreateHandle?: (tabId: TabId) => string;
   /** Reverse-lookup a handle → real tab id. */
   resolveHandle?: (handle: string) => TabId | undefined;
+  /**
+   * Enumerate the conversation's currently-bound `(handle, ltid)` pairs.
+   * Used by tab-resolution error messages to inline the legend so the
+   * agent can recover from a stale handle without a separate `listTabs`
+   * round-trip. Optional: bench's session leaves it undefined, in which
+   * case `summarizeBoundHandles` falls back to the no-summary error
+   * wording. Extension wires it to `tab-handles.listHandles`.
+   *
+   * The indirection (rather than a direct import in `tool-context.ts`)
+   * keeps `tab-handles.ts` and its `chat-db` dependency out of bench's
+   * compile graph.
+   */
+  listHandles?: () => { handle: string; ltid: string }[];
   /**
    * True when the conversation owns the given tab (so the agent should
    * reuse it for subsequent navigations rather than spawning new ones).
@@ -216,19 +247,29 @@ async function summarizeBoundHandles(ctx: ToolContext): Promise<string> {
   try {
     const cid = ctx.session?.conversationId;
     if (!cid) return "";
-    const entries = listHandles(cid);
+    // ToolSession owns handle-map enumeration so this module doesn't
+    // need a static import of `tab-handles` (which transitively pulls
+    // chat-db into bench's compile graph). Bench's session leaves
+    // `listHandles` undefined → empty summary, matches the no-handles
+    // fallback wording.
+    const enumerate = ctx.session?.listHandles;
+    if (!enumerate) return "";
+    const entries = enumerate();
     if (entries.length === 0) return "";
 
     // Resolve handle → ltid → ctid → tab info, keeping only entries
     // whose chain succeeds. Run the per-handle lookups in parallel:
     // each is one cheap `chrome.tabs.get`, and failures are
     // independent (one stale entry shouldn't block fresh ones).
+    const tabsGet = getChrome()?.tabs?.get;
+    if (!tabsGet) return "";
     const resolved = await Promise.all(
       entries.map(async (e) => {
         try {
           const ctid = tabRegistry.toChromeTabId(e.ltid);
           if (ctid == null) return null;
-          const tab = await chrome.tabs.get(ctid);
+          const tab = await tabsGet(ctid);
+          if (!tab) return null;
           return {
             handle: e.handle,
             url: tab.url ?? "",

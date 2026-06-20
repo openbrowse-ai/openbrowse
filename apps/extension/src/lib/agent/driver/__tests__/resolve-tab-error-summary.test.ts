@@ -23,6 +23,7 @@ import { tabRegistry } from "../../tab-registry";
 import {
   getOrCreateHandle,
   clearHandles,
+  listHandles,
   resolveHandle,
 } from "../../tab-handles";
 
@@ -65,7 +66,9 @@ function bindHandle(ctid: number): string {
  * Minimal ToolContext that points at the test conversation. The
  * session's `resolveHandle` reads from the same in-memory handle map
  * the conversation uses in production, so binding via `bindHandle`
- * makes the handle resolvable here.
+ * makes the handle resolvable here. `listHandles` is wired the same
+ * way production wires it (see agent-transport.ts), so the inline-
+ * summary helper sees the test's bound handles.
  */
 function makeCtx(): ToolContext {
   return {
@@ -77,6 +80,7 @@ function makeCtx(): ToolContext {
     session: {
       conversationId: CID,
       resolveHandle: (handle: string) => resolveHandle(CID, handle),
+      listHandles: () => listHandles(CID),
     },
   };
 }

@@ -51,6 +51,56 @@ export { isDetachError } from "./cdp-errors";
 import { isCrossExtensionFrameError, isDetachError } from "./cdp-errors";
 import { tabRegistry } from "./tab-registry";
 
+// --- structural chrome shape ----------------------------------------------
+//
+// We reach `chrome.debugger.*` and `chrome.tabs.onRemoved` through a
+// minimal structural type rather than `typeof chrome` so this module
+// typechecks in `packages/bench` (no `@types/chrome` there). Mirrors the
+// pattern documented in `tab-registry.ts:298-326`. The shape covers
+// exactly the surface this module uses; in production every property is
+// non-null (the extension always has chrome.debugger), so the optional
+// chains below behave like direct property access.
+
+interface ChromeDebuggerShape {
+  debugger?: {
+    attach?: (target: { tabId: number }, version: string) => Promise<void>;
+    detach?: (target: { tabId: number }) => Promise<void>;
+    sendCommand?: (
+      target: { tabId: number },
+      method: string,
+      params?: Record<string, unknown>,
+    ) => Promise<unknown>;
+    onDetach?: {
+      addListener?: (
+        cb: (source: { tabId?: number }, reason: string | undefined) => void,
+      ) => void;
+    };
+  };
+  tabs?: {
+    onRemoved?: {
+      addListener?: (cb: (tabId: number) => void) => void;
+    };
+  };
+}
+
+/** Resolve `chrome` lazily. Tests stub `chrome` via `vi.stubGlobal` AFTER
+ *  this module is imported, so capturing the reference at module-load
+ *  would freeze the original (un-stubbed) value. Read at call time. */
+function getChrome(): ChromeDebuggerShape | undefined {
+  return (globalThis as { chrome?: ChromeDebuggerShape }).chrome;
+}
+
+/** Helper that throws a clean error if `chrome.debugger` is missing
+ *  (non-extension runtime — bench, vitest without the chrome stub).
+ *  Production extension always has it; the throw is unreachable there. */
+function requireDebugger(): NonNullable<ChromeDebuggerShape["debugger"]> {
+  const dbg = getChrome()?.debugger;
+  if (!dbg) {
+    throw new Error("chrome.debugger is unavailable (non-extension runtime)");
+  }
+  return dbg;
+}
+
 // --- onDetach pub/sub ------------------------------------------------------
 //
 // Chrome's `chrome.debugger.onDetach` fires when the browser severs the
@@ -69,7 +119,7 @@ export function onDetach(listener: DetachListener): () => void {
   return () => detachSubscribers.delete(listener);
 }
 
-chrome.debugger.onDetach.addListener((source, reason) => {
+getChrome()?.debugger?.onDetach?.addListener?.((source, reason) => {
   if (source.tabId == null) return;
   // Drop our cached session BEFORE notifying subscribers so any subscriber
   // that calls `attach(tabId)` in response (e.g. cdp-capture's re-arm)
@@ -126,7 +176,7 @@ export async function attach(tabId: number): Promise<Session> {
 
 async function doAttach(tabId: number): Promise<Session> {
   try {
-    await chrome.debugger.attach({ tabId }, "1.3");
+    await requireDebugger().attach!({ tabId }, "1.3");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Chrome's user-facing message is "Another debugger is already attached
@@ -169,7 +219,7 @@ export function release(tabId: number): void {
   if (!session) return;
   sessions.delete(tabId);
   if (session.attached) {
-    chrome.debugger.detach({ tabId }).catch(() => {});
+    requireDebugger().detach!({ tabId }).catch(() => {});
   }
   for (const cb of [...detachSubscribers]) {
     try {
@@ -220,7 +270,7 @@ async function sendCommandWithRetry<T>(
   const domain = method.split(".")[0];
   if (!session.enabledDomains.has(domain) && !NO_ENABLE_DOMAINS.has(domain)) {
     try {
-      await chrome.debugger.sendCommand({ tabId }, `${domain}.enable`);
+      await requireDebugger().sendCommand!({ tabId }, `${domain}.enable`);
       session.enabledDomains.add(domain);
     } catch (err) {
       // Cross-extension frame access errors do not mean the session is dead
@@ -250,7 +300,7 @@ async function sendCommandWithRetry<T>(
   }
 
   try {
-    const result = await chrome.debugger.sendCommand(
+    const result = await requireDebugger().sendCommand!(
       { tabId },
       method,
       params ?? {},
@@ -292,7 +342,7 @@ async function sendCommandWithRetry<T>(
 // `chrome.tabs.onRemoved` listener below does not, but in practice Chrome
 // fires both for removals so this is just defense-in-depth.
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+getChrome()?.tabs?.onRemoved?.addListener?.((tabId) => {
   sessions.delete(tabId);
 });
 

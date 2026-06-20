@@ -311,7 +311,29 @@ export function isCapturing(tabId: number): boolean {
 // Route every CDP event for a *tracked* tab to handleCdpEvent. Untracked
 // tabs (the user's own tabs, internal pages) are ignored — their events
 // never reach the buffer. The listener is registered once at module load.
-chrome.debugger.onEvent.addListener((source, method, params) => {
+//
+// The chrome global is reached via a structural shape rather than
+// `typeof chrome` so this module typechecks in `packages/bench` (no
+// `@types/chrome` there). Mirrors the pattern in `tab-registry.ts`.
+// Resolved lazily (call time) so vitest's `vi.stubGlobal("chrome", …)`
+// in beforeEach takes effect even though it runs after module load.
+interface ChromeOnEventShape {
+  debugger?: {
+    onEvent?: {
+      addListener?: (
+        cb: (
+          source: { tabId?: number },
+          method: string,
+          params?: object,
+        ) => void,
+      ) => void;
+    };
+  };
+}
+function getChrome(): ChromeOnEventShape | undefined {
+  return (globalThis as { chrome?: ChromeOnEventShape }).chrome;
+}
+getChrome()?.debugger?.onEvent?.addListener?.((source, method, params) => {
   const tabId = source.tabId;
   if (tabId == null || !isCapturing(tabId)) return;
   handleCdpEvent(tabId, method, (params ?? {}) as Record<string, unknown>);
