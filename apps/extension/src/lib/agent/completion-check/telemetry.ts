@@ -217,7 +217,11 @@ export const completionCheckTelemetry = {
         // (`evidenceGrounding`, `surfaceAccuracy` from earlier
         // revisions). Skip unknown keys silently rather than letting
         // them pollute the aggregation as dynamically-created fields.
-        if (d in byDimension) {
+        // Use Object.hasOwn so prototype-chain keys (`constructor`,
+        // `toString`) supplied by an attacker-influenced row don't
+        // satisfy the guard and overwrite a function reference with
+        // a numeric value.
+        if (Object.hasOwn(byDimension, d)) {
           byDimension[d] = (byDimension[d] ?? 0) + 1;
         }
       }

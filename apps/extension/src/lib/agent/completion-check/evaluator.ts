@@ -75,7 +75,7 @@ const concernSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Optional supporting quote from the drafted response. Internal/export only — not surfaced in the inline UI.",
+      "Optional supporting quote — from the drafted response, the todo state, or the tool-call trace. Internal/export only — not surfaced in the inline UI.",
     ),
 });
 

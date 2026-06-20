@@ -47,6 +47,16 @@ const sessions = new Map<number, Session>();
 const pendingAttach = new Map<number, Promise<Session>>();
 const NO_ENABLE_DOMAINS = new Set(["Input", "Page", "DOMSnapshot", "Runtime"]);
 
+/**
+ * Monotonic counter incremented by `releaseAll()`. An in-flight
+ * `doAttach()` snapshots this at entry; if it differs at the moment
+ * the chrome.debugger.attach round-trip resolves, teardown happened
+ * mid-flight and the resolved attach must be undone immediately
+ * (otherwise we'd install a session into the now-cleared map and the
+ * agent-finished-working teardown would silently leak the session).
+ */
+let releaseEpoch = 0;
+
 export { isDetachError } from "./cdp-errors";
 import { isCrossExtensionFrameError, isDetachError } from "./cdp-errors";
 import { tabRegistry } from "./tab-registry";
@@ -175,6 +185,9 @@ export async function attach(tabId: number): Promise<Session> {
 }
 
 async function doAttach(tabId: number): Promise<Session> {
+  // Snapshot the release epoch BEFORE the attach round-trip so we can
+  // detect a `releaseAll()` that fires while we're awaiting Chrome.
+  const epoch = releaseEpoch;
   try {
     await requireDebugger().attach!({ tabId }, "1.3");
   } catch (err) {
@@ -189,6 +202,21 @@ async function doAttach(tabId: number): Promise<Session> {
     if (!/already attached/i.test(msg)) {
       throw new Error(`Cannot attach debugger to tab ${tabId}: ${msg}`);
     }
+  }
+
+  // If `releaseAll()` fired between entry and now, teardown already
+  // ran — do not install the session. Detach immediately to release
+  // Chrome's slot (best-effort, errors swallowed: if Chrome already
+  // detached as part of teardown, `detach` rejects "not attached" and
+  // we don't care). Throw so the caller's promise rejects rather than
+  // returning a session that isn't in the map.
+  if (releaseEpoch !== epoch) {
+    requireDebugger()
+      .detach!({ tabId })
+      .catch(() => {});
+    throw new Error(
+      `Attach to tab ${tabId} canceled: agent teardown ran during chrome.debugger.attach`,
+    );
   }
 
   const session: Session = {
@@ -235,11 +263,23 @@ export function release(tabId: number): void {
  * `agent-transport.resetAgentIndicator`. Replaces the prior
  * `cdp-capture.releaseAll()` and the orphaned `cdp-session.releaseAll()`
  * (both now collapse to this one).
+ *
+ * Also handles in-flight attaches: bumping `releaseEpoch` causes any
+ * `doAttach` currently awaiting `chrome.debugger.attach` to detect the
+ * teardown when it resolves and detach itself rather than installing a
+ * session into the now-cleared map. We also clear the pendingAttach
+ * map directly so subsequent callers don't await stale promises that
+ * resolve to rejected sessions.
  */
 export function releaseAll(): void {
+  releaseEpoch += 1;
   for (const tabId of [...sessions.keys()]) {
     release(tabId);
   }
+  // Clear pending entries so future `attach()` callers start fresh.
+  // The promises themselves are still in flight; they'll resolve and
+  // self-cancel via the epoch check in doAttach.
+  pendingAttach.clear();
 }
 
 // --- sendCommand -----------------------------------------------------------

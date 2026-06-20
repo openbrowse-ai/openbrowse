@@ -117,8 +117,27 @@ export function readConsole(
   let rows = c.consoles;
   if (opts.onlyErrors) rows = rows.filter((m) => m.level === "error");
   if (opts.pattern) {
-    const re = new RegExp(opts.pattern);
-    rows = rows.filter((m) => re.test(m.text));
+    // The agent supplies the pattern through its tool-call schema. We
+    // length-cap to keep pathological backtracking out of the SW
+    // (catastrophic ReDoS would freeze the worker until the regex
+    // engine gives up); on a malformed pattern we filter to no matches
+    // rather than throw, so an invalid argument doesn't poison the
+    // tool result the agent is trying to read. The contract on
+    // read_console_messages is "regex over message text"; substring
+    // matching is one common use of that contract and works as-is via
+    // a literal pattern.
+    const PATTERN_CAP = 256;
+    const pat =
+      opts.pattern.length > PATTERN_CAP
+        ? opts.pattern.slice(0, PATTERN_CAP)
+        : opts.pattern;
+    let re: RegExp | null = null;
+    try {
+      re = new RegExp(pat);
+    } catch {
+      re = null;
+    }
+    rows = re ? rows.filter((m) => re.test(m.text)) : [];
   }
   const total = rows.length;
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -237,12 +256,35 @@ import {
 const tracked = new Set<number>();
 
 /**
+ * In-flight startCapture promises, keyed by tabId. Concurrent callers
+ * with the same tabId share one promise so the second caller doesn't
+ * see a half-initialized session.
+ *
+ * Without this, the previous implementation's `if (tracked.has(tabId))
+ * return; tracked.add(tabId);` check let a second caller see `tracked`
+ * true after only the synchronous mark — but before `cdpAttach` and
+ * `Network.enable`/`Runtime.enable` had completed. The second caller
+ * would return immediately, then any CDP commands it issued in the
+ * next tick could race the unfinished domain-enable round-trip and
+ * miss a window of events. Mirrors `cdp-session.ts`'s `pendingAttach`
+ * pattern.
+ *
+ * `tracked` is still set synchronously at the start of startCapture so
+ * the onEvent listener routes events as soon as they arrive (the
+ * domain-enable round-trip is a strict superset of the moment Chrome
+ * starts emitting events for that tab). The pending map is used only
+ * to coalesce *callers waiting on initialization*.
+ */
+const pendingStartups = new Map<number, Promise<void>>();
+
+/**
  * Begin capturing network + console for a tab. Idempotent — a second call
- * for the same tab returns immediately. Acquires the underlying debugger
- * session via `cdp-session.attach` (which itself is idempotent across
- * concurrent ad-hoc tools and capture), then enables the Network and
- * Runtime CDP domains via cdp-session's sendCommand so console +
- * exception events flow.
+ * for the same tab returns the same in-flight promise (or a no-op promise
+ * once startup completes). Acquires the underlying debugger session via
+ * `cdp-session.attach` (which itself is idempotent across concurrent
+ * ad-hoc tools and capture), then enables the Network and Runtime CDP
+ * domains via cdp-session's sendCommand so console + exception events
+ * flow.
  *
  * Best-effort: if `Network.enable` / `Runtime.enable` rejects (e.g. mid-
  * navigation), capture stays armed but may miss events until Chrome
@@ -251,25 +293,44 @@ const tracked = new Set<number>();
  */
 export async function startCapture(tabId: number): Promise<void> {
   if (tracked.has(tabId)) return;
+  const inflight = pendingStartups.get(tabId);
+  if (inflight) return inflight;
+  // Mark as tracked synchronously so the onEvent listener routes events
+  // for this tab as soon as Chrome starts delivering them — events that
+  // arrive after `chrome.debugger.attach` resolves but before
+  // `Network.enable` does land in the buffer (they'll just be sparse
+  // until `Network.enable` actually flips the spigot fully open).
+  // Without the synchronous mark, the re-arm's onEvent in cdp-capture's
+  // detach handler would drop the first events of the new domain.
   tracked.add(tabId);
   ensure(tabId);
+  const promise = (async () => {
+    try {
+      await cdpAttach(tabId);
+    } catch (err) {
+      // cdp-session.attach already treats Chrome's "already attached"
+      // form as success; anything reaching here is a genuine attach
+      // failure (tab gone, restricted target). Drop bookkeeping so
+      // reads return captured:false and a future caller can retry.
+      tracked.delete(tabId);
+      captures.delete(tabId);
+      throw err;
+    }
+    try {
+      await cdpSendCommand(tabId, "Network.enable");
+      await cdpSendCommand(tabId, "Runtime.enable");
+    } catch {
+      // Domain enable can fail transiently on navigation. Leave the
+      // tab in `tracked`; events that DO arrive will still be
+      // captured, and the next sendCommand from any consumer will
+      // re-enable on demand via cdp-session's auto-reattach retry path.
+    }
+  })();
+  pendingStartups.set(tabId, promise);
   try {
-    await cdpAttach(tabId);
-  } catch (err) {
-    // cdp-session.attach already treats Chrome's "already attached" form
-    // as success; anything reaching here is a genuine attach failure
-    // (tab gone, restricted target). Untrack so reads return captured:false.
-    tracked.delete(tabId);
-    captures.delete(tabId);
-    throw err;
-  }
-  try {
-    await cdpSendCommand(tabId, "Network.enable");
-    await cdpSendCommand(tabId, "Runtime.enable");
-  } catch {
-    // Domain enable can fail transiently on navigation. Leave the tab in
-    // `tracked`; events that DO arrive will still be captured, and the
-    // next sendCommand from any consumer will re-enable on demand.
+    await promise;
+  } finally {
+    pendingStartups.delete(tabId);
   }
 }
 
@@ -299,6 +360,7 @@ export function stopCapture(tabId: number): void {
 export function releaseAll(): void {
   tracked.clear();
   captures.clear();
+  pendingStartups.clear();
 }
 
 /** Whether a tab is currently being captured. */
@@ -347,18 +409,26 @@ getChrome()?.debugger?.onEvent?.addListener?.((source, method, params) => {
 // then we run).
 //
 // Behavior on detach:
-//   - Chrome auto-detached (`reason !== "explicit_release"`): flush this
-//     tab's buffers, drop from `tracked` so the re-arm's idempotency
-//     guard is bypassed, then re-acquire the session via startCapture.
-//     This matches the "cleared on cross-domain navigation" semantics
-//     while keeping eager capture armed across navigations.
 //   - Explicit release (`reason === "explicit_release"`): the caller
 //     (typically agent-transport's done-working hook) is intentionally
 //     tearing the session down. Drop our routing flags + buffers and
 //     DO NOT re-arm.
+//   - User canceled (`reason === "canceled_by_user"`): the user clicked
+//     "Cancel" on Chrome's "is being debugged" banner. Re-attaching
+//     would just be rejected by Chrome (the user's intent is "stop
+//     debugging this tab"), so we treat this as terminal too. Without
+//     this branch the re-arm path would call cdpAttach, fail, and
+//     surface a noisy error to the agent on every dismissed banner.
+//   - Chrome auto-detached (any other reason — most commonly cross-
+//     domain navigation, target replacement, or banner-timeout): flush
+//     this tab's buffers, drop from `tracked` so the re-arm's
+//     idempotency guard is bypassed, then re-acquire the session via
+//     startCapture. This matches the "cleared on cross-domain
+//     navigation" semantics while keeping eager capture armed across
+//     navigations.
 cdpOnDetach((tabId, reason) => {
   if (!isCapturing(tabId)) return;
-  if (reason === "explicit_release") {
+  if (reason === "explicit_release" || reason === "canceled_by_user") {
     tracked.delete(tabId);
     captures.delete(tabId);
     return;
@@ -378,4 +448,5 @@ export function __test_pushConsole(tabId: number, e: ConsoleEntry): void {
 export function __test_reset(): void {
   captures.clear();
   tracked.clear();
+  pendingStartups.clear();
 }

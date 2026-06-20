@@ -82,8 +82,10 @@ of "the agent" who will revise the response. Cite text precisely.
 - Bad:  "response is incomplete".
 - Good: "Drafted response says 'I found the cheapest 3 options' but only lists 2 (Logitech MX, Keychron K2). The third item is missing."
 
-Where possible, include an \`evidence\` field quoting the offending text
-from the drafted response.
+Where possible, include an \`evidence\` field quoting the offending text —
+from the drafted response, the todo state, or the tool-call trace
+(e.g. "todos[1..2] still pending", "executor's snapshot before
+respond shows the input field unchanged").
 
 ### \`userSummary\` (user-facing, plain language)
 

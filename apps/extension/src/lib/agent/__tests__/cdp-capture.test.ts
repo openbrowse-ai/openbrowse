@@ -267,9 +267,15 @@ describe("cdp-capture onEvent wiring", () => {
 
     // Cross-domain navigation: Chrome fires onDetach.
     onDetachListener?.({ tabId: TAB }, "target_closed");
-    // Wait a microtask for the re-arm's startCapture to settle.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Wait for the re-arm's startCapture to settle. We assert on the
+    // observable behavior — `chrome.debugger.attach` having been
+    // called for the second time (initial startCapture above + re-arm
+    // here) — rather than counting microticks. With the
+    // `pendingStartups` coalescing in startCapture, the exact number
+    // of internal awaits between the detach and the second attach
+    // call has changed; tying the assertion to attach.calls keeps
+    // this test robust to that.
+    await vi.waitFor(() => expect(attach).toHaveBeenCalledTimes(2));
 
     // Buffer flushed BUT tab is still captured (re-armed).
     const r = mod.readNetwork(TAB, {});

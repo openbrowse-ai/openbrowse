@@ -95,10 +95,10 @@ import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
  * When true, the background site-skill curator logs each pipeline stage to the
  * service-worker console with a `[curator]` prefix (gate passed → candidate
  * counts → enqueue → drain → per-job). This pipeline runs fire-and-forget and
- * is otherwise silent on the happy path, so leave this on while the curator is
- * being validated; flip to false to quiet it.
+ * is otherwise silent on the happy path. Off in production; flip back to true
+ * locally if you need to validate the pipeline end-to-end.
  */
-const DEBUG_CURATOR = true;
+const DEBUG_CURATOR = false;
 
 // Load-time beacon: confirms the RUNNING service worker actually has the
 // curator-instrumented build. Service workers persist old code across HMR, so
@@ -2285,9 +2285,22 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // Fire-and-forget: extract reusable site-skill candidates from this
       // turn and enqueue a background curator job. Never blocks the user's
       // response; failures are swallowed.
+      //
+      // Capture the turn-snapshot locals BEFORE the first await. The
+      // module-level `lastCatalogDomains` / `lastActiveUrl` /
+      // `lastTurnBaselineCount` are overwritten by the next turn's
+      // `prepareCall`; without snapshotting, a slow curator closure would
+      // see turn N+1's values and misattribute candidates from turn N to
+      // the wrong domain. (Same shape of bug the wait-for-persist fix
+      // resolved one layer up, but on the variables instead of the
+      // message stream.)
+      const turnConvId = lastTurnConversationId;
+      const turnCatalogDomains = lastCatalogDomains.slice();
+      const turnActiveUrl = lastActiveUrl;
+      const turnBaseline = lastTurnBaselineCount;
       void (async () => {
         try {
-          if (lastTurnConversationId !== cid) {
+          if (turnConvId !== cid) {
             if (DEBUG_CURATOR)
               console.warn(
                 "[curator] skip: conversation-id mismatch (stale turn snapshot)",
@@ -2299,15 +2312,21 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
           // from chat-db. This is the only source with complete tool
           // inputs/outputs — the completion-check `sendMessages` are pre-turn
           // input only, and the tool-call trace is hard-truncated.
-          await waitForAssistantPersist(cid, lastTurnBaselineCount);
+          await waitForAssistantPersist(cid, turnBaseline);
           const persisted = await chatDb.getMessages(cid);
-          const messages = persisted as unknown as {
+          const allMessages = persisted as unknown as {
             role: string;
             parts?: unknown[];
           }[];
+          // Slice from the captured baseline so we ONLY pass this turn's
+          // messages to the extractor. Without the slice, a long-running
+          // conversation would re-extract every prior turn's executeOnPage
+          // parts on every approval, attributing old work to the current
+          // domain.
+          const messages = allMessages.slice(turnBaseline);
           if (DEBUG_CURATOR) {
             console.error(
-              `[curator] approved conv=${cid} catalogDomains=[${lastCatalogDomains.join(",")}] activeUrl=${lastActiveUrl ?? "?"} baseline=${lastTurnBaselineCount} persisted=${messages.length}`,
+              `[curator] approved conv=${cid} catalogDomains=[${turnCatalogDomains.join(",")}] activeUrl=${turnActiveUrl ?? "?"} baseline=${turnBaseline} persisted=${allMessages.length} turnSlice=${messages.length}`,
             );
           }
           if (!messages.length) {
@@ -2319,16 +2338,16 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
             await import("@/lib/skills/site-skill-candidates");
           const candidates = extractSiteSkillCandidates({
             messages,
-            catalogDomains: lastCatalogDomains,
-            activeUrl: lastActiveUrl,
+            catalogDomains: turnCatalogDomains,
+            activeUrl: turnActiveUrl,
           });
           // Notes-only trigger: even with no reusable script, a turn that hit
           // friction (errored/timed-out tool calls) on a catalog domain is
           // worth curating a durable site note for.
           const notableDomain = detectNotableActivityDomain({
             messages,
-            catalogDomains: lastCatalogDomains,
-            activeUrl: lastActiveUrl,
+            catalogDomains: turnCatalogDomains,
+            activeUrl: turnActiveUrl,
           });
           if (DEBUG_CURATOR)
             console.warn(
