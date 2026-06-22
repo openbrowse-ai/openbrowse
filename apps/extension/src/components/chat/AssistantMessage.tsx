@@ -121,6 +121,12 @@ export function resolveToolPartState(
     }
   }
 
+  // A call awaiting approval is suspended but genuinely live from the user's
+  // perspective — it hasn't timed out or been interrupted, it's just paused.
+  if (state === "approval-requested") {
+    return { state: "call" };
+  }
+
   // Non-terminal state. If the message is still streaming this part is
   // genuinely in flight — render as pending. If streaming has finished,
   // the part is an orphan that will never advance.

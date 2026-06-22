@@ -36,9 +36,13 @@ function isSettingsTabId(value: string): value is SettingsTabId {
  * `tab` param is missing or names an unknown tab.
  */
 export function parseSettingsTab(search: string): SettingsTabId {
-  // Tolerate either a bare query string or a full URL/path; `URLSearchParams`
-  // accepts both via the "?…" prefix.
-  const qs = search.startsWith("?") ? search : `?${search}`;
+  // Extract just the query string portion (everything after the first "?").
+  // This allows the parser to tolerate a full URL, a path+search string,
+  // or a bare query string.
+  const qsIndex = search.indexOf("?");
+  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
+
+  const qs = rawQs.startsWith("?") ? rawQs : `?${rawQs}`;
   const params = new URLSearchParams(qs);
   const tab = params.get("tab");
   if (tab && isSettingsTabId(tab)) return tab;

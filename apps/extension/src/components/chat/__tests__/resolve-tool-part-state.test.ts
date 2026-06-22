@@ -84,12 +84,18 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("errored");
   });
 
+  it.each([
+    ["approval-requested"],
+  ])("non-terminal state '%s' + isStreaming:false → 'call' (paused waiting for user)", (state) => {
+    const r = resolveToolPartState({ state }, { isStreaming: false });
+    expect(r.state).toBe("call");
+  });
+
   // ── Non-terminal states while streaming (genuine in-flight) ─────────
 
   it.each([
     ["input-streaming"],
     ["input-available"],
-    ["approval-requested"],
     ["approval-responded"],
   ])("non-terminal state '%s' + isStreaming:true → 'call' (genuinely in flight)", (state) => {
     const r = resolveToolPartState({ state }, { isStreaming: true });

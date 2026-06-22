@@ -8,6 +8,11 @@ import {
 } from "../route";
 
 describe("parseSettingsTab", () => {
+  it("handles a full URL", () => {
+    expect(parseSettingsTab("https://example.com/settings.html?tab=models")).toBe("models");
+    expect(parseSettingsTab("http://localhost:3000/settings.html?foo=bar&tab=skills")).toBe("skills");
+  });
+
   it("returns the default tab when the search string is empty", () => {
     expect(parseSettingsTab("")).toBe(DEFAULT_SETTINGS_TAB);
     expect(parseSettingsTab("?")).toBe(DEFAULT_SETTINGS_TAB);

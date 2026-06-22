@@ -12,8 +12,31 @@ vi.mock("@/lib/vfs/opfs", () => {
       writeFile: vi.fn(async (p: string, c: string) => {
         fs.set(p, c);
       }),
-      exists: vi.fn(async (p: string) => fs.has(p)),
-      readDir: vi.fn(async () => []),
+      exists: vi.fn(async (p: string) => {
+        if (fs.has(p)) return true;
+        for (const k of fs.keys()) {
+          if (k.startsWith(p + "/") || k === p) return true;
+        }
+        return false;
+      }),
+      readDir: vi.fn(async (p: string) => {
+        const entries = [];
+        for (const [k] of fs) {
+          if (k.startsWith(p + "/")) {
+            entries.push(k.slice(p.length + 1));
+            return entries;
+          }
+        }
+        throw new Error("Directory not found at " + p);
+      }),
+      walk: async function* (p: string) {
+        for (const [k] of fs) {
+          if (k.startsWith(p)) yield k;
+        }
+      },
+      remove: vi.fn(async (p: string) => {
+        fs.delete(p);
+      }),
       __fs: fs,
     },
   };
@@ -100,5 +123,135 @@ describe("fs tools — shared space workspace mount", () => {
       { driver: {} as any, session: { conversationId: "c1", spaceId: null } } as any,
     );
     expect(result).toMatch(/Permission denied|not found|not allowed/i);
+  });
+
+  // --- Glob ---
+  it("Glob can search the active space's workspace", async () => {
+    (OPFS as any).__fs.set("spaces/sp1/workspace/a.md", "hello");
+    const { createFsTools } = await import("../fs");
+    const { globTool } = createFsTools();
+    const result = await globTool.execute(
+      { pattern: "*.md", path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toContain("a.md");
+  });
+
+  it("Glob to ANOTHER space's workspace is denied", async () => {
+    (OPFS as any).__fs.set("spaces/other/workspace/a.md", "hello");
+    const { createFsTools } = await import("../fs");
+    const { globTool } = createFsTools();
+    const result = await globTool.execute(
+      { pattern: "*.md", path: "spaces/other/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  it("Glob with null spaceId is denied for spaces/* paths", async () => {
+    const { createFsTools } = await import("../fs");
+    const { globTool } = createFsTools();
+    const result = await globTool.execute(
+      { pattern: "*.md", path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: null } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  // --- Grep ---
+  it("Grep can search the active space's workspace", async () => {
+    (OPFS as any).__fs.set("spaces/sp1/workspace/a.md", "findme");
+    const { createFsTools } = await import("../fs");
+    const { grepTool } = createFsTools();
+    const result = await grepTool.execute(
+      { pattern: "findme", path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toContain("findme");
+  });
+
+  it("Grep to ANOTHER space's workspace is denied", async () => {
+    (OPFS as any).__fs.set("spaces/other/workspace/a.md", "findme");
+    const { createFsTools } = await import("../fs");
+    const { grepTool } = createFsTools();
+    const result = await grepTool.execute(
+      { pattern: "findme", path: "spaces/other/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  it("Grep with null spaceId is denied for spaces/* paths", async () => {
+    const { createFsTools } = await import("../fs");
+    const { grepTool } = createFsTools();
+    const result = await grepTool.execute(
+      { pattern: "findme", path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: null } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  // --- LS ---
+  it("LS can list the active space's workspace", async () => {
+    (OPFS as any).__fs.set("spaces/sp1/workspace/a.md", "");
+    const { createFsTools } = await import("../fs");
+    const { lsTool } = createFsTools();
+    const result = await lsTool.execute(
+      { path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toContain("a.md");
+  });
+
+  it("LS to ANOTHER space's workspace is denied", async () => {
+    const { createFsTools } = await import("../fs");
+    const { lsTool } = createFsTools();
+    const result = await lsTool.execute(
+      { path: "spaces/other/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  it("LS with null spaceId is denied for spaces/* paths", async () => {
+    const { createFsTools } = await import("../fs");
+    const { lsTool } = createFsTools();
+    const result = await lsTool.execute(
+      { path: "spaces/sp1/workspace" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: null } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  // --- Delete ---
+  it("Delete in the active space's workspace is denied (shared workspace is read-only for agent destructive ops)", async () => {
+    (OPFS as any).__fs.set("spaces/sp1/workspace/bad.md", "");
+    const { createFsTools } = await import("../fs");
+    const { deleteTool } = createFsTools();
+    const result = await deleteTool.execute(
+      { path: "spaces/sp1/workspace/bad.md" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  it("Delete in ANOTHER space's workspace is denied", async () => {
+    const { createFsTools } = await import("../fs");
+    const { deleteTool } = createFsTools();
+    const result = await deleteTool.execute(
+      { path: "spaces/other/workspace/bad.md" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: "sp1" } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
+  });
+
+  it("Delete with null spaceId is denied for spaces/* paths", async () => {
+    const { createFsTools } = await import("../fs");
+    const { deleteTool } = createFsTools();
+    const result = await deleteTool.execute(
+      { path: "spaces/sp1/workspace/bad.md" },
+      { driver: {} as any, session: { conversationId: "c1", spaceId: null } } as any,
+    );
+    expect(result).toMatch(/Permission denied|not allowed/i);
   });
 });
