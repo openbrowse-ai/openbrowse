@@ -69,10 +69,58 @@ export const memoryDb = {
     await db.delete("memories", id);
   },
 
-  async findByTitle(title: string, spaceId: string | null): Promise<Memory | undefined> {
+  /**
+   * Strict same-scope title lookup, used by `saveMemory`'s duplicate check.
+   * Only matches a memory whose `spaceId` is *exactly* the requested scope —
+   * a global "X" does not block creating a space-scoped "X" (and vice versa).
+   */
+  async findByTitleInExactScope(
+    title: string,
+    spaceId: string | null,
+  ): Promise<Memory | undefined> {
     if (!title) return undefined;
-    const all = await this.list(spaceId);
+    const db = await getDb();
+    const all = await db.getAll("memories");
     const lower = title.toLowerCase();
-    return all.find((m) => m.title.toLowerCase() === lower);
+    return all.find(
+      (m) => m.spaceId === spaceId && m.title.toLowerCase() === lower,
+    );
+  },
+
+  /**
+   * Find every memory matching `title` (case-insensitive) within the
+   * agent's current visibility set: globals when no space is active, or
+   * globals + active-space memories when one is. Used by `recallMemory`,
+   * `updateMemory`, and `deleteMemory` to enumerate ambiguous matches —
+   * collisions are surfaced to the model rather than silently picking one.
+   *
+   * Returns matches in a stable order: space-scoped first (when present),
+   * global second. The agent doesn't have to depend on the order, but the
+   * stability avoids flaky test diffs.
+   */
+  async findAllByTitle(
+    title: string,
+    activeSpaceId: string | null,
+  ): Promise<Memory[]> {
+    if (!title) return [];
+    const all = await this.list(activeSpaceId);
+    const lower = title.toLowerCase();
+    const matches = all.filter((m) => m.title.toLowerCase() === lower);
+    // Sort: space-scoped first, then globals. activeSpaceId === null path
+    // can only contain globals, so sort is a no-op there.
+    matches.sort((a, b) => {
+      if (a.spaceId === b.spaceId) return 0;
+      if (a.spaceId === null) return 1; // global goes after
+      return -1;
+    });
+    return matches;
+  },
+
+  /**
+   * Test/debug helper. Reset the in-memory db handle so a fresh
+   * `indexedDB` (e.g. fake-indexeddb in tests) is opened on next call.
+   */
+  _resetForTests(): void {
+    dbPromise = null;
   },
 };

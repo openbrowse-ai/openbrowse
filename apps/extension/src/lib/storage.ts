@@ -36,12 +36,17 @@ export const storage = {
   async getSpaces(): Promise<Space[]> {
     const raw = (await get<any[]>(STORAGE_KEYS.SPACES)) ?? [];
     return raw.map((s) => {
-      // Default the pinnedTabs field for spaces stored before it existed.
-      const withPinned = (sp: any): Space => ({
+      // Default fields for spaces stored before each was introduced.
+      const withDefaults = (sp: any): Space => ({
         ...sp,
         pinnedTabs: sp.pinnedTabs ?? [],
+        instructions: sp.instructions ?? null,
+        description: sp.description ?? null,
+        // Lazy-default updatedAt to "now" so existing spaces sort sanely
+        // until they're next mutated.
+        updatedAt: typeof sp.updatedAt === "number" ? sp.updatedAt : Date.now(),
       });
-      if (s.favorites) return withPinned(s);
+      if (s.favorites) return withDefaults(s);
       const urls: string[] = s.favoriteTabUrls ?? [];
       const titles: Record<string, string> = s.favoriteTabTitles ?? {};
       const favorites = urls.map((url: string, i: number) => ({
@@ -51,7 +56,7 @@ export const storage = {
         position: i,
       }));
       const { favoriteTabUrls: _, favoriteTabTitles: _t, ...rest } = s;
-      return withPinned({ ...rest, favorites });
+      return withDefaults({ ...rest, favorites });
     });
   },
 
@@ -73,7 +78,27 @@ export const storage = {
     const spaces = await this.getSpaces();
     const idx = spaces.findIndex((s) => s.id === id);
     if (idx !== -1) {
-      spaces[idx] = { ...spaces[idx], ...updates };
+      // Bump `updatedAt` when the user changed something user-visible
+      // (name, icon, instructions, colors, favorites). System-level
+      // updates (windowId, pinnedTabs, position) don't count — they
+      // happen during window reconciliation and shouldn't move the card
+      // to the top of the "Last updated" sort.
+      const userFacing: ReadonlyArray<keyof Space> = [
+        "name",
+        "icon",
+        "instructions",
+        "description",
+        "colors",
+        "colorMode",
+        "favorites",
+      ];
+      const userTouched = userFacing.some((k) =>
+        Object.prototype.hasOwnProperty.call(updates, k),
+      );
+      const touched = userTouched
+        ? { ...updates, updatedAt: Date.now() }
+        : updates;
+      spaces[idx] = { ...spaces[idx], ...touched };
       await this.setSpaces(spaces);
     }
   },

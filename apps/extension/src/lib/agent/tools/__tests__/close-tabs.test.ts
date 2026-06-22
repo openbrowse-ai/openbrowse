@@ -18,6 +18,7 @@ function ctx(overrides: Partial<NonNullable<ToolContext["session"]>> = {}): Tool
     driver: {} as ToolContext["driver"],
     session: {
       conversationId: "c1",
+      spaceId: null,
       resolveHandle: (h: string) => ({ t1: LTID_T1, t2: LTID_T2 } as Record<string, string>)[h],
       ...overrides,
     },

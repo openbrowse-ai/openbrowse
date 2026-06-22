@@ -38,12 +38,12 @@ vi.mock("@/lib/vfs/events", () => ({
 import { createPythonTool } from "../execute-python";
 import type { ToolContext } from "../../driver/tool-context";
 
-function ctxWith(conversationId: string | null): ToolContext {
+function ctxWith(conversationId: string | null, spaceId: string | null = null): ToolContext {
   return {
     // The driver is unused on the python path; a bare cast keeps the
     // fixture minimal.
     driver: {} as ToolContext["driver"],
-    session: { conversationId },
+    session: { conversationId, spaceId },
   };
 }
 
@@ -91,5 +91,25 @@ describe("executePython — conversation id resolution", () => {
 
     expect(res.ok).toBe(false);
     expect(rpc.executePythonRPC).not.toHaveBeenCalled();
+  });
+
+  it("forwards ctx.session.spaceId so the sandbox can mount /spaces/<id>/workspace", async () => {
+    const tool = createPythonTool();
+    await tool.execute({ code: "1" }, ctxWith("conv-A", "space-7"));
+
+    expect(rpc.executePythonRPC.mock.calls[0][0]).toMatchObject({
+      conversationId: "conv-A",
+      spaceId: "space-7",
+    });
+  });
+
+  it("forwards spaceId: null when the conversation is not bound to a space", async () => {
+    const tool = createPythonTool();
+    await tool.execute({ code: "1" }, ctxWith("conv-A", null));
+
+    expect(rpc.executePythonRPC.mock.calls[0][0]).toMatchObject({
+      conversationId: "conv-A",
+      spaceId: null,
+    });
   });
 });

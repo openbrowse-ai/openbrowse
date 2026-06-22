@@ -21,15 +21,14 @@ import type { ScheduledTask } from "@/lib/schedule/types";
 import { CreateScheduledTaskDialog } from "./CreateScheduledTaskDialog";
 import { cn } from "@/lib/utils";
 import {
-  Clock,
   Play,
   Pencil,
+  Plus,
   Trash2,
   ChevronDown,
   Sparkles,
   SlidersHorizontal,
   Search,
-  Info,
   MoreVertical,
   ExternalLink,
 } from "lucide-react";
@@ -52,8 +51,7 @@ export function ScheduledView({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ScheduledTask | null>(null);
   const [query, setQuery] = useState("");
-  const [searchFocused, setSearchFocused] = useState(false);
-  const searchRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(() => {
     void taskDb.list().then((t) => setTasks(t as ScheduledTask[]));
@@ -64,35 +62,52 @@ export function ScheduledView({
     return taskDb.subscribe(refresh);
   }, [refresh]);
 
-  // "/" focuses the search input when the user isn't already typing in a
-  // field. (Escape-to-clear is handled on the input's own onKeyDown.)
+  // Global "/" focuses the search input when not typing into another input
+  // or with a modifier (those are platform shortcuts). Mirrors SpacesPage.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "/") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement | null;
-      const typing =
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable);
-      if (e.key === "/" && !typing) {
-        e.preventDefault();
-        searchRef.current?.focus();
-      }
+      const tag = target?.tagName;
+      const editable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable;
+      if (editable) return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
     }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // Sort by next run (soonest first), with manual/paused tasks sinking to
+  // the bottom; falls back to name order so the grid is stable.
+  const sorted = useMemo(() => {
+    const FAR = Number.POSITIVE_INFINITY;
+    return [...tasks].sort((a, b) => {
+      const aNext =
+        a.enabled && typeof a.nextRunAt === "number" ? a.nextRunAt : FAR;
+      const bNext =
+        b.enabled && typeof b.nextRunAt === "number" ? b.nextRunAt : FAR;
+      if (aNext !== bNext) return aNext - bNext;
+      return a.name.localeCompare(b.name);
+    });
+  }, [tasks]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return tasks;
-    return tasks.filter(
+    if (!q) return sorted;
+    return sorted.filter(
       (t) =>
         t.name.toLowerCase().includes(q) ||
         t.description.toLowerCase().includes(q) ||
         t.prompt.toLowerCase().includes(q),
     );
-  }, [tasks, query]);
+  }, [sorted, query]);
 
   async function toggle(task: ScheduledTask, enabled: boolean) {
     await taskDb.update(task.id, { enabled });
@@ -128,32 +143,17 @@ export function ScheduledView({
   }
 
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-6">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h1 className="text-xl font-semibold">Scheduled tasks</h1>
-            <p className="text-sm text-muted-foreground">
-              Run tasks on a schedule or whenever you need them. Type{" "}
-              <code className="rounded bg-muted px-1 py-0.5 text-[0.8em]">
-                /schedule
-              </code>{" "}
-              in any chat to set one up.
-            </p>
-            <p
-              className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground"
-              title="Scheduled tasks run in the background only while Chrome is open. If Chrome is closed when a task is due, that run is skipped and the next occurrence runs at its scheduled time."
-            >
-              <Info className="size-3.5 shrink-0" />
-              Runs only while Chrome is open; missed runs are skipped.
-            </p>
-          </div>
+    <div className="flex-1 min-w-0 overflow-y-auto">
+      <div className="px-6 py-8 max-w-5xl mx-auto w-full">
+        {/* Header: title + New task split-button */}
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-2xl font-semibold">Scheduled tasks</h1>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button className="shrink-0 gap-1.5">
+              <Button className="gap-1.5">
+                <Plus />
                 New task
-                <ChevronDown className="size-4" />
+                <ChevronDown className="size-4 -ml-0.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-48">
@@ -171,156 +171,74 @@ export function ScheduledView({
 
         {/* Search */}
         {tasks.length > 0 && (
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <div className="relative mb-4">
+            <Search
+              className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground"
+              aria-hidden
+            />
             <input
-              ref={searchRef}
+              ref={searchInputRef}
+              type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
               onKeyDown={(e) => {
                 if (e.key === "Escape" && query) {
                   e.preventDefault();
-                  e.stopPropagation();
                   setQuery("");
-                  searchRef.current?.blur();
                 }
               }}
-              placeholder="Search tasks…"
-              className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent pl-8 pr-10 py-1 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              placeholder="Search tasks..."
+              className="w-full h-10 rounded-md border border-input/30 bg-muted/40 pl-9 pr-14 text-sm placeholder:text-muted-foreground outline-none focus:ring-1 focus:ring-ring"
+              aria-label="Search tasks"
             />
-            {query ? (
-              <Kbd className="absolute right-2.5 top-1/2 -translate-y-1/2">
-                esc
-              </Kbd>
-            ) : !searchFocused ? (
-              <Kbd className="absolute right-2.5 top-1/2 -translate-y-1/2">
-                /
-              </Kbd>
-            ) : null}
+            <Kbd className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+              {query ? "esc" : "/"}
+            </Kbd>
           </div>
         )}
 
-        {/* List / empty state */}
-        {tasks.length === 0 ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
-            <Clock className="size-10" />
-            <p>Create your first scheduled task</p>
+        {/* Empty state */}
+        {tasks.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border py-12 text-center">
+            <p className="text-sm text-muted-foreground">
+              No scheduled tasks yet. Create one to get started.
+            </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Type{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[0.9em]">
+                /schedule
+              </code>{" "}
+              in any chat to set one up. Tasks run only while Chrome is open;
+              missed runs are skipped.
+            </p>
           </div>
-        ) : filtered.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            No tasks match “{query}”.
+        )}
+
+        {/* No-search-results */}
+        {tasks.length > 0 && filtered.length === 0 && (
+          <p className="text-sm text-muted-foreground py-8 text-center">
+            No tasks match "{query}".
           </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
+        )}
+
+        {/* Card grid */}
+        {filtered.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {filtered.map((task) => (
-              <li
+              <ScheduledTaskCard
                 key={task.id}
-                className="flex items-center justify-between gap-3 rounded-lg border p-3"
-              >
-                <div
-                  className={cn(
-                    "min-w-0 flex-1",
-                    !task.enabled && "opacity-60",
-                  )}
-                >
-                  <span className="font-medium">{task.name}</span>
-                  <p className="truncate text-sm text-muted-foreground">
-                    {task.description || task.prompt}
-                  </p>
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>{formatSchedule(task.schedule)}</span>
-                    {!task.enabled ? (
-                      <>
-                        <span aria-hidden>·</span>
-                        <span>Paused</span>
-                      </>
-                    ) : (
-                      typeof task.nextRunAt === "number" && (
-                        <>
-                          <span aria-hidden>·</span>
-                          <span title={new Date(task.nextRunAt).toLocaleString()}>
-                            Next run {formatRelativeTime(task.nextRunAt)}
-                          </span>
-                        </>
-                      )
-                    )}
-                    {task.enabled && task.lastRunStatus && (
-                      <>
-                        <span aria-hidden>·</span>
-                        <RunStatusBadge
-                          status={task.lastRunStatus}
-                          error={task.lastRunError}
-                        />
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="inline-flex">
-                        <Switch
-                          checked={task.enabled}
-                          onCheckedChange={(v) => toggle(task, v)}
-                          aria-label={`${task.enabled ? "Pause" : "Resume"} ${task.name}`}
-                        />
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {task.enabled ? "Pause" : "Resume"}
-                    </TooltipContent>
-                  </Tooltip>
-
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Open actions for ${task.name}`}
-                      >
-                        <MoreVertical className="size-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => runNow(task)}>
-                        <Play className="size-3.5" />
-                        Run now
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => {
-                          setEditing(task);
-                          setDialogOpen(true);
-                        }}
-                      >
-                        <Pencil className="size-3.5" />
-                        Edit
-                      </DropdownMenuItem>
-                      {task.lastRunConversationId &&
-                        (task.lastRunStatus === "success" ||
-                          task.lastRunStatus === "error") && (
-                          <DropdownMenuItem
-                            onClick={() => openLastRun(task)}
-                          >
-                            <ExternalLink className="size-3.5" />
-                            View last run
-                          </DropdownMenuItem>
-                        )}
-                      <DropdownMenuItem
-                        variant="destructive"
-                        onClick={() => remove(task)}
-                      >
-                        <Trash2 className="size-3.5" />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </li>
+                task={task}
+                onToggle={(enabled) => toggle(task, enabled)}
+                onRunNow={() => runNow(task)}
+                onEdit={() => {
+                  setEditing(task);
+                  setDialogOpen(true);
+                }}
+                onOpenLastRun={() => openLastRun(task)}
+                onRemove={() => remove(task)}
+              />
             ))}
-          </ul>
+          </div>
         )}
       </div>
 
@@ -330,6 +248,138 @@ export function ScheduledView({
         editing={editing}
         models={models}
       />
+    </div>
+  );
+}
+
+function ScheduledTaskCard({
+  task,
+  onToggle,
+  onRunNow,
+  onEdit,
+  onOpenLastRun,
+  onRemove,
+}: {
+  task: ScheduledTask;
+  onToggle: (enabled: boolean) => void;
+  onRunNow: () => void;
+  onEdit: () => void;
+  onOpenLastRun: () => void;
+  onRemove: () => void;
+}) {
+  const description = (task.description || task.prompt || "").trim();
+  const hasViewableLastRun =
+    !!task.lastRunConversationId &&
+    (task.lastRunStatus === "success" || task.lastRunStatus === "error");
+
+  return (
+    <div
+      className={cn(
+        "group relative rounded-lg border border-border bg-background hover:border-foreground/30 transition-colors",
+        !task.enabled && "opacity-60",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onEdit}
+        className="block w-full text-left p-4 min-h-[140px] flex flex-col gap-3"
+        aria-label={`Edit task ${task.name}`}
+      >
+        <div className="flex items-center gap-2 min-w-0 pr-20">
+          <span className="flex-1 truncate text-base font-semibold">
+            {task.name}
+          </span>
+          {!task.enabled && (
+            <span
+              className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              aria-label="Paused"
+            >
+              Paused
+            </span>
+          )}
+          {task.enabled && task.lastRunStatus && (
+            <RunStatusBadge
+              status={task.lastRunStatus}
+              error={task.lastRunError}
+            />
+          )}
+        </div>
+
+        {description ? (
+          <p className="text-sm text-muted-foreground line-clamp-3 flex-1">
+            {description}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground/60 italic flex-1">
+            No description set.
+          </p>
+        )}
+
+        <p className="text-xs text-muted-foreground">
+          {formatSchedule(task.schedule)}
+          {task.enabled && typeof task.nextRunAt === "number" && (
+            <>
+              {" · "}
+              <span title={new Date(task.nextRunAt).toLocaleString()}>
+                Next run {formatRelativeTime(task.nextRunAt)}
+              </span>
+            </>
+          )}
+        </p>
+      </button>
+
+      {/* Always-visible toggle + hover-revealed actions, mirroring
+          SpaceCard's corner-affordance pattern. The toggle stays visible
+          since it's a primary one-click action; the menu reveals on hover. */}
+      <div className="absolute top-2 right-2 flex items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex" onClick={(e) => e.stopPropagation()}>
+              <Switch
+                checked={task.enabled}
+                onCheckedChange={onToggle}
+                aria-label={`${task.enabled ? "Pause" : "Resume"} ${task.name}`}
+              />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            {task.enabled ? "Pause" : "Resume"}
+          </TooltipContent>
+        </Tooltip>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`Open actions for ${task.name}`}
+              className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-opacity opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+            >
+              <MoreVertical className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={onRunNow}>
+              <Play className="size-3.5" />
+              Run now
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onEdit}>
+              <Pencil className="size-3.5" />
+              Edit
+            </DropdownMenuItem>
+            {hasViewableLastRun && (
+              <DropdownMenuItem onClick={onOpenLastRun}>
+                <ExternalLink className="size-3.5" />
+                View last run
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem variant="destructive" onClick={onRemove}>
+              <Trash2 className="size-3.5" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 }
@@ -348,18 +398,24 @@ function RunStatusBadge({
   }[status];
 
   return (
-    <span
-      className={cn("inline-flex items-center gap-1", config.text)}
-      title={status === "error" && error ? error : undefined}
-    >
-      <span
-        className={cn(
-          "size-1.5 rounded-full",
-          config.dot,
-          status === "running" && "animate-pulse",
-        )}
-      />
-      {config.label}
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className={cn("shrink-0 inline-flex items-center", config.text)}
+          aria-label={config.label}
+        >
+          <span
+            className={cn(
+              "size-2 rounded-full",
+              config.dot,
+              status === "running" && "animate-pulse",
+            )}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>
+        {status === "error" && error ? `${config.label}: ${error}` : config.label}
+      </TooltipContent>
+    </Tooltip>
   );
 }

@@ -165,11 +165,11 @@ description: Use whenever the user pastes CSV data and asks for it as a markdown
 # `csv-to-markdown` Skill
 
 1. Identify the CSV content in the user's message. Strip any surrounding code fences.
-2. Save the CSV data to a file in `/workspace/` using the `Write` tool.
-3. Parse it with `executePython`:
+2. Save the CSV data to `data.csv` in the conversation workspace using the `Write` tool.
+3. Parse it with `executePython` (Pyodide's cwd is the conversation workspace, so relative paths just work):
    ```python
    import pandas as pd
-   df = pd.read_csv("/workspace/data.csv")
+   df = pd.read_csv("data.csv")
    df.to_markdown(index=False)
    ```
 4. Return the markdown table inline in your reply.

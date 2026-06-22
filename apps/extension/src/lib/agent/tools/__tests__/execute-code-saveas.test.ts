@@ -39,7 +39,7 @@ import type { ToolContext } from "../../driver/tool-context";
 function ctxWith(conversationId: string | null): ToolContext {
   return {
     driver: {} as ToolContext["driver"],
-    session: { conversationId },
+    session: { conversationId, spaceId: null },
   };
 }
 

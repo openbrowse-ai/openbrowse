@@ -19,12 +19,6 @@ const parameters = z.object({
     .describe(
       "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return any JSON-serializable value (auto-stringified) or `{ __binary_b64: \"...\" }` for binary content. Provide EITHER `code` or `scriptRef`, not both.",
     ),
-  kind: z
-    .enum(["read", "write"])
-    .optional()
-    .describe(
-      "Required when `code` is set; ignored when `scriptRef` is set. Whether this script READS page state (returns data; no DOM/storage/network mutation, no clicks, no fetch) or WRITES (mutates DOM, types into fields, dispatches events, calls fetch, modifies storage, navigates). Read-shaped scripts skip approval on ANY origin (a static AST check on the body is the trust mechanism — same exfiltration surface as snapshot/readPage, both ungated). Write-shaped scripts skip approval ONLY on user-allowlisted origins, otherwise require approval (in Ask mode) or must target an in-plan site (in Plan mode). When in doubt, declare 'write' — a misclassified read prompts unnecessarily but a misclassified write would silently bypass the gate.",
-    ),
   scriptRef: z
     .object({
       skill: z
@@ -84,11 +78,11 @@ type Output = z.infer<typeof outputSchema>;
 export const executeOnPageTool: BrowserTool<Input, Output> = {
   name: "executeOnPage",
   description:
-    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs), `kind` ('read' or 'write' — required when `code` is set), and EITHER inline `code` OR a `scriptRef` to a saved site-skill script. On a domain that has a site skill (see '## Site skills for open tabs'), check its scripts FIRST and use `scriptRef` if one matches — its body runs without filling your context. Otherwise write inline `code`. Read-shaped inline `code` skips approval on ANY origin (a static check on the body is the trust mechanism). Write-shaped inline `code` skips approval ONLY on user-allowlisted origins, otherwise prompts. A `scriptRef` run of a saved script does NOT require approval (it's trusted — you don't need to Read the body first, the script catalog is its contract). Use for complex DOM manipulation or page JavaScript state beyond what readPage/clickElement/typeInElement provide. For payloads larger than a few KB, set `saveAs` to write directly to /workspace instead of round-tripping through the chat.",
+    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs) and EITHER inline `code` OR a `scriptRef` to a saved site-skill script. On a domain that has a site skill (see '## Site skills for open tabs'), check its scripts FIRST and use `scriptRef` if one matches — its body runs without filling your context. Otherwise write inline `code`. Inline `code` requires user approval before each execution; a `scriptRef` run of a saved script does NOT (it's trusted — you don't need to Read the body first, the script catalog is its contract). Use for complex DOM manipulation or page JavaScript state beyond what readPage/clickElement/typeInElement provide. For payloads larger than a few KB, set `saveAs` to write directly to /workspace instead of round-tripping through the chat.",
   parameters,
   outputSchema,
   approval: { required: true },
-  execute: async ({ tab: handle, code, kind, scriptRef, args, saveAs }, ctx) => {
+  execute: async ({ tab: handle, code, scriptRef, args, saveAs }, ctx) => {
     const tab = await resolveTabOrThrow(ctx, handle);
     if (tab.id == null) {
       return { tab: handle, error: "Tab id missing" };
@@ -119,12 +113,6 @@ export const executeOnPageTool: BrowserTool<Input, Output> = {
         desc: parseScriptDesc(loaded),
       };
     } else if (code) {
-      if (!kind) {
-        return {
-          tab: handle,
-          error: "Inline `code` requires `kind` ('read' or 'write'). See tool description.",
-        };
-      }
       scriptBody = code;
     } else {
       return {

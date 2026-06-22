@@ -9,14 +9,50 @@ export interface ToolCallLike {
 export interface ScannedToolUsage {
   connectorIds: string[];
   skillNames: string[];
+  /**
+   * Workspace-relative paths under the active space's workspace touched
+   * by Read/Write/Edit calls in this batch. Empty when `spaceId` is null
+   * or no fs call targeted the active space. NOT deduped — `mergeDistinct`
+   * handles dedup against the persisted list.
+   */
+  spaceFiles: string[];
+}
+
+/** Tool names whose `input.file_path` is interpreted as a VFS path. */
+const FS_FILE_PATH_TOOLS = new Set(["Read", "Write", "Edit"]);
+
+/**
+ * Extract the workspace-relative tail from a path that targets
+ * `spaces/<spaceId>/workspace/<rel>`. Returns null when the path doesn't
+ * match (different space, conversation workspace, bare root, etc.).
+ *
+ * - Strips a leading slash so both `/spaces/...` and `spaces/...` match.
+ * - The bare workspace root (with or without trailing slash) is rejected:
+ *   it's a directory, not a file.
+ */
+function extractActiveSpaceRelative(
+  rawPath: unknown,
+  spaceId: string,
+): string | null {
+  if (typeof rawPath !== "string") return null;
+  const clean = rawPath.replace(/^\/+/, "");
+  const root = `spaces/${spaceId}/workspace`;
+  if (clean === root || clean === `${root}/`) return null;
+  if (!clean.startsWith(`${root}/`)) return null;
+  return clean.slice(root.length + 1);
 }
 
 /**
- * Scan a finished step's tool calls for connector and skill usage.
+ * Scan a finished step's tool calls for connector / skill / space-file usage.
  *
  * - `mcp_*` tool names map to a connector id via `resolveMcpToolDisplay`;
  *   unmatched MCP servers (no known connector) are skipped.
  * - `skill` tool calls contribute their non-empty string `input.name`.
+ * - `Read` / `Write` / `Edit` calls whose `input.file_path` targets the
+ *   ACTIVE space (`spaces/<spaceId>/workspace/...`) contribute the
+ *   workspace-relative tail (e.g. `poem.md`, `sub/data.csv`). When
+ *   `spaceId` is null the agent cannot reference any space's workspace,
+ *   so the array is empty.
  *
  * Any invocation counts (we do not inspect tool-call success/state),
  * matching the prior message-derived semantics. Results are NOT deduped
@@ -24,9 +60,11 @@ export interface ScannedToolUsage {
  */
 export function scanToolUsage(
   toolCalls: readonly ToolCallLike[],
+  spaceId: string | null,
 ): ScannedToolUsage {
   const connectorIds: string[] = [];
   const skillNames: string[] = [];
+  const spaceFiles: string[] = [];
   for (const call of toolCalls) {
     if (call.toolName.startsWith("mcp_")) {
       const id = resolveMcpToolDisplay(call.toolName).mcpInfo?.connector.id;
@@ -34,9 +72,14 @@ export function scanToolUsage(
     } else if (call.toolName === "skill") {
       const name = (call.input as { name?: unknown } | undefined)?.name;
       if (typeof name === "string" && name.length > 0) skillNames.push(name);
+    } else if (spaceId && FS_FILE_PATH_TOOLS.has(call.toolName)) {
+      const filePath = (call.input as { file_path?: unknown } | undefined)
+        ?.file_path;
+      const rel = extractActiveSpaceRelative(filePath, spaceId);
+      if (rel) spaceFiles.push(rel);
     }
   }
-  return { connectorIds, skillNames };
+  return { connectorIds, skillNames, spaceFiles };
 }
 
 /**

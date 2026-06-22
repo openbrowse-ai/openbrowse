@@ -46,11 +46,22 @@ interface ContextTab {
 export function ContextCard({
   conversationId,
   onSelectFile,
+  onSelectSpaceFile,
   collapsible = true,
   showHeader = true,
 }: {
   conversationId: string;
+  /**
+   * Click handler for an Uploads row. Argument is the path RELATIVE to
+   * the conversation workspace (e.g. `.uploads/notes.txt`).
+   */
   onSelectFile: (file: string | null) => void;
+  /**
+   * Click handler for a Space files row. Argument is the path RELATIVE
+   * to the active space's workspace (e.g. `poem.md`). When omitted,
+   * Space file rows render as non-clickable display rows.
+   */
+  onSelectSpaceFile?: (file: string | null) => void;
   collapsible?: boolean;
   showHeader?: boolean;
 }) {
@@ -63,6 +74,7 @@ export function ContextCard({
   const [uploads, setUploads] = useState<string[]>([]);
   const [connectors, setConnectors] = useState<DerivedConnector[]>([]);
   const [skills, setSkills] = useState<string[]>([]);
+  const [spaceFiles, setSpaceFiles] = useState<string[]>([]);
 
   // Poll: tabs (from ownedLtids) + connectors/skills (from message parts).
   useEffect(() => {
@@ -135,9 +147,10 @@ export function ContextCard({
         if (isMounted) setTabs(hydrated);
 
         if (!isMounted) return;
-        // Connectors + skills are recorded live onto the conversation row at
-        // step-finish time (see recordToolUsageForStep in agent-transport), so
-        // we read them directly from `conv` rather than scanning message parts.
+        // Connectors, skills, and space-file references are recorded live
+        // onto the conversation row at step-finish time (see
+        // recordToolUsageForStep in agent-transport), so we read them
+        // directly from `conv` rather than scanning message parts.
         const connectorList: DerivedConnector[] = (conv?.usedConnectorIds ?? [])
           .map((id) => {
             const c = getConnector(id);
@@ -146,6 +159,7 @@ export function ContextCard({
           .filter((c): c is DerivedConnector => c !== null);
         setConnectors(connectorList);
         setSkills(conv?.loadedSkillNames ?? []);
+        setSpaceFiles(conv?.referencedSpaceFiles ?? []);
       } catch {
         // Transient read failure (chatDb / chrome.tabs). Leave the last good
         // state in place; the next poll tick (or vfs:change) retries. Swallow
@@ -202,6 +216,7 @@ export function ContextCard({
   const isEmpty =
     tabs.length === 0 &&
     uploads.length === 0 &&
+    spaceFiles.length === 0 &&
     connectors.length === 0 &&
     skills.length === 0;
 
@@ -280,6 +295,22 @@ export function ContextCard({
                   icon={<FileTypeIcon filename={name} />}
                   label={name}
                   onClick={() => onSelectFile(`${UPLOADS_DIR}/${name}`)}
+                />
+              ))}
+            </ContextSection>
+          )}
+          {spaceFiles.length > 0 && (
+            <ContextSection label="Space files">
+              {spaceFiles.map((rel) => (
+                <ContextRow
+                  key={rel}
+                  icon={<FileTypeIcon filename={rel} />}
+                  label={rel}
+                  onClick={
+                    onSelectSpaceFile
+                      ? () => onSelectSpaceFile(rel)
+                      : undefined
+                  }
                 />
               ))}
             </ContextSection>

@@ -13,11 +13,12 @@ You are running CPython 3 inside a WebAssembly sandbox (Pyodide) in the user's b
 
 *   **Module-level execution:** Code executes at the top level of a module. **DO NOT use the `return` statement at the top level** (it will cause a `SyntaxError`). The value of the *last expression* in your code is automatically returned to the caller.
 *   **Top-level await:** Supported. You can use `await` without wrapping it in an `async` function.
-*   **Filesystem:**
-    *   `/workspace` (read/write, persistent) - This is your current working directory. Read/write user files here.
-    *   `/skills` (read-only) - Files bundled with skills.
+*   **Filesystem:** Paths in Python match what the agent's fs tools (Read/Write/Glob/Grep/LS) see — no aliasing.
+    *   **Conversation workspace** (read/write, persistent) — mounted at `conversations/<conversationId>/workspace` and set as Pyodide's CWD. **Just use relative paths**: `open("data.csv")` reads/writes here. This is the only writable tree.
+    *   `/skills/...` (read-only) — files bundled with skills.
+    *   `spaces/<spaceId>/workspace/...` (read-only) — the active space's shared workspace, present only when the conversation is in a space.
     *   Everything else is a temporary in-memory filesystem that resets.
-*   **Getting data into `/workspace` from a page or JS sandbox:** Don't pass large payloads through tool results. `executeOnPage` and `executeCode` both accept a `saveAs: "<path>"` parameter that writes their return value directly to `/workspace`, so Python can `open()` it on the next call. See the `data-plumbing` skill for the canonical recipe.
+*   **Getting data into the workspace from a page or JS sandbox:** Don't pass large payloads through tool results. `executeOnPage` and `executeCode` both accept a `saveAs: "<path>"` parameter that writes their return value directly into the conversation workspace, so Python can `open("<path>")` it on the next call. See the `data-plumbing` skill for the canonical recipe.
 
 ## 2. Package Availability
 
@@ -99,7 +100,7 @@ import openpyxl
 wb = openpyxl.Workbook()
 ws = wb.active
 ws["A1"] = "Hello from Pyodide"
-wb.save("test.xlsx") # Saves to /workspace/test.xlsx
+wb.save("test.xlsx") # Saves into the conversation workspace (Pyodide's cwd)
 
 # Return a success dictionary
 {"success": True, "file": "test.xlsx"}

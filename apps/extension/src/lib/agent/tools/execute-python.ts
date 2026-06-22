@@ -11,10 +11,14 @@ const parameters = z.object({
   code: z
     .string()
     .describe(
-      "Python source. Workspace files are at /workspace (cwd, read/write). " +
-        "Skills are at /skills (read-only). Code runs at module level: " +
-        "DO NOT use `return`; the value of the last expression is returned. " +
-        "Top-level `await` is supported (e.g. `await micropip.install('X')`).",
+      "Python source. Paths in Python match what the agent's fs tools see: " +
+        "the conversation workspace is at `conversations/<conversationId>/workspace` " +
+        "(read/write, and the cwd — relative paths like `data.csv` resolve here). " +
+        "When a space is active, the shared space workspace is at " +
+        "`spaces/<spaceId>/workspace` (read-only). Skills are at `/skills` (read-only). " +
+        "Code runs at module level: DO NOT use `return`; the value of the last " +
+        "expression is returned. Top-level `await` is supported (e.g. " +
+        "`await micropip.install('X')`).",
     ),
   timeout_ms: z
     .number()
@@ -55,9 +59,11 @@ export function createPythonTool(): BrowserTool<Input, Output> {
   return {
     name: "executePython",
     description:
-      "Execute Python (CPython 3 via Pyodide) inside the browser, with " +
-      "access to the conversation's OPFS workspace at /workspace and the " +
-      "shared skills directory at /skills (read-only). State " +
+      "Execute Python (CPython 3 via Pyodide) inside the browser. Paths in " +
+      "Python match the agent's fs tools verbatim: the conversation workspace " +
+      "lives at `conversations/<conversationId>/workspace` (read/write, and " +
+      "the cwd), the shared space workspace (when set) at `spaces/<spaceId>/workspace` " +
+      "(read-only), and `/skills` is read-only. State " +
       "(imports, globals) persists across calls in the same conversation. " +
       "Network is OFF by default — set allow_network: true to install " +
       "packages with micropip or hit the internet. Prefer the dedicated fs " +
@@ -77,6 +83,7 @@ export function createPythonTool(): BrowserTool<Input, Output> {
       // before the conversation row existed) and subagent workspaces
       // resolve correctly.
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
       if (!conversationId) {
         return {
           ok: false,
@@ -89,6 +96,7 @@ export function createPythonTool(): BrowserTool<Input, Output> {
       try {
         const res = await executePythonRPC({
           conversationId,
+          spaceId,
           code,
           timeoutMs: timeout_ms,
           resetState: reset_state,

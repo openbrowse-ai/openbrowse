@@ -22,6 +22,9 @@ import {
   Download,
   RefreshCw,
   FileIcon,
+  FileCheck,
+  FileClock,
+  FilePlusCorner,
   Eye,
   Code as CodeIcon,
   ListTree,
@@ -34,11 +37,33 @@ import {
 } from "@/components/ui/tooltip";
 import { downloadBlob, downloadText } from "@/lib/download";
 import { formatBytes } from "@/lib/format-bytes";
+import { saveToSpace } from "@/lib/spaces/save-to-space";
+import {
+  savedFilesDb,
+  savedFilesEvents,
+  sha256Hex,
+  type SavedStatus,
+} from "@/lib/spaces/saved-files-db";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
 interface FileViewerPanelProps {
   filePath: string;
   fileName: string;
+  /**
+   * The owning conversation id. Used to derive the workspace-relative path
+   * from `filePath` and to look up / record saved-to-space relationships.
+   * Optional so tooling that mounts the viewer outside the home/sidepanel
+   * (e.g. ad-hoc previews) keeps working — when omitted, the save-to-space
+   * affordance is not rendered.
+   */
+  conversationId?: string;
+  /**
+   * The active space id, or `null` when the user is in the global scope.
+   * When omitted or null, the save-to-space button is rendered disabled
+   * with an explanatory tooltip (matching the Working Folder card).
+   */
+  spaceId?: string | null;
   onClose: () => void;
   className?: string;
 }
@@ -99,9 +124,26 @@ interface LoadedContent {
   blobUrl?: string;
 }
 
+/**
+ * Strip the conversations workspace prefix from a full OPFS path to get the
+ * workspace-relative path used by the saved-files-db key. Returns null when
+ * `filePath` doesn't live under a conversation workspace (the save-to-space
+ * affordance is hidden in that case).
+ */
+function relativeFilePathFor(
+  filePath: string,
+  conversationId: string,
+): string | null {
+  const prefix = `conversations/${conversationId}/workspace/`;
+  if (!filePath.startsWith(prefix)) return null;
+  return filePath.slice(prefix.length);
+}
+
 export function FileViewerPanel({
   filePath,
   fileName,
+  conversationId,
+  spaceId,
   onClose,
   className,
 }: FileViewerPanelProps) {
@@ -109,6 +151,15 @@ export function FileViewerPanel({
   const language = useMemo(() => detectLanguage(fileName), [fileName]);
   const isBinary = isBinaryClass(fileClass);
   const typeLabel = useMemo(() => uppercaseExt(fileName), [fileName]);
+
+  const relativeFilePath = useMemo(
+    () =>
+      conversationId ? relativeFilePathFor(filePath, conversationId) : null,
+    [filePath, conversationId],
+  );
+  const canSaveToSpace =
+    conversationId != null && relativeFilePath != null;
+  const activeSpaceId = spaceId ?? null;
 
   const [loaded, setLoaded] = useState<LoadedContent | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +170,15 @@ export function FileViewerPanel({
   const [htmlMode, setHtmlMode] = useState<HtmlPreviewMode>("preview");
   const [jsonMode, setJsonMode] = useState<JsonViewerMode>("tree");
   const [jsonMeta, setJsonMeta] = useState<JsonParseMeta | null>(null);
+
+  // Saved-to-space relationship state. Computed from the loaded source's
+  // size + hash plus the saved-files-db record. Recomputes whenever the
+  // file content changes (vfs:change → reload → new hash) or whenever the
+  // save record itself changes (other surfaces save the same file).
+  const [savedStatus, setSavedStatus] = useState<SavedStatus>({
+    state: "unsaved",
+  });
+  const [savingToSpace, setSavingToSpace] = useState(false);
 
   // Reset per-file UI state when the file changes.
   useEffect(() => {
@@ -185,6 +245,81 @@ export function FileViewerPanel({
     };
   }, [filePath]);
 
+  // Compute the saved-to-space status whenever the file content or the
+  // saved-files-db relationship changes. Reads source bytes from the
+  // already-loaded `loaded` state when possible (text files share the
+  // string with the viewer; binary files re-read the blob since hashing
+  // wants the bytes anyway). Skipped entirely when the affordance isn't
+  // applicable (no conversationId, or filePath isn't a workspace path).
+  const refreshSavedStatus = useCallback(async () => {
+    if (!canSaveToSpace || conversationId == null || relativeFilePath == null) {
+      setSavedStatus({ state: "unsaved" });
+      return;
+    }
+    if (loaded == null) return; // wait until the source is loaded
+    try {
+      let bytes: Blob;
+      if (loaded.blob) {
+        bytes = loaded.blob;
+      } else if (loaded.text !== undefined) {
+        bytes = new Blob([loaded.text]);
+      } else {
+        return;
+      }
+      const sourceSize = bytes.size;
+      const sourceHashHex = await sha256Hex(bytes);
+      const status = await savedFilesDb.getStatus({
+        conversationId,
+        filePath: relativeFilePath,
+        spaceId: activeSpaceId,
+        currentSourceSize: sourceSize,
+        currentSourceHashHex: sourceHashHex,
+      });
+      setSavedStatus(status);
+    } catch {
+      // Hashing or IDB failed; leave the prior status in place rather than
+      // flipping the indicator to a misleading state.
+    }
+  }, [
+    canSaveToSpace,
+    conversationId,
+    relativeFilePath,
+    activeSpaceId,
+    loaded,
+  ]);
+
+  useEffect(() => {
+    void refreshSavedStatus();
+  }, [refreshSavedStatus]);
+
+  // Subscribe to saved-files-db changes so a save performed in the
+  // working-folder rail (or another window) updates the indicator without
+  // a full re-mount.
+  useEffect(() => {
+    if (!canSaveToSpace) return;
+    function onChange(e: Event) {
+      const detail = (e as CustomEvent).detail ?? {};
+      // Filter on the relationship we care about. A filePath/conversationId
+      // mismatch means it's a different file's save record changing.
+      if (
+        detail.conversationId != null &&
+        detail.conversationId !== conversationId
+      ) {
+        return;
+      }
+      if (
+        detail.filePath != null &&
+        detail.filePath !== relativeFilePath
+      ) {
+        return;
+      }
+      void refreshSavedStatus();
+    }
+    savedFilesEvents.addEventListener("saved-files:changed", onChange);
+    return () =>
+      savedFilesEvents.removeEventListener("saved-files:changed", onChange);
+  }, [canSaveToSpace, conversationId, relativeFilePath, refreshSavedStatus]);
+
   const handleCopy = async () => {
     if (loaded?.text === undefined) return;
     await navigator.clipboard.writeText(loaded.text);
@@ -205,6 +340,38 @@ export function FileViewerPanel({
 
   const handleRefresh = () => {
     setRefreshKey((k) => k + 1);
+  };
+
+  const handleSaveToSpace = async () => {
+    if (
+      !conversationId ||
+      !relativeFilePath ||
+      !activeSpaceId ||
+      savingToSpace
+    ) {
+      return;
+    }
+    setSavingToSpace(true);
+    try {
+      const result = await saveToSpace({
+        conversationId,
+        spaceId: activeSpaceId,
+        filePath: relativeFilePath,
+      });
+      if (result.ok) {
+        toast.success(
+          result.mode === "updated"
+            ? `Updated "${fileName}" in this space`
+            : `Saved "${fileName}" to this space`,
+        );
+        // savedFilesDb broadcasts; the listener above will re-fetch and
+        // flip the indicator. No local optimistic update needed.
+      } else {
+        toast.error(`Save failed: ${result.error}`);
+      }
+    } finally {
+      setSavingToSpace(false);
+    }
   };
 
   const onJsonMeta = useCallback((m: JsonParseMeta) => setJsonMeta(m), []);
@@ -275,6 +442,15 @@ export function FileViewerPanel({
           >
             <RefreshCw className="size-3.5" />
           </IconButton>
+          {canSaveToSpace && (
+            <SaveToSpaceButton
+              status={savedStatus}
+              spaceActive={activeSpaceId !== null}
+              loading={savingToSpace}
+              disabled={loaded === null}
+              onClick={handleSaveToSpace}
+            />
+          )}
           <IconButton
             onClick={handleDownload}
             disabled={loaded === null}
@@ -393,6 +569,69 @@ function IconButton({ onClick, disabled, tooltip, children }: IconButtonProps) {
           aria-label={tooltip}
         >
           {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+interface SaveToSpaceButtonProps {
+  status: SavedStatus;
+  spaceActive: boolean;
+  loading: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}
+
+/**
+ * Three-state save-to-space affordance.
+ *
+ *   unsaved → neutral icon, "Save to space"
+ *   saved   → emerald check, "Saved to space"
+ *   stale   → amber clock, "Source has changed since save — click to update"
+ *
+ * Disabled (with explanatory tooltip) when no space is active.
+ */
+function SaveToSpaceButton({
+  status,
+  spaceActive,
+  loading,
+  disabled,
+  onClick,
+}: SaveToSpaceButtonProps) {
+  let icon: React.ReactNode;
+  let tooltip: string;
+  let colorClass = "text-muted-foreground";
+
+  if (!spaceActive) {
+    icon = <FilePlusCorner className="size-3.5" />;
+    tooltip = "Open this conversation in a space to enable Save to space";
+  } else if (status.state === "saved") {
+    icon = <FileCheck className="size-3.5" />;
+    tooltip = "Saved to space";
+    colorClass = "text-emerald-500";
+  } else if (status.state === "stale") {
+    icon = <FileClock className="size-3.5" />;
+    tooltip = "Source has changed since the last save — click to update";
+    colorClass = "text-amber-500";
+  } else {
+    icon = <FilePlusCorner className="size-3.5" />;
+    tooltip = "Save to space";
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={onClick}
+          disabled={!spaceActive || disabled || loading}
+          className={cn("size-7 hover:text-foreground", colorClass)}
+          aria-label={tooltip}
+        >
+          {icon}
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{tooltip}</TooltipContent>

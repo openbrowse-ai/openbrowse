@@ -7,7 +7,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { ChatPicker } from "@/components/chat/ChatPicker";
-import { SpaceSwitcher } from "./components/SpaceSwitcher";
+import { Logo } from "@/components/ui/logo";
 import { CopyIcon, Download, ExternalLink, FileDown, MessageSquarePlus, MoreVertical, Settings, PictureInPicture, PanelRight } from "lucide-react";
 import {
   Tooltip,
@@ -98,34 +98,21 @@ export default function App() {
       const allSpaces = await storage.getSpaces();
       setSpaces(allSpaces);
 
-      // In popup mode, the popup's own window isn't a real space.
-      // Resolve the active space from the origin window if known, otherwise
-      // fall back to the first space.
       if (isPopupMode) {
         if (originWindowId != null) {
           const space = await storage.getSpaceByWindowId(originWindowId);
-          if (space) {
-            setActiveSpaceId(space.id);
-            return;
-          }
+          setActiveSpaceId(space?.id ?? null);
+          return;
         }
-        if (allSpaces.length > 0) setActiveSpaceId(allSpaces[0].id);
+        // No origin window → run space-less.
+        setActiveSpaceId(null);
         return;
       }
 
       const currentWindow = await chrome.windows.getCurrent();
       if (currentWindow.id) {
-        const response = await chrome.runtime.sendMessage({
-          type: "GET_OR_CREATE_SPACE",
-          windowId: currentWindow.id,
-        });
-        if (response?.ok) {
-          setActiveSpaceId(response.spaceId);
-          const refreshed = await storage.getSpaces();
-          setSpaces(refreshed);
-        } else if (allSpaces.length > 0) {
-          setActiveSpaceId(allSpaces[0].id);
-        }
+        const space = await storage.getSpaceByWindowId(currentWindow.id);
+        setActiveSpaceId(space?.id ?? null);
 
         try {
           const owned = await chrome.runtime.sendMessage({
@@ -138,9 +125,7 @@ export default function App() {
         } catch {}
         return;
       }
-      if (allSpaces.length > 0) {
-        setActiveSpaceId(allSpaces[0].id);
-      }
+      setActiveSpaceId(null);
     }
     init();
 
@@ -471,7 +456,19 @@ export default function App() {
     <FileSelectionContext.Provider value={handleSelectFile}>
       <div className="relative flex flex-col h-screen">
         <div className="relative flex items-center gap-1.5 border-b border-border px-2 py-1.5">
-          <SpaceSwitcher spaces={spaces} activeSpaceId={activeSpaceId} />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={handleOpenFullView}
+                className="rounded p-1 hover:bg-accent"
+                aria-label="Open OpenBrowse home"
+              >
+                <Logo className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Open home</TooltipContent>
+          </Tooltip>
           {conversationTitle && (
             <>
               <span className="text-muted-foreground text-xs">/</span>
@@ -602,6 +599,8 @@ export default function App() {
             <FileViewerPanel
               filePath={`conversations/${activeConversationId}/workspace/${viewerFile}`}
               fileName={viewerFile.split("/").pop() ?? viewerFile}
+              conversationId={activeConversationId}
+              spaceId={activeSpaceId}
               onClose={() => setViewerFile(null)}
             />
           </div>

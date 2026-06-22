@@ -40,7 +40,12 @@ export function ChatList({
 
   const refresh = useCallback(async () => {
     const convs = await chatDb.listRootConversations(spaceId);
-    setConversations(convs);
+    // When `spaceId === null` (global view) the underlying list returns
+    // rows from every space. Filter so the global view shows only
+    // globally-scoped conversations and never bleeds a space's chats in.
+    const visible =
+      spaceId === null ? convs.filter((c) => c.spaceId == null) : convs;
+    setConversations(visible);
   }, [spaceId]);
 
   useEffect(() => {

@@ -73,6 +73,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "PYTHON_EXECUTE":
         return getPyodideManager().runPython({
           conversationId: message.conversationId,
+          spaceId: message.spaceId ?? null,
           code: message.code,
           timeoutMs: message.timeoutMs,
           resetState: message.resetState,
