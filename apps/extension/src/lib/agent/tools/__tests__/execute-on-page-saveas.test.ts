@@ -54,7 +54,7 @@ describe("executeOnPage with saveAs", () => {
   it("writes string return value and omits it from the result", async () => {
     const ctx = ctxWith("conv-A");
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return JSON.stringify({k:'v'})", saveAs: "data.json" },
+      { tab: "t1", kind: "write", code: "return JSON.stringify({k:'v'})", saveAs: "data.json" },
       ctx,
     );
     expect(r.result).toBeUndefined();
@@ -70,7 +70,7 @@ describe("executeOnPage with saveAs", () => {
   it("rejects when no conversation is bound", async () => {
     const ctx = ctxWith(null);
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return 'x'", saveAs: "x.txt" },
+      { tab: "t1", kind: "write", code: "return 'x'", saveAs: "x.txt" },
       ctx,
     );
     expect(r.error).toMatch(/active conversation/);
@@ -80,7 +80,7 @@ describe("executeOnPage with saveAs", () => {
   it("rejects path traversal", async () => {
     const ctx = ctxWith("conv-A");
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return 'x'", saveAs: "../escape.txt" },
+      { tab: "t1", kind: "write", code: "return 'x'", saveAs: "../escape.txt" },
       ctx,
     );
     expect(r.error).toBeDefined();
@@ -96,7 +96,7 @@ describe("executeOnPage with saveAs", () => {
       result: { type: "object", value: { not: "a string" } },
     });
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return { not: 'a string' }", saveAs: "x.json" },
+      { tab: "t1", kind: "write", code: "return { not: 'a string' }", saveAs: "x.json" },
       ctx,
     );
     expect(r.error).toBeUndefined();
@@ -113,7 +113,7 @@ describe("executeOnPage with saveAs", () => {
       result: { type: "string", value: '{"k":"v"}' },
     });
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "return JSON.stringify({k:'v'})" },
+      { tab: "t1", kind: "write", code: "return JSON.stringify({k:'v'})" },
       ctx,
     );
     expect(r.result).toBe('{"k":"v"}');
@@ -127,7 +127,7 @@ describe("executeOnPage with saveAs", () => {
       exceptionDetails: { exception: { description: "ReferenceError: x is not defined" } },
     });
     const r = await executeOnPageTool.execute(
-      { tab: "t1", code: "x", saveAs: "out.json" },
+      { tab: "t1", kind: "write", code: "x", saveAs: "out.json" },
       ctx,
     );
     expect(r.error).toMatch(/ReferenceError/);

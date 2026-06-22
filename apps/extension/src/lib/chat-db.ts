@@ -1,7 +1,13 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { queueDb } from "./queue-db";
 import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
-import type { ConversationUsage, SerializedUIPart, TodoItem } from "./types";
+import type {
+  ApprovedPlan,
+  ConversationMode,
+  ConversationUsage,
+  SerializedUIPart,
+  TodoItem,
+} from "./types";
 import { OPFS } from "./vfs/opfs";
 
 /**
@@ -81,6 +87,12 @@ interface ChatDB extends DBSchema {
       // needed (keyPath store stores whole objects). Mirrors `Conversation`
       // in lib/types.ts.
       usage?: ConversationUsage;
+      // v16 — per-conversation approval mode and approved plan. Both
+      // optional; pre-v16 rows read back as undefined which the agent
+      // treats as the default ("ask" mode, no plan). Mirrors
+      // `Conversation` in lib/types.ts.
+      mode?: ConversationMode;
+      plan?: ApprovedPlan;
     };
     indexes: {
       "by-updated": number;
@@ -220,7 +232,7 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      `chrome.tabs.get` rejects (the tab is gone) are dropped.
     //      Per-row try/catch — corrupt rows degrade to empty owned-state
     //      with a console.warn rather than aborting the whole upgrade.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 15, {
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 16, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -435,6 +447,15 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // IndexedDB stores arbitrary values — we just need to bump the
           // version number so the post-open fixup runs.
           flags.needsV15Fixup = true;
+        }
+
+        if (oldVersion < 16) {
+          // v16: Conversation rows gain optional `mode` and `plan` fields
+          // (see types.ts). No row migration needed — pre-v16 rows read
+          // back as { ...existing, mode: undefined, plan: undefined } which
+          // is the correct default state ("ask" mode, no plan). We bump
+          // the version so future hops can rely on the schema having
+          // reached this state.
         }
       },
     });

@@ -422,6 +422,10 @@ export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
   const rewritten = working.map((m, i) => {
     let parts = m.parts;
     parts = substituteCompactionPart(parts);
+    // Plan-extension markers are UI-only — strip before the LLM ever
+    // sees them. The empty-parts filter below removes user messages
+    // whose only content was a stripped marker.
+    parts = stripPlanExtensionParts(parts);
     // Only strip screenshots from messages older than the last
     // SCREENSHOT_PROTECTED_TURNS user turns. Recent screenshots ride
     // along intact so the model retains visual recall across one user-
@@ -841,6 +845,23 @@ function substituteCompactionPart(
     }
   }
   return changed ? out : parts;
+}
+
+/**
+ * Strip `data-plan-extension` marker parts from a parts array before
+ * sending to the LLM. The model has no use for these — they're a UI
+ * signal that the auto-extend hook flipped the plan — and a user
+ * message containing only this part would convert to a `user` model
+ * message with empty `content`, failing the SDK's prompt validation.
+ *
+ * The empty-parts filter in `rewriteForLLM` then drops any message
+ * whose only content was a stripped marker.
+ */
+function stripPlanExtensionParts(
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
+  if (!parts.some((p) => p.type === "data-plan-extension")) return parts;
+  return parts.filter((p) => p.type !== "data-plan-extension");
 }
 
 /**

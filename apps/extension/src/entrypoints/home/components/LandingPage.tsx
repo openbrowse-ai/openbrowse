@@ -18,7 +18,7 @@ import { markPendingFirstTurn } from "@/lib/agent/pending-first-turn";
 import { storage } from "@/lib/storage";
 import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
 import { useProviders } from "@/hooks/useProviders";
-import type { Space, Settings, AgentSettings, SerializedUIPart, ThinkingConfig } from "@/lib/types";
+import type { Space, Settings, AgentSettings, ConversationMode, SerializedUIPart, ThinkingConfig } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -68,6 +68,10 @@ export function LandingPage({
   }, []);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
+  // Pre-conversation approval mode. The user can pick a mode in the
+  // composer before sending the first message; we apply it when
+  // creating the new conversation in `handleSubmit`. Default Ask.
+  const [mode, setMode] = useState<ConversationMode>("ask");
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
@@ -199,6 +203,8 @@ export function LandingPage({
         spaceId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        // Apply the user's pre-conversation mode selection.
+        ...(mode !== "ask" && { mode }),
       });
 
       const baseText = input.trim();
@@ -299,6 +305,7 @@ export function LandingPage({
       onNewConversation,
       agentSettings.agentModel,
       settings.providerConfigs,
+      mode,
     ],
   );
 
@@ -357,6 +364,8 @@ export function LandingPage({
               setAgentSettings(updated);
               storage.setAgentSettings(updated);
             }}
+            mode={mode}
+            onModeChange={setMode}
             thinkingEnabled={agentSettings.thinkingEnabled}
             thinkingConfig={agentSettings.thinkingConfig}
             onThinkingChange={(enabled, config) => {

@@ -94,6 +94,20 @@ export function resolveToolPartState(
     return { state: "denied" };
   }
 
+  // `approval-requested` is genuinely pending — waiting on a human gesture,
+  // not orphaned. Render as `call` regardless of streaming state. Without
+  // this case the orphan branch below would flip the row to "Interrupted"
+  // the moment the SDK marked the assistant message non-streaming (which
+  // happens as soon as the agent emits the gated tool call and pauses for
+  // approval — well before the user clicks). Affects every approval-gated
+  // tool, but is load-bearing for `proposePlan`: with the composer-replacement
+  // approval surface (see ChatView), the inline ToolCallBlock IS the
+  // "Drafting plan..." breadcrumb, and it must keep showing pending until
+  // the user responds.
+  if (state === "approval-requested") {
+    return { state: "call" };
+  }
+
   // An APPROVED `approval-responded` call is a legitimate resume point: the
   // SDK re-executes it from this state via the `tool-approval-response` it
   // emits during convertToModelMessages. There is a brief window right after
@@ -257,7 +271,18 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
       );
     }
     if (part.type === "dynamic-tool") {
-            if (part.state === "approval-requested" && "approval" in part && onToolApproval) {
+            // proposePlan's approval surface lives in the chat composer
+            // (see `findPendingPlanApproval` + `<PlanApprovalCard>` in
+            // ChatView). Skip the inline approval block entirely; the
+            // fall-through below renders a `<ToolCallBlock>` showing
+            // "Drafting plan..." in the message stream as a breadcrumb,
+            // while the composer-level card carries the actual buttons.
+            if (
+              part.state === "approval-requested" &&
+              "approval" in part &&
+              onToolApproval &&
+              part.toolName !== "proposePlan"
+            ) {
               const approval = part.approval as { id: string };
               return (
                 <ToolApprovalBlock
@@ -339,7 +364,14 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             if ("toolCallId" in part && "state" in part && "input" in part) {
               const toolName = part.type.slice(5);
               const p = part as Record<string, unknown>;
-              if (p.state === "approval-requested" && "approval" in p && onToolApproval) {
+              // proposePlan's approval surface lives in the chat composer;
+              // see the parallel comment in the dynamic-tool branch above.
+              if (
+                p.state === "approval-requested" &&
+                "approval" in p &&
+                onToolApproval &&
+                toolName !== "proposePlan"
+              ) {
                 const approval = p.approval as { id: string };
                 return (
                   <ToolApprovalBlock

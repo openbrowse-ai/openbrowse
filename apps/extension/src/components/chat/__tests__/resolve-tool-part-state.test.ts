@@ -170,6 +170,29 @@ describe("resolveToolPartState", () => {
     expect(r.state).toBe("denied");
   });
 
+  // ── approval-requested is genuinely pending, not orphaned ───────────
+  // Regression guard for the proposePlan composer-replacement card and
+  // for any other approval-gated tool: the moment the agent emits a
+  // gated tool call, the SDK marks the assistant message non-streaming
+  // even though the call is waiting on the user. Without an explicit
+  // case, the orphan branch below would flip the row to "Interrupted"
+  // before the user could click. Approval-requested must always render
+  // as 'call' regardless of streaming.
+
+  it("approval-requested + isStreaming:false → 'call' (pending, not orphaned)", () => {
+    const r = resolveToolPartState(
+      { state: "approval-requested" },
+      { isStreaming: false },
+    );
+    expect(r.state).toBe("call");
+    expect(r.result).toBeUndefined();
+  });
+
+  it("approval-requested with no opts provided → 'call' (still pending)", () => {
+    const r = resolveToolPartState({ state: "approval-requested" });
+    expect(r.state).toBe("call");
+  });
+
   it.each([
     ["input-streaming"],
     ["input-available"],
