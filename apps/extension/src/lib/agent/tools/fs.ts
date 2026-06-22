@@ -43,16 +43,23 @@ export function isAnySpacePath(rawPath: string): boolean {
   return /^spaces\/[^/]+\/workspace(\/|$)/.test(clean);
 }
 
+function sanitizePath(p: string): string {
+  // Deterministic removal of `..` segments that prevents nested escapes
+  // like `....//` which bypass a single `.replace()` regex pass.
+  return p.split("/").filter((segment) => segment !== "..").join("/");
+}
+
 function resolveVfsPath(
   conversationId: string | null,
   spaceId: string | null,
   rawPath: string,
 ): string {
+  const cleanBase = rawPath.replace(/^\/+/, "");
   if (rawPath.startsWith("/skills/")) {
-    return rawPath.replace(/^\/+/, "").replace(/\.\.\//g, "");
+    return sanitizePath(cleanBase);
   }
   if (isOwnSpacePath(rawPath, spaceId)) {
-    return rawPath.replace(/^\/+/, "").replace(/\.\.\//g, "");
+    return sanitizePath(cleanBase);
   }
   if (isAnySpacePath(rawPath)) {
     throw new Error(
@@ -60,8 +67,7 @@ function resolveVfsPath(
     );
   }
   const root = getVfsRoot(conversationId);
-  const clean = rawPath.replace(/^\/+/, "").replace(/\.\.\//g, "");
-  return `${root}/${clean}`;
+  return `${root}/${sanitizePath(cleanBase)}`;
 }
 
 // Strip the VFS root prefix so the LLM only sees relative paths
