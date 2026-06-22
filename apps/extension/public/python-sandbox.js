@@ -73,12 +73,14 @@ def _is_space_workspace_path(path):
 def _is_readonly(path):
     return _is_skills_path(path) or _is_space_workspace_path(path)
 def _guarded_open(file, mode='r', *args, **kwargs):
-    if any(c in mode for c in _WRITE_MODES) and _is_readonly(file):
+    real_file = os.path.realpath(file)
+    if any(c in mode for c in _WRITE_MODES) and _is_readonly(real_file):
         raise PermissionError(f"path is read-only: {file!r}")
     return _orig_open(file, mode, *args, **kwargs)
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 def _guarded_os_open(path, flags, *args, **kwargs):
-    if (flags & _WRITE_FLAGS) and _is_readonly(path):
+    real_path = os.path.realpath(path)
+    if (flags & _WRITE_FLAGS) and _is_readonly(real_path):
         raise PermissionError(f"path is read-only: {path!r}")
     return _orig_os_open(path, flags, *args, **kwargs)
 builtins.open = _guarded_open

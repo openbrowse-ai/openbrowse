@@ -49,10 +49,10 @@ function resolveVfsPath(
   rawPath: string,
 ): string {
   if (rawPath.startsWith("/skills/")) {
-    return rawPath.replace(/^\/+/, "");
+    return rawPath.replace(/^\/+/, "").replace(/\.\.\//g, "");
   }
   if (isOwnSpacePath(rawPath, spaceId)) {
-    return rawPath.replace(/^\/+/, "");
+    return rawPath.replace(/^\/+/, "").replace(/\.\.\//g, "");
   }
   if (isAnySpacePath(rawPath)) {
     throw new Error(
