@@ -139,4 +139,49 @@ describe("child-conversation helpers", () => {
     );
     expect(found).toBeUndefined();
   });
+
+  it("inherits parent's mode and plan (security: user contract binds transitively)", async () => {
+    // Update parent to Plan mode with an approved plan. The child must
+    // inherit BOTH so the user-approved approval bounds bind across
+    // delegations — otherwise a subagent silently reverts to default
+    // Ask mode (or worse, would skip approvals the parent wouldn't).
+    const planFixture = {
+      goal: "research",
+      sites: ["https://kilo.ai"],
+      allowNetwork: false,
+      approvedAt: 200,
+      extensions: [],
+    };
+    await chatDb.updateConversation("parent-1", {
+      mode: "plan",
+      plan: planFixture,
+    });
+
+    const child = await createChildConversation({
+      parentConversationId: "parent-1",
+      slug: "explore",
+      isolation: "peer",
+      title: "research subtask",
+    });
+
+    const stored = await chatDb.getConversation(child.id);
+    expect(stored?.mode).toBe("plan");
+    expect(stored?.plan).toEqual(planFixture);
+  });
+
+  it("does not stamp mode/plan when parent has neither (defaults remain undefined)", async () => {
+    // Parent in default Ask state — no mode, no plan. The child must
+    // not synthesize fields that weren't there: undefined inherits
+    // undefined, which chatDb treats as Ask + no plan.
+    const child = await createChildConversation({
+      parentConversationId: "parent-1",
+      slug: "explore",
+      isolation: "peer",
+      title: "task",
+    });
+
+    const stored = await chatDb.getConversation(child.id);
+    expect(stored?.mode).toBeUndefined();
+    expect(stored?.plan).toBeUndefined();
+  });
 });

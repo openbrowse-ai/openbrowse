@@ -35,7 +35,7 @@ import {
 } from "@/lib/chat/attachment-meta";
 import type { Attachment } from "@/lib/chat/types";
 import { openSettingsTab } from "@/lib/open-settings";
-import type { ThinkingConfig } from "@/lib/types";
+import type { ConversationMode, ThinkingConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
@@ -60,6 +60,7 @@ import {
     type ModelOption,
     type ProviderModels,
 } from "./ModelPicker";
+import { ModeSwitch } from "./ModeSwitch";
 
 // Derived alias kept for back-compat with call sites that destructure
 // images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
@@ -133,6 +134,23 @@ interface ChatInputProps {
   thinkingConfig?: ThinkingConfig;
   onThinkingChange?: (enabled: boolean, config?: ThinkingConfig) => void;
   selectedModelCapabilities?: string[];
+  /**
+   * Per-conversation approval mode picker. When BOTH props are provided
+   * the mode dropdown renders next to the model picker. The parent
+   * (ChatView) reads `Conversation.mode` from chatDb and persists changes
+   * via `chatDb.updateConversation`.
+   *
+   * Pre-conversation surfaces (e.g. LandingPage) omit these to hide the
+   * picker entirely.
+   */
+  mode?: ConversationMode;
+  onModeChange?: (mode: ConversationMode) => void;
+  /**
+   * True when the conversation has an approved plan. Forwarded to
+   * ModeSwitch so the trigger can indicate "plan approved" vs "plan
+   * mode but no plan yet".
+   */
+  hasPlan?: boolean;
 }
 
 export interface TabMentionAttrs {
@@ -316,6 +334,9 @@ export function ChatInput({
   thinkingConfig,
   onThinkingChange,
   selectedModelCapabilities,
+  mode,
+  onModeChange,
+  hasPlan,
 }: ChatInputProps) {
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
@@ -935,8 +956,8 @@ export function ChatInput({
 
       {/* Bottom bar: model selector left, actions right */}
       <div className="flex items-center justify-between px-1.5 pb-1.5">
-        {/* Model selector */}
-        <div>
+        {/* Model selector + mode switch */}
+        <div className="flex items-center gap-1">
           {providerModels && providerModels.length > 0 && onModelChange && (
             <ModelPicker
               trigger="chat"
@@ -1003,6 +1024,9 @@ export function ChatInput({
                 ) : null
               }
             />
+          )}
+          {mode && onModeChange && (
+            <ModeSwitch mode={mode} onChange={onModeChange} hasPlan={hasPlan} />
           )}
         </div>
 

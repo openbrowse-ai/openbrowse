@@ -100,6 +100,15 @@ export interface ToolSession {
   getTodos?: () => Promise<TodoItem[]>;
   /** Replace the current to-do list for this session. */
   setTodos?: (todos: TodoItem[]) => Promise<void>;
+  /** Read the conversation's approved plan, or `undefined` if none. */
+  getPlan?: () => Promise<import("../../types").ApprovedPlan | undefined>;
+  /** Replace the conversation's approved plan wholesale. */
+  setPlan?: (plan: import("../../types").ApprovedPlan) => Promise<void>;
+  /**
+   * Read the conversation's approval mode. Returns `"ask"` when the
+   * field is absent (matches the default behavior for pre-existing rows).
+   */
+  getMode?: () => Promise<import("../../types").ConversationMode>;
   /**
    * Set when this session is running as a subagent. Carries the parent's
    * conversation id and the depth in the agent tree (root = 0, first-level

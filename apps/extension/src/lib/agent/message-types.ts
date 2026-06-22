@@ -29,6 +29,7 @@ export type SerializedUIPart =
   | { type: "step-start" }
   | CompactionPart
   | CompletionCheckRejectionPart
+  | PlanExtensionPart
   | SerializedToolPart;
 
 /**
@@ -53,6 +54,36 @@ export interface CompactionData {
   auto: boolean;
   overflow?: boolean;
   tailStartMessageId?: string;
+}
+
+/**
+ * Surfaces a Plan-mode option-C auto-extension to the user. Emitted by
+ * the agent transport's auto-extend hook in `toSDKTool`'s `execute` after
+ * the plan is mutated in IDB. Persisted as a `user`-role message with
+ * this single part, so it renders inline in the conversation stream and
+ * survives reloads (parallel to `data-compaction`).
+ *
+ * Two flavors:
+ *   - `kind: "site"` — a new origin was appended to `plan.sites` because
+ *     the user just approved an off-plan tab call.
+ *   - `kind: "network"` — `plan.allowNetwork` was flipped from false to
+ *     true because the user just approved an executePython network call.
+ *
+ * Stripped before reaching the LLM (see `rewriteForLLM` in
+ * `compacting-transport.ts`) — the model has no use for this and an
+ * unsubstituted user message containing only this part would convert to
+ * an empty `user` model message and fail SDK validation.
+ */
+export interface PlanExtensionData {
+  kind: "site" | "network";
+  /** Present when `kind === "site"`. The origin appended to plan.sites. */
+  origin?: string;
+  extendedAt: number;
+}
+
+export interface PlanExtensionPart {
+  type: "data-plan-extension";
+  data: PlanExtensionData;
 }
 
 /**
@@ -192,6 +223,7 @@ export type AgentDataParts = {
   compaction: CompactionData;
   "completion-check-rejection": CompletionCheckRejectionData;
   "completion-check-running": CompletionCheckRunningData;
+  "plan-extension": PlanExtensionData;
 };
 
 /**

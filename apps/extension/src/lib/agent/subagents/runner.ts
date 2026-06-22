@@ -413,6 +413,20 @@ function buildChildToolContext(args: {
           updatedAt: Date.now(),
         });
       },
+      getPlan: async () => {
+        const conv = await chatDb.getConversation(childConvId);
+        return conv?.plan;
+      },
+      setPlan: async (plan) => {
+        await chatDb.updateConversation(childConvId, {
+          plan,
+          updatedAt: Date.now(),
+        });
+      },
+      getMode: async () => {
+        const conv = await chatDb.getConversation(childConvId);
+        return conv?.mode ?? "ask";
+      },
     },
   };
 }

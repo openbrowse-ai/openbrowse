@@ -4,6 +4,9 @@ import {
   type Attachment,
 } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { PlanApprovalCard } from "./PlanApprovalCard";
+import { findPendingPlanApproval } from "./find-pending-plan-approval";
+import type { ProposePlanInput } from "@/lib/agent/tools/propose-plan";
 import {
   Conversation,
   ConversationContent,
@@ -32,12 +35,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { chatDb } from "@/lib/chat-db";
 import { ConversationIdContext } from "@/lib/conversation-id-context";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { useProviders } from "@/hooks/useProviders";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { openSettingsTab } from "@/lib/open-settings";
+import type { ConversationMode, ApprovedPlan } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import { CoworkBar } from "@/components/cowork/cowork-bar";
@@ -174,6 +179,20 @@ export function ChatView({
   const activeAgents = useActiveAgents();
   const isAgentActiveGlobally = conversationId ? activeAgents.has(conversationId) : false;
 
+  // Per-conversation approval mode + approved plan. Declared BEFORE
+  // useAgentChat so we can pass `initialMode: mode` to it — this lets
+  // the user pick a mode in the composer BEFORE sending the first
+  // message; useAgentChat applies the mode at conversation-create time.
+  // Read from chatDb when the conversation changes; subscribe so
+  // out-of-band updates (e.g. another tool/window mutating the row, or
+  // proposePlan landing a fresh plan mid-turn) reflect in the picker.
+  // `plan` is plumbed alongside `mode` so the ModeSwitch trigger can
+  // indicate "plan approved" via a small dot — without it the trigger
+  // label is identical between "Plan, no plan yet" and "Plan, plan
+  // approved", which obscures the most important plan-mode UI fact.
+  const [mode, setMode] = useState<ConversationMode>("ask");
+  const [plan, setPlan] = useState<ApprovedPlan | undefined>(undefined);
+
   const {
     messages,
     input,
@@ -210,6 +229,7 @@ export function ChatView({
     onNewConversation,
     initialInput,
     getSharedTabId,
+    initialMode: mode,
   });
 
   // Seed the composer from an external "seed-chat-input" event (e.g. the
@@ -231,8 +251,69 @@ export function ChatView({
     return () => window.removeEventListener("seed-chat-input", onSeed);
   }, [conversationId, setInput]);
 
+  // Hydrate the mode/plan state declared above from chatDb when the
+  // conversation changes; subscribe so out-of-band updates (e.g.
+  // another tool/window mutating the row, or proposePlan landing a
+  // fresh plan mid-turn) reflect in the picker.
+  useEffect(() => {
+    if (!conversationId) {
+      // No conversation yet → preserve the user's pending mode/plan
+      // selection from the picker. (Resetting here would clobber the
+      // pending choice the moment the user clicks the dropdown but
+      // before sending the first message.)
+      return;
+    }
+    let cancelled = false;
+    async function refresh() {
+      const conv = await chatDb.getConversation(conversationId!);
+      if (cancelled) return;
+      setMode(conv?.mode ?? "ask");
+      setPlan(conv?.plan);
+    }
+    void refresh();
+    const unsubscribe = chatDb.subscribeConversationChange((convId) => {
+      if (convId === conversationId) void refresh();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [conversationId]);
+
+  const handleModeChange = useCallback(
+    async (next: ConversationMode) => {
+      // Always update local display immediately so the picker is
+      // responsive even before the conversation exists. The next
+      // chatDb.createConversation call (in useAgentChat) reads
+      // `initialMode` and applies the mode at row creation. Once a
+      // conversation row exists, persist the change directly.
+      setMode(next);
+      if (!conversationId) return;
+      await chatDb.updateConversation(conversationId, {
+        mode: next,
+        updatedAt: Date.now(),
+      });
+    },
+    [conversationId],
+  );
+
   const isLoading = hookIsLoading || isAgentActiveGlobally;
   const isStreaming = hookIsStreaming || isAgentActiveGlobally;
+
+  // When the agent has a pending `proposePlan` approval, the chat
+  // composer is replaced with a {@link PlanApprovalCard} (mirrors
+  // Claude's UX where the plan card sits in the composer slot, not
+  // inline in the message stream). The inline message stream still
+  // shows a "Drafting plan..." `<ToolCallBlock>` row as a breadcrumb;
+  // see the comment in AssistantMessage's dynamic-tool branch.
+  //
+  // Memoized on `messages` so keystrokes in the composer (which
+  // re-render ChatView via `input` state) don't re-scan the message
+  // list. Cheap regardless — the scan is O(latest-message-parts).
+  const pendingPlanApproval = useMemo(
+    () => findPendingPlanApproval(messages),
+    [messages],
+  );
 
   // Viewer-aware stop. In a viewer tab there is no live local loop to
   // abort — the run is driven by the host. Forward a stop request via
@@ -797,57 +878,71 @@ export function ChatView({
             </QueueSection>
           </Queue>
         )}
-        <ChatInput
-          value={input}
-          onChange={setInput}
-          onSubmit={isEditing ? handleEditSubmit : handleSubmit}
-          onQueue={isEditing ? undefined : queueMessage}
-          onCommand={
-            isEditing
-              ? undefined
-              : async ({ command, hasRemaining, mentions, attachments }) => {
-                  if (command !== "compact") return;
-                  // Compact first; the transport prunes against the
-                  // fresh compaction state on the next send.
-                  await compactNow();
-                  // Compact-then-send: if the user typed text alongside
-                  // `/compact`, send it now. ChatInput already stripped
-                  // the command node and synced `input` to the leftover
-                  // text, so handleSubmit picks it up.
-                  if (hasRemaining) {
-                    await handleSubmit(mentions, attachments);
+        {pendingPlanApproval ? (
+          <PlanApprovalCard
+            variant="composer"
+            toolCallId={pendingPlanApproval.toolCallId}
+            args={pendingPlanApproval.input as Partial<ProposePlanInput>}
+            approvalId={pendingPlanApproval.approvalId}
+            onApprove={(id) => approveToolCall({ id, approved: true })}
+            onDeny={(id) => approveToolCall({ id, approved: false })}
+          />
+        ) : (
+          <ChatInput
+            value={input}
+            onChange={setInput}
+            onSubmit={isEditing ? handleEditSubmit : handleSubmit}
+            onQueue={isEditing ? undefined : queueMessage}
+            onCommand={
+              isEditing
+                ? undefined
+                : async ({ command, hasRemaining, mentions, attachments }) => {
+                    if (command !== "compact") return;
+                    // Compact first; the transport prunes against the
+                    // fresh compaction state on the next send.
+                    await compactNow();
+                    // Compact-then-send: if the user typed text alongside
+                    // `/compact`, send it now. ChatInput already stripped
+                    // the command node and synced `input` to the leftover
+                    // text, so handleSubmit picks it up.
+                    if (hasRemaining) {
+                      await handleSubmit(mentions, attachments);
+                    }
                   }
-                }
-          }
-          editMode={isEditing}
-          onStop={handleStop}
-          isLoading={isLoading}
-          disabled={!isConfigured}
-          providerModels={providerModels}
-          favoriteModels={settings.favoriteModels}
-          onFavoriteToggle={(modelKey) => {
-            const favoriteModels = settings.favoriteModels.includes(modelKey)
-              ? settings.favoriteModels.filter((k) => k !== modelKey)
-              : [...settings.favoriteModels, modelKey];
-            updateSettings({ favoriteModels });
-          }}
-          selectedModel={agentSettings.agentModel}
-          onModelChange={setAgentModel}
-          thinkingEnabled={agentSettings.thinkingEnabled}
-          thinkingConfig={agentSettings.thinkingConfig}
-          onThinkingChange={setThinkingSettings}
-          selectedModelCapabilities={
-            providers
-              .flatMap((p) => p.models)
-              .find((m) => {
-                const parts = agentSettings.agentModel.split(":");
-                const actualId = parts.length > 1 ? parts.slice(1).join(":") : agentSettings.agentModel;
-                return m.id === actualId;
-              })?.capabilities
-          }
-          autoFocus
-          focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}-${seedNonce}`}
-        />
+            }
+            editMode={isEditing}
+            onStop={handleStop}
+            isLoading={isLoading}
+            disabled={!isConfigured}
+            providerModels={providerModels}
+            favoriteModels={settings.favoriteModels}
+            onFavoriteToggle={(modelKey) => {
+              const favoriteModels = settings.favoriteModels.includes(modelKey)
+                ? settings.favoriteModels.filter((k) => k !== modelKey)
+                : [...settings.favoriteModels, modelKey];
+              updateSettings({ favoriteModels });
+            }}
+            selectedModel={agentSettings.agentModel}
+            onModelChange={setAgentModel}
+            mode={mode}
+            onModeChange={handleModeChange}
+            hasPlan={!!plan}
+            thinkingEnabled={agentSettings.thinkingEnabled}
+            thinkingConfig={agentSettings.thinkingConfig}
+            onThinkingChange={setThinkingSettings}
+            selectedModelCapabilities={
+              providers
+                .flatMap((p) => p.models)
+                .find((m) => {
+                  const parts = agentSettings.agentModel.split(":");
+                  const actualId = parts.length > 1 ? parts.slice(1).join(":") : agentSettings.agentModel;
+                  return m.id === actualId;
+                })?.capabilities
+            }
+            autoFocus
+            focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}-${seedNonce}`}
+          />
+        )}
       </div>
     </div>
     </ConversationIdContext.Provider>

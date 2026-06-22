@@ -3,7 +3,7 @@ import type { AgentUIMessage } from "@/lib/types";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
 import { ExpandableText } from "./tool-results/expandable-text";
-import { AlertCircle, RefreshCw } from "lucide-react";
+import { AlertCircle, RefreshCw, ShieldCheck } from "lucide-react";
 
 interface MessageListProps {
   messages: AgentUIMessage[];
@@ -51,6 +51,32 @@ function MessageListImpl({
   return (
     <>
       {messages.map((message, i) => {
+        // Plan-extension marker: a synthetic user message emitted when
+        // the auto-extend hook in agent-transport flips the plan
+        // (option-C site append, or network unlock). Render as a small
+        // inline notice rather than a chat bubble so it reads as a
+        // status line, not a user utterance. Stripped before reaching
+        // the LLM (see `rewriteForLLM`).
+        const planExtensionPart = message.parts.find(
+          (p) => p.type === "data-plan-extension",
+        );
+        if (message.role === "user" && planExtensionPart) {
+          const data = planExtensionPart.data;
+          const text =
+            data.kind === "site"
+              ? `Plan extended: ${data.origin ?? "site"}`
+              : "Plan extended: network access permitted";
+          return (
+            <div
+              key={message.id}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground py-1 ml-3"
+            >
+              <ShieldCheck className="size-3" />
+              <span>{text}</span>
+            </div>
+          );
+        }
+
         // Compaction-user message: replace the bubble with a
         // CompactionDivider. The next assistant message in the
         // stream is the summary; we render its text inside the
