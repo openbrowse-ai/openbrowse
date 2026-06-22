@@ -93,7 +93,8 @@ export function SpacesPage({ activeSpaceId }: SpacesPageProps) {
         description: null,
         updatedAt: Date.now(),
       };
-      const all = [...spaces, next];
+      const current = await storage.getSpaces();
+      const all = [...current, next];
       await storage.setSpaces(all);
       setSpaces(all);
       // The new card appears at the top of the list. The user opens the

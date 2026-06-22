@@ -1517,7 +1517,7 @@ export async function createAgentTransport(
   }
 
   if (spaceId && spaceName) {
-    instructions += `\n\nYou are chatting from the space "${spaceName}" (id: ${spaceId}). When saving space-scoped memories, use this spaceId.`;
+    instructions += `\n\nYou are chatting from the space "${spaceName}" (id: ${spaceId}). When saving space-scoped memories, use \`scope: "space"\`.`;
 
     // Per-space user-defined instructions, edited in the home Spaces page.
     try {

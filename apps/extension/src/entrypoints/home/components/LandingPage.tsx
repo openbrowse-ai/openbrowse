@@ -293,8 +293,11 @@ export function LandingPage({
       // side-panel-started chats. The async result also feeds the tab-group
       // labeler when navigate fires later.
       if (baseText) {
+        const [_, ...modelIdParts] = agentSettings.agentModel.split(":");
+        const normalizedModelId = modelIdParts.length > 0 ? modelIdParts.join(":") : agentSettings.agentModel;
+
         const provider = providers.find((p) =>
-          p.models.some((m) => m.id === agentSettings.agentModel),
+          p.models.some((m) => m.id === normalizedModelId),
         );
         if (provider) {
           const config = settings.providerConfigs[provider.id] ?? {};
@@ -308,7 +311,7 @@ export function LandingPage({
               type: "GENERATE_CHAT_TITLE",
               providerId: provider.id,
               config,
-              modelId: agentSettings.agentModel,
+              modelId: normalizedModelId,
               userMessage: baseText,
             })
             .then((res: { title?: string } | undefined) => {

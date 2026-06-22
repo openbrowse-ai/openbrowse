@@ -142,11 +142,11 @@ export async function getOrCreateSpaceForWindow(windowId: number): Promise<Space
  */
 export async function ensureHomeTab(windowId: number, spaceId: string): Promise<void> {
   const tabs = await chrome.tabs.query({ windowId })
-  const home = tabs.find((t) => isHomeUrl(t.url))
+  const home = tabs.find((t) => isHomeUrl(t.url) || isHomeUrl(t.pendingUrl))
   const targetUrl = homeUrlForSpace(spaceId)
 
   if (home?.id != null) {
-    if (spaceIdFromUrl(home.url) !== spaceId) {
+    if (spaceIdFromUrl(home.url ?? home.pendingUrl ?? "") !== spaceId) {
       await chrome.tabs.update(home.id, { url: targetUrl })
     }
     if (!home.pinned) await chrome.tabs.update(home.id, { pinned: true })

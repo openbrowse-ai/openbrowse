@@ -205,6 +205,13 @@ export default function App() {
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
   );
+
+  // Clear any active space-file selection when the active space changes
+  // to prevent the viewer from trying to read from a missing space.
+  useEffect(() => {
+    if (!activeSpaceId) setSelectedSpaceFile(null);
+  }, [activeSpaceId]);
+
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
 
