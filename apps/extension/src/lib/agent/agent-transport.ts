@@ -756,12 +756,21 @@ export function toSDKTool<TInput, TOutput>(
    *     harnesses, or the conversation row was deleted mid-call). The
    *     fallback preserves Ask-mode semantics — i.e. existing behavior —
    *     rather than failing the approval check entirely.
+   *
+   * Takes `cid` as a parameter rather than reading `agentConversationId`
+   * directly so callers can pin a snapshot at entry. The auto-extension
+   * hook in `execute` pins `cid` BEFORE its try block and passes it
+   * here, ensuring mode/plan reads and persistence operations refer to
+   * the same conversation even if the user switches mid-await.
+   * `needsApproval` (which has no later persistence to align with)
+   * passes `agentConversationId` directly.
    */
-  const resolveModeAndPlan = async (): Promise<{
+  const resolveModeAndPlan = async (
+    cid: string | null,
+  ): Promise<{
     mode: ConversationMode;
     plan: ApprovedPlan | undefined;
   }> => {
-    const cid = agentConversationId;
     if (!cid) return { mode: "ask", plan: undefined };
     try {
       const conv = await chatDb.getConversation(cid);
@@ -973,7 +982,7 @@ export function toSDKTool<TInput, TOutput>(
    */
   const needsApproval = approvalRequired
     ? async (input: unknown, opts: unknown): Promise<boolean> => {
-        const { mode, plan } = await resolveModeAndPlan();
+        const { mode, plan } = await resolveModeAndPlan(agentConversationId);
 
         if (mode === "act") {
           // proposePlan is ALWAYS gated, in any mode. Without this,
@@ -1091,22 +1100,19 @@ export function toSDKTool<TInput, TOutput>(
     //
     // Capture cid once at entry, BEFORE the auto-extension block
     // below. Every chatDb / handle-map operation reachable from this
-    // tool call — the auto-extension block, the tool's own execute via
+    // tool call — the auto-extension block (including the mode/plan
+    // read via resolveModeAndPlan), the tool's own execute via
     // `ctx.session`, and resolveTabFromInput / capture stores — pins
     // to this snapshot. So if the user switches conversations
-    // mid-tool-await, the in-flight call still writes to the
-    // conversation that originated it. (The mode/plan read inside
-    // resolveModeAndPlan still observes the latest agentConversationId
-    // when it fires — that's a narrower correctness window we accept;
-    // the security-relevant operations are the persists, which use
-    // the pinned cid.)
+    // mid-tool-await, the in-flight call still reads, decides, and
+    // writes against the conversation that originated it.
     const cid = agentConversationId;
     capturedToolOrigins.delete(options.toolCallId);
 
     // Runs BEFORE the tool's body so the extension is durable even if
     // the tool throws.
     try {
-      const { mode, plan } = await resolveModeAndPlan();
+      const { mode, plan } = await resolveModeAndPlan(cid);
       if (plan && (mode === "plan" || mode === "act")) {
         // Resolve target origin for tab-tools (best effort, Plan mode only).
         let targetOrigin: string | undefined;
