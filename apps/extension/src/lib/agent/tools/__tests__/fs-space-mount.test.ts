@@ -20,18 +20,24 @@ vi.mock("@/lib/vfs/opfs", () => {
         return false;
       }),
       readDir: vi.fn(async (p: string) => {
-        const entries = [];
+        const entries: string[] = [];
+        let dirExists = false;
         for (const [k] of fs) {
-          if (k.startsWith(p + "/")) {
+          if (k === p) {
+            dirExists = true;
+          } else if (k.startsWith(p + "/")) {
+            dirExists = true;
             entries.push(k.slice(p.length + 1));
-            return entries;
           }
         }
-        throw new Error("Directory not found at " + p);
+        if (!dirExists) {
+          throw new Error("Directory not found at " + p);
+        }
+        return entries;
       }),
       walk: async function* (p: string) {
         for (const [k] of fs) {
-          if (k.startsWith(p)) yield k;
+          if (k === p || k.startsWith(p + "/")) yield k;
         }
       },
       remove: vi.fn(async (p: string) => {

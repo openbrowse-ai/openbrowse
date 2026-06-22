@@ -868,15 +868,18 @@ export function ChatView({
             thinkingEnabled={agentSettings.thinkingEnabled}
             thinkingConfig={agentSettings.thinkingConfig}
             onThinkingChange={setThinkingSettings}
-            selectedModelCapabilities={
-              providers
-                .flatMap((p) => p.models)
-                .find((m) => {
-                  const parts = agentSettings.agentModel.split(":");
-                  const actualId = parts.length > 1 ? parts.slice(1).join(":") : agentSettings.agentModel;
-                  return m.id === actualId;
-                })?.capabilities
-            }
+            selectedModelCapabilities={(() => {
+              const parts = agentSettings.agentModel.split(":");
+              const hasProvider = parts.length > 1;
+              const targetProviderId = hasProvider ? parts[0] : undefined;
+              const actualId = hasProvider ? parts.slice(1).join(":") : agentSettings.agentModel;
+              const provider = providers.find((p) =>
+                hasProvider
+                  ? p.id === targetProviderId
+                  : p.models.some((m) => m.id === actualId),
+              );
+              return provider?.models.find((m) => m.id === actualId)?.capabilities;
+            })()}
             autoFocus
             focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}-${seedNonce}`}
           />
