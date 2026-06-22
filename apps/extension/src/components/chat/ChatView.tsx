@@ -287,14 +287,24 @@ export function ChatView({
       // chatDb.createConversation call (in useAgentChat) reads
       // `initialMode` and applies the mode at row creation. Once a
       // conversation row exists, persist the change directly.
+      const prev = mode;
       setMode(next);
       if (!conversationId) return;
-      await chatDb.updateConversation(conversationId, {
-        mode: next,
-        updatedAt: Date.now(),
-      });
+      try {
+        await chatDb.updateConversation(conversationId, {
+          mode: next,
+          updatedAt: Date.now(),
+        });
+      } catch (err) {
+        // Persist failed (transient IDB error, etc.). Revert the
+        // optimistic UI update so the picker reflects what's actually
+        // stored. The user sees the dropdown snap back; better than a
+        // silent desync between picker label and agent behavior.
+        console.warn("[mode] persist failed; reverting picker", err);
+        setMode(prev);
+      }
     },
-    [conversationId],
+    [conversationId, mode],
   );
 
   const isLoading = hookIsLoading || isAgentActiveGlobally;

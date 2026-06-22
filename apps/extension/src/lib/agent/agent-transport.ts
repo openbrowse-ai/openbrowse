@@ -976,6 +976,15 @@ export function toSDKTool<TInput, TOutput>(
         const { mode, plan } = await resolveModeAndPlan();
 
         if (mode === "act") {
+          // proposePlan is ALWAYS gated, in any mode. Without this,
+          // Act mode would let the model silently mint a fresh plan
+          // (with arbitrary sites + allowNetwork) without user
+          // confirmation — and in-plan calls then skip approval, so
+          // the agent could broaden its own boundary unilaterally.
+          // Matches the contract documented in the JSDoc above and
+          // mirrors the explicit `proposePlan` gate in the "plan"
+          // branch below.
+          if (toolKey === "proposePlan") return true;
           // Network floor: even in Act mode, a plan that disallows
           // network blocks Python network calls. Without this the model
           // could quietly exfiltrate via Python after the user picked
@@ -1080,12 +1089,25 @@ export function toSDKTool<TInput, TOutput>(
     //     mirroring Plan mode's behavior. Site extension does NOT apply
     //     in Act mode (sites always skip; there's no approval gesture).
     //
+    // Capture cid once at entry, BEFORE the auto-extension block
+    // below. Every chatDb / handle-map operation reachable from this
+    // tool call — the auto-extension block, the tool's own execute via
+    // `ctx.session`, and resolveTabFromInput / capture stores — pins
+    // to this snapshot. So if the user switches conversations
+    // mid-tool-await, the in-flight call still writes to the
+    // conversation that originated it. (The mode/plan read inside
+    // resolveModeAndPlan still observes the latest agentConversationId
+    // when it fires — that's a narrower correctness window we accept;
+    // the security-relevant operations are the persists, which use
+    // the pinned cid.)
+    const cid = agentConversationId;
+    capturedToolOrigins.delete(options.toolCallId);
+
     // Runs BEFORE the tool's body so the extension is durable even if
     // the tool throws.
     try {
       const { mode, plan } = await resolveModeAndPlan();
       if (plan && (mode === "plan" || mode === "act")) {
-        const cidForExt = agentConversationId;
         // Resolve target origin for tab-tools (best effort, Plan mode only).
         let targetOrigin: string | undefined;
         if (
@@ -1093,7 +1115,7 @@ export function toSDKTool<TInput, TOutput>(
           toolKey !== "executePython" &&
           toolKey !== "proposePlan"
         ) {
-          const resolved = await resolveTabFromInput(cidForExt, input);
+          const resolved = await resolveTabFromInput(cid, input);
           if (resolved?.tab.url) {
             try {
               targetOrigin = new URL(resolved.tab.url).origin;
@@ -1109,16 +1131,16 @@ export function toSDKTool<TInput, TOutput>(
           targetOrigin,
           plan,
         });
-        if (decision.kind === "site" && cidForExt) {
-          await extendPlanWithSite(cidForExt, decision.origin);
-          await savePlanExtensionMarker(cidForExt, {
+        if (decision.kind === "site" && cid) {
+          await extendPlanWithSite(cid, decision.origin);
+          await savePlanExtensionMarker(cid, {
             kind: "site",
             origin: decision.origin,
             extendedAt: Date.now(),
           });
-        } else if (decision.kind === "network" && cidForExt) {
-          await flipPlanNetwork(cidForExt);
-          await savePlanExtensionMarker(cidForExt, {
+        } else if (decision.kind === "network" && cid) {
+          await flipPlanNetwork(cid);
+          await savePlanExtensionMarker(cid, {
             kind: "network",
             extendedAt: Date.now(),
           });
@@ -1128,14 +1150,6 @@ export function toSDKTool<TInput, TOutput>(
       console.warn("[plan] auto-extend failed; tool call proceeds:", err);
     }
 
-    // Capture cid once at entry. Every chatDb / handle-map operation
-    // reachable from this tool call — both inside the wrapper
-    // (resolveTabFromInput, capture stores) and inside the tool's own
-    // execute via `ctx.session` — pins to this snapshot. So if the user
-    // switches conversations mid-tool-await, the in-flight call still
-    // writes to the conversation that originated it.
-    const cid = agentConversationId;
-    capturedToolOrigins.delete(options.toolCallId);
 
     // Non-auto-approve headless runs have no human to approve a network
     // request, so force `executePython` to run sandboxed regardless of what

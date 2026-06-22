@@ -17,6 +17,19 @@ export interface PendingPlanApproval {
 }
 
 /**
+ * True when `value` is a plain object — not null, not an array, not a
+ * primitive. Used by {@link findPendingPlanApproval} to guard against
+ * malformed `input` payloads (the SDK types `input` as `unknown`, and
+ * a stray array or null would otherwise reach consumers expecting an
+ * object — `sites.map(...)` etc.).
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" && value !== null && !Array.isArray(value)
+  );
+}
+
+/**
  * Locate the latest assistant message's pending `proposePlan` approval, if
  * any. Returns `null` when no message has a `proposePlan` part in
  * `approval-requested` state.
@@ -64,7 +77,7 @@ export function findPendingPlanApproval(
       return {
         toolCallId: p.toolCallId,
         approvalId: p.approval.id,
-        input: (p.input as Record<string, unknown> | undefined) ?? {},
+        input: isPlainObject(p.input) ? p.input : {},
       };
     }
   }

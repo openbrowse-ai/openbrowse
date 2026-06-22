@@ -202,3 +202,116 @@ describe("staticReadCheck — receiver-aware method check", () => {
     expect(staticReadCheck(`location.replace("/x");`).ok).toBe(false);
   });
 });
+
+describe("staticReadCheck — extended DOM-mutation method calls", () => {
+  it("rejects el.append(...)", () => {
+    expect(staticReadCheck(`el.append(child);`).ok).toBe(false);
+  });
+
+  it("rejects el.insertAdjacentHTML(...)", () => {
+    expect(staticReadCheck(`el.insertAdjacentHTML("beforeend", "<x/>");`).ok).toBe(false);
+  });
+
+  it("rejects el.insertAdjacentElement(...)", () => {
+    expect(staticReadCheck(`el.insertAdjacentElement("beforeend", child);`).ok).toBe(false);
+  });
+
+  it("rejects el.insertAdjacentText(...)", () => {
+    expect(staticReadCheck(`el.insertAdjacentText("beforeend", "x");`).ok).toBe(false);
+  });
+
+  it("rejects document.write(...)", () => {
+    expect(staticReadCheck(`document.write("<x/>");`).ok).toBe(false);
+  });
+
+  it("rejects document.writeln(...)", () => {
+    expect(staticReadCheck(`document.writeln("x");`).ok).toBe(false);
+  });
+});
+
+describe("staticReadCheck — string-literal computed property assignment", () => {
+  // `el["innerHTML"] = "x"` is the computed-access form of `el.innerHTML = "x"`.
+  // Equivalent at runtime; must be rejected the same way.
+  it("rejects el[\"innerHTML\"] = ...", () => {
+    expect(staticReadCheck(`el["innerHTML"] = "<x/>";`).ok).toBe(false);
+  });
+
+  it("rejects el[\"value\"] = ...", () => {
+    expect(staticReadCheck(`el["value"] = "x";`).ok).toBe(false);
+  });
+
+  it("rejects el[\"textContent\"] = ...", () => {
+    expect(staticReadCheck(`el["textContent"] = "x";`).ok).toBe(false);
+  });
+
+  it("rejects update on string-literal computed access (el[\"value\"]++)", () => {
+    expect(staticReadCheck(`el["value"]++;`).ok).toBe(false);
+  });
+
+  it("rejects delete on string-literal computed access (delete el[\"innerHTML\"])", () => {
+    expect(staticReadCheck(`delete el["innerHTML"];`).ok).toBe(false);
+  });
+
+  it("accepts string-literal computed access on a non-forbidden prop", () => {
+    // `el["foo"] = 1` should pass — `foo` isn't in the forbidden list.
+    expect(staticReadCheck(`el["foo"] = 1;`).ok).toBe(true);
+  });
+});
+
+describe("staticReadCheck — location property assignments (navigation)", () => {
+  it("rejects location.pathname = ...", () => {
+    expect(staticReadCheck(`location.pathname = "/x";`).ok).toBe(false);
+  });
+
+  it("rejects location.host = ...", () => {
+    expect(staticReadCheck(`location.host = "example.com";`).ok).toBe(false);
+  });
+
+  it("rejects location.hostname = ...", () => {
+    expect(staticReadCheck(`location.hostname = "example.com";`).ok).toBe(false);
+  });
+
+  it("rejects location.protocol = ...", () => {
+    expect(staticReadCheck(`location.protocol = "https:";`).ok).toBe(false);
+  });
+
+  it("rejects location.search = ...", () => {
+    expect(staticReadCheck(`location.search = "?q=x";`).ok).toBe(false);
+  });
+
+  it("rejects location.hash = ...", () => {
+    expect(staticReadCheck(`location.hash = "#x";`).ok).toBe(false);
+  });
+
+  it("rejects window.location.pathname = ...", () => {
+    expect(staticReadCheck(`window.location.pathname = "/x";`).ok).toBe(false);
+  });
+
+  it("accepts el.pathname = ... on a non-location receiver", () => {
+    // `pathname` on an arbitrary object isn't a navigation; only flag
+    // when the receiver is `location` (or a *.location alias).
+    expect(staticReadCheck(`el.pathname = "x";`).ok).toBe(true);
+  });
+
+  it("accepts el.host = ... on a non-location receiver", () => {
+    expect(staticReadCheck(`el.host = "x";`).ok).toBe(true);
+  });
+});
+
+describe("staticReadCheck — whole-object location replacement", () => {
+  it("rejects window.location = ...", () => {
+    expect(staticReadCheck(`window.location = "/x";`).ok).toBe(false);
+  });
+
+  it("rejects globalThis.location = ...", () => {
+    expect(staticReadCheck(`globalThis.location = "/x";`).ok).toBe(false);
+  });
+
+  it("rejects self.location = ...", () => {
+    expect(staticReadCheck(`self.location = "/x";`).ok).toBe(false);
+  });
+
+  it("rejects top.location = ...", () => {
+    expect(staticReadCheck(`top.location = "/x";`).ok).toBe(false);
+  });
+});

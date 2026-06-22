@@ -101,8 +101,12 @@ export function ModeSwitch({ mode, onChange, disabled, hasPlan }: ModeSwitchProp
         !e.altKey &&
         (e.key === "." || e.code === "Period")
       ) {
-        e.preventDefault();
+        // Bail BEFORE preventDefault so a disabled picker doesn't
+        // silently consume the keystroke. Symmetric with the click
+        // handler — when disabled, both paths no-op (no UI change AND
+        // the OS-level shortcut, if any, is preserved for the user).
         if (disabled) return;
+        e.preventDefault();
         onChange(nextMode(mode));
       }
     }

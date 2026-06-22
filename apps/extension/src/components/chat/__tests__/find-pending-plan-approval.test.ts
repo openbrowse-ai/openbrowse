@@ -199,4 +199,60 @@ describe("findPendingPlanApproval", () => {
     const out = findPendingPlanApproval(messages);
     expect(out?.input).toEqual({});
   });
+
+  it("returns input as empty object when input is null", () => {
+    // `null` is `typeof "object"` but isn't a usable record; the helper
+    // must normalize it to {} so consumers reading `.sites` / `.todos`
+    // / etc. don't throw on undefined property access.
+    const messages = [
+      msg("assistant", [
+        {
+          type: "dynamic-tool",
+          toolName: "proposePlan",
+          state: "approval-requested",
+          toolCallId: "call-1",
+          input: null,
+          approval: { id: "ap-1" },
+        },
+      ]),
+    ];
+    const out = findPendingPlanApproval(messages);
+    expect(out?.input).toEqual({});
+  });
+
+  it("returns input as empty object when input is an array", () => {
+    // Arrays are `typeof "object"` but the consumer expects a record;
+    // an array would `.map`-mistake `sites = ["x"][0]` etc. Guard.
+    const messages = [
+      msg("assistant", [
+        {
+          type: "dynamic-tool",
+          toolName: "proposePlan",
+          state: "approval-requested",
+          toolCallId: "call-1",
+          input: ["bogus"],
+          approval: { id: "ap-1" },
+        },
+      ]),
+    ];
+    const out = findPendingPlanApproval(messages);
+    expect(out?.input).toEqual({});
+  });
+
+  it("returns input as empty object when input is a primitive", () => {
+    const messages = [
+      msg("assistant", [
+        {
+          type: "dynamic-tool",
+          toolName: "proposePlan",
+          state: "approval-requested",
+          toolCallId: "call-1",
+          input: "not an object",
+          approval: { id: "ap-1" },
+        },
+      ]),
+    ];
+    const out = findPendingPlanApproval(messages);
+    expect(out?.input).toEqual({});
+  });
 });

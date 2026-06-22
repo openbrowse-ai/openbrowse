@@ -64,7 +64,7 @@ function MessageListImpl({
           const data = planExtensionPart.data;
           const text =
             data.kind === "site"
-              ? `Plan extended: ${data.origin ?? "site"}`
+              ? `Plan extended: ${data.origin}`
               : "Plan extended: network access permitted";
           return (
             <div

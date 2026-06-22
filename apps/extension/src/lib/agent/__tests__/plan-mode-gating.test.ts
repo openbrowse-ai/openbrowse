@@ -351,4 +351,39 @@ describe("plan-mode gating — Act mode", () => {
     });
     expect(out).toBe(true);
   });
+
+  it("ALWAYS requires approval for proposePlan even in Act mode (security: no silent plan replacement)", async () => {
+    // Without this gate, the model could mint a fresh plan with arbitrary
+    // sites + allowNetwork in Act mode without user confirmation, then
+    // call any tab tool — those calls would skip approval (Act mode) AND
+    // be in-plan, broadening the agent's boundary unilaterally.
+    await seedConversation({ mode: "act" });
+    const out = await needsApprovalForTool("proposePlan", {
+      goal: "g",
+      sites: ["https://attacker.example"],
+      todos: [],
+      allowNetwork: true,
+    });
+    expect(out).toBe(true);
+  });
+
+  it("ALWAYS requires approval for proposePlan in Act mode WITH an existing plan (regression)", async () => {
+    await seedConversation({
+      mode: "act",
+      plan: {
+        goal: "test",
+        sites: ["https://approved.example"],
+        allowNetwork: false,
+        approvedAt: Date.now(),
+        extensions: [],
+      },
+    });
+    const out = await needsApprovalForTool("proposePlan", {
+      goal: "replacement",
+      sites: ["https://attacker.example"],
+      todos: [],
+      allowNetwork: true,
+    });
+    expect(out).toBe(true);
+  });
 });

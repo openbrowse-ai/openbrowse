@@ -63,10 +63,17 @@ export function PlanApprovalCard({
   //
   // Both work as global accelerators while the card is mounted, so the
   // user doesn't have to ensure the Approve button retains focus. We
-  // gate plain Enter on "no editable element is focused" so the user
-  // typing into a search/input elsewhere (rare on this surface, but
-  // defensive) doesn't accidentally approve. Cmd+Enter has no such
-  // gate — it's a deliberate two-key combo.
+  // gate plain Enter on:
+  //   - "no editable element is focused" so the user typing into a
+  //     search/input elsewhere (rare on this surface, but defensive)
+  //     doesn't accidentally approve.
+  //   - "no button element is focused" so the user can Tab to the
+  //     "Make changes" button and press Enter to deny — without our
+  //     handler racing the button's native click. Without this guard,
+  //     pressing Enter on the focused Make changes button would fire
+  //     BOTH the button's onClick (deny) AND our handler (approve).
+  //
+  // Cmd+Enter has no such gate — it's a deliberate two-key combo.
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key !== "Enter") return;
@@ -77,11 +84,12 @@ export function PlanApprovalCard({
       }
       if (e.shiftKey || e.altKey) return;
       const active = document.activeElement;
-      const isEditable =
+      const shouldSkip =
         active instanceof HTMLInputElement ||
         active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLButtonElement ||
         (active instanceof HTMLElement && active.isContentEditable);
-      if (isEditable) return;
+      if (shouldSkip) return;
       e.preventDefault();
       onApprove(approvalId);
     }

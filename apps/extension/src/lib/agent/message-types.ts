@@ -63,7 +63,10 @@ export interface CompactionData {
  * this single part, so it renders inline in the conversation stream and
  * survives reloads (parallel to `data-compaction`).
  *
- * Two flavors:
+ * Discriminated union — `origin` is REQUIRED when `kind === "site"` and
+ * DISALLOWED when `kind === "network"`. Mirrors the same shape used by
+ * `ApprovedPlan.extensions` in lib/types.ts so the two stores agree.
+ *
  *   - `kind: "site"` — a new origin was appended to `plan.sites` because
  *     the user just approved an off-plan tab call.
  *   - `kind: "network"` — `plan.allowNetwork` was flipped from false to
@@ -74,12 +77,9 @@ export interface CompactionData {
  * unsubstituted user message containing only this part would convert to
  * an empty `user` model message and fail SDK validation.
  */
-export interface PlanExtensionData {
-  kind: "site" | "network";
-  /** Present when `kind === "site"`. The origin appended to plan.sites. */
-  origin?: string;
-  extendedAt: number;
-}
+export type PlanExtensionData =
+  | { kind: "site"; origin: string; extendedAt: number }
+  | { kind: "network"; extendedAt: number };
 
 export interface PlanExtensionPart {
   type: "data-plan-extension";
