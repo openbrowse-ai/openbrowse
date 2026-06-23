@@ -287,6 +287,13 @@ export default function HomeApp({ surface }: HomeAppProps) {
     document.addEventListener("keydown", handleKeydown);
 
     const handleMessage = (e: MessageEvent) => {
+      // Only accept messages from our own overlay iframe. The overlay is
+      // served from the same chrome-extension origin and identifies itself
+      // by being the iframe's contentWindow. This guards against any
+      // cross-context postMessage that could otherwise toggle our overlay
+      // state — flagged by CodeQL as a missing origin check.
+      if (e.origin !== window.location.origin) return;
+      if (e.source && e.source !== overlayIframeRef.current?.contentWindow) return;
       if (e.data?.type === "OPENBROWSE_OVERLAY_CLOSE") {
         setShowOverlay(false);
         setOverlayAction(null);
@@ -385,9 +392,18 @@ export default function HomeApp({ surface }: HomeAppProps) {
     setIsCoworkPanelOpen(true);
     setSelectedFile(null);
     setSelectedSpaceFile(null);
+    // Guard against stale resolutions: if `activeConversationId` flips
+    // again before this getConversation resolves (rapid sidebar clicks),
+    // discard the late response so it can't overwrite the title we've
+    // since picked up for a different conversation.
+    let cancelled = false;
     chatDb.getConversation(activeConversationId).then((conv) => {
+      if (cancelled) return;
       setConversationTitle(conv?.title ?? null);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [activeConversationId]);
 
   useEffect(() => {

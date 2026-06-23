@@ -149,7 +149,7 @@ export const SpaceActionsTrigger = React.forwardRef<
         e.stopPropagation();
         onClick?.(e);
       }}
-      aria-label={`Actions for space ${space.name}`}
+      aria-label={`Actions for space ${space.name?.trim() || "Unnamed space"}`}
       className={className}
       {...rest}
     >

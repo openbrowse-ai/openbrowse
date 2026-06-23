@@ -150,6 +150,13 @@ describe("formatDocumentTitle", () => {
   });
 });
 
-// Type-only check — fails compile if Surface drifts.
-const _surfaces: Surface[] = ["home", "newtab"];
-void _surfaces;
+// Exhaustiveness check: fails compile if `Surface` is extended without
+// updating this record. The `Record<Surface, true>` shape requires every
+// member of the Surface union to appear as a key, so adding a new
+// surface variant elsewhere will surface here as a "Property X is
+// missing" type error.
+const _surfaceExhaustivenessCheck: Record<Surface, true> = {
+  home: true,
+  newtab: true,
+};
+void _surfaceExhaustivenessCheck;

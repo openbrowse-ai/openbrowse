@@ -249,6 +249,43 @@ describe("handleNewWindowAutoHome", () => {
     expect(winTabs[0].index).toBe(0);
   });
 
+  it("closes the override-supplied newtab even when an existing home tab is already in the window", async () => {
+    // Edge case: a window may end up with BOTH a pinned home tab (e.g.
+    // from a prior repair, or `focusOrCreateWindow` injected one) AND
+    // the override-supplied newtab tab. The cleanup must run regardless
+    // of whether the home tab was just created or was already there.
+    // Without the existing-home branch calling closeInitialNewtabs, the
+    // newtab would survive and the user would see two tabs.
+    tabs.push({
+      id: nextTabId++,
+      windowId: 77,
+      url: HOME_BASE,
+      pinned: true,
+      index: 0,
+      active: false,
+    });
+    tabs.push({
+      id: nextTabId++,
+      windowId: 77,
+      url: "",
+      pendingUrl: "chrome://newtab/",
+      pinned: false,
+      index: 1,
+      active: true,
+    });
+
+    const { handleNewWindowAutoHome } = await import("../background/auto-home");
+    await handleNewWindowAutoHome({
+      id: 77,
+      type: "normal",
+    } as chrome.windows.Window);
+
+    const winTabs = tabs.filter((t) => t.windowId === 77);
+    expect(winTabs).toHaveLength(1);
+    expect(winTabs[0].url).toBe(HOME_BASE);
+    expect(winTabs[0].pinned).toBe(true);
+  });
+
   it("ignores popup-type windows", async () => {
     const { handleNewWindowAutoHome } = await import("../background/auto-home");
     await handleNewWindowAutoHome({
