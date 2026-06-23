@@ -25,6 +25,7 @@ export async function ensureOffscreenDocument(): Promise<void> {
 
 export async function openHomePage(windowId: number): Promise<void> {
   const homeBase = chrome.runtime.getURL(HOME_PAGE_URL)
+  const newtabBase = chrome.runtime.getURL("/newtab.html")
 
   // Match a tab as "the home tab" by its committed `url` OR its
   // `pendingUrl`. On a freshly created window — exactly the case where
@@ -36,6 +37,46 @@ export async function openHomePage(windowId: number): Promise<void> {
     Boolean(
       t.url?.startsWith(homeBase) || t.pendingUrl?.startsWith(homeBase),
     )
+
+  // Match four URL forms because Chrome reports the new-window initial
+  // tab differently depending on lifecycle timing and override state:
+  //   - `chrome-extension://<id>/newtab.html` in `url` (override resolved,
+  //     navigation committed)
+  //   - same in `pendingUrl` (override resolving, not yet committed)
+  //   - `chrome://newtab/` in `url` (override disabled by user, or
+  //     committed as canonical NTP URL)
+  //   - `chrome://newtab/` in `pendingUrl` (the production shape on
+  //     Cmd-N: `url` is empty and `pendingUrl` carries the canonical
+  //     target Chrome will resolve to our newtab.html via the override)
+  const isNewtabTab = (t: chrome.tabs.Tab): boolean => {
+    const url = t.url ?? ""
+    const pending = t.pendingUrl ?? ""
+    return (
+      url.startsWith(newtabBase) ||
+      pending.startsWith(newtabBase) ||
+      url === "chrome://newtab/" ||
+      pending === "chrome://newtab/"
+    )
+  }
+
+  // Snapshot the window's initial tab set BEFORE we create or modify
+  // any tabs. All three branches below (space-bound, existing-home,
+  // create-fresh) call the same close helper using this single snapshot.
+  // Capturing the list before any home-tab creation ensures Cmd-T
+  // activity in the same tick is unaffected, and means the cleanup runs
+  // regardless of which branch produced/repaired the home tab. Caller
+  // MUST guarantee that a home tab now exists in the window before
+  // invoking the close helper, since Chrome closes the entire window if
+  // you remove its last tab.
+  const initialTabs = await chrome.tabs.query({ windowId })
+  const closeInitialNewtabs = async (): Promise<void> => {
+    const ids = initialTabs
+      .filter((t) => t.id != null && isNewtabTab(t))
+      .map((t) => t.id!)
+    for (const id of ids) {
+      await chrome.tabs.remove(id).catch(() => {})
+    }
+  }
 
   // Only spaces that already exist for this window get the durable
   // `?space=<id>` anchor. The default install path is space-less; we never
@@ -68,19 +109,20 @@ export async function openHomePage(windowId: number): Promise<void> {
     if (home?.id != null) {
       await chrome.tabs.update(home.id, { active: true })
     }
+    await closeInitialNewtabs()
     return
   }
 
   // No space bound to this window — open / activate a pinned, un-anchored
   // home tab. The home tab is the app shell and is always pinned; only the
   // `?space=<id>` URL anchor is space-specific.
-  const tabs = await chrome.tabs.query({ windowId })
-  const existing = tabs.find(isHomeTab)
+  const existing = initialTabs.find(isHomeTab)
   if (existing?.id != null) {
     if (!existing.pinned) {
       await chrome.tabs.update(existing.id, { pinned: true })
     }
     await chrome.tabs.update(existing.id, { active: true })
+    await closeInitialNewtabs()
     return
   }
   const created = await chrome.tabs.create({
@@ -108,4 +150,5 @@ export async function openHomePage(windowId: number): Promise<void> {
       // Tab vanished between create and verify — give up silently.
     }
   }
+  await closeInitialNewtabs()
 }

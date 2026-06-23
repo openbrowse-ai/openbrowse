@@ -53,6 +53,15 @@ interface LandingPageProps {
    * "Try in chat" flow from settings.
    */
   initialInput?: string;
+  /**
+   * When true, focus the chat input the first time the window gains focus
+   * after mount (one-shot). Used by the newtab surface to work around
+   * Chrome's "omnibox keeps focus when you Cmd-T" behavior: the page can't
+   * grab focus while the omnibox owns it, but the moment the user clicks
+   * the page or hits Tab/Escape, `window` fires a focus event and we hand
+   * it to the input. Subsequent tab-switches back do not steal focus.
+   */
+  refocusOnWindowFocus?: boolean;
 }
 
 const SUGGESTIONS = [
@@ -68,9 +77,31 @@ export function LandingPage({
   pinnedCount,
   onNewConversation,
   initialInput,
+  refocusOnWindowFocus = false,
 }: LandingPageProps) {
   const recentTabs = useRecentTabs(space?.windowId ?? null);
   const [input, setInput] = useState(initialInput ?? "");
+  // Bumped exactly once on first window-focus when refocusOnWindowFocus is
+  // set; passed to ChatInput as `focusTrigger` to drive its existing
+  // refocus effect. Stays null after the one shot, so subsequent
+  // tab-switches back to this surface do not steal focus from whatever
+  // the user is interacting with (sidebar, dropdowns, etc.).
+  const [focusTrigger, setFocusTrigger] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!refocusOnWindowFocus) return;
+    // If the document already has focus when this effect runs (cold cache,
+    // slow first paint, or React StrictMode dev-mode double-mount where the
+    // user provided focus between cycles), fire immediately and don't bother
+    // attaching a listener that would never fire.
+    if (document.hasFocus()) {
+      setFocusTrigger(`win-focus-${Date.now()}`);
+      return;
+    }
+    const handler = () => setFocusTrigger(`win-focus-${Date.now()}`);
+    window.addEventListener("focus", handler, { once: true });
+    return () => window.removeEventListener("focus", handler);
+  }, [refocusOnWindowFocus]);
   /**
    * Workspace-relative path of a Space file the user clicked in the
    * right rail's `SpaceCustomization`. When non-null, the rail swaps
@@ -519,6 +550,7 @@ export function LandingPage({
             agentSettings={agentSettings}
             setAgentSettings={setAgentSettings}
             providers={providers}
+            focusTrigger={focusTrigger}
           />
         </div>
         {pageDragOver && <PageDropOverlay />}
@@ -569,6 +601,7 @@ export function LandingPage({
               agentSettings={agentSettings}
               setAgentSettings={setAgentSettings}
               providers={providers}
+              focusTrigger={focusTrigger}
             />
           </div>
         </div>
@@ -793,6 +826,13 @@ interface HeroComposerProps {
   setAgentSettings: (next: AgentSettings) => void;
   providers: ReturnType<typeof useProviders>["providers"];
   chatInputRef?: React.Ref<ChatInputHandle>;
+  /**
+   * Bumped by the parent (LandingPage) when a one-shot refocus is
+   * desired, e.g. after the newtab page first gains window focus.
+   * Forwarded to ChatInput's `focusTrigger`. Null when no refocus is
+   * pending so the ChatInput's effect doesn't fire on every render.
+   */
+  focusTrigger?: string | null;
 }
 
 function HeroComposer({
@@ -811,6 +851,7 @@ function HeroComposer({
   setAgentSettings,
   providers,
   chatInputRef,
+  focusTrigger,
 }: HeroComposerProps) {
   return (
     <>
@@ -834,6 +875,7 @@ function HeroComposer({
           isLoading={false}
           disabled={!isConfigured}
           autoFocus
+          focusTrigger={focusTrigger}
           providerModels={providerModels}
           favoriteModels={settings.favoriteModels}
           onFavoriteToggle={(modelKey) => {

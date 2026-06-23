@@ -103,6 +103,14 @@ export default defineConfig({
       "128": "icon/128.png",
     },
     action: {},
+    // Make newtab.html the Chrome new-tab page. Contrast with the
+    // side_panel strip in the build:manifestGenerated hook above:
+    // side_panel was stripped because Chrome injects it on every tab and
+    // we want per-tab control. The new-tab override is the opposite — we
+    // *do* want every Cmd-T to land on our chat surface.
+    chrome_url_overrides: {
+      newtab: "newtab.html",
+    },
     permissions: [
       "tabs",
       "tabGroups",

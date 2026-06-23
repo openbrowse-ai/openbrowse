@@ -1,4 +1,4 @@
-// src/entrypoints/home/components/CreateScheduledTaskDialog.tsx
+// src/entrypoints/_shared/components/CreateScheduledTaskDialog.tsx
 import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
