@@ -1,6 +1,6 @@
 ---
 name: data-plumbing
-description: Move data between sandboxes (page → /workspace → Python) without bloating chat context. Load this whenever you're scraping, fetching, or extracting data on a page and need to process it later in Python — or any time a tool's return value is larger than a few KB. Triggers include "scrape this page", "extract all the X from", "build a CSV from", "save the JSON", "fetch the data and analyze it", "download the table", and similar. Covers `saveAs` on `executeOnPage` / `executeCode`, atomic writes, when to use `pyfetch` vs `executeOnPage`, and the canonical recipes that avoid the 30-tool-call data-roundtrip spiral.
+description: Move data between sandboxes (page → conversation workspace → Python) without bloating chat context. Load this whenever you're scraping, fetching, or extracting data on a page and need to process it later in Python — or any time a tool's return value is larger than a few KB. Triggers include "scrape this page", "extract all the X from", "build a CSV from", "save the JSON", "fetch the data and analyze it", "download the table", and similar. Covers `saveAs` on `executeOnPage` / `executeCode`, atomic writes, when to use `pyfetch` vs `executeOnPage`, and the canonical recipes that avoid the 30-tool-call data-roundtrip spiral.
 ---
 
 # `data-plumbing` Skill: Moving Bytes Between Sandboxes
@@ -9,19 +9,19 @@ OpenBrowse has three execution sandboxes. **None of them share a filesystem with
 
 ## The three sandboxes
 
-| Tool | Origin | `/workspace` access | DOM / cookies | Network |
+| Tool | Origin | Workspace access | DOM / cookies | Network |
 |---|---|---|---|---|
 | `executeOnPage` | the active tab's site origin | **No** | Yes (full DOM, page globals, site cookies) | Yes, as the site (no CORS for same-origin XHR) |
 | `executeCode` (JS) | sandboxed iframe in the extension | **No** | No DOM | Yes, but bound by CORS |
-| `executePython` | offscreen iframe in the extension | **Yes** (`/workspace` and `/skills`) | No DOM | Off by default; opt in with `allow_network: true` |
+| `executePython` | offscreen iframe in the extension | **Yes** — read/write to the conversation workspace (Pyodide's cwd; use relative paths like `open("data.csv")`); read-only `/skills` and (when in a space) `spaces/<spaceId>/workspace` | No DOM | Off by default; opt in with `allow_network: true` |
 
-Only `executePython` can read and write `/workspace`. Anything else has to *hand off* its data through a tool result — and tool results travel through the chat context, which has practical size limits and is wasted on payloads.
+Only `executePython` can read and write the conversation workspace. Anything else has to *hand off* its data through a tool result — and tool results travel through the chat context, which has practical size limits and is wasted on payloads.
 
 ## The two transports you should know
 
 ### Transport 1: `saveAs` (preferred for any payload >~4 KB)
 
-Both `executeOnPage` and `executeCode` accept an optional `saveAs: "<path>"` parameter. When set, the script's return value is written **directly** to `/workspace/<path>` by the host, and the tool result includes `path`, `bytes`, and `sha256` instead of the data — the bytes themselves are **not** echoed back to the chat. (`executeOnPage` also includes its `tab` handle; `executeCode` also includes its `logs`.)
+Both `executeOnPage` and `executeCode` accept an optional `saveAs: "<path>"` parameter. When set, the script's return value is written **directly** into the conversation workspace at `<path>` by the host, and the tool result includes `path`, `bytes`, and `sha256` instead of the data — the bytes themselves are **not** echoed back to the chat. (`executeOnPage` also includes its `tab` handle; `executeCode` also includes its `logs`.) Python can then read it with a relative path: `open("<path>")`.
 
 The script must return either:
 
@@ -32,7 +32,7 @@ Anything else is rejected — the tool will surface an error rather than silentl
 
 Writes are **atomic**: the destination file is either fully written or unchanged. A producer crash mid-stringify will not truncate a previously-good file.
 
-**Canonical recipe — page → /workspace → Python:**
+**Canonical recipe — page → conversation workspace → Python:**
 
 ```text
 1. executeOnPage({
@@ -43,7 +43,7 @@ Writes are **atomic**: the destination file is either fully written or unchanged
    → { tab: "t1", path: "data.json", bytes: 62169, sha256: "abc123..." }
 
 2. executePython({
-     code: "import json; data = json.load(open('/workspace/data.json')); …"
+     code: "import json; data = json.load(open('data.json')); …"
    })
 ```
 
@@ -127,8 +127,8 @@ executeOnPage({
 executePython({
   code: "
     import json, csv
-    guests = json.load(open('/workspace/guests.json'))
-    with open('/workspace/guests.csv','w',newline='') as f:
+    guests = json.load(open('guests.json'))
+    with open('guests.csv','w',newline='') as f:
       w = csv.writer(f)
       w.writerow(['name','company','linkedin','twitter'])
       for g in guests:

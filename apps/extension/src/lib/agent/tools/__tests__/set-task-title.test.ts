@@ -23,6 +23,7 @@ const peerCtx = (overrides: Partial<ToolContext["session"]> = {}): ToolContext =
   session: {
     // Peer-isolated subagent: child conv id != parent conv id.
     conversationId: "child-1",
+    spaceId: null,
     parent: { conversationId: "parent-1", depth: 1, toolCallId: "tc-abc" },
     ...overrides,
   },
@@ -81,7 +82,7 @@ describe("setTaskTitle tool", () => {
       { title: "anything" },
       {
         driver: fakeDriver,
-        session: { conversationId: "parent-1" },
+        session: { conversationId: "parent-1", spaceId: null },
       },
     );
     expect(out).toEqual({

@@ -25,27 +25,71 @@ function getVfsRoot(conversationId: string | null): string {
   return `conversations/${conversationId}/workspace`;
 }
 
-function resolveVfsPath(conversationId: string | null, rawPath: string): string {
-  // Allow explicit escaping to skills directory (read-only in tools)
-  if (rawPath.startsWith('/skills/')) {
-    return rawPath.replace(/^\/+/, '');
+/**
+ * True when `rawPath` (with or without leading slash) targets the active
+ * space's shared workspace. False when spaceId is null or the path doesn't
+ * reference a space.
+ */
+export function isOwnSpacePath(rawPath: string, spaceId: string | null): boolean {
+  if (!spaceId) return false;
+  const clean = rawPath.replace(/^\/+/, "");
+  const root = `spaces/${spaceId}/workspace`;
+  return clean === root || clean.startsWith(`${root}/`);
+}
+
+/** True when `rawPath` references ANY space's workspace under `spaces/<id>/workspace/...`. */
+export function isAnySpacePath(rawPath: string): boolean {
+  const clean = rawPath.replace(/^\/+/, "");
+  return /^spaces\/[^/]+\/workspace(\/|$)/.test(clean);
+}
+
+function sanitizePath(p: string): string {
+  // Deterministic removal of `..` segments that prevents nested escapes
+  // like `....//` which bypass a single `.replace()` regex pass.
+  return p.split("/").filter((segment) => segment !== "..").join("/");
+}
+
+function resolveVfsPath(
+  conversationId: string | null,
+  spaceId: string | null,
+  rawPath: string,
+): string {
+  const cleanBase = rawPath.replace(/^\/+/, "");
+  if (rawPath.startsWith("/skills/")) {
+    return sanitizePath(cleanBase);
+  }
+  if (isOwnSpacePath(rawPath, spaceId)) {
+    return sanitizePath(cleanBase);
+  }
+  if (isAnySpacePath(rawPath)) {
+    throw new Error(
+      "resolveVfsPath: unreachable cross-space path; caller must guard with isAnySpacePath",
+    );
   }
   const root = getVfsRoot(conversationId);
-  const clean = rawPath.replace(/^\/+/, '').replace(/\.\.\//g, '');
-  return `${root}/${clean}`;
+  return `${root}/${sanitizePath(cleanBase)}`;
 }
 
 // Strip the VFS root prefix so the LLM only sees relative paths
 function stripVfsRoot(conversationId: string | null, fullPath: string): string {
-  if (fullPath.startsWith('skills/')) {
-    return '/' + fullPath;
+  if (fullPath.startsWith("skills/")) {
+    return "/" + fullPath;
   }
-  const root = getVfsRoot(conversationId) + '/';
+  if (fullPath.startsWith("spaces/")) {
+    // Space workspace paths are exposed verbatim (no aliasing).
+    return fullPath;
+  }
+  const root = getVfsRoot(conversationId) + "/";
   if (fullPath.startsWith(root)) {
     return fullPath.slice(root.length);
   }
   return fullPath;
 }
+
+const SPACE_CROSS_WRITE_DENIED =
+  "Error: Permission denied. Path is outside this conversation's space.";
+const SPACE_READ_DENIED =
+  "Error: Permission denied. Path is outside this conversation's space.";
 
 export function createFsTools() {
   const readTool: BrowserTool<{ file_path: string; offset?: number; limit?: number }, string> = {
@@ -58,8 +102,12 @@ export function createFsTools() {
     }),
     execute: async ({ file_path, offset, limit }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
+      if (isAnySpacePath(file_path) && !isOwnSpacePath(file_path, spaceId)) {
+        return SPACE_READ_DENIED;
+      }
       try {
-        const fullPath = resolveVfsPath(conversationId, file_path);
+        const fullPath = resolveVfsPath(conversationId, spaceId, file_path);
         const exists = await OPFS.exists(fullPath);
         if (!exists) return `Error: File not found at ${file_path}`;
 
@@ -83,21 +131,29 @@ export function createFsTools() {
 
   const writeTool: BrowserTool<{ file_path: string; content: string }, string> = {
     name: "Write",
-    description: "Creates or overwrites a file. Automatically creates parent directories.",
+    description: "Creates or overwrites a file. Automatically creates parent directories. Writes to the active space's shared workspace require user approval.",
     parameters: z.object({
       file_path: z.string(),
       content: z.string(),
     }),
+    approval: { required: true },
     execute: async ({ file_path, content }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot write to global skills directory.`;
       }
       if (isUploadsPath(file_path)) {
         return `Error: Permission denied. Files under /.uploads/ are user-attached and read-only. Write your output to a different path in the workspace.`;
       }
+      // Cross-space writes are still denied. Own-space writes are allowed
+      // but require user approval (gated in agent-transport's dynamic
+      // needsApproval branch for the Write tool).
+      if (isAnySpacePath(file_path) && !isOwnSpacePath(file_path, spaceId)) {
+        return SPACE_CROSS_WRITE_DENIED;
+      }
       try {
-        const fullPath = resolveVfsPath(conversationId, file_path);
+        const fullPath = resolveVfsPath(conversationId, spaceId, file_path);
         await OPFS.writeFile(fullPath, content);
         return `File created/updated at ${file_path}.`;
       } catch (e) {
@@ -108,23 +164,30 @@ export function createFsTools() {
 
   const editTool: BrowserTool<{ file_path: string; oldString: string; newString: string; replaceAll?: boolean }, string> = {
     name: "Edit",
-    description: "Performs exact string replacement in a file. Use Read first to verify exact indentation and content.",
+    description: "Performs exact string replacement in a file. Use Read first to verify exact indentation and content. Edits to the active space's shared workspace require user approval.",
     parameters: z.object({
       file_path: z.string(),
       oldString: z.string(),
       newString: z.string(),
       replaceAll: z.boolean().optional(),
     }),
+    approval: { required: true },
     execute: async ({ file_path, oldString, newString, replaceAll }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
       if (file_path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot edit files in global skills directory.`;
       }
       if (isUploadsPath(file_path)) {
         return `Error: Permission denied. Files under /.uploads/ are user-attached and read-only.`;
       }
+      // Cross-space edits are still denied. Own-space edits are allowed
+      // but require user approval (gated in agent-transport).
+      if (isAnySpacePath(file_path) && !isOwnSpacePath(file_path, spaceId)) {
+        return SPACE_CROSS_WRITE_DENIED;
+      }
       try {
-        const fullPath = resolveVfsPath(conversationId, file_path);
+        const fullPath = resolveVfsPath(conversationId, spaceId, file_path);
         if (!(await OPFS.exists(fullPath))) return `Error: File not found at ${file_path}`;
 
         const content = await OPFS.readFile(fullPath);
@@ -158,8 +221,14 @@ export function createFsTools() {
     }),
     execute: async ({ pattern, path }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
+      if (path && isAnySpacePath(path) && !isOwnSpacePath(path, spaceId)) {
+        return SPACE_READ_DENIED;
+      }
       try {
-        const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
+        const searchRoot = path
+          ? resolveVfsPath(conversationId, spaceId, path)
+          : getVfsRoot(conversationId);
         const regex = globToRegex(pattern);
         
         const matches: string[] = [];
@@ -190,8 +259,14 @@ export function createFsTools() {
     }),
     execute: async ({ pattern, path, include }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
+      if (path && isAnySpacePath(path) && !isOwnSpacePath(path, spaceId)) {
+        return SPACE_READ_DENIED;
+      }
       try {
-        const searchRoot = path ? resolveVfsPath(conversationId, path) : getVfsRoot(conversationId);
+        const searchRoot = path
+          ? resolveVfsPath(conversationId, spaceId, path)
+          : getVfsRoot(conversationId);
         const searchRegex = new RegExp(pattern);
         const includeRegex = include ? globToRegex(include) : null;
         
@@ -234,9 +309,13 @@ export function createFsTools() {
     }),
     execute: async ({ path }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
+      if (path && isAnySpacePath(path) && !isOwnSpacePath(path, spaceId)) {
+        return SPACE_READ_DENIED;
+      }
       try {
         const targetPath = (path === '.' || !path) ? '' : path;
-        const fullPath = resolveVfsPath(conversationId, targetPath);
+        const fullPath = resolveVfsPath(conversationId, spaceId, targetPath);
         
         const exists = await OPFS.exists(fullPath);
         if (!exists) return `Error: Directory not found at ${path}`;
@@ -260,14 +339,21 @@ export function createFsTools() {
     approval: { required: true },
     execute: async ({ path }, ctx) => {
       const conversationId = ctx.session?.conversationId ?? null;
+      const spaceId = ctx.session?.spaceId ?? null;
       if (path.startsWith('/skills/')) {
         return `Error: Permission denied. Cannot delete files in the global skills directory.`;
       }
       if (isUploadsPath(path)) {
         return `Error: Permission denied. Files under /.uploads/ are user-attached and cannot be deleted.`;
       }
+      // The shared space workspace is read-only to the agent; explicit
+      // deletes targeting `spaces/<id>/workspace/...` are rejected the
+      // same way Write/Edit are guarded elsewhere in this file.
+      if (isAnySpacePath(path)) {
+        return SPACE_CROSS_WRITE_DENIED;
+      }
       try {
-        const fullPath = resolveVfsPath(conversationId, path);
+        const fullPath = resolveVfsPath(conversationId, spaceId, path);
         // Recursive so a whole folder can go in one call. OPFS.rm treats a
         // missing path as a no-op success.
         await OPFS.rm(fullPath, { recursive: true });

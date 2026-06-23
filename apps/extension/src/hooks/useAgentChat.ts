@@ -73,7 +73,6 @@ import { providers as registryProviders } from "@/registry/providers";
 import type {
   AgentSettings,
   CloudProvider,
-  ConversationMode,
   QueuedMessage,
   SerializedToolPart,
   SerializedUIPart,
@@ -81,7 +80,6 @@ import type {
   ThinkingConfig,
   AgentUIMessage,
   CompactionPart,
-  PlanExtensionPart,
 } from "@/lib/types";
 import { Chat, useChat } from "@ai-sdk/react";
 import {
@@ -140,15 +138,6 @@ interface UseAgentChatOptions {
    * getAgentSettings() hydration.
    */
   modelOverride?: string | null;
-  /**
-   * Initial approval mode for a NEW conversation created by `handleSubmit`
-   * or `queueMessage`. Lets the user pick a mode in the composer BEFORE
-   * sending the first message; otherwise `handleModeChange` in ChatView
-   * silently no-ops on a null `conversationId`. Read at conversation-create
-   * time only — once `conversationId` is set, mode changes go through
-   * `chatDb.updateConversation` directly.
-   */
-  initialMode?: ConversationMode;
 }
 
 function generateId() {
@@ -272,14 +261,6 @@ export function deserializePart(
       // Reuse the shared `CompactionPart` shape — by construction it
       // matches the data-compaction variant of `AgentMessage["parts"][number]`.
       return { type: "data-compaction", data: p.data } satisfies CompactionPart;
-    case "data-plan-extension":
-      // Round-trip plan-extension markers from chatDb so the inline
-      // notice survives reload. By construction the shape matches the
-      // data-plan-extension variant of `AgentMessage["parts"][number]`.
-      return {
-        type: "data-plan-extension",
-        data: p.data,
-      } satisfies PlanExtensionPart;
     case "data-completion-check-rejection":
       // Round-trip the rejection block so concerns are visible after a
       // reload. The data shape matches the AgentDataParts registration,
@@ -509,7 +490,6 @@ export function useAgentChat({
   getSharedTabId,
   headless,
   modelOverride,
-  initialMode,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
@@ -525,13 +505,6 @@ export function useAgentChat({
   // handleSubmit guarantees we send the latest editor text.
   const inputRef = useRef(input);
   inputRef.current = input;
-
-  // Mirror of `initialMode` so the conversation-create paths below
-  // (handleSubmit / queueMessage) read the latest user-selected mode at
-  // the moment a new conversation is minted, even if the closure was
-  // captured earlier.
-  const initialModeRef = useRef(initialMode);
-  initialModeRef.current = initialMode;
 
   const [isCompacting, setIsCompacting] = useState(false);
   // AbortController for the in-flight compaction summary call. The chat's
@@ -1775,12 +1748,6 @@ export function useAgentChat({
           spaceId,
           createdAt: Date.now(),
           updatedAt: Date.now(),
-          // Apply the mode the user selected in the composer before
-          // sending the first message (see useAgentChat.initialMode JSDoc).
-          // Falls back to "ask" implicitly when undefined.
-          ...(initialModeRef.current !== undefined && {
-            mode: initialModeRef.current,
-          }),
         });
 
         const titleConvId = convId;
@@ -1966,11 +1933,6 @@ export function useAgentChat({
           spaceId,
           createdAt: Date.now(),
           updatedAt: Date.now(),
-          // Apply the mode the user selected in the composer before
-          // queuing/sending (see useAgentChat.initialMode JSDoc).
-          ...(initialModeRef.current !== undefined && {
-            mode: initialModeRef.current,
-          }),
         });
       }
 

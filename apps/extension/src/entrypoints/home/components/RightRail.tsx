@@ -12,9 +12,24 @@ import { FileViewerPanel } from "@/components/files/FileViewerPanel";
 
 interface RightRailProps {
   conversationId: string;
-  /** Selected file path RELATIVE to the workspace root (e.g. `notes.csv`). */
+  /** Active space id, threaded into the workspace panel for Save-to-space. */
+  spaceId: string | null;
+  /**
+   * Selected file path RELATIVE to the conversation workspace root (e.g.
+   * `notes.csv`). Mutually exclusive with `selectedSpaceFile` — the parent
+   * must clear one when setting the other.
+   */
   selectedFile: string | null;
   onSelectFile: (file: string | null) => void;
+  /**
+   * Selected file path RELATIVE to the active space's workspace root (e.g.
+   * `poem.md`). When non-null, the file viewer reads from
+   * `spaces/<spaceId>/workspace/<selectedSpaceFile>` instead of the
+   * conversation workspace. Requires `spaceId` to be non-null at the
+   * moment of selection — the parent must guard this.
+   */
+  selectedSpaceFile: string | null;
+  onSelectSpaceFile: (file: string | null) => void;
   /**
    * Whether the rail is open (visible) at all. Driven by the parent's
    * side-panel toggle button. Toggling animates the rail width to/from 0.
@@ -58,8 +73,11 @@ const TWEEN_MS = 240;
  */
 export function RightRail({
   conversationId,
+  spaceId,
   selectedFile,
   onSelectFile,
+  selectedSpaceFile,
+  onSelectSpaceFile,
   isOpen,
   fileWidthPx,
   onFileWidthChange,
@@ -67,9 +85,12 @@ export function RightRail({
 }: RightRailProps) {
   /** Imperative handle on the rail panel — internal only. */
   const railPanelRef = useRef<PanelImperativeHandle | null>(null);
-  /** Latest selectedFile, read inside onResize without re-binding. */
-  const selectedFileRef = useRef(selectedFile);
-  selectedFileRef.current = selectedFile;
+  /** Latest in-file-mode flag, read inside onResize without re-binding. */
+  const inFileModeRef = useRef<boolean>(
+    selectedFile !== null || selectedSpaceFile !== null,
+  );
+  inFileModeRef.current =
+    selectedFile !== null || selectedSpaceFile !== null;
   /** Latest persisted file width, read inside the mode/open effect. */
   const fileWidthRef = useRef(fileWidthPx);
   fileWidthRef.current = fileWidthPx;
@@ -79,7 +100,7 @@ export function RightRail({
   const cancelTweenRef = useRef<(() => void) | null>(null);
   const hasInitializedRef = useRef(false);
 
-  const inFileMode = selectedFile !== null;
+  const inFileMode = selectedFile !== null || selectedSpaceFile !== null;
 
   /**
    * Initial defaultSize for the rail panel, captured ONCE at mount. We
@@ -98,7 +119,7 @@ export function RightRail({
     // the division yields a tiny percentage (like 1.6%) and permanently locks
     // the panel to a sliver. Providing a percentage bypasses the math bug.
     const getTargetPx = () => {
-      if (selectedFile !== null) {
+      if (selectedFile !== null || selectedSpaceFile !== null) {
         return fileWidthPx < FILE_AUTO_WIDEN_THRESHOLD_PX
           ? FILE_AUTO_WIDEN_PX
           : fileWidthPx;
@@ -127,7 +148,7 @@ export function RightRail({
     
     const target = !isOpen
       ? 0
-      : selectedFile !== null
+      : selectedFile !== null || selectedSpaceFile !== null
         ? fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
           ? FILE_AUTO_WIDEN_PX
           : fileWidthRef.current
@@ -154,7 +175,7 @@ export function RightRail({
       durationMs: TWEEN_MS,
       flagRef: animatingRef,
     });
-  }, [isOpen, selectedFile]);
+  }, [isOpen, selectedFile, selectedSpaceFile]);
 
   useEffect(() => {
     return () => {
@@ -211,10 +232,7 @@ export function RightRail({
           // potentially lock in a transient width.
           if (animatingRef.current) return;
           // Only persist while in file mode. Workspace mode width is fixed.
-          if (
-            panelSize.inPixels > 0 &&
-            selectedFileRef.current !== null
-          ) {
+          if (panelSize.inPixels > 0 && inFileModeRef.current) {
             onFileWidthChange(Math.round(panelSize.inPixels));
           }
         }}
@@ -222,7 +240,7 @@ export function RightRail({
       >
         <div className="relative h-full w-full overflow-hidden">
           <AnimatePresence mode="wait" initial={false}>
-            {selectedFile === null ? (
+            {!inFileMode ? (
               <motion.div
                 key="workspace"
                 className="absolute inset-0"
@@ -233,10 +251,31 @@ export function RightRail({
               >
                 <CoworkPanel
                   conversationId={conversationId}
+                  spaceId={spaceId}
                   onSelectFile={onSelectFile}
+                  onSelectSpaceFile={onSelectSpaceFile}
                 />
               </motion.div>
-            ) : (
+            ) : selectedSpaceFile !== null && spaceId !== null ? (
+              <motion.div
+                key="space-file"
+                className="absolute inset-0"
+                initial={{ x: -16, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -16, opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                <FileViewerPanel
+                  filePath={`spaces/${spaceId}/workspace/${selectedSpaceFile}`}
+                  fileName={
+                    selectedSpaceFile.split("/").pop() ?? selectedSpaceFile
+                  }
+                  conversationId={conversationId}
+                  spaceId={spaceId}
+                  onClose={() => onSelectSpaceFile(null)}
+                />
+              </motion.div>
+            ) : selectedFile !== null ? (
               <motion.div
                 key="file"
                 className="absolute inset-0"
@@ -248,10 +287,12 @@ export function RightRail({
                 <FileViewerPanel
                   filePath={`conversations/${conversationId}/workspace/${selectedFile}`}
                   fileName={selectedFile.split("/").pop() ?? selectedFile}
+                  conversationId={conversationId}
+                  spaceId={spaceId}
                   onClose={() => onSelectFile(null)}
                 />
               </motion.div>
-            )}
+            ) : null}
           </AnimatePresence>
         </div>
       </ResizablePanel>

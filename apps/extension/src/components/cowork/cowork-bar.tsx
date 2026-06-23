@@ -42,9 +42,16 @@ type Panel = "plan" | "files" | "context";
  */
 export function CoworkBar({
   conversationId,
+  spaceId,
   showWorkspaceControls = false,
 }: {
   conversationId: string | null;
+  /**
+   * Active space id, forwarded to the embedded Working Folder card so its
+   * per-row "Save to space" action can target the right destination. `null`
+   * disables the affordance with an explanatory tooltip.
+   */
+  spaceId: string | null;
   showWorkspaceControls?: boolean;
 }) {
   const todos = useConversationTodos(conversationId);
@@ -237,6 +244,7 @@ export function CoworkBar({
             <div className="max-h-[40vh] overflow-y-auto border-t border-border/60 bg-background">
               <WorkingFolderCard
                 conversationId={conversationId}
+                spaceId={spaceId}
                 onSelectFile={handleSelectFile}
                 collapsible={false}
                 showHeader={false}

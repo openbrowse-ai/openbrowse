@@ -2,6 +2,7 @@ console.log("Background service worker loaded up successfully!");
 import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
 import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
 import { openHomePage } from "./messages";
+import { handleNewWindowAutoHome } from "./auto-home";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { registerScheduler } from "./scheduler";
 import { chatDb } from "@/lib/chat-db";
@@ -260,8 +261,20 @@ export default defineBackground({
         const w = await chrome.windows.get(windowId);
         if (w.type === "normal") lastFocusedWindowId = windowId;
       } catch {
-        // Window vanished between focus event and lookup — ignore.
+         // Window vanished between focus event and lookup — ignore.
       }
+    });
+
+    // Auto-open a pinned home tab in every newly-created normal window so
+    // OpenBrowse's app shell is always one click away. Skip when the
+    // window was created by `focusOrCreateWindow` recreating a bound
+    // space's window — that path already supplies the anchored home tab
+    // among its initial URLs and signals ownership via the auto-home gate
+    // in `./spaces` (`markAutoHomeOwned`).
+    chrome.windows.onCreated.addListener((win) => {
+      // Don't await — `addListener` callbacks aren't supposed to be async.
+      // The chrome API call inside keeps the SW alive for the duration.
+      void handleNewWindowAutoHome(win);
     });
 
     chrome.commands.onCommand.addListener((command) => {
@@ -640,13 +653,17 @@ export default defineBackground({
         return true;
       }
 
+      // TODO(spaces): this handler is now fetch-only; rename to GET_SPACE_FOR_WINDOW.
       if (message.type === "GET_OR_CREATE_SPACE") {
-        import("./spaces")
-          .then(async ({ getOrCreateSpaceForWindow }) => {
-            const space = await getOrCreateSpaceForWindow(message.windowId);
-            sendResponse({ ok: true, spaceId: space.id });
-          })
-          .catch((err) => sendResponse({ ok: false, error: String(err) }));
+        (async () => {
+          try {
+            const { storage } = await import("@/lib/storage");
+            const space = await storage.getSpaceByWindowId(message.windowId);
+            sendResponse({ ok: true, spaceId: space?.id ?? null });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
         return true;
       }
 
@@ -784,12 +801,11 @@ export default defineBackground({
         (async () => {
           try {
             const { storage } = await import("@/lib/storage");
-            const { getOrCreateSpaceForWindow } = await import("./spaces");
             const windowId = sender.tab?.windowId;
             let activeSpaceId: string | null = null;
             if (windowId) {
-              const space = await getOrCreateSpaceForWindow(windowId);
-              activeSpaceId = space.id;
+              const space = await storage.getSpaceByWindowId(windowId);
+              activeSpaceId = space?.id ?? null;
             }
             const spaces = await storage.getSpaces();
             const autoTidyNotification = await storage.getAutoTidyNotification();
@@ -1793,6 +1809,19 @@ export default defineBackground({
             const deletedSpace = spaces.find((s) => s.id === message.spaceId);
             const updated = spaces.filter((s) => s.id !== message.spaceId);
             await storage.setSpaces(updated);
+
+            // Cascade-clear saved-to-space relationship records targeting
+            // this space so the indicator doesn't surface stale "saved"
+            // state for files whose destination has just disappeared.
+            try {
+              const { savedFilesDb } = await import("@/lib/spaces/saved-files-db");
+              await savedFilesDb.clearForSpace(message.spaceId);
+            } catch (e) {
+              console.warn(
+                "Failed to clear saved-files records for deleted space",
+                e,
+              );
+            }
 
             const targetWindowId = deletedSpace?.windowId ?? null;
 

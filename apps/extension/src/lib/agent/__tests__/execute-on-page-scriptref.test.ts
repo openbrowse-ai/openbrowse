@@ -168,7 +168,7 @@ describe("executeOnPage scriptRef (run saved site-skill script by reference)", (
     const sent: SentCommand[] = [];
     const ctx = fakeCtx({ sent, result: 2 });
     const out = await executeOnPageTool.execute(
-      { tab: "t1", kind: "write", code: "return 1 + 1;" },
+      { tab: "t1", code: "return 1 + 1;" },
       ctx,
     );
     expect(out).toEqual({ tab: "t1", result: 2 });

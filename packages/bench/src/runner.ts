@@ -393,6 +393,7 @@ async function runTrialInner(
         // (subagent dispatch) and the per-parent concurrency tracker have a
         // key to work with. Bench trials are single-run; no chatDb row exists.
         conversationId: "bench",
+        spaceId: null,
         // Bench TabIds are already stable strings (`t0`, `t1`, ...) emitted
         // by PlaywrightDriver, so we identity-map them as agent-facing
         // handles. No persistence needed — bench trials are single-run.

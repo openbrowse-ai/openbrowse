@@ -212,6 +212,7 @@ export async function runSubagent(
       parentToolContext,
       parentConversationId,
       childConversationId,
+      childSpaceId: child.spaceId,
       incognitoWindowId,
       parentToolCallId,
       isolation,
@@ -289,6 +290,10 @@ function buildChildToolContext(args: {
   parentToolContext: ToolContext;
   parentConversationId: string;
   childConversationId: string;
+  /** The child conversation's spaceId. Inherited from the parent unless
+   *  the child was created in incognito (which forces null). Threaded
+   *  onto the child session so fs tools mount the right space workspace. */
+  childSpaceId: string | null;
   /** windowId of the fresh incognito window for `incognito`; null for others. */
   incognitoWindowId: number | null;
   /** Parent's `delegate` tool call id, stamped onto child's `session.parent.toolCallId`. */
@@ -300,6 +305,7 @@ function buildChildToolContext(args: {
     parentToolContext,
     parentConversationId,
     childConversationId,
+    childSpaceId,
     incognitoWindowId,
     parentToolCallId,
     isolation,
@@ -353,6 +359,7 @@ function buildChildToolContext(args: {
     session: {
       ...parentToolContext.session,
       conversationId: childConvId,
+      spaceId: childSpaceId,
       parent: {
         conversationId: parentConversationId,
         depth: 1,
@@ -412,20 +419,6 @@ function buildChildToolContext(args: {
           todos,
           updatedAt: Date.now(),
         });
-      },
-      getPlan: async () => {
-        const conv = await chatDb.getConversation(childConvId);
-        return conv?.plan;
-      },
-      setPlan: async (plan) => {
-        await chatDb.updateConversation(childConvId, {
-          plan,
-          updatedAt: Date.now(),
-        });
-      },
-      getMode: async () => {
-        const conv = await chatDb.getConversation(childConvId);
-        return conv?.mode ?? "ask";
       },
     },
   };

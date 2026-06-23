@@ -23,7 +23,7 @@ vi.mock("../sandbox", () => ({
 function makeCtx(conversationId: string | null = null): ToolContext {
   return {
     driver: {} as ToolContext["driver"],
-    session: { conversationId },
+    session: { conversationId, spaceId: null },
   };
 }
 

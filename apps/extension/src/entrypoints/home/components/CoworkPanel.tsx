@@ -3,19 +3,44 @@ import { ProgressCard, WorkingFolderCard, ContextCard } from "@/components/cowor
 interface CoworkPanelProps {
   conversationId: string;
   /**
-   * Click handler for a working-folder file row. Called with the file path
-   * RELATIVE to the workspace root (e.g. `subdir/data.csv`). Pass `null` to
-   * deselect (currently only used by the parent on Esc / file panel close).
+   * Active space id, threaded down so the Working Folder card can offer a
+   * per-row "Save to space" action. `null` disables that affordance.
+   */
+  spaceId: string | null;
+  /**
+   * Click handler for a working-folder file row OR an Uploads row in the
+   * Context card. Called with the file path RELATIVE to the conversation
+   * workspace root (e.g. `subdir/data.csv`, `.uploads/foo.png`). Pass
+   * `null` to deselect.
    */
   onSelectFile: (file: string | null) => void;
+  /**
+   * Click handler for a Space files row in the Context card. Called with
+   * the file path RELATIVE to the active space's workspace root (e.g.
+   * `poem.md`). When omitted, Space file rows render as non-clickable.
+   */
+  onSelectSpaceFile?: (file: string | null) => void;
 }
 
-export function CoworkPanel({ conversationId, onSelectFile }: CoworkPanelProps) {
+export function CoworkPanel({
+  conversationId,
+  spaceId,
+  onSelectFile,
+  onSelectSpaceFile,
+}: CoworkPanelProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
       <ProgressCard conversationId={conversationId} />
-      <WorkingFolderCard conversationId={conversationId} onSelectFile={onSelectFile} />
-      <ContextCard conversationId={conversationId} onSelectFile={onSelectFile} />
+      <WorkingFolderCard
+        conversationId={conversationId}
+        spaceId={spaceId}
+        onSelectFile={onSelectFile}
+      />
+      <ContextCard
+        conversationId={conversationId}
+        onSelectFile={onSelectFile}
+        onSelectSpaceFile={onSelectSpaceFile}
+      />
     </div>
   );
 }

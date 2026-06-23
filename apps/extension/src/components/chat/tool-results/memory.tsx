@@ -13,7 +13,13 @@ export function MemoryResult({ args, result, action }: Props) {
 
   // Handle the "didn't happen" outcomes (e.g. update failed, save collided).
   const r = result as
-    | { saved?: boolean; updated?: boolean; reason?: string; diffPreview?: string }
+    | {
+        saved?: boolean;
+        updated?: boolean;
+        reason?: string;
+        diffPreview?: string;
+        scope?: "user" | "space";
+      }
     | undefined;
   const failed =
     r != null &&
@@ -31,6 +37,15 @@ export function MemoryResult({ args, result, action }: Props) {
   }
 
   const title = typeof args.title === "string" ? args.title : undefined;
+  // Scope badge surfaces where the memory landed so a misfile is easy to
+  // spot. Falls back to nothing when the tool result hasn't resolved yet
+  // or when the action failed (no scope to report).
+  const scopeBadge =
+    !failed && r?.scope === "space"
+      ? "in this space"
+      : !failed && r?.scope === "user"
+        ? "globally"
+        : null;
   const headerLabel = action === "save" ? "Memory saved" : "Memory updated";
 
   return (
@@ -39,6 +54,7 @@ export function MemoryResult({ args, result, action }: Props) {
         <Database className="size-3 shrink-0" />
         <span className="truncate">
           {headerLabel}
+          {scopeBadge ? ` ${scopeBadge}` : ""}
           {title ? `: ${title}` : ""}
         </span>
       </div>

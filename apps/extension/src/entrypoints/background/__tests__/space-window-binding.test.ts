@@ -56,6 +56,10 @@ function installChromeStub() {
         if (q.pinned != null) res = res.filter((t) => t.pinned === q.pinned);
         return Promise.resolve(res.map((t) => ({ ...t })));
       },
+      get: (id: number) => {
+        const t = tabs.find((x) => x.id === id);
+        return t ? Promise.resolve({ ...t }) : Promise.reject(new Error("no tab"));
+      },
       create: (props: {
         windowId: number;
         url: string;
@@ -111,6 +115,9 @@ function makeSpace(over: Partial<Space> & { id: string }): Space {
     pinnedTabs: [],
     colors: null,
     colorMode: null,
+    instructions: null,
+    description: null,
+    updatedAt: 0,
     ...over,
   };
 }

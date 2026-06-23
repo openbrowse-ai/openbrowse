@@ -60,17 +60,115 @@ import { LandingPage } from "./components/LandingPage";
 import { RightRail } from "./components/RightRail";
 import { ScheduledView } from "./components/ScheduledView";
 import { ScheduledRunHost } from "./components/ScheduledRunHost";
+import { SpacesPage } from "./components/SpacesPage";
+import {
+  formatHomeRoute,
+  parseHomeRoute,
+  sameView,
+  type HomeRoute,
+} from "./route";
 
 export default function App() {
   useTheme();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
-  const [activeConversationId, setActiveConversationId] = useState<
-    string | null
-  >(() => {
-    const hash = window.location.hash.slice(1);
-    return hash || null;
-  });
+
+  // Single source of truth for which view is mounted (`chat` / `scheduled`
+  // / `spaces`), the active conversation id (when on chat), and the
+  // selected space id (when on the Spaces detail). Persisted in the URL
+  // hash so reload, back/forward, and direct deep-links all work.
+  // See `./route.ts` for the grammar.
+  const [route, setRoute] = useState<HomeRoute>(() =>
+    parseHomeRoute(window.location.hash),
+  );
+
+  // Derived view scalars — kept around for ergonomic JSX and so that
+  // existing render branches read naturally. Don't set these directly;
+  // mutate via `setRoute` (which writes the URL) and they update.
+  const view = route.view;
+  const activeConversationId =
+    route.view === "chat" ? route.conversationId : null;
+
+  // Track the most recent hash we wrote so the URL→state listener can
+  // ignore self-induced events. The URL is the source of truth, but
+  // `navigate` writes it before the next `hashchange` fires; we don't
+  // want a redundant `setRoute` (it'd be a no-op via React's bail-out,
+  // but it's clearer to short-circuit explicitly).
+  const lastWrittenHashRef = useRef<string>(window.location.hash);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
+  /**
+   * Single navigation entry point: sets the route state and writes the
+   * URL. Uses `pushState` for view transitions (Back navigates between
+   * views) and `replaceState` for incidental same-view updates (e.g.
+   * switching conversations within chat — back-spam-free, matching the
+   * pre-routing behavior of the conversation-id sync).
+   */
+  const navigate = useCallback((next: HomeRoute) => {
+    const prev = routeRef.current;
+    const nextHash = formatHomeRoute(next);
+    const url =
+      window.location.pathname +
+      window.location.search +
+      (nextHash || "");
+    const isViewChange = !sameView(prev, next);
+    if (window.location.hash !== nextHash) {
+      if (isViewChange) {
+        history.pushState(null, "", url || window.location.pathname);
+      } else {
+        history.replaceState(null, "", url || window.location.pathname);
+      }
+    }
+    lastWrittenHashRef.current = nextHash;
+    // Update the ref synchronously so back-to-back navigate() calls in
+    // the same React batch (e.g. setView + setActiveConversationId)
+    // see the updated previous-route and don't double-push.
+    routeRef.current = next;
+    setRoute(next);
+  }, []);
+
+  /**
+   * Backward-compatible shims so existing call sites don't need to learn
+   * `navigate(route)`. Each shim translates a familiar set/clear into a
+   * route delta and routes through `navigate`.
+   */
+  const setView = useCallback(
+    (v: "chat" | "scheduled" | "spaces") => {
+      const prev = routeRef.current;
+      if (v === "chat") {
+        navigate({
+          view: "chat",
+          // Preserve the active conversation if we're already on chat;
+          // otherwise switch to empty chat. (Existing call sites that
+          // want to land on a specific conversation pair `setView("chat")`
+          // with a follow-up `setActiveConversationId(id)` — the second
+          // call is what writes the id.)
+          conversationId:
+            prev.view === "chat" ? prev.conversationId : null,
+        });
+      } else if (v === "scheduled") {
+        navigate({ view: "scheduled" });
+      } else {
+        navigate({ view: "spaces" });
+      }
+    },
+    [navigate],
+  );
+
+  const setActiveConversationId = useCallback(
+    (id: string | null) => {
+      // Convo changes always belong to the chat view. Existing call
+      // sites that target chat already pair this with `setView("chat")`;
+      // call sites that fire while on another view (none in practice,
+      // see App.tsx delete path) would silently switch to chat — but
+      // those paths only run while on chat anyway, so this is a no-op
+      // in those cases (sameView ⇒ replaceState, not pushState).
+      navigate({ view: "chat", conversationId: id });
+    },
+    [navigate],
+  );
+
   // Prefill consumed once on mount — used by the "Try in chat" flow from
   // Settings. Reading from URL synchronously avoids a flicker, and we
   // history.replaceState the param away so a refresh doesn't re-seed.
@@ -79,7 +177,7 @@ export default function App() {
     const prefill = params.get("prefill");
     if (!prefill) return undefined;
     // Strip the param from the URL without disturbing the hash (which
-    // carries the active conversation id).
+    // carries the active route).
     params.delete("prefill");
     const newSearch = params.toString();
     const newUrl =
@@ -93,7 +191,6 @@ export default function App() {
   const [overlayAction, setOverlayAction] = useState<string | null>(null);
   const overlayIframeRef = useRef<HTMLIFrameElement>(null);
 
-  const [view, setView] = useState<"chat" | "scheduled">("chat");
   const scheduleModels = useScheduleModels();
 
   const [conversationTitle, setConversationTitle] = useState<string | null>(
@@ -101,10 +198,20 @@ export default function App() {
   );
   const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [selectedSpaceFile, setSelectedSpaceFile] = useState<string | null>(
+    null,
+  );
   const [filePanelWidth, setFilePanelWidth] = useFilePanelWidth();
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
   );
+
+  // Clear any active space-file selection when the active space changes
+  // to prevent the viewer from trying to read from a missing space.
+  useEffect(() => {
+    if (!activeSpaceId) setSelectedSpaceFile(null);
+  }, [activeSpaceId]);
+
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
 
@@ -119,7 +226,7 @@ export default function App() {
 
       // Prefer the durable ?space=<id> anchor (set on the home tab so a
       // restored window resolves to its real space immediately), then fall
-      // back to windowId match, then the first space.
+      // back to windowId match. If neither matches, run space-less.
       const spaceParam = new URLSearchParams(window.location.search).get("space");
       if (spaceParam && allSpaces.some((s) => s.id === spaceParam)) {
         setActiveSpaceId(spaceParam);
@@ -129,12 +236,10 @@ export default function App() {
       const currentWindow = await chrome.windows.getCurrent();
       if (currentWindow.id) {
         const space = allSpaces.find((s) => s.windowId === currentWindow.id);
-        if (space) {
-          setActiveSpaceId(space.id);
-        } else if (allSpaces.length > 0) {
-          setActiveSpaceId(allSpaces[0].id);
-        }
+        setActiveSpaceId(space?.id ?? null);
+        return;
       }
+      setActiveSpaceId(null);
     }
     init();
 
@@ -225,30 +330,51 @@ export default function App() {
     }
   }, [activeSpace]);
 
+  // URL → state. Listens to both `hashchange` (e.g. background's
+  // `FOCUS_CONVERSATION` rewriting `...#<conversationId>` to switch the
+  // home tab to a chat) and `popstate` (Back/Forward, which doesn't
+  // always fire `hashchange`). Self-induced writes from `navigate` are
+  // skipped via `lastWrittenHashRef`.
   useEffect(() => {
-    const hash = activeConversationId ? `#${activeConversationId}` : "";
-    if (window.location.hash !== hash) {
-      history.replaceState(null, "", hash || window.location.pathname);
+    function onLocationChange() {
+      const currentHash = window.location.hash;
+      if (currentHash === lastWrittenHashRef.current) return;
+      lastWrittenHashRef.current = currentHash;
+      const next = parseHomeRoute(currentHash);
+      // Avoid redundant re-renders if the parsed route is already
+      // structurally equal to what we have (rare but possible if some
+      // external code rewrote the hash to the same value).
+      const prev = routeRef.current;
+      if (
+        prev.view === next.view &&
+        ((prev.view === "chat" &&
+          next.view === "chat" &&
+          prev.conversationId === next.conversationId) ||
+          prev.view === "spaces" ||
+          prev.view === "scheduled")
+      ) {
+        return;
+      }
+      setRoute(next);
     }
-  }, [activeConversationId]);
-
-  useEffect(() => {
-    const onHashChange = () => {
-      const id = window.location.hash.slice(1) || null;
-      setActiveConversationId(id);
+    window.addEventListener("hashchange", onLocationChange);
+    window.addEventListener("popstate", onLocationChange);
+    return () => {
+      window.removeEventListener("hashchange", onLocationChange);
+      window.removeEventListener("popstate", onLocationChange);
     };
-    window.addEventListener("hashchange", onHashChange);
-    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
   useEffect(() => {
     if (!activeConversationId) {
       setConversationTitle(null);
       setSelectedFile(null);
+      setSelectedSpaceFile(null);
       return;
     }
     setIsCoworkPanelOpen(true);
     setSelectedFile(null);
+    setSelectedSpaceFile(null);
     chatDb.getConversation(activeConversationId).then((conv) => {
       setConversationTitle(conv?.title ?? null);
     });
@@ -452,10 +578,33 @@ export default function App() {
   const handleSelectFile = useCallback((file: string | null) => {
     setSelectedFile(file);
     if (file !== null) {
+      // Mutually exclusive with the space-file selection — only one
+      // FileViewerPanel can be open at a time.
+      setSelectedSpaceFile(null);
       // Selecting a file always implies the rail should be visible.
       setIsCoworkPanelOpen(true);
     }
   }, []);
+
+  const handleSelectSpaceFile = useCallback(
+    (file: string | null) => {
+      // Defense-in-depth: a non-null selection requires an active space, since
+      // the viewer reads from `spaces/<spaceId>/workspace/<file>`. Currently
+      // unreachable (the conversation's space is fixed at creation and rows
+      // can only acquire `referencedSpaceFiles` while in a space), but cheap
+      // to guard so a future loosening of that invariant can't render an
+      // empty/broken rail.
+      if (file !== null && activeSpaceId === null) return;
+      setSelectedSpaceFile(file);
+      if (file !== null) {
+        // Mutually exclusive with the conversation-file selection.
+        setSelectedFile(null);
+        // Selecting a file always implies the rail should be visible.
+        setIsCoworkPanelOpen(true);
+      }
+    },
+    [activeSpaceId],
+  );
 
   const handleToggleCowork = useCallback(() => {
     setIsCoworkPanelOpen((prev) => !prev);
@@ -467,8 +616,11 @@ export default function App() {
       <HomeSidebar
         spaces={spaces}
         activeSpaceId={activeSpaceId}
-        activeConversationId={view === "scheduled" ? null : activeConversationId}
+        activeConversationId={
+          view === "scheduled" || view === "spaces" ? null : activeConversationId
+        }
         scheduledActive={view === "scheduled"}
+        spacesActive={view === "spaces"}
         onSelectConversation={handleSelectConversation}
         onNewConversation={() => handleNewConversation("")}
         onGoHome={() => {
@@ -476,13 +628,11 @@ export default function App() {
           setActiveConversationId(null);
         }}
         onOpenOverlay={() => setShowOverlay(true)}
-        onNewSpace={() => {
-          setOverlayAction("new-space");
-          setShowOverlay(true);
-        }}
-        onConfigureSpace={() => {
-          setOverlayAction("configure-space");
-          setShowOverlay(true);
+        onOpenSpaces={() => {
+          // navigate directly to the route to avoid the back-compat
+          // shims overwriting each other (setActiveConversationId would
+          // route us back to chat).
+          navigate({ view: "spaces" });
         }}
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
@@ -490,7 +640,9 @@ export default function App() {
         onScheduleConversation={handleScheduleConversation}
       />
 
-      {view === "scheduled" ? (
+      {view === "spaces" ? (
+        <SpacesPage activeSpaceId={activeSpaceId} />
+      ) : view === "scheduled" ? (
         <ScheduledView
           models={scheduleModels}
           onOpenConversation={(id) => {
@@ -503,8 +655,11 @@ export default function App() {
         <FileSelectionContext.Provider value={handleSelectFile}>
         <RightRail
           conversationId={activeConversationId}
+          spaceId={activeSpaceId}
           selectedFile={selectedFile}
           onSelectFile={handleSelectFile}
+          selectedSpaceFile={selectedSpaceFile}
+          onSelectSpaceFile={handleSelectSpaceFile}
           isOpen={isCoworkPanelOpen}
           fileWidthPx={filePanelWidth}
           onFileWidthChange={setFilePanelWidth}
@@ -574,7 +729,7 @@ export default function App() {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {selectedFile === null && (
+                  {selectedFile === null && selectedSpaceFile === null && (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <button

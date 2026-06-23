@@ -55,6 +55,7 @@ describe("navigate — new tab windowId precedence", () => {
         driver,
         session: {
           conversationId: "c1",
+          spaceId: null,
           targetWindowId: 42,
           resolveNewTabWindowId,
           getOrCreateHandle: () => "t1",
@@ -75,6 +76,7 @@ describe("navigate — new tab windowId precedence", () => {
         driver,
         session: {
           conversationId: "c1",
+          spaceId: null,
           resolveNewTabWindowId: async () => 5,
           getOrCreateHandle: () => "t1",
           bindTabsToConversation: async () => {},
@@ -92,6 +94,7 @@ describe("navigate — new tab windowId precedence", () => {
         driver,
         session: {
           conversationId: "c1",
+          spaceId: null,
           resolveNewTabWindowId: async () => undefined,
           getOrCreateHandle: () => "t1",
           bindTabsToConversation: async () => {},
@@ -109,6 +112,7 @@ describe("navigate — new tab windowId precedence", () => {
         driver,
         session: {
           conversationId: "c1",
+          spaceId: null,
           resolveNewTabWindowId: async () => {
             throw new Error("transient lookup failure");
           },

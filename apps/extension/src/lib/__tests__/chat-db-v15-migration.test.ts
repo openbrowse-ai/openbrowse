@@ -75,11 +75,8 @@ async function seedV14Row(row: {
 
 /** Read the raw row past the typed chatDb wrapper to inspect post-migration shape. */
 async function readRowRaw(id: string): Promise<Record<string, unknown> | undefined> {
-  // chatDb.getDb is private; use the raw factory at the current version.
-  // Must match (or exceed) whatever version chatDb itself opened at — opening
-  // at a lower version throws VersionError. Bumped to 16 with the empty v16
-  // hop (Conversation.mode / Conversation.plan).
-  const db = await openDB("openbrowse-chat", 16);
+  // chatDb.getDb is private; use the raw factory at v15.
+  const db = await openDB("openbrowse-chat", 15);
   const v = await db.get("conversations", id);
   db.close();
   return v as unknown as Record<string, unknown> | undefined;

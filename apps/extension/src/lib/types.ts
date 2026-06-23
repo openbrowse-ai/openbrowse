@@ -34,6 +34,26 @@ export interface Space {
   pinnedTabs: string[];
   colors: string[] | null;
   colorMode: "auto" | "light" | "dark" | null;
+  /**
+   * Custom instructions appended to the agent's system prompt for every
+   * conversation in this space. `null` means no instructions block is
+   * injected. Editable from the home Spaces page.
+   */
+  instructions: string | null;
+  /**
+   * Short, human-facing one-liner describing what the space is for
+   * (e.g. "OpenBrowse extension development"). Surfaced in the
+   * customization rail header alongside the name; not injected into
+   * the agent's prompt — that's `instructions`. `null` if unset.
+   */
+  description: string | null;
+  /**
+   * Epoch ms of the last time this space was modified (name, icon, color,
+   * instructions, etc.). Used by the home Spaces page to sort cards by
+   * "Last updated". Lazily defaulted on read for spaces stored before this
+   * field existed; auto-touched by `storage.updateSpace`.
+   */
+  updatedAt: number;
 }
 
 export interface PageContext {
@@ -111,46 +131,6 @@ export interface AgentSettings {
   curatorModel?: string;
 }
 
-/**
- * Per-conversation approval mode. Stored on `Conversation.mode`.
- *
- *   - "ask" (default): per-tool-call gating with the existing allowlist escape.
- *   - "plan": agent proposes a plan first; in-plan tool calls skip approval;
- *      off-plan calls prompt and the plan auto-extends on approval.
- *   - "act": no approvals (Plan-mode network rule still applies if a plan
- *      is set with allowNetwork: false — see `needsApproval` in agent-transport).
- *
- * Headless / scheduled runs use `autoApprove` independently of this field.
- */
-export type ConversationMode = "ask" | "plan" | "act";
-
-/**
- * Plan approved by the user for a conversation. Created by the `proposePlan`
- * tool and persisted on `Conversation.plan`. Mutated only by the on-approve
- * extension hooks in `agent-transport.ts` (option-C deviation handling) and
- * by re-running `proposePlan` to replace the plan wholesale.
- */
-export interface ApprovedPlan {
-  /** 1–2 sentence summary of what the agent will accomplish. */
-  goal: string;
-  /** Origins the plan permits. Normalized to `https://example.com` form. */
-  sites: string[];
-  /** True iff the plan permits `executePython` with `allow_network: true`. */
-  allowNetwork: boolean;
-  /** Wall clock when the user approved the plan. */
-  approvedAt: number;
-  /**
-   * Auto-extensions appended by option-C deviation handling. Each entry
-   * records WHAT was extended (a new site, or the network flip) and
-   * WHEN. The base plan keeps its `approvedAt`; extensions track their
-   * own timestamps for audit.
-   */
-  extensions: Array<
-    | { kind: "site"; site: string; extendedAt: number }
-    | { kind: "network"; extendedAt: number }
-  >;
-}
-
 export interface Conversation {
   id: string;
   title: string;
@@ -164,23 +144,6 @@ export interface Conversation {
    */
   ownedLtids: string[];
   todos?: TodoItem[];
-
-  /**
-   * Approval mode for this conversation. Defaults to "ask" for new
-   * conversations and pre-existing rows (no migration needed; absent
-   * field = "ask"). The mode picker UI (Phase 3) writes this; the
-   * agent-transport's `needsApproval` reads it.
-   */
-  mode?: ConversationMode;
-
-  /**
-   * Approved plan when `mode === "plan"`. Absent before the user
-   * approves a plan (the agent's first turn must call proposePlan in
-   * Plan mode). Persists across the conversation; auto-extended by
-   * deviation handling.
-   */
-  plan?: ApprovedPlan;
-
   createdAt: number;
   updatedAt: number;
 
@@ -217,6 +180,14 @@ export interface Conversation {
    * conversation. Written live at step-finish time. Deduped; first-seen order.
    */
   loadedSkillNames?: string[];
+  /**
+   * Workspace-relative paths under the conversation's active space that the
+   * agent's fs tools have touched this conversation (Read/Write/Edit).
+   * Stored as paths relative to `spaces/<spaceId>/workspace/` so they
+   * render compactly. Deduped; first-seen order. Written live at
+   * step-finish time. Undefined on rows from before the field existed.
+   */
+  referencedSpaceFiles?: string[];
 
   // v13 — agent tab-cleanup completion marker. Set when a turn's
   // CompletionCheck resolves to `approved`. Read by the idle sweep to

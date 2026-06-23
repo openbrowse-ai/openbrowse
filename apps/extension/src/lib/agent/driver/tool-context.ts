@@ -55,6 +55,13 @@ export interface ToolSession {
   /** The active conversation id, or null when running outside a conversation. */
   conversationId: string | null;
   /**
+   * The active space id for this conversation, or null when the conversation
+   * is not in a space. Read by tools that mount space-scoped resources
+   * (e.g. the shared space workspace). Stable for the duration of the
+   * conversation; transports build a fresh ToolSession on each model call.
+   */
+  spaceId: string | null;
+  /**
    * Bind newly-created tabs to the active conversation so the extension can
    * track agent-owned tabs across reloads. No-op in the bench harness.
    */
@@ -100,15 +107,6 @@ export interface ToolSession {
   getTodos?: () => Promise<TodoItem[]>;
   /** Replace the current to-do list for this session. */
   setTodos?: (todos: TodoItem[]) => Promise<void>;
-  /** Read the conversation's approved plan, or `undefined` if none. */
-  getPlan?: () => Promise<import("../../types").ApprovedPlan | undefined>;
-  /** Replace the conversation's approved plan wholesale. */
-  setPlan?: (plan: import("../../types").ApprovedPlan) => Promise<void>;
-  /**
-   * Read the conversation's approval mode. Returns `"ask"` when the
-   * field is absent (matches the default behavior for pre-existing rows).
-   */
-  getMode?: () => Promise<import("../../types").ConversationMode>;
   /**
    * Set when this session is running as a subagent. Carries the parent's
    * conversation id and the depth in the agent tree (root = 0, first-level

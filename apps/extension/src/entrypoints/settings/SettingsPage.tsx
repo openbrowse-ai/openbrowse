@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { X } from "lucide-react";
@@ -10,20 +10,23 @@ import type { Settings, AgentSettings } from "@/lib/types";
 import { GeneralTab } from "./GeneralTab";
 import { MemoryTab } from "./MemoryTab";
 import { ModelsTab } from "./ModelsTab";
-import { SpacesTab } from "./SpacesTab";
 import { SkillsTab } from "./SkillsTab";
 import { ConnectorsTab } from "./ConnectorsTab";
+import {
+  formatSettingsSearch,
+  parseSettingsTab,
+  type SettingsTabId,
+} from "./route";
 
-const TABS = [
+const TABS: ReadonlyArray<{ id: SettingsTabId; label: string }> = [
   { id: "general", label: "General" },
-  { id: "spaces", label: "Spaces" },
   { id: "models", label: "Models" },
   { id: "connectors", label: "Connectors" },
   { id: "skills", label: "Skills" },
   { id: "memory", label: "Memory" },
 ] as const;
 
-type TabId = (typeof TABS)[number]["id"];
+type TabId = SettingsTabId;
 
 interface SettingsPageProps {
   onBack: () => void;
@@ -36,8 +39,40 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
   const [savedAgentSettings, setSavedAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
   
-  const initialTab = (new URLSearchParams(window.location.search).get("tab") as TabId) || "general";
-  const [activeTab, setActiveTab] = useState<TabId>(TABS.some(t => t.id === initialTab) ? initialTab : "general");
+  // Active tab is URL-backed via `?tab=<id>`. Reading from the query
+  // string on mount lets external callers (e.g. `openSettingsTab("models")`)
+  // deep-link, and writing back via `pushState` on tab change makes the
+  // tab survive reload and Back/Forward navigation.
+  const [activeTab, setActiveTabState] = useState<TabId>(() =>
+    parseSettingsTab(window.location.search),
+  );
+
+  // Track the most recent search string we wrote so the URL→state
+  // listener (popstate) can ignore self-induced changes.
+  const lastWrittenSearchRef = useRef<string>(window.location.search);
+
+  const setActiveTab = useCallback((next: TabId) => {
+    setActiveTabState(next);
+    const nextSearch = formatSettingsSearch(next, window.location.search);
+    if (nextSearch !== window.location.search) {
+      const url =
+        window.location.pathname + nextSearch + window.location.hash;
+      history.pushState(null, "", url);
+      lastWrittenSearchRef.current = nextSearch;
+    }
+  }, []);
+
+  // popstate (Back/Forward) → reflect into state. Ignore the event when
+  // the current search matches what we just wrote.
+  useEffect(() => {
+    function onPopState() {
+      if (window.location.search === lastWrittenSearchRef.current) return;
+      lastWrittenSearchRef.current = window.location.search;
+      setActiveTabState(parseSettingsTab(window.location.search));
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   const dirty = JSON.stringify(settings) !== JSON.stringify(savedSettings) ||
                 JSON.stringify(agentSettings) !== JSON.stringify(savedAgentSettings);
@@ -158,11 +193,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                   setAgentSettings((prev) => ({ ...prev, ...patch }));
                 }}
               />
-            </div>
-          )}
-          {activeTab === "spaces" && (
-            <div className="p-4">
-              <SpacesTab />
             </div>
           )}
           {activeTab === "models" && (

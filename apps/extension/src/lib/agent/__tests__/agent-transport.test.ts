@@ -26,7 +26,7 @@ function makeMinimalContext(): ToolContext {
     // Driver is unused in these tests — the wrapper only touches it via
     // the inner tool's execute, which we replace with a recorder.
     driver: {} as ToolContext["driver"],
-    session: { conversationId: null },
+    session: { conversationId: null, spaceId: null },
   };
 }
 

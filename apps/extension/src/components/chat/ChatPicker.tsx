@@ -72,7 +72,12 @@ export function ChatPicker({
     // and as a back-link from the child view itself. Listing them at the
     // top would clutter the picker with auto-spawned rows.
     const convs = await chatDb.listRootConversations(spaceId);
-    setConversations(convs);
+    // When `spaceId === null` (global view) the underlying list returns
+    // rows from every space. Filter so the global picker shows only
+    // globally-scoped conversations and never surfaces a space's chats.
+    const visible =
+      spaceId === null ? convs.filter((c) => c.spaceId == null) : convs;
+    setConversations(visible);
   }, [spaceId]);
 
   useEffect(() => {

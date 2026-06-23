@@ -12,6 +12,7 @@ const fakeCtx = (
   driver: {} as ToolContext["driver"],
   session: {
     conversationId: "parent-conv",
+    spaceId: null,
     ...overrides,
   },
 });
@@ -133,7 +134,7 @@ describe("delegate tool", () => {
     });
     const out = await tool.execute(
       { slug: "explore", task: "..." },
-      { driver: {} as ToolContext["driver"], session: { conversationId: null } },
+      { driver: {} as ToolContext["driver"], session: { conversationId: null, spaceId: null } },
     );
     expect(out).toMatchObject({
       status: "failed",
@@ -185,6 +186,7 @@ describe("delegate tool — CUA attached auto-bind", () => {
       driver,
       session: {
         conversationId: "parent-conv",
+        spaceId: null,
         // Numeric handle "4242" does NOT resolve as a tN handle.
         resolveHandle: (h: string) => handleMap.get(h),
         getOrCreateHandle: (tabId) => {

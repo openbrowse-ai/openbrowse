@@ -10,11 +10,15 @@ import { isUploadsPath } from "@/lib/uploads-dir";
  * - \`sandbox\` pages have an opaque origin and allow \`unsafe-eval\`.
  * 
  * However, sandbox pages cannot access the extension's OPFS. Therefore, we:
- * 1. Read all files from OPFS (\`/conversations/<id>/workspace\`)
+ * 1. Read all files from OPFS (`/conversations/<id>/workspace`, `/skills`,
+ *    and `/spaces/<spaceId>/workspace` when a space is active).
  * 2. Send them via postMessage to the iframe.
- * 3. Iframe mounts them in MEMFS, runs code, extracts modified files.
+ * 3. Iframe mounts each tree at its real absolute path in MEMFS (no
+ *    aliasing — paths match what the agent's fs tools advertise), runs
+ *    code, extracts modified files from the conversation workspace ONLY.
  * 4. Iframe sends them back via postMessage.
- * 5. We write them back to OPFS.
+ * 5. We write them back to OPFS. /skills and /spaces/<id>/workspace are
+ *    read-only mounts and are NOT round-tripped.
  */
 
 const IDLE_EVICTION_MS = 10 * 60 * 1000;
@@ -23,6 +27,13 @@ const MAX_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface RunPythonOptions {
   conversationId: string;
+  /**
+   * UUID of the active space, or null when the conversation is not bound to
+   * any space. When set, the iframe mounts `/spaces/<spaceId>/workspace`
+   * read-only so Python sees the same shared-space tree as the agent's fs
+   * tools.
+   */
+  spaceId: string | null;
   code: string;
   timeoutMs?: number;
   resetState?: boolean;
@@ -115,8 +126,14 @@ export class PyodideSandboxManager {
           id,
           code: "pass",
           resetState: true,
+          // No mount roots: a reset RUN just clears state. The iframe
+          // tolerates null mount roots and skips mounting/chdir.
+          conversationWorkspaceRoot: null,
+          skillsRoot: "/skills",
+          spaceWorkspaceRoot: null,
           workspaceFiles: {},
           skillsFiles: {},
+          spaceFiles: {},
         }, "*");
       }));
     await entry.queue;
@@ -174,10 +191,18 @@ export class PyodideSandboxManager {
     opts: RunPythonOptions,
     timeoutMs: number,
   ): Promise<RunPythonResult> {
-    // 1. Read files
+    // 1. Read files. Paths are kept verbatim — no MEMFS aliasing. The
+    // sandbox mounts each tree at its absolute OPFS path so paths in
+    // Python match what the agent's fs tools (Read/Glob/Grep/LS) see.
     const workspaceRoot = `conversations/${opts.conversationId}/workspace`;
     const workspaceFiles = await this.loadOpfsTree(workspaceRoot);
     const skillsFiles = await this.loadOpfsTree("skills");
+    const spaceWorkspaceRoot = opts.spaceId
+      ? `spaces/${opts.spaceId}/workspace`
+      : null;
+    const spaceFiles = spaceWorkspaceRoot
+      ? await this.loadOpfsTree(spaceWorkspaceRoot)
+      : {};
 
     return new Promise<RunPythonResult>((resolve) => {
       let settled = false;
@@ -235,8 +260,15 @@ export class PyodideSandboxManager {
           code: opts.code,
           allowNetwork: opts.allowNetwork,
           resetState: opts.resetState,
+          // Files keyed by the real OPFS path (verbatim — no aliasing).
+          // The sandbox mounts each tree at its absolute path under MEMFS
+          // and chdirs into the conversation workspace.
+          conversationWorkspaceRoot: `/${workspaceRoot}`,
+          skillsRoot: "/skills",
+          spaceWorkspaceRoot: spaceWorkspaceRoot ? `/${spaceWorkspaceRoot}` : null,
           workspaceFiles,
           skillsFiles,
+          spaceFiles,
         }, "*");
       };
 

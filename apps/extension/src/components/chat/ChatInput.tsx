@@ -34,8 +34,9 @@ import {
     isTextFile,
 } from "@/lib/chat/attachment-meta";
 import type { Attachment } from "@/lib/chat/types";
+import { validateFiles } from "@/lib/chat/validate-files";
 import { openSettingsTab } from "@/lib/open-settings";
-import type { ConversationMode, ThinkingConfig } from "@/lib/types";
+import type { ThinkingConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
@@ -51,7 +52,15 @@ import {
     Square,
     X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    forwardRef,
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { toast } from "sonner";
 import { computeButtonMode } from "./chat-input-mode";
@@ -60,7 +69,6 @@ import {
     type ModelOption,
     type ProviderModels,
 } from "./ModelPicker";
-import { ModeSwitch } from "./ModeSwitch";
 
 // Derived alias kept for back-compat with call sites that destructure
 // images: ImagePreview[] from onSubmit. Tasks 5-6 migrate those sites;
@@ -134,23 +142,6 @@ interface ChatInputProps {
   thinkingConfig?: ThinkingConfig;
   onThinkingChange?: (enabled: boolean, config?: ThinkingConfig) => void;
   selectedModelCapabilities?: string[];
-  /**
-   * Per-conversation approval mode picker. When BOTH props are provided
-   * the mode dropdown renders next to the model picker. The parent
-   * (ChatView) reads `Conversation.mode` from chatDb and persists changes
-   * via `chatDb.updateConversation`.
-   *
-   * Pre-conversation surfaces (e.g. LandingPage) omit these to hide the
-   * picker entirely.
-   */
-  mode?: ConversationMode;
-  onModeChange?: (mode: ConversationMode) => void;
-  /**
-   * True when the conversation has an approved plan. Forwarded to
-   * ModeSwitch so the trigger can indicate "plan approved" vs "plan
-   * mode but no plan yet".
-   */
-  hasPlan?: boolean;
 }
 
 export interface TabMentionAttrs {
@@ -313,31 +304,42 @@ function fileToDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ChatInput({
-  value,
-  onChange,
-  onSubmit,
-  onQueue,
-  onStop,
-  onCommand,
-  editMode = false,
-  isLoading,
-  disabled,
-  providerModels,
-  favoriteModels = [],
-  onFavoriteToggle,
-  selectedModel,
-  onModelChange,
-  autoFocus,
-  focusTrigger,
-  thinkingEnabled,
-  thinkingConfig,
-  onThinkingChange,
-  selectedModelCapabilities,
-  mode,
-  onModeChange,
-  hasPlan,
-}: ChatInputProps) {
+export interface ChatInputHandle {
+  /**
+   * Imperatively add files to the composer's attachment list. Used by
+   * page-level drop zones (e.g. the LandingPage hero) so dropping a file
+   * anywhere on the page routes into this composer's attachments.
+   */
+  addFiles: (files: FileList | File[]) => void;
+  /** Focus the editor. */
+  focus: () => void;
+}
+
+export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput(
+  {
+    value,
+    onChange,
+    onSubmit,
+    onQueue,
+    onStop,
+    onCommand,
+    editMode = false,
+    isLoading,
+    disabled,
+    providerModels,
+    favoriteModels = [],
+    onFavoriteToggle,
+    selectedModel,
+    onModelChange,
+    autoFocus,
+    focusTrigger,
+    thinkingEnabled,
+    thinkingConfig,
+    onThinkingChange,
+    selectedModelCapabilities,
+  },
+  ref,
+) {
   const onSubmitRef = useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   const onQueueRef = useRef(onQueue);
@@ -370,38 +372,46 @@ export function ChatInput({
   const addFiles = useCallback(
     async (files: FileList | File[]) => {
       const MB = 1024 * 1024;
-      const FILE_CAP = 50 * MB;
-      const COUNT_CAP = 10;
       const imageCap = selectedModel ? getImageSizeLimit(selectedModel) : 10 * MB;
 
+      // Shared validator (also used by SpaceFilesSection). Note: error
+      // copy here is slightly tweaked downstream to keep the existing
+      // composer-specific phrasing ("attachment", "per message").
       const incoming = Array.from(files);
-      const rejections: string[] = [];
+      const { accepted: acceptedFiles, rejections: rawRejections } = validateFiles(
+        incoming,
+        {
+          fileCap: 50 * MB,
+          imageCap,
+          countCap: 10,
+          existingCount: attachmentsRef.current.length,
+        },
+      );
 
-      const remainingSlots = COUNT_CAP - attachmentsRef.current.length;
-      if (incoming.length > remainingSlots) {
-        rejections.push(
-          `Only ${remainingSlots} more attachment${remainingSlots === 1 ? "" : "s"} allowed (max ${COUNT_CAP} per message).`,
-        );
-      }
+      // Re-phrase the count-cap rejection to match the historical
+      // composer-specific wording. Size-cap messages already match.
+      const rejections = rawRejections.map((m) => {
+        if (m.startsWith("Only ") && m.includes(" more file")) {
+          return m
+            .replace(" more file", " more attachment")
+            .replace(" (max 10).", " (max 10 per message).");
+        }
+        if (m === "Maximum of 10 files reached.") {
+          return "Maximum of 10 attachments per message reached.";
+        }
+        return m;
+      });
 
       // Validate synchronously so we can insert placeholder cards
       // immediately. The async metadata work (FileReader for images,
       // file.text() for text-file line counts) runs in parallel and
       // patches each card in place when it lands. Without this, the
       // user sees a delay between picking a file and seeing it appear.
-      const slice = incoming.slice(0, Math.max(0, remainingSlots));
-      const accepted = slice.flatMap((file) => {
-        const isImage = file.type.startsWith("image/");
-        const cap = isImage ? imageCap : FILE_CAP;
-        if (file.size > cap) {
-          const capMB = Math.round(cap / MB);
-          rejections.push(
-            `${file.name} exceeds the ${capMB} MB ${isImage ? "image" : "file"} limit.`,
-          );
-          return [];
-        }
-        return [{ file, isImage, id: crypto.randomUUID() }];
-      });
+      const accepted = acceptedFiles.map((file) => ({
+        file,
+        isImage: file.type.startsWith("image/"),
+        id: crypto.randomUUID(),
+      }));
 
       if (accepted.length > 0) {
         const placeholders: Attachment[] = accepted.map(({ file, isImage, id }) =>
@@ -464,19 +474,42 @@ export function ChatInput({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
+  // Imperative handle so a page-level drop zone (e.g. the LandingPage)
+  // can route dropped files into this composer. Re-bound whenever
+  // `addFiles` changes (per-`selectedModel`) so the latest validation
+  // caps apply.
+  useImperativeHandle(
+    ref,
+    () => ({
+      addFiles: (files) => {
+        void addFiles(files);
+      },
+      focus: () => {
+        editorRef.current?.commands.focus("end");
+      },
+    }),
+    [addFiles],
+  );
+
   // Container-level drag-and-drop handlers. Activated only for actual
   // file drags (filtered via dataTransfer.types) so text/tab-mention
   // drags pass through unaffected. The counter pattern avoids flicker
   // on dragenter/leave fired from child elements.
+  //
+  // We `stopPropagation()` so a page-level drop zone (e.g. the
+  // LandingPage hero) doesn't also receive the same drop and add the
+  // files twice.
   const handleContainerDragEnter = useCallback((e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes("Files")) return;
     e.preventDefault();
+    e.stopPropagation();
     dragCounter.current += 1;
     setIsDragOver(true);
   }, []);
 
   const handleContainerDragLeave = useCallback((e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes("Files")) return;
+    e.stopPropagation();
     dragCounter.current -= 1;
     if (dragCounter.current <= 0) {
       dragCounter.current = 0;
@@ -487,6 +520,7 @@ export function ChatInput({
   const handleContainerDragOver = useCallback((e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes("Files")) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "copy";
   }, []);
 
@@ -494,6 +528,7 @@ export function ChatInput({
     (e: React.DragEvent) => {
       if (!e.dataTransfer.types.includes("Files")) return;
       e.preventDefault();
+      e.stopPropagation();
       dragCounter.current = 0;
       setIsDragOver(false);
       const files = e.dataTransfer.files;
@@ -956,8 +991,8 @@ export function ChatInput({
 
       {/* Bottom bar: model selector left, actions right */}
       <div className="flex items-center justify-between px-1.5 pb-1.5">
-        {/* Model selector + mode switch */}
-        <div className="flex items-center gap-1">
+        {/* Model selector */}
+        <div>
           {providerModels && providerModels.length > 0 && onModelChange && (
             <ModelPicker
               trigger="chat"
@@ -1024,9 +1059,6 @@ export function ChatInput({
                 ) : null
               }
             />
-          )}
-          {mode && onModeChange && (
-            <ModeSwitch mode={mode} onChange={onModeChange} hasPlan={hasPlan} />
           )}
         </div>
 
@@ -1114,7 +1146,7 @@ export function ChatInput({
       )}
     </div>
   );
-}
+});
 
 /**
  * Split a compound `"<providerId>:<modelId>"` (the form stored in

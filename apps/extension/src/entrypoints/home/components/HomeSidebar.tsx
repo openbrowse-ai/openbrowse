@@ -6,11 +6,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  SpaceActionsMenu,
+  SpaceActionsTrigger,
+} from "@/components/spaces/SpaceActionsMenu";
 import { chatDb } from "@/lib/chat-db";
 import { openSettingsTab } from "@/lib/open-settings";
 import type { Space } from "@/lib/types";
 import {
   EllipsisVertical,
+  FoldersIcon,
   MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
@@ -20,7 +26,6 @@ import {
   Trash2,
   Clock,
 } from "lucide-react";
-import { Popover } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
 
@@ -32,14 +37,15 @@ interface HomeSidebarProps {
   onNewConversation: () => void;
   onGoHome: () => void;
   onOpenOverlay: () => void;
-  onNewSpace: () => void;
-  onConfigureSpace: () => void;
   onRenameConversation: (conv: { id: string; title: string }) => void;
   onDeleteConversation: (conv: { id: string; title: string }) => void;
   onOpenScheduled: () => void;
   onScheduleConversation: (conv: { id: string; title: string }) => void;
   /** True when the Scheduled view is the active main pane. */
   scheduledActive?: boolean;
+  onOpenSpaces: () => void;
+  /** True when the Spaces page is the active main pane. */
+  spacesActive?: boolean;
 }
 
 interface ConversationItem {
@@ -51,162 +57,6 @@ interface ConversationItem {
 const SIDEBAR_WIDTH = 260;
 const HOTZONE_WIDTH = 24;
 
-function SpacePicker({
-  spaces,
-  activeSpaceId,
-  activeSpace,
-  onNewSpace,
-  onConfigureSpace,
-}: {
-  spaces: Space[];
-  activeSpaceId: string | null;
-  activeSpace: Space | undefined;
-  onNewSpace: () => void;
-  onConfigureSpace: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(0);
-  const listRef = useRef<HTMLDivElement>(null);
-
-  const filtered = spaces
-    .filter((s) => s.name.toLowerCase().includes(query.toLowerCase()))
-    .sort((a, b) => a.position - b.position);
-
-  function selectSpace(spaceId: string) {
-    chrome.runtime.sendMessage({ type: "SWITCH_SPACE", spaceId });
-    setOpen(false);
-    setQuery("");
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      setHighlighted((i) => Math.min(i + 1, filtered.length - 1));
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
-      setHighlighted((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (filtered[highlighted]) selectSpace(filtered[highlighted].id);
-    }
-  }
-
-  useEffect(() => {
-    setHighlighted(0);
-  }, [query]);
-
-  useEffect(() => {
-    if (!open) {
-      setQuery("");
-      setHighlighted(0);
-    } else {
-      const idx = filtered.findIndex((s) => s.id === activeSpaceId);
-      if (idx >= 0) setHighlighted(idx);
-    }
-  }, [open]);
-
-  useEffect(() => {
-    requestAnimationFrame(() => {
-      const el = listRef.current?.children[highlighted] as
-        | HTMLElement
-        | undefined;
-      el?.scrollIntoView({ block: "nearest" });
-    });
-  }, [highlighted]);
-
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-2 flex-1 min-w-0 rounded-md hover:bg-sidebar-accent px-1.5 py-0.5 transition-colors"
-        >
-          <span className="text-sm font-semibold truncate flex-1 text-left">
-            {activeSpace?.icon && `${activeSpace.icon} `}
-            {activeSpace?.name ?? "OpenBrowse"}
-          </span>
-          <svg
-            className="size-3 text-muted-foreground shrink-0"
-            viewBox="0 0 16 16"
-            fill="currentColor"
-          >
-            <path
-              d="M4.5 6.5l3.5 3.5 3.5-3.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="bottom"
-          align="start"
-          sideOffset={4}
-          className="z-50 w-52 rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10 overflow-hidden animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          onKeyDown={handleKeyDown}
-        >
-          <div className="p-1">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search spaces..."
-              autoFocus
-              className="w-full rounded-md border border-input/30 bg-input/30 px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring/50"
-            />
-          </div>
-          <div ref={listRef} className="max-h-48 overflow-y-auto p-1">
-            {filtered.map((space, i) => (
-              <button
-                key={space.id}
-                type="button"
-                onClick={() => selectSpace(space.id)}
-                onMouseEnter={() => setHighlighted(i)}
-                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
-                  i === highlighted ? "bg-accent text-accent-foreground" : ""
-                }`}
-              >
-                <span className="shrink-0 w-5 text-center">
-                  {space.icon || space.name.charAt(0)}
-                </span>
-                <span className="truncate">{space.name}</span>
-              </button>
-            ))}
-            {filtered.length === 0 && (
-              <p className="px-2 py-1.5 text-sm text-muted-foreground text-center">
-                No spaces found
-              </p>
-            )}
-          </div>
-          <div className="border-t border-border p-1">
-            <button
-              type="button"
-              onClick={() => { setOpen(false); onConfigureSpace(); }}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              <Settings className="shrink-0 size-3.5 ml-0.5" />
-              <span>Configure space</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => { setOpen(false); onNewSpace(); }}
-              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-            >
-              <span className="shrink-0 w-5 text-center">+</span>
-              <span>New space</span>
-            </button>
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
 export function HomeSidebar({
   spaces,
   activeSpaceId,
@@ -215,13 +65,13 @@ export function HomeSidebar({
   onNewConversation,
   onGoHome,
   onOpenOverlay,
-  onNewSpace,
-  onConfigureSpace,
   onRenameConversation,
   onDeleteConversation,
   onOpenScheduled,
   onScheduleConversation,
   scheduledActive,
+  onOpenSpaces,
+  spacesActive,
 }: HomeSidebarProps) {
   const [pinned, setPinned] = useState(() => {
     const stored = localStorage.getItem("openbrowse-sidebar-pinned");
@@ -232,6 +82,10 @@ export function HomeSidebar({
   const [generatingTitles, setGeneratingTitles] = useState<Set<string>>(new Set());
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+
+  const activeSpace = activeSpaceId
+    ? spaces.find((s) => s.id === activeSpaceId) ?? null
+    : null;
   const activeAgents = useActiveAgents();
 
   useEffect(() => {
@@ -239,14 +93,30 @@ export function HomeSidebar({
   }, [pinned]);
 
   const refresh = useCallback(async () => {
-    // Normal chats: space-scoped roots (subagent children excluded upstream).
-    const roots = await chatDb.listRootConversations(activeSpaceId);
-    // Scheduled-task runs are global (spaceId null) and have a
-    // parentConversationId, so listRootConversations omits them. Fetch the
-    // full list and surface the per-run conversations regardless of space.
+    // Normal chats: scope-filtered roots (subagent children excluded
+    // upstream). When `activeSpaceId === null` the underlying
+    // `listConversations(null)` returns rows from every space; we filter
+    // here so the global ("no space") view shows only globally-scoped
+    // conversations and never bleeds a space's chats into the global
+    // sidebar.
+    const allRoots = await chatDb.listRootConversations(activeSpaceId);
+    const roots =
+      activeSpaceId === null
+        ? allRoots.filter((c) => c.spaceId == null)
+        : allRoots;
+
+    // Scheduled-task runs have a `parentConversationId` so
+    // `listRootConversations` omits them. Surface them via the full list,
+    // then apply the same scope rule so they only appear in the scope they
+    // were created against.
     const all = await chatDb.listConversations();
     const scheduledRuns = all.filter(
-      (c) => c.subagentSlug === "scheduled" && !!c.parentConversationId,
+      (c) =>
+        c.subagentSlug === "scheduled" &&
+        !!c.parentConversationId &&
+        (activeSpaceId === null
+          ? c.spaceId == null
+          : c.spaceId === activeSpaceId),
     );
     const seen = new Set(roots.map((c) => c.id));
     const merged = [...roots];
@@ -365,8 +235,6 @@ export function HomeSidebar({
     void openSettingsTab();
   }
 
-  const activeSpace = spaces.find((s) => s.id === activeSpaceId);
-
   return (
     <>
       {/* Spacer for pinned mode */}
@@ -413,23 +281,49 @@ export function HomeSidebar({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        {/* Logo + Space switcher */}
+        {/* Logo (always); space breadcrumb when active. The whole
+            logo+breadcrumb composite is the "go home" target so users can
+            click anywhere along it. */}
         <div className="flex items-center gap-2 px-3 py-3 border-b border-sidebar-border">
-          <button
-            type="button"
-            onClick={onGoHome}
-            className="shrink-0 rounded-md p-0.5 hover:bg-sidebar-accent transition-colors"
-            title="Go home"
-          >
-            <Logo className="size-5" />
-          </button>
-          <SpacePicker
-            spaces={spaces}
-            activeSpaceId={activeSpaceId}
-            activeSpace={activeSpace}
-            onNewSpace={onNewSpace}
-            onConfigureSpace={onConfigureSpace}
-          />
+          {activeSpace ? (
+            <>
+              <button
+                type="button"
+                onClick={onGoHome}
+                title="Go home"
+                className="flex flex-1 min-w-0 items-center gap-2 rounded-md p-0.5 text-left hover:bg-sidebar-accent transition-colors"
+              >
+                <Logo className="size-5 shrink-0" />
+                <span className="text-muted-foreground text-xs">/</span>
+                {activeSpace.icon && (
+                  <span className="shrink-0 text-sm leading-none" aria-hidden>
+                    {activeSpace.icon}
+                  </span>
+                )}
+                <span className="text-sm font-semibold truncate">
+                  {activeSpace.name}
+                </span>
+              </button>
+              <SpaceActionsMenu space={activeSpace}>
+                <SpaceActionsTrigger
+                  space={activeSpace}
+                  className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors data-[state=open]:bg-sidebar-accent"
+                />
+              </SpaceActionsMenu>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onGoHome}
+              className="flex shrink-0 items-end gap-1.5 rounded-md p-0.5 hover:bg-sidebar-accent transition-colors"
+              title="Go home"
+            >
+              <Logo className="size-5" />
+              <span className="font-mono text-[10px] leading-none text-muted-foreground pb-0.5">
+                v{chrome.runtime.getManifest().version}
+              </span>
+            </button>
+          )}
         </div>
 
         {/* Actions */}
@@ -437,7 +331,7 @@ export function HomeSidebar({
           <button
             type="button"
             onClick={onNewConversation}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-sidebar-accent transition-colors"
+            className="flex h-7 items-center gap-2 rounded-md px-2 text-xs hover:bg-sidebar-accent transition-colors"
           >
             <MessageSquarePlus className="size-3.5 shrink-0" />
             <span className="flex-1 text-left">New chat</span>
@@ -446,7 +340,7 @@ export function HomeSidebar({
           <button
             type="button"
             onClick={onOpenOverlay}
-            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-sidebar-accent transition-colors"
+            className="flex h-7 items-center gap-2 rounded-md px-2 text-xs hover:bg-sidebar-accent transition-colors"
           >
             <Search className="size-3.5 shrink-0" />
             <span className="flex-1 text-left">Search tabs</span>
@@ -455,7 +349,7 @@ export function HomeSidebar({
           <button
             type="button"
             onClick={onOpenScheduled}
-            className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors ${
+            className={`flex h-7 items-center gap-2 rounded-md px-2 text-xs transition-colors ${
               scheduledActive
                 ? "bg-sidebar-accent text-sidebar-foreground"
                 : "hover:bg-sidebar-accent"
@@ -463,6 +357,18 @@ export function HomeSidebar({
           >
             <Clock className="size-3.5 shrink-0" />
             <span className="flex-1 text-left">Scheduled</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSpaces}
+            className={`flex h-7 items-center gap-2 rounded-md px-2 text-xs transition-colors ${
+              spacesActive
+                ? "bg-sidebar-accent text-sidebar-foreground"
+                : "hover:bg-sidebar-accent"
+            }`}
+          >
+            <FoldersIcon className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Spaces</span>
           </button>
         </div>
 

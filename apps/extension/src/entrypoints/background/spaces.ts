@@ -39,6 +39,42 @@ function isHomeUrl(url: string | undefined): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-home gate — used by `chrome.windows.onCreated` to avoid double-creating
+// a home tab when WE are the ones creating the window via
+// `focusOrCreateWindow` (which already injects an anchored home tab among the
+// initial URLs).
+//
+// Without a gate the listener has to URL-sniff `pendingUrl`/`url` of the
+// initial tab(s) on a wall-clock timer, which races SW eviction. With this
+// gate the listener can run synchronously off `onCreated` and trust ownership.
+// ---------------------------------------------------------------------------
+
+const skipAutoHomeWindows = new Set<number>()
+
+/**
+ * Mark a window we're creating ourselves as not needing the auto-home
+ * fallback. The mark is cleared after a couple of macrotasks, by which point
+ * `chrome.windows.onCreated` has had its turn for this window id and the gate
+ * has served its purpose.
+ */
+export function markAutoHomeOwned(windowId: number): void {
+  skipAutoHomeWindows.add(windowId)
+  // Two macrotasks gives the onCreated listener a chance to observe the gate
+  // even if Chrome dispatches it slightly after `chrome.windows.create`
+  // resolves. We deliberately use queueMicrotask -> setTimeout(0) instead of
+  // a single setTimeout so the gate is removed promptly without leaving a
+  // longer-lived timer that could outlive the SW.
+  queueMicrotask(() => {
+    setTimeout(() => skipAutoHomeWindows.delete(windowId), 0)
+  })
+}
+
+/** Read-only check for the auto-home gate. */
+export function isAutoHomeOwned(windowId: number): boolean {
+  return skipAutoHomeWindows.has(windowId)
+}
+
+// ---------------------------------------------------------------------------
 // Space creation
 // ---------------------------------------------------------------------------
 
@@ -56,6 +92,9 @@ export async function ensureDefaultSpace(windowId: number): Promise<Space> {
       pinnedTabs: [],
       colors: null,
       colorMode: null,
+      instructions: null,
+      description: null,
+      updatedAt: Date.now(),
     }
     await storage.setSpaces([space])
     return space
@@ -81,6 +120,9 @@ export async function ensureDefaultSpace(windowId: number): Promise<Space> {
     pinnedTabs: [],
     colors: null,
     colorMode: null,
+    instructions: null,
+    description: null,
+    updatedAt: Date.now(),
   }
   await storage.setSpaces([...spaces, space])
   return space
@@ -100,11 +142,11 @@ export async function getOrCreateSpaceForWindow(windowId: number): Promise<Space
  */
 export async function ensureHomeTab(windowId: number, spaceId: string): Promise<void> {
   const tabs = await chrome.tabs.query({ windowId })
-  const home = tabs.find((t) => isHomeUrl(t.url))
+  const home = tabs.find((t) => isHomeUrl(t.url) || isHomeUrl(t.pendingUrl))
   const targetUrl = homeUrlForSpace(spaceId)
 
   if (home?.id != null) {
-    if (spaceIdFromUrl(home.url) !== spaceId) {
+    if (spaceIdFromUrl(home.url ?? home.pendingUrl ?? "") !== spaceId) {
       await chrome.tabs.update(home.id, { url: targetUrl })
     }
     if (!home.pinned) await chrome.tabs.update(home.id, { pinned: true })
@@ -120,6 +162,14 @@ export async function ensureHomeTab(windowId: number, spaceId: string): Promise<
   })
   if (tab.id) {
     await chrome.tabs.move(tab.id, { index: 0 })
+    // Belt-and-suspenders: re-read and re-pin if Chrome dropped the flag
+    // (observed sporadically on freshly-created windows).
+    try {
+      const verify = await chrome.tabs.get(tab.id)
+      if (!verify.pinned) await chrome.tabs.update(tab.id, { pinned: true })
+    } catch {
+      // Tab vanished between create and verify — give up silently.
+    }
   }
 }
 
@@ -155,6 +205,11 @@ export async function focusOrCreateWindow(space: Space): Promise<void> {
   })
 
   if (!newWindow?.id) return
+
+  // We just provided an anchored home tab among the initial URLs; tell the
+  // global `chrome.windows.onCreated` listener not to inject an un-anchored
+  // home tab on top of it.
+  markAutoHomeOwned(newWindow.id)
 
   await storage.updateSpace(space.id, { windowId: newWindow.id })
 
@@ -205,6 +260,9 @@ export async function createSpace(name: string, icon: string | null = null): Pro
     pinnedTabs: [],
     colors: null,
     colorMode: null,
+    instructions: null,
+    description: null,
+    updatedAt: Date.now(),
   }
 
   await storage.setSpaces([...spaces, space])

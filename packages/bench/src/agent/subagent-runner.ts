@@ -160,6 +160,7 @@ function buildBenchChildToolContext(args: {
     session: {
       ...parentToolContext.session,
       conversationId: `bench-subagent-${parentConversationId}`,
+      spaceId: null,
       parent: {
         conversationId: parentConversationId,
         depth: 1,

@@ -24,6 +24,7 @@ const fakeCtx = (
   driver: {} as ToolContext["driver"], // unused in tests below
   session: {
     conversationId: "parent-conv",
+    spaceId: null,
     ...overrides,
   },
 });
@@ -492,6 +493,7 @@ describe("runSubagent — attached isolation", () => {
       driver: {} as ToolContext["driver"],
       session: {
         conversationId: "parent-conv",
+        spaceId: null,
         resolveHandle: (h: string) => (h === "t3" ? 4242 : undefined),
         getOrCreateHandle: (id) => (id === 4242 ? "t3" : `t${id}`),
       },
@@ -518,6 +520,7 @@ describe("runSubagent — attached isolation", () => {
       driver: {} as ToolContext["driver"],
       session: {
         conversationId: "parent-conv",
+        spaceId: null,
         resolveHandle: (h: string) => (h === "t3" ? 4242 : undefined),
         getOrCreateHandle: (id) => (id === 4242 ? "t3" : `t${id}`),
       },

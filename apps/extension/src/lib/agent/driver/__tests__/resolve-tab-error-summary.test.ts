@@ -79,6 +79,7 @@ function makeCtx(): ToolContext {
     } as unknown as ToolContext["driver"],
     session: {
       conversationId: CID,
+      spaceId: null,
       resolveHandle: (handle: string) => resolveHandle(CID, handle),
       listHandles: () => listHandles(CID),
     },

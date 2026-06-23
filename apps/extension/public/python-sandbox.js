@@ -6,6 +6,14 @@ const TRUNC_MARKER = "\n…[output truncated, exceeded 1MB]";
 let pyodide = null;
 let allowNetworkForCurrentCall = false;
 
+// Mount roots used by the previous RUN, so we can clean them up on reset.
+// We only clear the conversation workspace; /skills and the shared space
+// workspace are read-only context that don't need scrubbing between runs
+// (they are re-written from the host on every RUN).
+let lastConversationWorkspaceRoot = null;
+let lastSpaceWorkspaceRoot = null;
+let lastSkillsRoot = null;
+
 // We bundle pyodide locally, so the iframe will load it from the extension URL
 async function initPyodide() {
   if (pyodide) return pyodide;
@@ -39,12 +47,10 @@ async function initPyodide() {
     // We use the version that matches our installed pyodide.
     packageBaseUrl: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/"
   });
-  
-  // Mount MEMFS for workspace and skills
-  pyodide.FS.mkdirTree("/workspace");
-  pyodide.FS.mkdirTree("/skills");
-  
-  // Guard skills directory
+
+  // Guard /skills as read-only. The actual mount happens per-RUN under the
+  // real path "/skills". Paths to mount-roots like the per-conversation
+  // workspace and per-space workspace are also created per-RUN.
   await pyodide.runPythonAsync(`
 import builtins, os
 _orig_open = builtins.open
@@ -56,14 +62,26 @@ def _is_skills_path(path):
     except TypeError:
         return False
     return s.startswith('/skills/') or s == '/skills'
+def _is_space_workspace_path(path):
+    try:
+        s = os.fspath(path)
+    except TypeError:
+        return False
+    # /spaces/<id>/workspace is read-only context shared across the space's
+    # conversations. The agent's fs tools deny writes here too.
+    return s.startswith('/spaces/') and ('/workspace' in s)
+def _is_readonly(path):
+    return _is_skills_path(path) or _is_space_workspace_path(path)
 def _guarded_open(file, mode='r', *args, **kwargs):
-    if any(c in mode for c in _WRITE_MODES) and _is_skills_path(file):
-        raise PermissionError(f"/skills is read-only: {file!r}")
+    real_file = os.path.realpath(file)
+    if any(c in mode for c in _WRITE_MODES) and _is_readonly(real_file):
+        raise PermissionError(f"path is read-only: {file!r}")
     return _orig_open(file, mode, *args, **kwargs)
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 def _guarded_os_open(path, flags, *args, **kwargs):
-    if (flags & _WRITE_FLAGS) and _is_skills_path(path):
-        raise PermissionError(f"/skills is read-only: {path!r}")
+    real_path = os.path.realpath(path)
+    if (flags & _WRITE_FLAGS) and _is_readonly(real_path):
+        raise PermissionError(f"path is read-only: {path!r}")
     return _orig_os_open(path, flags, *args, **kwargs)
 builtins.open = _guarded_open
 os.open = _guarded_os_open
@@ -165,19 +183,47 @@ window.addEventListener("message", async (e) => {
     pyodide.setStdout({ batched: (s) => stdout.push(s) });
     pyodide.setStderr({ batched: (s) => stderr.push(s) });
 
-    // Sync files to MEMFS
+    // 1. On reset, scrub the previous run's mount roots.
+    //
+    // We clear the conversation workspace AND the previous space/skills
+    // mounts so a fresh RUN sees only what the host posted. The host
+    // re-sends the full skills + space trees on every RUN, so wiping them
+    // here is safe (and avoids stale files leaking across resets).
     if (msg.resetState) {
-      clearMemfsDir("/workspace");
-    }
-    
-    if (msg.workspaceFiles) {
-      writeFilesToMemfs(msg.workspaceFiles, "/workspace");
-    }
-    if (msg.skillsFiles) {
-      writeFilesToMemfs(msg.skillsFiles, "/skills");
+      if (lastConversationWorkspaceRoot) clearMemfsDir(lastConversationWorkspaceRoot);
+      if (lastSpaceWorkspaceRoot) clearMemfsDir(lastSpaceWorkspaceRoot);
+      if (lastSkillsRoot) clearMemfsDir(lastSkillsRoot);
     }
 
-    pyodide.FS.chdir("/workspace");
+    // 2. Ensure mount directories exist for THIS run. Paths come from the
+    // host as absolute MEMFS paths (e.g. "/conversations/<id>/workspace").
+    if (msg.conversationWorkspaceRoot) pyodide.FS.mkdirTree(msg.conversationWorkspaceRoot);
+    if (msg.skillsRoot) pyodide.FS.mkdirTree(msg.skillsRoot);
+    if (msg.spaceWorkspaceRoot) pyodide.FS.mkdirTree(msg.spaceWorkspaceRoot);
+
+    // 3. Mount file maps. Each map is keyed by relative path inside its
+    // mount root; writeFilesToMemfs joins (basePath + "/" + relPath).
+    if (msg.workspaceFiles && msg.conversationWorkspaceRoot) {
+      writeFilesToMemfs(msg.workspaceFiles, msg.conversationWorkspaceRoot);
+    }
+    if (msg.skillsFiles && msg.skillsRoot) {
+      writeFilesToMemfs(msg.skillsFiles, msg.skillsRoot);
+    }
+    if (msg.spaceFiles && msg.spaceWorkspaceRoot) {
+      writeFilesToMemfs(msg.spaceFiles, msg.spaceWorkspaceRoot);
+    }
+
+    // 4. chdir into the conversation workspace so relative paths in user
+    // code (e.g. open("data.csv")) keep resolving to the conversation's
+    // workspace, even though the absolute path is now the real OPFS path.
+    if (msg.conversationWorkspaceRoot) {
+      pyodide.FS.chdir(msg.conversationWorkspaceRoot);
+    }
+
+    // 5. Track mount roots so the next reset can scrub them.
+    lastConversationWorkspaceRoot = msg.conversationWorkspaceRoot ?? null;
+    lastSpaceWorkspaceRoot = msg.spaceWorkspaceRoot ?? null;
+    lastSkillsRoot = msg.skillsRoot ?? null;
 
     if (msg.resetState) {
       await pyodide.runPythonAsync(`
@@ -203,8 +249,12 @@ del _sys, _g, _keep
       allowNetworkForCurrentCall = false;
     }
 
-    // Extract updated files before serialization which might throw
-    const updatedWorkspaceFiles = readFilesFromMemfs("/workspace");
+    // Read back ONLY the conversation workspace. /skills and the shared
+    // space workspace are read-only mounts; modifications to them stay
+    // inside MEMFS and are discarded on the next run.
+    const updatedWorkspaceFiles = msg.conversationWorkspaceRoot
+      ? readFilesFromMemfs(msg.conversationWorkspaceRoot)
+      : {};
 
     let serialized = result;
     const proxy = result;
@@ -249,9 +299,9 @@ del _sys, _g, _keep
     
     // We still try to extract files in case it partially succeeded before crashing
     let updatedWorkspaceFiles = {};
-    if (pyodide) {
+    if (pyodide && msg.conversationWorkspaceRoot) {
       try {
-        updatedWorkspaceFiles = readFilesFromMemfs("/workspace");
+        updatedWorkspaceFiles = readFilesFromMemfs(msg.conversationWorkspaceRoot);
       } catch { /* noop */ }
     }
 

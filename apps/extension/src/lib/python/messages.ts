@@ -12,6 +12,14 @@
 
 export interface PythonExecuteRequest {
   conversationId: string;
+  /**
+   * UUID of the active space, or null when the conversation is not bound to
+   * any space. When set, the Python sandbox mounts `/spaces/<spaceId>/workspace`
+   * read-only so Python code sees the same shared-space files the agent's fs
+   * tools (Read/Glob/Grep/LS) advertise. Required so the contract is explicit:
+   * callers must decide whether to expose a shared workspace.
+   */
+  spaceId: string | null;
   code: string;
   timeoutMs?: number;
   resetState?: boolean;

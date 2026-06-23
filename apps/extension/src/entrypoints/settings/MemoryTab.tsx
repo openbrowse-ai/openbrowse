@@ -1,86 +1,8 @@
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+import { MemoryItem } from "@/components/memory/MemoryItem";
 import { memoryDb, type Memory } from "@/lib/memory-db";
 import { storage } from "@/lib/storage";
-import { Trash2, ChevronDown, ChevronRight } from "lucide-react";
-
-function MemoryItem({
-  memory,
-  onDelete,
-}: {
-  memory: Memory;
-  onDelete: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className="border border-border rounded-md p-3 flex flex-col gap-2">
-      <div className="flex items-start justify-between gap-2">
-        <button
-          className="flex items-start gap-2 text-left flex-1 min-w-0"
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium truncate">{memory.title}</span>
-            </div>
-            {memory.description && (
-              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                {memory.description}
-              </p>
-            )}
-          </div>
-        </button>
-
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
-              <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete memory</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete "{memory.title}"? This action
-                cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => onDelete(memory.id)}>
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-
-      {expanded && (
-        <div className="ml-6 p-2 bg-muted rounded text-xs whitespace-pre-wrap break-words font-mono">
-          {memory.content}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function MemoryTab() {
   const [memories, setMemories] = useState<Memory[]>([]);
