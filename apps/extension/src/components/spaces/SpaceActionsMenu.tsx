@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useState } from "react";
 import { MoreVertical, Trash2 } from "lucide-react";
 import {
@@ -118,22 +119,41 @@ export function SpaceActionsMenu({
  * intentionally minimal so callers can override via `className`; the
  * exported component stays a plain `<button>` so it composes with
  * `DropdownMenuTrigger asChild`.
+ *
+ * MUST forward refs and spread incoming props onto the underlying
+ * `<button>`. When wrapped in Radix's `<DropdownMenuTrigger asChild>`,
+ * the Slot clones this child and passes through:
+ *   - `onClick` (the menu-toggle handler)
+ *   - `data-state` ("open" / "closed")
+ *   - `aria-expanded`, `aria-controls`, `aria-haspopup`
+ *   - the trigger ref
+ *
+ * If those props are dropped (e.g. by not spreading or by replacing
+ * `onClick` with our own that doesn't call `props.onClick`), the menu
+ * silently never opens. The internal `stopPropagation` runs first so
+ * a click inside a parent SpaceCard's body click handler doesn't also
+ * navigate, then we forward to Radix's composed handler.
  */
-export function SpaceActionsTrigger({
-  space,
-  className,
-}: {
-  space: Space;
-  className?: string;
-}) {
+export const SpaceActionsTrigger = React.forwardRef<
+  HTMLButtonElement,
+  React.ButtonHTMLAttributes<HTMLButtonElement> & { space: Space }
+>(function SpaceActionsTrigger(
+  { space, onClick, className, ...rest },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type="button"
-      onClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.(e);
+      }}
       aria-label={`Actions for space ${space.name}`}
       className={className}
+      {...rest}
     >
       <MoreVertical className="size-3.5" />
     </button>
   );
-}
+});

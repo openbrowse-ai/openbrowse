@@ -274,8 +274,14 @@ export function getHomeHostDeps(): Pick<
  * Ensure at least one home.html page exists to host runs. Reuses an existing
  * one if present; otherwise opens a pinned, UNFOCUSED home tab in the current
  * window so it doesn't interrupt the user.
+ *
+ * Hosts MUST be home.html, never newtab.html. Newtab pages are ephemeral
+ * (they close the moment the user navigates) and unsuitable as a durable
+ * background-run host. The query below pins the host URL to /home.html
+ * specifically; do not generalize it to "any extension page" or scheduled
+ * runs will start being adopted by, then losing their host with, NTP tabs.
  */
-async function ensureHomePage(): Promise<void> {
+export async function ensureHomePage(): Promise<void> {
   const homeUrl = chrome.runtime.getURL("/home.html");
   try {
     const existing = await chrome.tabs.query({ url: `${homeUrl}*` });

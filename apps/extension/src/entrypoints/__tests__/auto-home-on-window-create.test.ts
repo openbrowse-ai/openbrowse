@@ -106,6 +106,14 @@ describe("handleNewWindowAutoHome", () => {
           if (tab) tab.index = props.index;
           return Promise.resolve(tab ? { ...tab } : undefined);
         },
+        remove: (id: number | number[]) => {
+          const ids = Array.isArray(id) ? id : [id];
+          for (const i of ids) {
+            const idx = tabs.findIndex((t) => t.id === i);
+            if (idx >= 0) tabs.splice(idx, 1);
+          }
+          return Promise.resolve();
+        },
       },
       storage: {
         local: {
@@ -175,6 +183,70 @@ describe("handleNewWindowAutoHome", () => {
     expect(homeTabs[0].index).toBe(0);
     expect(homeTabs[0].url).toBe(HOME_BASE);
     expect(homeTabs[0].url).not.toContain("?space=");
+  });
+
+  it("closes the override-supplied newtab.html after creating the pinned home tab", async () => {
+    // With chrome_url_overrides.newtab set in the manifest, Chrome opens a
+    // new normal window (Cmd-N) with `newtab.html` as the initial tab,
+    // not `chrome://newtab/`. handleNewWindowAutoHome must:
+    //   1. Create the pinned home tab.
+    //   2. Close the original newtab.html so the user lands on a single
+    //      pinned home tab instead of a redundant two-tab window.
+    // Removing the newtab is only safe AFTER the home tab exists (Chrome
+    // closes the entire window if you remove its last tab).
+    tabs.push({
+      id: nextTabId++,
+      windowId: 55,
+      url: "chrome-extension://test/newtab.html",
+      pinned: false,
+      index: 0,
+      active: true,
+    });
+
+    const { handleNewWindowAutoHome } = await import("../background/auto-home");
+    await handleNewWindowAutoHome({
+      id: 55,
+      type: "normal",
+    } as chrome.windows.Window);
+
+    const winTabs = tabs.filter((t) => t.windowId === 55);
+    expect(winTabs).toHaveLength(1);
+    expect(winTabs[0].url).toBe(HOME_BASE);
+    expect(winTabs[0].pinned).toBe(true);
+    expect(winTabs[0].index).toBe(0);
+  });
+
+  it("closes the newtab when chrome reports it as a pre-resolution chrome://newtab/ pendingUrl", async () => {
+    // Production reality on Cmd-N with chrome_url_overrides.newtab set:
+    // when auto-home fires, Chrome has put `chrome://newtab/` into
+    // `pendingUrl` but hasn't yet resolved the override to
+    // `chrome-extension://<id>/newtab.html` (the navigation hasn't
+    // committed yet, so `url` is empty). The earlier filter only
+    // matched the resolved chrome-extension URL and missed this shape,
+    // leaving the newtab tab alongside the pinned home tab in
+    // production. The filter must also recognize this pre-resolution
+    // form (verified via service-worker logs).
+    tabs.push({
+      id: nextTabId++,
+      windowId: 66,
+      url: "",
+      pendingUrl: "chrome://newtab/",
+      pinned: false,
+      index: 0,
+      active: true,
+    });
+
+    const { handleNewWindowAutoHome } = await import("../background/auto-home");
+    await handleNewWindowAutoHome({
+      id: 66,
+      type: "normal",
+    } as chrome.windows.Window);
+
+    const winTabs = tabs.filter((t) => t.windowId === 66);
+    expect(winTabs).toHaveLength(1);
+    expect(winTabs[0].url).toBe(HOME_BASE);
+    expect(winTabs[0].pinned).toBe(true);
+    expect(winTabs[0].index).toBe(0);
   });
 
   it("ignores popup-type windows", async () => {
@@ -405,6 +477,14 @@ describe("openHomePage — pin verification belt-and-suspenders", () => {
           const tab = tabs.find((t) => t.id === id);
           if (tab) tab.index = props.index;
           return Promise.resolve(tab ? { ...tab } : undefined);
+        },
+        remove: (id: number | number[]) => {
+          const ids = Array.isArray(id) ? id : [id];
+          for (const i of ids) {
+            const idx = tabs.findIndex((t) => t.id === i);
+            if (idx >= 0) tabs.splice(idx, 1);
+          }
+          return Promise.resolve();
         },
       },
       storage: {

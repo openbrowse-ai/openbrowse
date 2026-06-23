@@ -25,6 +25,7 @@ export async function ensureOffscreenDocument(): Promise<void> {
 
 export async function openHomePage(windowId: number): Promise<void> {
   const homeBase = chrome.runtime.getURL(HOME_PAGE_URL)
+  const newtabBase = chrome.runtime.getURL("/newtab.html")
 
   // Match a tab as "the home tab" by its committed `url` OR its
   // `pendingUrl`. On a freshly created window — exactly the case where
@@ -74,8 +75,18 @@ export async function openHomePage(windowId: number): Promise<void> {
   // No space bound to this window — open / activate a pinned, un-anchored
   // home tab. The home tab is the app shell and is always pinned; only the
   // `?space=<id>` URL anchor is space-specific.
-  const tabs = await chrome.tabs.query({ windowId })
-  const existing = tabs.find(isHomeTab)
+  //
+  // Snapshot the window's initial tab set BEFORE we create the home tab.
+  // We use this for two things:
+  //   1. Reuse an existing home tab if one is already there.
+  //   2. Identify the override-supplied newtab.html that Chrome opens as
+  //      the initial tab on Cmd-N when chrome_url_overrides.newtab is set,
+  //      so we can close it AFTER the home tab is created (Chrome closes
+  //      the entire window if you remove its last tab).
+  // Capturing the list before the create call ensures any Cmd-T activity
+  // happening in the same tick doesn't get caught by the close loop.
+  const initialTabs = await chrome.tabs.query({ windowId })
+  const existing = initialTabs.find(isHomeTab)
   if (existing?.id != null) {
     if (!existing.pinned) {
       await chrome.tabs.update(existing.id, { pinned: true })
@@ -107,5 +118,38 @@ export async function openHomePage(windowId: number): Promise<void> {
     } catch {
       // Tab vanished between create and verify — give up silently.
     }
+  }
+
+  // Close the override-supplied newtab.html that Chrome auto-opened with
+  // the new window. The pinned home tab now exists (we just created and
+  // verified it), so removing the newtab won't close the window.
+  // Restrict to ids captured BEFORE the home tab was created so any
+  // Cmd-T activity in this same tick is unaffected.
+  //
+  // Match four URL forms because Chrome reports the new-window initial
+  // tab differently depending on lifecycle timing and override state:
+  //   - `chrome-extension://<id>/newtab.html` in `url` (override resolved,
+  //     navigation committed)
+  //   - same in `pendingUrl` (override resolving, not yet committed)
+  //   - `chrome://newtab/` in `url` (override disabled by user, or
+  //     committed as canonical NTP URL)
+  //   - `chrome://newtab/` in `pendingUrl` (the production shape on
+  //     Cmd-N: `url` is empty and `pendingUrl` carries the canonical
+  //     target Chrome will resolve to our newtab.html via the override)
+  const isNewtabTab = (t: chrome.tabs.Tab): boolean => {
+    const url = t.url ?? ""
+    const pending = t.pendingUrl ?? ""
+    return (
+      url.startsWith(newtabBase) ||
+      pending.startsWith(newtabBase) ||
+      url === "chrome://newtab/" ||
+      pending === "chrome://newtab/"
+    )
+  }
+  const initialNewtabIds = initialTabs
+    .filter((t) => t.id != null && isNewtabTab(t))
+    .map((t) => t.id!)
+  for (const id of initialNewtabIds) {
+    await chrome.tabs.remove(id).catch(() => {})
   }
 }

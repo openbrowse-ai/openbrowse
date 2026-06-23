@@ -1,4 +1,4 @@
-// src/entrypoints/home/components/ScheduledRunHost.tsx
+// src/entrypoints/_shared/components/ScheduledRunHost.tsx
 //
 // Hosts scheduled-task agent runs as BACKGROUND chats inside the home app —
 // the only realm with both a DOM and chrome.debugger/tabs/scripting. A run

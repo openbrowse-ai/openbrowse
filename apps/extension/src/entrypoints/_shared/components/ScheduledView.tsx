@@ -1,4 +1,4 @@
-// src/entrypoints/home/components/ScheduledView.tsx
+// src/entrypoints/_shared/components/ScheduledView.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
