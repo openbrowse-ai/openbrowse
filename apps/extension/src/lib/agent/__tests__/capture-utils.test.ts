@@ -64,11 +64,46 @@ describe("captureScreenshot — overlay hiding", () => {
     expect(methods.filter((m) => m === "Page.captureScreenshot").length).toBe(2);
   });
 
-  it("retries once on a transient capture failure", async () => {
+  it("retries on a transient capture failure with captureBeyondViewport flipped on", async () => {
+    // First call fails with -32000; retry should succeed. The retry MUST
+    // pass `captureBeyondViewport: true` (the off-screen renderer path)
+    // because the dominant cause of -32000 in production is a backgrounded
+    // tab whose compositor isn't committing frames — captureBeyondViewport
+    // doesn't depend on a fresh compositor frame.
     const { driver, calls } = recordingDriver({ captureFails: 1 });
     const data = await captureScreenshot(driver, 1);
     expect(data).toBe("QUJD");
-    expect(calls.filter((c) => c.method === "Page.captureScreenshot").length).toBe(2);
+
+    const captureCalls = calls.filter(
+      (c) => c.method === "Page.captureScreenshot",
+    );
+    expect(captureCalls.length).toBe(2);
+
+    // First attempt: caller's params (no captureBeyondViewport).
+    expect(captureCalls[0].params).toEqual({ format: "png" });
+
+    // Retry attempt: same params PLUS captureBeyondViewport: true.
+    expect(captureCalls[1].params).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+    });
+  });
+
+  it("retries WITHOUT changing params when captureBeyondViewport was already on (fullPage callers)", async () => {
+    // When the caller (e.g. screenshot tool's fullPage mode) already
+    // requested captureBeyondViewport, there's no further escape hatch —
+    // retry with the same params.
+    const { driver, calls } = recordingDriver({ captureFails: 1 });
+    const params = { format: "png", captureBeyondViewport: true };
+    const data = await captureScreenshot(driver, 1, params);
+    expect(data).toBe("QUJD");
+
+    const captureCalls = calls.filter(
+      (c) => c.method === "Page.captureScreenshot",
+    );
+    expect(captureCalls.length).toBe(2);
+    expect(captureCalls[0].params).toEqual(params);
+    expect(captureCalls[1].params).toEqual(params);
   });
 
   it("still captures when overlay hide/restore is unavailable", async () => {
