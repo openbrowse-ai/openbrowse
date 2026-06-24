@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { MemoryItem } from "@/components/memory/MemoryItem";
 import { memoryDb, type Memory } from "@/lib/memory-db";
 import { storage } from "@/lib/storage";
@@ -59,13 +58,11 @@ export function MemoryTab() {
         {userMemories.length === 0 ? (
           <p className="text-sm text-muted-foreground">No memories saved yet</p>
         ) : (
-          <ScrollArea className="max-h-[300px]">
-            <div className="flex flex-col gap-2 pr-2">
-              {userMemories.map((m) => (
-                <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
-              ))}
-            </div>
-          </ScrollArea>
+          <div className="flex flex-col gap-2">
+            {userMemories.map((m) => (
+              <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
+            ))}
+          </div>
         )}
       </section>
 
@@ -76,13 +73,11 @@ export function MemoryTab() {
           {spaceMemories.length === 0 ? (
             <p className="text-sm text-muted-foreground">No memories saved yet</p>
           ) : (
-            <ScrollArea className="max-h-[300px]">
-              <div className="flex flex-col gap-2 pr-2">
-                {spaceMemories.map((m) => (
-                  <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
-                ))}
-              </div>
-            </ScrollArea>
+            <div className="flex flex-col gap-2">
+              {spaceMemories.map((m) => (
+                <MemoryItem key={m.id} memory={m} onDelete={handleDelete} />
+              ))}
+            </div>
           )}
         </section>
       )}
