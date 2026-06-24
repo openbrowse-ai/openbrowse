@@ -85,23 +85,41 @@ export async function scrollIntoViewIfNeeded(
  * pre-scroll position. Two rAFs is Playwright's pattern: the first lets
  * style/layout flush, the second ensures the scroll commit has landed.
  *
- * Best-effort. Times out at 1 second so a stuck rAF (e.g. tab in
- * background) can never wedge a click.
+ * Best-effort: a host-side 1500 ms timeout caps the wait so a stuck rAF
+ * (e.g. a fully-throttled background tab where the visibility override in
+ * cdp-session didn't take effect, or a page using requestPostAnimationFrame
+ * / compositor-driven timelines that remain paused) can never wedge a click.
+ *
+ * NB: the `timeout` field on CDP `Runtime.evaluate` does NOT exist (unlike
+ * `Runtime.callFunctionOn`); Chrome silently drops it. The only real
+ * timeout is the host-side `Promise.race` below — which is why a wedged
+ * `awaitPromise: true` would otherwise hang forever.
  */
 export async function waitForLayoutFlush(
   driver: BrowserDriver,
   tabId: TabId,
 ): Promise<void> {
+  // Race the in-page rAF wait against a host-side timeout. Resolve normally
+  // on either path — this function is documented as best-effort, and
+  // proceeding with a slightly-stale layout read is strictly better than
+  // wedging the click pipeline. The `try/catch` around the race still
+  // catches genuine CDP errors (detach, target gone) so they don't escape.
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    await driver.sendCommand(tabId, "Runtime.evaluate", {
+    const cdpCall = driver.sendCommand(tabId, "Runtime.evaluate", {
       expression:
         "new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))",
       awaitPromise: true,
       returnByValue: true,
-      timeout: 1000,
     });
+    const timeout = new Promise<void>((resolve) => {
+      timeoutId = setTimeout(resolve, 1500);
+    });
+    await Promise.race([cdpCall, timeout]);
   } catch {
     // Renderer was busy / debugger detached — don't block the click.
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }
 

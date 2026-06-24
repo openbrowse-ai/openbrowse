@@ -225,6 +225,70 @@ async function doAttach(tabId: number): Promise<Session> {
     enabledDomains: new Set(),
   };
   sessions.set(tabId, session);
+
+  // Lift Chrome's background-tab throttling on every tab the agent attaches
+  // to. Without this, a worked tab that isn't currently focused (the common
+  // case when the user is looking at home.html / newtab.html / the side
+  // panel) is subject to three compounding throttles that wedge or slow
+  // down agent tools:
+  //
+  //   1. requestAnimationFrame is throttled to ~1 Hz then 0 Hz. This is the
+  //      direct cause of `clickElement` stalling indefinitely until the
+  //      user switches to the worked tab — `viewport.waitForLayoutFlush`
+  //      awaits two rAFs in-page via `Runtime.evaluate { awaitPromise:
+  //      true }`, which never resolves on a backgrounded tab.
+  //   2. setTimeout in the page is throttled to a 1 Hz floor (worse over
+  //      time). Bites any in-page wait, including user `executeOnPage`
+  //      scripts that await a frame.
+  //   3. After ~5 minutes, Chrome demotes the renderer's main thread and
+  //      the compositor stops committing — `Page.captureScreenshot`
+  //      starts returning `-32000 Unable to capture screenshot`.
+  //
+  // `Emulation.setPageVisibilityOverride { visibility: "visible" }` makes
+  // the page see itself as visible — `document.visibilityState === "visible"`,
+  // rAF/timer throttling lifted — without changing actual tab/window focus.
+  // `Page.setWebLifecycleState { state: "active" }` prevents Chrome from
+  // freezing the tab (the more aggressive lifecycle pause that survives
+  // even the visibility override). Together they make agent tools run as
+  // if every worked tab were foregrounded.
+  //
+  // Both are best-effort: some targets reject the override (DevTools tabs,
+  // chrome:// URLs, certain Chrome versions). A failure here must not break
+  // the attach — the tab is still attached and tools will work, just at
+  // background-tab speed. Chrome resets these overrides automatically when
+  // the debugger detaches, so no teardown reciprocal is needed in
+  // `release()`.
+  //
+  // Side effect to be aware of: pages that pause autoplay/animation when
+  // hidden won't pause for the agent. For an agent-driven worktab this is
+  // almost always the desired behavior (the agent needs to interact with
+  // the page as if a human were viewing it).
+  const dbg = requireDebugger();
+  try {
+    await dbg.sendCommand!(
+      { tabId },
+      "Emulation.setPageVisibilityOverride",
+      { visibility: "visible" },
+    );
+  } catch (err) {
+    console.debug(
+      `[cdp-session] tab ${tabId} setPageVisibilityOverride failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  try {
+    await dbg.sendCommand!(
+      { tabId },
+      "Page.setWebLifecycleState",
+      { state: "active" },
+    );
+  } catch (err) {
+    console.debug(
+      `[cdp-session] tab ${tabId} setWebLifecycleState failed:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   return session;
 }
 
