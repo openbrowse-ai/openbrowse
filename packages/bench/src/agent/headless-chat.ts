@@ -1,8 +1,42 @@
 import type { TokenLimits } from "@agent/compaction";
 import type { AgentUIMessage } from "@agent/message-types";
+import { normalizeToolInputForPersistence } from "@agent/tool-input-normalize";
 import type { UIMessageChunk } from "ai";
 import type { ChatTransport, LanguageModel } from "ai";
 import { runCompaction } from "./run-compaction";
+
+/**
+ * The bench harness consumes the transport's UIMessage stream manually
+ * (mirroring what the real chat hook does in the extension). Tool-call
+ * chunks land here as either `tool-call` or `tool-call-delta` with an
+ * `args` field carrying the input. We pass that input through the same
+ * persistence-side normalizer the extension uses on its serialize/
+ * deserialize boundary so a non-object value never lands in the bench's
+ * accumulated assistant message — which would then 400 the provider on
+ * the next turn or skew the bench's eval results.
+ *
+ * Returns the recovered object, or `{}` if the input couldn't be
+ * recovered. Coercing to {} matches the runtime transport's last-mile
+ * assertion behavior; the bench is non-interactive so we prefer
+ * "complete the run with a flagged eval" over "abort the trial".
+ */
+function normalizeBenchToolArgs(args: unknown): Record<string, unknown> {
+  if (args !== null && typeof args === "object" && !Array.isArray(args)) {
+    return args as Record<string, unknown>;
+  }
+  const result = normalizeToolInputForPersistence({ value: args });
+  if (result.kind === "object") return result.value;
+  // Last-resort coercion. The bench reports each trial's tool calls as
+  // part of its eval output; an empty {} for an irrecoverable input is
+  // visible in the report so the trial author can investigate.
+  if (typeof console !== "undefined" && console.warn) {
+    console.warn(
+      `[bench/headless-chat] tool-call had non-object input ` +
+        `(typeof=${typeof args}); coercing to {}.`,
+    );
+  }
+  return {};
+}
 
 export async function consumeChatStream(
   transport: ChatTransport<AgentUIMessage>,
@@ -57,7 +91,7 @@ export async function consumeChatStream(
           toolName: value.toolName,
           toolCallId: value.toolCallId,
           state: "call-pending" as any,
-          input: value.args,
+          input: normalizeBenchToolArgs(value.args),
         } as any);
       }
     } else if (value.type === "tool-result") {

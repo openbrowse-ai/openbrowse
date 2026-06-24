@@ -192,10 +192,36 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(part.input).toEqual({ url: "https://example.com" });
   });
 
-  it("falls back to rawInput when input is absent (does not drop)", () => {
+  it("falls back to rawInput when input is absent and rawInput parses to an object", () => {
+    // The SDK stashes complete-but-not-yet-promoted args as a stringified
+    // JSON blob in rawInput. The normalizer parses it and uses the result
+    // as the part's input.
     const part = {
       type: "tool-navigate",
       toolCallId: "raw-input-only",
+      state: "input-streaming",
+      rawInput: '{"url":"https://example.com"}',
+    } as unknown as AgentUIMessage["parts"][number];
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart(part),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const healed = out[1].parts[0] as { state: string; input: unknown };
+    expect(healed.state).toBe("output-error");
+    expect(healed.input).toEqual({ url: "https://example.com" });
+  });
+
+  it("DROPS a part whose rawInput is a malformed (truncated) JSON string", () => {
+    // Pre-fix behavior accepted any non-null rawInput including a truncated
+    // string like '{"url":"https://partial'. convertToModelMessages would
+    // forward it verbatim on the wire, which the provider then rejects with
+    // `tool_use.input: Input should be a valid dictionary`. The normalizer
+    // now requires rawInput to actually parse to an object before keeping it.
+    const part = {
+      type: "tool-navigate",
+      toolCallId: "raw-input-malformed",
       state: "input-streaming",
       rawInput: '{"url":"https://partial',
     } as unknown as AgentUIMessage["parts"][number];
@@ -204,9 +230,9 @@ describe("rewriteForLLM tool-state heal", () => {
       assistantWithPart(part),
     ];
     const out = rewriteForLLM(msgs);
-    expect(out).toHaveLength(2);
-    const healed = out[1].parts[0] as { state: string };
-    expect(healed.state).toBe("output-error");
+    // The lone tool part is dropped → assistant message becomes empty → removed.
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
   });
 
   it("heals output-streaming parts to output-error", () => {
@@ -317,7 +343,14 @@ describe("rewriteForLLM tool-state heal", () => {
     });
   });
 
-  it("leaves missing input undefined on an approved approval-responded part (no {} synthesis)", () => {
+  it("DROPS an approved approval-responded part with no input (no {} synthesis, no provider 400)", () => {
+    // Pre-fix this preserved the part as approval-responded/input:undefined,
+    // and convertToModelMessages then forwarded a tool_use with no input to
+    // Anthropic on the auto-resume turn → 400. The normalizer drops the
+    // part instead. Synthesizing {} would make validateUIMessages run the
+    // tool's (possibly strict) schema against an empty object and fail.
+    // (In practice this state never occurs: a user can't approve a call
+    // they have no args for. The test exercises the defensive drop path.)
     const part = {
       type: "dynamic-tool",
       toolCallId: "install-no-input",
@@ -328,15 +361,17 @@ describe("rewriteForLLM tool-state heal", () => {
     } as unknown as AgentUIMessage["parts"][number];
     const msgs: AgentUIMessage[] = [
       userMsg("install"),
-      assistantWithPart(part),
+      // Keep a text part so the message itself survives.
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "approving" }, part],
+      } as AgentUIMessage,
     ];
     const out = rewriteForLLM(msgs);
-    const healed = out[1].parts[0] as { state: string; input: unknown };
-    expect(healed.state).toBe("approval-responded");
-    // Synthesizing {} here would make validateUIMessages run the tool's
-    // (possibly strict) schema against an empty object and fail. Absent
-    // input must stay absent.
-    expect(healed.input).toBeUndefined();
+    expect(out).toHaveLength(2);
+    expect(out[1].parts).toHaveLength(1);
+    expect(out[1].parts[0]).toMatchObject({ type: "text", text: "approving" });
   });
 
   it("heals an approval-responded part with malformed approval to output-error", () => {
@@ -468,23 +503,48 @@ describe("rewriteForLLM tool-state heal", () => {
     expect(part.errorText).toBe("boom");
   });
 
-  it("KEEPS a terminal output-error part with no input but a rawInput", () => {
-    // convertToModelMessages fills the emitted input from rawInput, producing
-    // a defined value the provider accepts — so we must not drop these.
+  it("KEEPS a terminal output-error part with no input but a rawInput that parses to an object", () => {
+    // The SDK fills the emitted input from rawInput when input is absent.
+    // The normalizer accepts rawInput only when it actually parses to an
+    // object, so the resulting tool_use is structurally valid for the
+    // provider.
     const msgs: AgentUIMessage[] = [
       userMsg("hi"),
       assistantWithPart({
         type: "tool-navigate",
-        toolCallId: "err-raw-input",
+        toolCallId: "err-raw-input-ok",
+        state: "output-error",
+        errorText: "boom",
+        rawInput: '{"url":"https://example.com"}',
+      } as unknown as AgentUIMessage["parts"][number]),
+    ];
+    const out = rewriteForLLM(msgs);
+    expect(out).toHaveLength(2);
+    const part = out[1].parts[0] as { state: string; input: unknown };
+    expect(part.state).toBe("output-error");
+    expect(part.input).toEqual({ url: "https://example.com" });
+  });
+
+  it("DROPS a terminal output-error part whose rawInput is a malformed (truncated) JSON string", () => {
+    // Pre-fix accepted any non-null rawInput, including a truncated string
+    // like '{"url":"https://partial'. convertToModelMessages forwards the
+    // value verbatim → the provider sees a non-object input and 400s
+    // (Anthropic: `tool_use.input: Input should be a valid dictionary`).
+    // The normalizer requires rawInput to actually parse before keeping it;
+    // an unparseable rawInput is irrecoverable, so drop the part.
+    const msgs: AgentUIMessage[] = [
+      userMsg("hi"),
+      assistantWithPart({
+        type: "tool-navigate",
+        toolCallId: "err-raw-input-malformed",
         state: "output-error",
         errorText: "boom",
         rawInput: '{"url":"https://partial',
       } as unknown as AgentUIMessage["parts"][number]),
     ];
     const out = rewriteForLLM(msgs);
-    expect(out).toHaveLength(2);
-    const part = out[1].parts[0] as { state: string };
-    expect(part.state).toBe("output-error");
+    expect(out).toHaveLength(1);
+    expect(out[0].role).toBe("user");
   });
 
   it("DROPS a terminal output-denied part with no usable input", () => {

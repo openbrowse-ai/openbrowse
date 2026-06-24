@@ -13,6 +13,7 @@ import {
 import { setTargetTabId } from "@/lib/agent/active-tab";
 import { healPendingTools } from "@/lib/agent/heal-pending-tools";
 import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
+import { normalizeToolInputForPersistence } from "@/lib/agent/tool-input-normalize";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import { runOwnership, HEARTBEAT_MS, STALE_OWNER_MS } from "@/lib/agent/run-ownership";
 import {
@@ -277,25 +278,84 @@ export function deserializePart(
   }
 }
 
-function deserializeToolPart(p: SerializedToolPart): DynamicToolUIPart {
+function deserializeToolPart(p: SerializedToolPart): DynamicToolUIPart | null {
+  // Sanitize the persisted input on the way back into a live UIMessage.
+  // chat-db rows from before the input-normalization fix may carry a
+  // non-object `input` (Opus emitted `""` / `null` for no-arg MCP tool
+  // calls and the persistence layer wrote it verbatim). Re-introducing
+  // such a part to the live message list would carry the bad shape into
+  // every subsequent send. The normalizer recovers stringified-JSON and
+  // rawInput-style inputs; truly irrecoverable values are dropped here
+  // (return null) so the live UI never sees them. The transport's
+  // send-time normalizer is the eventual backstop, but dropping at
+  // deserialization keeps the runtime UIMessage list clean.
+  const inputResult = normalizeToolInputForPersistence({ value: p.input });
+  // Distinguish "input intentionally absent" (legitimate persisted shape
+  // for a terminal output-error/output-denied) from "input was a
+  // malformed non-object" (must be dropped). The persistence-side
+  // normalizer collapses both to `drop`, so we re-check here.
+  const inputWasIntentionallyAbsent = p.input === undefined;
+  let recoveredInput: unknown;
+  if (inputResult.kind === "object") {
+    recoveredInput = inputResult.value;
+  } else if (inputWasIntentionallyAbsent) {
+    recoveredInput = undefined;
+  } else {
+    // Present-but-malformed and non-recoverable. Drop the part so it
+    // never reaches the live message list.
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn(
+        `[useAgentChat] dropping persisted tool part with ` +
+          `non-object input on deserialize ` +
+          `(toolName=${p.toolName}, state=${p.state}, ` +
+          `inputType=${typeof p.input}); see tool-input-normalize.ts.`,
+      );
+    }
+    return null;
+  }
+
   const base = {
     type: "dynamic-tool" as const,
     toolName: p.toolName,
     toolCallId: p.toolCallId,
   };
   if (p.state === "output-available") {
-    return { ...base, state: "output-available", input: p.input, output: p.output };
+    return {
+      ...base,
+      state: "output-available",
+      input: recoveredInput,
+      output: p.output,
+    };
   }
   if (p.state === "output-error") {
-    return { ...base, state: "output-error", input: p.input, errorText: p.errorText ?? "" };
+    return {
+      ...base,
+      state: "output-error",
+      input: recoveredInput,
+      errorText: p.errorText ?? "",
+    };
   }
   if (p.state === "approval-requested" && p.approval) {
-    return { ...base, state: "approval-requested", input: p.input, approval: { id: p.approval.id } } as DynamicToolUIPart;
+    return {
+      ...base,
+      state: "approval-requested",
+      input: recoveredInput,
+      approval: { id: p.approval.id },
+    } as DynamicToolUIPart;
   }
   if (p.state === "approval-responded" && p.approval) {
-    return { ...base, state: "approval-responded", input: p.input, approval: p.approval as { id: string; approved: boolean; reason?: string } } as DynamicToolUIPart;
+    return {
+      ...base,
+      state: "approval-responded",
+      input: recoveredInput,
+      approval: p.approval as {
+        id: string;
+        approved: boolean;
+        reason?: string;
+      },
+    } as DynamicToolUIPart;
   }
-  return { ...base, state: "input-available", input: p.input };
+  return { ...base, state: "input-available", input: recoveredInput };
 }
 
 function dbMessageToUIMessage(m: {
