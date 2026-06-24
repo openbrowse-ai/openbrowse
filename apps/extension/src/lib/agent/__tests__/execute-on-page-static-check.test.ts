@@ -315,3 +315,114 @@ describe("staticReadCheck — whole-object location replacement", () => {
     expect(staticReadCheck(`top.location = "/x";`).ok).toBe(false);
   });
 });
+
+describe("staticReadCheck — bare window-global calls", () => {
+  // Bare `postMessage(...)`, `open(...)`, `close()` resolve to the
+  // window globals at runtime (the script body is wrapped in
+  // `(async function() { ... })()`, so `this` is undefined and a bare
+  // identifier-call hits the global). They are forbidden as
+  // member-call targets via FORBIDDEN_METHOD_CALLS; the bare-call path
+  // must reject them too.
+  it("rejects bare postMessage(...)", () => {
+    expect(staticReadCheck(`postMessage("hi", "*");`).ok).toBe(false);
+  });
+
+  it("rejects bare open(...)", () => {
+    expect(staticReadCheck(`open("https://example.com");`).ok).toBe(false);
+  });
+
+  it("rejects bare close()", () => {
+    expect(staticReadCheck(`close();`).ok).toBe(false);
+  });
+
+  it("still accepts obj.postMessage as a property KEY (no call/assign)", () => {
+    // Property-key uses are allowed by the property-key guard in the
+    // Identifier branch; the dangerous case is the call itself.
+    expect(staticReadCheck(`const o = { postMessage: 1 }; return o;`).ok).toBe(
+      true,
+    );
+  });
+
+  it("still accepts obj.open as a property KEY (no call/assign)", () => {
+    expect(staticReadCheck(`const o = { open: 1 }; return o;`).ok).toBe(true);
+  });
+
+  it("still accepts class { close() {} } method shorthand", () => {
+    expect(
+      staticReadCheck(`class C { close() {} } return new C();`).ok,
+    ).toBe(true);
+  });
+
+  it("still rejects window.postMessage(...) (member call)", () => {
+    expect(staticReadCheck(`window.postMessage("hi", "*");`).ok).toBe(false);
+  });
+
+  it("still rejects window.open(...) (member call)", () => {
+    expect(staticReadCheck(`window.open("https://example.com");`).ok).toBe(
+      false,
+    );
+  });
+});
+
+describe("staticReadCheck — Identifier-target location assignment", () => {
+  // Bare `location = "..."` is an Identifier-target AssignmentExpression
+  // (not a MemberExpression) — different AST shape from
+  // `window.location = ...`. Reject on intent, even though outside
+  // strict mode the runtime would silently fail to reassign the
+  // global.
+  it("rejects bare location = '/x'", () => {
+    expect(staticReadCheck(`location = "/x";`).ok).toBe(false);
+  });
+
+  it("rejects bare location = url variable", () => {
+    expect(
+      staticReadCheck(`const url = "/x"; location = url;`).ok,
+    ).toBe(false);
+  });
+
+  it("does not reject `const location = ...` (variable shadow, not assignment)", () => {
+    // VariableDeclaration with init is NOT an AssignmentExpression, so
+    // shadowing the name is fine — the body inside the wrapped IIFE
+    // operates on the local binding.
+    expect(staticReadCheck(`const location = "/x"; return location;`).ok).toBe(
+      true,
+    );
+  });
+});
+
+describe("staticReadCheck — computed location access (window['location'])", () => {
+  // `isLocationReceiver` must accept string-literal computed access on
+  // a window-like object so receiver-aware rejections fire on
+  // `window["location"].assign(...)` and `window["location"].pathname = ...`.
+  it("rejects window['location'].assign('/x')", () => {
+    expect(
+      staticReadCheck(`window["location"].assign("/x");`).ok,
+    ).toBe(false);
+  });
+
+  it("rejects window['location'].replace('/x')", () => {
+    expect(
+      staticReadCheck(`window["location"].replace("/x");`).ok,
+    ).toBe(false);
+  });
+
+  it("rejects globalThis['location'].pathname = '/x'", () => {
+    expect(
+      staticReadCheck(`globalThis["location"].pathname = "/x";`).ok,
+    ).toBe(false);
+  });
+
+  it("rejects window['location'] = '/x' (already covered, regression check)", () => {
+    expect(staticReadCheck(`window["location"] = "/x";`).ok).toBe(false);
+  });
+
+  it("still accepts Object.assign({}, src)", () => {
+    expect(
+      staticReadCheck(`return Object.assign({}, { a: 1 });`).ok,
+    ).toBe(true);
+  });
+
+  it("still accepts s.replace(/x/, y)", () => {
+    expect(staticReadCheck(`return "abc".replace(/a/, "b");`).ok).toBe(true);
+  });
+});

@@ -30,22 +30,23 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Locate the latest assistant message's pending `proposePlan` approval, if
- * any. Returns `null` when no message has a `proposePlan` part in
- * `approval-requested` state.
+ * Locate a pending `proposePlan` approval on the **newest** assistant
+ * message, if any. Returns `null` when the latest assistant message
+ * has no `proposePlan` part in `approval-requested` state — even if
+ * an older assistant message in history still does.
  *
- * Why "latest assistant message" rather than scanning everything:
- *   - The SDK only allows one pending approval at a time on a single
- *     message; older messages with approval-requested parts are stale
- *     (the SDK heals them out).
- *   - With Plan-mode's `activeTools: ["proposePlan"]` restriction
- *     (see prepareCall in agent-transport), the only approval-requested
- *     part on a fresh Plan-mode turn is `proposePlan` — but other tools'
- *     approval-requested parts may live on prior assistant messages
- *     (e.g. an executeOnPage gate the user already responded to). We
- *     scan for the LATEST proposePlan match across all assistant
- *     messages so that a stale older message can't shadow a newer one,
- *     but practically the latest assistant message dominates.
+ * Why "newest assistant message only" (no fallback to older history):
+ *   - The AI SDK's approval flow only considers the LAST message
+ *     (`messages.at(-1)`); older `approval-requested` parts that lost
+ *     the resume window are stale and will be terminalized by
+ *     `healPendingTools` at the next edit/retry/regenerate. The
+ *     composer mirrors this contract: only the newest pending
+ *     approval is actionable.
+ *   - Scanning older history can surface a stale card after the user
+ *     has already responded to it (e.g. they declined a previous
+ *     proposePlan, the agent revised, and the new message has no
+ *     pending approval — but the older declined-but-not-yet-healed
+ *     part shouldn't reappear in the composer).
  *
  * Recognizes both AI-SDK part shapes:
  *   - `{ type: "dynamic-tool", toolName: "proposePlan", state: "approval-requested", ... }`
@@ -54,32 +55,38 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function findPendingPlanApproval(
   messages: ReadonlyArray<AgentUIMessage>,
 ): PendingPlanApproval | null {
-  // Iterate newest-to-oldest so the first match is the latest.
+  // Find the newest assistant message; bail (return null) if there
+  // isn't one. We deliberately do NOT fall back to earlier messages.
+  let latestAssistant: AgentUIMessage | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== "assistant") continue;
-    for (const part of msg.parts) {
-      const p = part as {
-        type?: string;
-        toolName?: string;
-        state?: string;
-        toolCallId?: string;
-        input?: unknown;
-        approval?: { id?: string };
-      };
-      if (p.state !== "approval-requested") continue;
-      const isProposePlan =
-        (p.type === "dynamic-tool" && p.toolName === "proposePlan") ||
-        p.type === "tool-proposePlan";
-      if (!isProposePlan) continue;
-      if (typeof p.toolCallId !== "string") continue;
-      if (!p.approval || typeof p.approval.id !== "string") continue;
-      return {
-        toolCallId: p.toolCallId,
-        approvalId: p.approval.id,
-        input: isPlainObject(p.input) ? p.input : {},
-      };
+    if (messages[i].role === "assistant") {
+      latestAssistant = messages[i];
+      break;
     }
+  }
+  if (!latestAssistant) return null;
+
+  for (const part of latestAssistant.parts) {
+    const p = part as {
+      type?: string;
+      toolName?: string;
+      state?: string;
+      toolCallId?: string;
+      input?: unknown;
+      approval?: { id?: string };
+    };
+    if (p.state !== "approval-requested") continue;
+    const isProposePlan =
+      (p.type === "dynamic-tool" && p.toolName === "proposePlan") ||
+      p.type === "tool-proposePlan";
+    if (!isProposePlan) continue;
+    if (typeof p.toolCallId !== "string") continue;
+    if (!p.approval || typeof p.approval.id !== "string") continue;
+    return {
+      toolCallId: p.toolCallId,
+      approvalId: p.approval.id,
+      input: isPlainObject(p.input) ? p.input : {},
+    };
   }
   return null;
 }

@@ -1541,6 +1541,31 @@ export function observeChunkForCompletionCheck(
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
+      // Always update rawToolOutputs first — independent of whether
+      // toolCalls saw a preceding `tool-input-available` chunk for
+      // this id. The SDK's auto-resume path (re-executing an
+      // approved-but-unfinished tool call) DOES NOT re-emit the input
+      // chunk; only the output chunk arrives. Without this lazy
+      // creation, terminalizeApprovedToolCalls would find no entry in
+      // rawToolOutputs and fall back to the generic interruption
+      // heal, dropping the real result.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "completed";
+          raw.output = c.output;
+        } else {
+          state.rawToolOutputs.set(toolCallId, {
+            state: "completed",
+            output: c.output,
+          });
+        }
+      }
+      // The truncated `toolCalls` trace still requires a preceding
+      // input chunk — without it we'd fabricate a `name` /
+      // `inputSummary`-less entry the evaluator can't read. Skip
+      // updating it in that case (the trace is best-effort signal for
+      // the gate, not authoritative).
       const entry = state.toolCalls.get(toolCallId);
       if (!entry) break;
       entry.outputSummary = stringifyTruncate(
@@ -1548,11 +1573,6 @@ export function observeChunkForCompletionCheck(
         TRACE_OUTPUT_TRUNCATE_CHARS,
       );
       entry.state = "completed";
-      const raw = state.rawToolOutputs?.get(toolCallId);
-      if (raw) {
-        raw.state = "completed";
-        raw.output = c.output;
-      }
       break;
     }
     case "tool-output-error":
@@ -1560,36 +1580,51 @@ export function observeChunkForCompletionCheck(
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
-      const entry = state.toolCalls.get(toolCallId);
-      if (!entry) break;
       const errorText =
         typeof c.errorText === "string" && c.errorText.length > 0
           ? c.errorText
           : "(tool error)";
+      // Lazy-create the rawToolOutputs entry so the auto-resume path
+      // (no preceding input chunk) still records the error. See the
+      // comment in the output-available branch above.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "errored";
+          raw.errorText = errorText;
+        } else {
+          state.rawToolOutputs.set(toolCallId, {
+            state: "errored",
+            errorText,
+          });
+        }
+      }
+      const entry = state.toolCalls.get(toolCallId);
+      if (!entry) break;
       entry.outputSummary =
         errorText.length > TRACE_OUTPUT_TRUNCATE_CHARS
           ? errorText.slice(0, TRACE_OUTPUT_TRUNCATE_CHARS) + "… (truncated)"
           : errorText;
       entry.state = "errored";
-      const raw = state.rawToolOutputs?.get(toolCallId);
-      if (raw) {
-        raw.state = "errored";
-        raw.errorText = errorText;
-      }
       break;
     }
     case "tool-output-denied": {
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
+      // Lazy-create. See comment in the output-available branch above.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "denied";
+        } else {
+          state.rawToolOutputs.set(toolCallId, { state: "denied" });
+        }
+      }
       const entry = state.toolCalls.get(toolCallId);
       if (!entry) break;
       entry.outputSummary = null;
       entry.state = "denied";
-      const raw = state.rawToolOutputs?.get(toolCallId);
-      if (raw) {
-        raw.state = "denied";
-      }
       break;
     }
     default:

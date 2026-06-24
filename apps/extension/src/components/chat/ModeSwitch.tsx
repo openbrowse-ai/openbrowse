@@ -122,15 +122,31 @@ export function ModeSwitch({ mode, onChange, disabled, hasPlan }: ModeSwitchProp
             <button
               type="button"
               disabled={disabled}
+              // Fold the "plan approved" status into the button's own
+              // accessible name so screen readers announce it
+              // alongside the mode label. The decorative dot stays
+              // aria-hidden — it's a visual cue, not the source of
+              // truth.
+              aria-label={
+                showPlanApprovedDot
+                  ? `${current.label}, plan approved`
+                  : current.label
+              }
               className="flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors disabled:opacity-50"
             >
               <Icon className="size-3.5" />
               <span>{shortLabel(current.value)}</span>
               {showPlanApprovedDot && (
-                <span
-                  className="size-1.5 rounded-full shrink-0 bg-emerald-500"
-                  aria-label="Plan approved"
-                />
+                <>
+                  <span
+                    className="size-1.5 rounded-full shrink-0 bg-emerald-500"
+                    aria-hidden="true"
+                  />
+                  {/* Visually-hidden text so the button's own label
+                      reaches assistive tech even if the host browser
+                      doesn't pick up the wrapping aria-label. */}
+                  <span className="sr-only">, plan approved</span>
+                </>
               )}
               <ChevronDown className="size-3" />
             </button>

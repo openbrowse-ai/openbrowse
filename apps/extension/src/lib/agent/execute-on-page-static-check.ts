@@ -149,6 +149,19 @@ const FORBIDDEN_IDENTIFIERS = new Set([
   "indexedDB",
   "eval",
   "Function",
+  // Bare top-level calls to these (`postMessage(...)`, `open(...)`,
+  // `close()`) resolve to the `window` global inside the
+  // `(async function() { ... })()` wrapper. They are already caught
+  // when invoked as `obj.method(...)` via FORBIDDEN_METHOD_CALLS; this
+  // entry closes the bare-call path.
+  //
+  // Property-key uses (`obj.postMessage`, `{ open: 1 }`, `class { close() {} }`)
+  // are still allowed by the property-key guard in the Identifier
+  // branch — the dangerous case in those positions is the call/assignment
+  // itself, caught by the dedicated AST branches.
+  "postMessage",
+  "open",
+  "close",
 ]);
 
 export function staticReadCheck(code: string): StaticCheckResult {
@@ -296,6 +309,21 @@ export function staticReadCheck(code: string): StaticCheckResult {
         type: "AssignmentExpression";
         left: Node;
       };
+      // Bare `location = "url"` — Identifier-target navigation. Outside
+      // of strict mode this is a no-op at runtime (location is a
+      // non-writable global), but the model's INTENT is to navigate;
+      // flagging here matches the intent-based contract of the rest of
+      // this checker. (The same applies to a stray `window = …` etc.,
+      // but those have benign legitimate uses elsewhere; only
+      // `location` is exclusively navigation-shaped.)
+      if (a.left.type === "Identifier") {
+        const name = (a.left as unknown as { name: string }).name;
+        if (name === "location") {
+          rejection =
+            "Forbidden assignment in read script: location = … (navigation)";
+          return;
+        }
+      }
       if (a.left.type === "MemberExpression") {
         const m = a.left as unknown as {
           type: "MemberExpression";
@@ -430,9 +458,10 @@ export function staticReadCheck(code: string): StaticCheckResult {
 
 /**
  * True if the given AST node refers to `location` or `window.location` /
- * `globalThis.location` / `self.location`. Used to scope receiver-aware
- * rejection of `.assign(…)` / `.replace(…)` so we don't flag
- * `Object.assign({}, …)` or `String.prototype.replace`.
+ * `globalThis.location` / `self.location` (in either dot-notation or
+ * string-literal computed form, e.g. `window["location"]`). Used to
+ * scope receiver-aware rejection of `.assign(…)` / `.replace(…)` so we
+ * don't flag `Object.assign({}, …)` or `String.prototype.replace`.
  */
 function isLocationReceiver(node: Node): boolean {
   if (node.type === "Identifier") {
@@ -443,8 +472,18 @@ function isLocationReceiver(node: Node): boolean {
       property: Node;
       computed: boolean;
     };
+    // Dot access: `window.location` etc.
     if (!m.computed && m.property.type === "Identifier") {
       return (m.property as unknown as { name: string }).name === "location";
+    }
+    // Computed string-literal access: `window["location"]` etc. Without
+    // this branch, `window["location"].assign(...)` and
+    // `window["location"].pathname = ...` would slip past the
+    // receiver-aware checks because the inner MemberExpression's
+    // `computed` flag prevented `isLocationReceiver` from matching.
+    if (m.computed && m.property.type === "Literal") {
+      const lit = m.property as unknown as { value: unknown };
+      if (lit.value === "location") return true;
     }
   }
   return false;

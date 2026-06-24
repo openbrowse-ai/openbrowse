@@ -254,24 +254,72 @@ describe("rejection loop heals approved approval-responded between rounds", () =
     expect(Array.isArray(round1Prompt)).toBe(true);
 
     // Anthropic pairing rule: every tool-call has a tool-result.
+    // Plus: the proposePlan tool-result must carry the REAL output
+    // round 0 produced (`{ approved: true, plan: ... }`), not the
+    // generic interruption fallback. Without this content check the
+    // bug where rawToolOutputs is dropped on the auto-resume path
+    // (no preceding `tool-input-available` chunk) would be hidden:
+    // terminalizeApprovedToolCalls would heal to output-error with
+    // TRANSPORT_HEAL_TEXT, which still satisfies the existence
+    // assertion but loses the real result.
     const toolUseIds = new Set<string>();
-    const toolResultIds = new Set<string>();
+    const toolResultsById = new Map<
+      string,
+      { output?: unknown; isError?: boolean; raw: unknown }
+    >();
     for (const m of round1Prompt) {
       if (!Array.isArray(m.content)) continue;
       for (const c of m.content as Array<{
         type: string;
         toolCallId?: string;
+        output?: unknown;
+        isError?: boolean;
       }>) {
         if (c.type === "tool-call" && c.toolCallId)
           toolUseIds.add(c.toolCallId);
-        if (c.type === "tool-result" && c.toolCallId)
-          toolResultIds.add(c.toolCallId);
+        if (c.type === "tool-result" && c.toolCallId) {
+          toolResultsById.set(c.toolCallId, {
+            output: c.output,
+            isError: c.isError,
+            raw: c,
+          });
+        }
       }
     }
     expect(toolUseIds.has("toolu_bdrk_001")).toBe(true);
-    expect(toolResultIds.has("toolu_bdrk_001")).toBe(true);
+    expect(toolResultsById.has("toolu_bdrk_001")).toBe(true);
     for (const id of toolUseIds) {
-      expect(toolResultIds.has(id)).toBe(true);
+      expect(toolResultsById.has(id)).toBe(true);
     }
+
+    // Strong content check: the result for the auto-resumed
+    // proposePlan must be the COMPLETED output (approved:true plan),
+    // not the interruption fallback. We accept several SDK-shaped
+    // representations of the result to keep the assertion robust
+    // across `convertToModelMessages` variants:
+    //   - `output` is the raw value
+    //   - `output: { type: "json", value: <raw> }`
+    //   - `result` (older SDKs)
+    const r = toolResultsById.get("toolu_bdrk_001")!;
+    expect(r.isError).not.toBe(true);
+    const candidates: unknown[] = [
+      r.output,
+      (r.output as { value?: unknown } | undefined)?.value,
+      (r.raw as { result?: unknown }).result,
+    ];
+    const serialized = candidates
+      .filter((v) => v !== undefined && v !== null)
+      .map((v) =>
+        typeof v === "string" ? v : JSON.stringify(v),
+      )
+      .join(" || ");
+    // The result must contain the real proposePlan return shape.
+    expect(serialized).toContain('"approved":true');
+    expect(serialized).toContain('"goal":"research mechanical keyboards"');
+    // And must NOT be the generic interruption fallback (proves the
+    // raw-output capture from auto-resume actually works).
+    expect(serialized).not.toContain(
+      "Tool execution was interrupted before it returned a result",
+    );
   });
 });

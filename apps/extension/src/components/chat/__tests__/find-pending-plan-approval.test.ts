@@ -150,6 +150,29 @@ describe("findPendingPlanApproval", () => {
     expect(out?.input.goal).toBe("new plan");
   });
 
+  it("returns null when the newest assistant message has no pending approval, even if an older one does", () => {
+    // Mirrors the SDK's `messages.at(-1)`-based approval flow: only the
+    // newest assistant message is actionable. A stale older
+    // `approval-requested` part should never reach the composer (it
+    // will be terminalized by healPendingTools at the next
+    // edit/retry/regenerate boundary).
+    const messages = [
+      msg("assistant", [
+        {
+          type: "dynamic-tool",
+          toolName: "proposePlan",
+          state: "approval-requested",
+          toolCallId: "call-stale",
+          input: { goal: "stale plan" },
+          approval: { id: "ap-stale" },
+        },
+      ]),
+      msg("user", [{ type: "text", text: "ignore that, do something else" }]),
+      msg("assistant", [{ type: "text", text: "Sure, doing something else." }]),
+    ];
+    expect(findPendingPlanApproval(messages)).toBeNull();
+  });
+
   it("returns null when proposePlan part lacks toolCallId or approval.id (defensive)", () => {
     const messages = [
       msg("assistant", [

@@ -58,7 +58,10 @@ type Input = ProposePlanInput;
 // than returned, so the only success-path output is `{ approved: true }`.
 type Output = { approved: true; plan: ApprovedPlan };
 
-const planExtensionSchema = z.union([
+// Discriminated on `kind` so validation produces a precise per-arm
+// error rather than a union-failure dump, and parsing skips the
+// alternate arm once the discriminator is matched.
+const planExtensionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("site"),
     site: z.string(),

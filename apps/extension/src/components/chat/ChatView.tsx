@@ -286,10 +286,15 @@ export function ChatView({
   // fresh plan mid-turn) reflect in the picker.
   useEffect(() => {
     if (!conversationId) {
-      // No conversation yet → preserve the user's pending mode/plan
-      // selection from the picker. (Resetting here would clobber the
-      // pending choice the moment the user clicks the dropdown but
-      // before sending the first message.)
+      // No conversation yet → preserve the user's pending mode
+      // selection (resetting it would clobber the picker the moment
+      // they open the dropdown but before sending the first message),
+      // but DROP any plan that was hydrated from a previous
+      // conversation. Otherwise hopping from a Plan-mode chat (with an
+      // approved plan) to a fresh chat would carry the prior
+      // conversation's `plan` into the new ChatInput's "Plan approved"
+      // dot and into pendingPlanApproval shadowing.
+      setPlan(undefined);
       return;
     }
     let cancelled = false;
