@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { Check, Copy, Pencil, RefreshCw } from "lucide-react";
+import { Kbd } from "@/components/ui/kbd";
 import { useCallback, useMemo, useRef, useState, memo } from "react";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { classifyFile } from "@/lib/vfs/file-classify";
@@ -202,7 +203,15 @@ function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps)
       )}
       {onRetry && (
         <AlertDialog open={confirmRetryOpen} onOpenChange={setConfirmRetryOpen}>
-          <AlertDialogContent>
+          <AlertDialogContent
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                setConfirmRetryOpen(false);
+                onRetry();
+              }
+            }}
+          >
             <AlertDialogHeader>
               <AlertDialogTitle>Retry from this message?</AlertDialogTitle>
               <AlertDialogDescription>
@@ -219,6 +228,7 @@ function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps)
                 }}
               >
                 Retry
+                <Kbd className="ml-1.5">⌘⏎</Kbd>
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

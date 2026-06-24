@@ -11,6 +11,7 @@ import { CompletionCheckRunningBlock } from "./CompletionCheckRunningBlock";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolApprovalBlock } from "./ToolApprovalBlock";
 import { StepGroup } from "./StepGroup";
+import { GeneratingIndicator } from "./GeneratingIndicator";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
 import { memo } from "react";
@@ -431,6 +432,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             </StepGroup>
           );
         })}
+        {isStreaming && <GeneratingIndicator />}
       </div>
       <MessageActions message={message} />
     </div>

@@ -519,11 +519,14 @@ export function ChatView({
     void openSettingsTab();
   }
 
-  const showThinking =
-    isLoading &&
-    !isStreaming &&
-    messages.length > 0 &&
-    messages[messages.length - 1].role === "user";
+  // Use the hook's local streaming signal (not the cross-tab `isStreaming`
+  // that includes `isAgentActiveGlobally`). The global flag flips on as
+  // soon as the agent starts running anywhere, but our local `messages`
+  // array only contains a streaming assistant message once
+  // `hookIsStreaming` is true. Gating on the global flag would unmount
+  // <ThinkingIndicator> before the assistant message exists, leaving a
+  // gap with no dot visible.
+  const showThinking = isLoading && !hookIsStreaming;
 
   // Sent-message edits dim everything below the edited row. Queued
   // edits don't affect the transcript, so they don't dim anything.

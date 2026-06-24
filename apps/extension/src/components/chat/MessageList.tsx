@@ -3,6 +3,7 @@ import type { AgentUIMessage } from "@/lib/types";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
 import { ExpandableText } from "./tool-results/expandable-text";
+import { GeneratingIndicator as ThinkingIndicator } from "./GeneratingIndicator";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 interface MessageListProps {
@@ -123,20 +124,6 @@ function MessageListImpl({
 }
 
 export const MessageList = memo(MessageListImpl);
-
-function ThinkingIndicator() {
-  return (
-    <div className="flex justify-start">
-      <div className="rounded-lg px-3 py-2 bg-muted">
-        <div className="flex items-center gap-1">
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse" />
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse [animation-delay:150ms]" />
-          <span className="size-1.5 rounded-full bg-foreground/40 animate-pulse [animation-delay:300ms]" />
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function ErrorMessage({
   error,
