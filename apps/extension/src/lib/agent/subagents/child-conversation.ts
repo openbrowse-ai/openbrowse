@@ -50,6 +50,16 @@ export async function createChildConversation(args: {
   const now = Date.now();
   const spaceId = args.spaceId !== undefined ? args.spaceId : parent.spaceId;
 
+  // Inherit the parent's approval mode + approved plan. Security
+  // rationale: the user's mode/plan contract on the parent must bind
+  // transitively across delegations — otherwise a subagent spawned
+  // from a Plan-mode parent would silently revert to default Ask mode
+  // (or, worse, if defaults were ever Act, would skip approvals the
+  // parent wouldn't have skipped). Inheriting the same mode+plan keeps
+  // the subagent inside the same approval bounds the user established.
+  // The plan's `sites`/`allowNetwork` apply to the child's own tool
+  // calls; auto-extensions on the child do NOT propagate back up to
+  // the parent's row (each row owns its own plan).
   await chatDb.createConversation({
     id,
     title: args.title,
@@ -60,6 +70,8 @@ export async function createChildConversation(args: {
     subagentSlug: args.slug,
     subagentStatus: "running",
     isolationProfile: args.isolation,
+    ...(parent.mode !== undefined && { mode: parent.mode }),
+    ...(parent.plan !== undefined && { plan: parent.plan }),
     ...(args.ephemeralWindowId !== undefined && {
       ephemeralWindowId: args.ephemeralWindowId,
     }),

@@ -59,6 +59,7 @@
     "@tiptap/react": "^3.22.5",
     "@tiptap/starter-kit": "^3.22.5",
     "@tiptap/suggestion": "^3.22.5",
+    "acorn": "^8.17.0",
     "ai": "^6.0.168",
     "chrome-ai": "^1.11.1",
     "class-variance-authority": "^0.7.1",

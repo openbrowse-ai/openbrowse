@@ -15,7 +15,12 @@ import { storage } from "../storage";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
 import { memoryDb } from "../memory-db";
-import type { AgentUIMessage, Settings } from "../types";
+import type {
+  AgentUIMessage,
+  ApprovedPlan,
+  ConversationMode,
+  Settings,
+} from "../types";
 import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
 import { scanToolUsage, mergeDistinct } from "./tool-usage";
@@ -82,11 +87,19 @@ import {
   updateMemoryTool,
   updateScheduledTaskTool,
   patchSiteSkillTool,
+  proposePlanTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
 import { createFsTools, isAnySpacePath } from "./tools/fs";
 import { createPythonTool } from "./tools/execute-python";
 import { setTaskTitleTool } from "./tools/set-task-title";
+import { staticReadCheck } from "./execute-on-page-static-check";
+import {
+  planExtensionForCall,
+  extendPlanWithSite,
+  flipPlanNetwork,
+} from "./plan-store";
+import type { PlanExtensionData, SerializedUIPart } from "./message-types";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
@@ -370,6 +383,39 @@ export async function setCloseTabsAlwaysAllowed(
 }
 
 /**
+ * Persist a synthetic user-role marker that surfaces a Plan auto-extension
+ * inline in the conversation stream. The chat UI subscribes to chatDb's
+ * message stream so this renders without any stream-controller plumbing.
+ *
+ * Failure here is non-fatal — the actual plan extension (in IDB via
+ * `plan-store`) has already succeeded by the time we get here; the marker
+ * is purely a UI signal. We log and move on so a write hiccup never blocks
+ * the tool call that triggered the extension.
+ *
+ * The part is stripped before reaching the LLM (see `rewriteForLLM` in
+ * `compacting-transport.ts`); the model never sees it.
+ */
+async function savePlanExtensionMarker(
+  conversationId: string,
+  data: PlanExtensionData,
+): Promise<void> {
+  try {
+    const part: SerializedUIPart = { type: "data-plan-extension", data };
+    await chatDb.saveMessage({
+      id: crypto.randomUUID(),
+      conversationId,
+      role: "user",
+      content: "",
+      parts: [part],
+      createdAt: Date.now(),
+    });
+  } catch (err) {
+    // Non-fatal — the extension persisted; the marker is purely UI.
+    console.warn("[plan] failed to save extension marker:", err);
+  }
+}
+
+/**
  * Resolve the target ltids for a closeTabs auto-approve check against the
  * conversation's owned tabs.
  */
@@ -483,6 +529,7 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     executePython: toSDKTool(pythonTool, "executePython"),
     extract: toSDKTool(extractTool, "extract"),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
+    proposePlan: toSDKTool(proposePlanTool, "proposePlan"),
     skill: toSDKTool(skillTool, "skill"),
     install_skill: toSDKTool(installSkillTool, "install_skill"),
     create_skill: toSDKTool(createSkillTool, "create_skill"),
@@ -598,6 +645,23 @@ export function buildExtensionToolContext(
           todos,
           updatedAt: Date.now(),
         });
+      },
+      getPlan: async () => {
+        if (!pinnedConversationId) return undefined;
+        const conv = await chatDb.getConversation(pinnedConversationId);
+        return conv?.plan;
+      },
+      setPlan: async (plan) => {
+        if (!pinnedConversationId) return;
+        await chatDb.updateConversation(pinnedConversationId, {
+          plan,
+          updatedAt: Date.now(),
+        });
+      },
+      getMode: async () => {
+        if (!pinnedConversationId) return "ask";
+        const conv = await chatDb.getConversation(pinnedConversationId);
+        return conv?.mode ?? "ask";
       },
       resolveNewTabWindowId: async () => {
         if (!pinnedConversationId) return undefined;
@@ -723,7 +787,110 @@ export function toSDKTool<TInput, TOutput>(
     return true;
   };
 
-  const needsApproval =
+  /**
+   * Read the conversation's current approval mode + plan. Used by the
+   * mode-aware `needsApproval` wrapper to dispatch on mode. Returns
+   * `{ mode: "ask" }` when:
+   *   - no conversation is bound (defensive),
+   *   - the conversation row has no `mode` field (pre-v17 rows / new
+   *     conversations default to Ask, the original pre-modes behavior),
+   *   - the chatDb read throws (e.g. IDB unavailable in some test
+   *     harnesses, or the conversation row was deleted mid-call). The
+   *     fallback preserves Ask-mode semantics — i.e. existing behavior —
+   *     rather than failing the approval check entirely.
+   *
+   * Takes `cid` as a parameter rather than reading `agentConversationId`
+   * directly so callers can pin a snapshot at entry. The auto-extension
+   * hook in `execute` pins `cid` BEFORE its try block and passes it
+   * here, ensuring mode/plan reads and persistence operations refer to
+   * the same conversation even if the user switches mid-await.
+   * `needsApproval` (which has no later persistence to align with)
+   * passes `agentConversationId` directly.
+   */
+  const resolveModeAndPlan = async (
+    cid: string | null,
+  ): Promise<{
+    mode: ConversationMode;
+    plan: ApprovedPlan | undefined;
+  }> => {
+    if (!cid) return { mode: "ask", plan: undefined };
+    try {
+      const conv = await chatDb.getConversation(cid);
+      return {
+        mode: conv?.mode ?? "ask",
+        plan: conv?.plan,
+      };
+    } catch (err) {
+      // Same fallback the per-turn refresh hook uses below: if the read
+      // fails for any reason, default to Ask mode so we err on the side
+      // of prompting the user (the safe default) rather than silently
+      // skipping approvals under a stale cached mode.
+      console.warn(
+        "[agent] resolveModeAndPlan failed; falling back to Ask mode",
+        err,
+      );
+      return { mode: "ask", plan: undefined };
+    }
+  };
+
+  /**
+   * Decide whether a tool call falls within an approved plan. Used by
+   * Plan mode's `needsApproval` to decide between skip-approval (in-plan)
+   * and prompt (off-plan).
+   *
+   *   - `proposePlan`: always in-plan. (It's gated by Plan-mode dispatch
+   *     itself; this branch is only reached when called via isInPlan.)
+   *   - `executePython`: in-plan when the call doesn't request network
+   *     OR when the plan permits it (`plan.allowNetwork`).
+   *   - Tab-targeted tools: resolve target tab's origin against
+   *     `plan.sites`. Falls back to "in-plan" when the tab can't be
+   *     resolved — same defensive default as `tabToolNeedsApproval`'s
+   *     unresolvable case.
+   *   - Other tools (todoWrite, recallMemory, etc.): in-plan by default.
+   *     They have no origin or network semantics for the plan to gate.
+   */
+  const isInPlan = async (
+    toolKeyArg: string,
+    input: unknown,
+    plan: ApprovedPlan,
+  ): Promise<boolean> => {
+    if (toolKeyArg === "proposePlan") return true;
+
+    if (toolKeyArg === "executePython") {
+      const wantsNetwork =
+        (input as { allow_network?: unknown })?.allow_network === true;
+      if (wantsNetwork) return plan.allowNetwork;
+      return true;
+    }
+
+    // Non-tab-targeted tools (todoWrite, recallMemory, saveMemory, etc.)
+    // have no origin to check against plan.sites — they're inherently
+    // in-plan because they don't reach out to any site. Short-circuit
+    // before the tab-resolution fallback so an unresolvable tab can't
+    // be confused with a non-tab tool's "no resolution needed" case.
+    if (!TAB_INTERACTING_TOOLS.has(toolKeyArg)) return true;
+
+    // Tab-targeted tools: resolve via the same path as
+    // tabToolNeedsApproval, then check origin against plan.sites.
+    // FAIL CLOSED: if the tab can't be resolved (stale handle, race
+    // with onReplaced/onRemoved, malformed URL), treat the call as
+    // off-plan so the user is prompted. The alternative (defaulting
+    // to in-plan) would let a write-tool fire on an unintended target
+    // when the agent's view of which tab a handle points to drifts —
+    // worst case is one extra prompt, vs the worst case of silent
+    // off-plan execution.
+    const cid = agentConversationId;
+    const resolved = await resolveTabFromInput(cid, input);
+    if (!resolved?.tab.url) return false;
+    try {
+      const origin = new URL(resolved.tab.url).origin;
+      return plan.sites.includes(origin);
+    } catch {
+      return false;
+    }
+  };
+
+  const askModeNeedsApproval =
     approvalRequired && toolKey === "executePython"
       ? // Python only needs human approval when it requests outbound network
         // access. Sandboxed runs (no `allow_network`, the default) touch only
@@ -774,17 +941,129 @@ export function toSDKTool<TInput, TOutput>(
       ? // A `scriptRef` run executes an ALREADY-SAVED script from one of the
         // agent's own site skills (authored by the background curator) — no prompt,
         // same trust basis as the no-approval site-skill patch/delete.
-        // This also removes the model's incentive to `Read` the body before
-        // running (to make an opaque approval legible), which would defeat
-        // run-by-reference. Inline `code` is arbitrary new JS → normal gate.
+        //
+        // Inline `code` with `kind: "read"` whose AST passes the static check
+        // skips approval on ANY origin. The static check is the trust mechanism
+        // for reads — it ensures no DOM/storage/network mutation, no clicks,
+        // no fetch, no navigation. Same exfiltration surface as snapshot/readPage,
+        // both of which already run ungated.
+        //
+        // Inline `code` with `kind: "write"` (or `kind: "read"` whose AST is
+        // rejected — treated as a misclassified write) falls through to the
+        // standard tab-tool allowlist check: skip on user-allowlisted origins,
+        // gate elsewhere.
         async (input: unknown) => {
-          const typed = input as { scriptRef?: unknown; code?: unknown };
+          const typed = input as {
+            scriptRef?: unknown;
+            code?: unknown;
+            kind?: "read" | "write";
+          };
           if (typed?.scriptRef != null && typed.code == null) return false;
+
+          // Verified-read fast path: kind: "read" + AST clean.
+          if (typed.kind === "read" && typeof typed.code === "string") {
+            const check = staticReadCheck(typed.code);
+            if (check.ok) {
+              // Verified read: skip approval on ANY origin. The static check
+              // is the trust mechanism — it ensures the script can't mutate
+              // the page, modify storage, navigate, or call network. The
+              // allowlist is only consulted for writes (and for AST-rejected
+              // reads, treated as writes per the table below).
+              return false;
+            }
+            console.warn(
+              "[executeOnPage] kind: read but static check rejected:",
+              check.reason,
+            );
+          }
+
           return tabToolNeedsApproval(input);
         }
       : approvalRequired && isTabTool
         ? (input: unknown) => tabToolNeedsApproval(input)
         : approvalRequired;
+
+  /**
+   * Mode-aware wrapper around `askModeNeedsApproval`. The conversation's
+   * current `mode` decides which gating policy applies:
+   *
+   *   - "ask"  → fall through to `askModeNeedsApproval` (the existing
+   *              per-tool chain: tab allowlist, scriptRef short-circuit,
+   *              executeOnPage verified-read fast path, executePython
+   *              network gate, closeTabs auto-approve). This preserves
+   *              every pre-modes behavior verbatim.
+   *   - "plan" → consult the conversation's plan. With no plan, only
+   *              `proposePlan` can run (and it's still gated — the user
+   *              reviews and Approves to set the plan). With a plan,
+   *              in-plan calls skip approval; off-plan calls gate.
+   *              `proposePlan` itself is ALWAYS gated (any mode), so
+   *              re-proposing extends the plan via the SDK's approval
+   *              flow.
+   *   - "act"  → skip approval for everything, EXCEPT executePython
+   *              with `allow_network: true` when a plan exists with
+   *              `allowNetwork: false`. The network floor binds even in
+   *              Act mode: it's a hard "this conversation has agreed not
+   *              to make network calls" rule, not just an Ask-mode prompt.
+   *
+   * The headless `autoApprove` wrapper is layered OUTSIDE this dispatch
+   * (see `needsApprovalWithHeadless` below) and always wins — auto-approve
+   * runs skip approval regardless of mode.
+   */
+  const needsApproval = approvalRequired
+    ? async (input: unknown, opts: unknown): Promise<boolean> => {
+        const { mode, plan } = await resolveModeAndPlan(agentConversationId);
+
+        if (mode === "act") {
+          // proposePlan is ALWAYS gated, in any mode. Without this,
+          // Act mode would let the model silently mint a fresh plan
+          // (with arbitrary sites + allowNetwork) without user
+          // confirmation — and in-plan calls then skip approval, so
+          // the agent could broaden its own boundary unilaterally.
+          // Matches the contract documented in the JSDoc above and
+          // mirrors the explicit `proposePlan` gate in the "plan"
+          // branch below.
+          if (toolKey === "proposePlan") return true;
+          // Network floor: even in Act mode, a plan that disallows
+          // network blocks Python network calls. Without this the model
+          // could quietly exfiltrate via Python after the user picked
+          // "no network" in Plan mode and switched to Act for speed.
+          if (
+            toolKey === "executePython" &&
+            (input as { allow_network?: unknown })?.allow_network === true &&
+            plan &&
+            !plan.allowNetwork
+          ) {
+            return true;
+          }
+          return false;
+        }
+
+        if (mode === "plan") {
+          // proposePlan is ALWAYS gated — the prompt IS the approval flow
+          // that lets the user review/edit/approve the plan. Without this
+          // explicit branch, isInPlan would return true (proposePlan is
+          // "in any plan") and we'd skip the prompt the user needs to see.
+          if (toolKey === "proposePlan") return true;
+          // No plan yet → only proposePlan can run (handled above; every
+          // other gated tool prompts). The user is expected to call
+          // proposePlan first; off-plan calls re-prompt until they do.
+          if (!plan) return true;
+          return !(await isInPlan(toolKey, input, plan));
+        }
+
+        // mode === "ask": defer to existing per-tool logic.
+        if (typeof askModeNeedsApproval === "function") {
+          return (askModeNeedsApproval as (
+            i: unknown,
+            o: unknown,
+          ) => boolean | Promise<boolean>)(input, opts);
+        }
+        // approvalRequired === true and askModeNeedsApproval is the
+        // boolean fallback (a tool that requires approval but has no
+        // per-tool override): default to gating.
+        return askModeNeedsApproval as boolean;
+      }
+    : askModeNeedsApproval;
 
   /**
    * Wrap the resolved `needsApproval` so that during a HEADLESS scheduled
@@ -831,14 +1110,80 @@ export function toSDKTool<TInput, TOutput>(
       abortSignal?: AbortSignal;
     },
   ) => {
-    // Capture cid once at entry. Every chatDb / handle-map operation
-    // reachable from this tool call — both inside the wrapper
-    // (resolveTabFromInput, capture stores) and inside the tool's own
-    // execute via `ctx.session` — pins to this snapshot. So if the user
-    // switches conversations mid-tool-await, the in-flight call still
-    // writes to the conversation that originated it.
+    // Auto-extend the plan when the user just approved (or is about to
+    // run via skip-approval) a call that would otherwise re-prompt in
+    // the future for the same reason. Two cases:
+    //
+    //   - Plan mode: option-C deviation handling. User approves an
+    //     off-plan call (new site or executePython+network when
+    //     plan.allowNetwork=false); extend the plan so subsequent calls
+    //     in the same conversation skip the re-prompt.
+    //
+    //   - Act mode: the only thing that can gate is executePython+network
+    //     when plan.allowNetwork=false (the spec's "always-protected
+    //     network floor"). Without auto-extension here, every such call
+    //     prompts forever — terrible UX in Act mode where the user opted
+    //     out of approvals. So we flip allowNetwork on the first approval,
+    //     mirroring Plan mode's behavior. Site extension does NOT apply
+    //     in Act mode (sites always skip; there's no approval gesture).
+    //
+    // Capture cid once at entry, BEFORE the auto-extension block
+    // below. Every chatDb / handle-map operation reachable from this
+    // tool call — the auto-extension block (including the mode/plan
+    // read via resolveModeAndPlan), the tool's own execute via
+    // `ctx.session`, and resolveTabFromInput / capture stores — pins
+    // to this snapshot. So if the user switches conversations
+    // mid-tool-await, the in-flight call still reads, decides, and
+    // writes against the conversation that originated it.
     const cid = agentConversationId;
     capturedToolOrigins.delete(options.toolCallId);
+
+    // Runs BEFORE the tool's body so the extension is durable even if
+    // the tool throws.
+    try {
+      const { mode, plan } = await resolveModeAndPlan(cid);
+      if (plan && (mode === "plan" || mode === "act")) {
+        // Resolve target origin for tab-tools (best effort, Plan mode only).
+        let targetOrigin: string | undefined;
+        if (
+          mode === "plan" &&
+          toolKey !== "executePython" &&
+          toolKey !== "proposePlan"
+        ) {
+          const resolved = await resolveTabFromInput(cid, input);
+          if (resolved?.tab.url) {
+            try {
+              targetOrigin = new URL(resolved.tab.url).origin;
+            } catch {
+              // skip
+            }
+          }
+        }
+        const decision = planExtensionForCall({
+          toolKey,
+          inputAllowNetwork:
+            (input as { allow_network?: unknown })?.allow_network === true,
+          targetOrigin,
+          plan,
+        });
+        if (decision.kind === "site" && cid) {
+          await extendPlanWithSite(cid, decision.origin);
+          await savePlanExtensionMarker(cid, {
+            kind: "site",
+            origin: decision.origin,
+            extendedAt: Date.now(),
+          });
+        } else if (decision.kind === "network" && cid) {
+          await flipPlanNetwork(cid);
+          await savePlanExtensionMarker(cid, {
+            kind: "network",
+            extendedAt: Date.now(),
+          });
+        }
+      }
+    } catch (err) {
+      console.warn("[plan] auto-extend failed; tool call proceeds:", err);
+    }
 
     // Non-auto-approve headless runs have no human to approve a network
     // request, so force `executePython` to run sandboxed regardless of what
@@ -2231,14 +2576,69 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // conversations (no agent-written files yet).
       const cid = agentConversationId;
       const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
+
+      // Per-turn mode + plan injection. Read fresh from chatDb so a mode
+      // switch or plan approval mid-conversation takes effect on the next
+      // turn (instead of being frozen at transport construction).
+      let modeBlock = "";
+      let activeToolsOverride: string[] | undefined;
+      if (cid) {
+        try {
+          const conv = await chatDb.getConversation(cid);
+          if (conv?.mode === "plan") {
+            if (!conv.plan) {
+              modeBlock = `## Plan mode
+
+You are in Plan mode. Your FIRST action MUST be \`proposePlan\` — do not call any other approval-gated tool until the user approves the plan.
+
+Be specific in \`sites\` — list every origin you intend to touch. Set \`allowNetwork: true\` ONLY if the task requires \`executePython\` with outbound network access (most tasks don't).
+
+If the user clicks 'Make changes', revise the plan based on their feedback and call \`proposePlan\` again.`;
+              // Hard enforcement: restrict the available tool set to just
+              // proposePlan so the model can't take any other action this
+              // turn. Once the plan is approved, the next turn's prepareCall
+              // sees conv.plan exists and lifts this restriction.
+              activeToolsOverride = ["proposePlan"];
+            } else {
+              const sitesList =
+                conv.plan.sites.length > 0
+                  ? conv.plan.sites.join(", ")
+                  : "(none yet — call proposePlan to extend)";
+              modeBlock = `## Plan mode (plan approved)
+
+Sites: ${sitesList}
+Network access: ${conv.plan.allowNetwork ? "permitted" : "not permitted"}
+
+Stay within the approved sites. If you need to touch a site not listed, call \`proposePlan\` again to extend the plan; the user will approve the extension. Do NOT use sites outside the list without re-proposing.`;
+            }
+          }
+        } catch (err) {
+          // Same fallback as resolveModeAndPlan: if the read fails for any
+          // reason (transient IDB error, etc.), fall through to Ask mode
+          // semantics. The user gets prompted on each tool call instead of
+          // the agent silently running unconstrained — safe default.
+          console.warn(
+            "[agent] mode/plan refresh failed; falling back to Ask mode",
+            err,
+          );
+        }
+      }
+
       const baseInstructions =
         typeof callArgs.instructions === "string" ? callArgs.instructions : "";
-      // Append both blocks; either or both can be empty. Use double-newline
-      // separators between blocks so they render as distinct sections.
-      const tail = [legend, wsBlock].filter(Boolean).join("\n\n");
+      // Append blocks; any can be empty. Mode block goes first (framing),
+      // then situational state (legend, workspace).
+      const tail = [modeBlock, legend, wsBlock].filter(Boolean).join("\n\n");
       return {
         ...callArgs,
         instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,
+        // Cast: TS infers `keyof TOOLS` narrowly here because `tools` is a
+        // union (headless filtered Record<string,...> vs the static base
+        // shape) — the intersection of keys collapses. Runtime: `proposePlan`
+        // is a real key in the agent's tools record, so the SDK accepts it.
+        ...(activeToolsOverride && {
+          activeTools: activeToolsOverride as never,
+        }),
       };
     },
     onStepFinish: (stepResult) => {

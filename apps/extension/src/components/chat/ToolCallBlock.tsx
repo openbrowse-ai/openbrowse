@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { CodeResult } from "./tool-results/execute-code";
 import { PageScriptResult } from "./tool-results/page-script";
+import { PlanResult } from "./tool-results/plan";
 import { PythonResult } from "./tool-results/execute-python";
 import { DelegateResult } from "./tool-results/delegate";
 import {
@@ -71,6 +72,7 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
       <CodeResult args={args} result={result} />
     ),
   executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
+  proposePlan: ({ args, result }) => <PlanResult args={args} result={result} />,
   selectTab: ({ result, toolCallId }) => (
     <SelectTabResult result={result} toolCallId={toolCallId} />
   ),
@@ -124,7 +126,31 @@ interface ToolCallBlockProps {
   errorKind?: "failed" | "interrupted";
 }
 
-const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
+const TOOL_LABELS: Record<
+  string,
+  {
+    pending: string;
+    done: string;
+    /**
+     * Suffix appended after a strikethrough'd `done` label in the
+     * denied row (default behavior for all tools). E.g. `done: "Ran
+     * Python"` + `denied: "Network blocked"` → `~~Ran Python~~ Network
+     * blocked`. Defaults to "Denied" when absent.
+     */
+    denied?: string;
+    /**
+     * Full replacement label for the denied row. When set, the denied
+     * row renders this text WITHOUT strikethrough and WITHOUT a suffix
+     * — i.e. the label IS the outcome message. Used when the strikethrough
+     * convention reads as self-contradictory: e.g. `proposePlan`'s
+     * `done` is "Plan approved", which strikethrough'd reads as "the
+     * plan wasn't approved" — technically correct but confusing. With
+     * `deniedReplace: "Make changes requested"` the row simply reads
+     * "Make changes requested" — the user's actual decision.
+     */
+    deniedReplace?: string;
+  }
+> = {
   readPage: { pending: "Reading page...", done: "Read page" },
   screenshot: { pending: "Taking screenshot...", done: "Took screenshot" },
   snapshot: { pending: "Taking snapshot...", done: "Took snapshot" },
@@ -148,6 +174,14 @@ const TOOL_LABELS: Record<string, { pending: string; done: string }> = {
   LS: { pending: "Listing folder...", done: "Listed folder" },
   Delete: { pending: "Deleting...", done: "Deleted" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
+  proposePlan: {
+    pending: "Drafting plan...",
+    done: "Plan approved",
+    // Use `deniedReplace` (not `denied` suffix) so the row reads
+    // "Make changes requested" cleanly instead of the confusing
+    // strikethrough'd "~~Plan approved~~ Make changes requested".
+    deniedReplace: "Make changes requested",
+  },
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
@@ -460,7 +494,13 @@ export function ToolCallBlock({
     resolveMcpToolDisplay(toolName);
   const connectorLabels =
     mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
-  const labels = TOOL_LABELS[toolName] ??
+  const labels: {
+    pending: string;
+    done: string;
+    denied?: string;
+    deniedReplace?: string;
+  } =
+    TOOL_LABELS[toolName] ??
     connectorLabels ?? {
       pending: readableName ? `Running ${readableName}...` : `${toolName}...`,
       done: readableNameSentence ? readableNameSentence : toolName,
@@ -490,8 +530,36 @@ export function ToolCallBlock({
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 
-  // Denied: compact non-expandable row with a muted "Denied" suffix
+  // Denied row. Two render shapes (per-tool config in TOOL_LABELS):
+  //
+  //   - default / `denied` suffix: strikethrough'd `done` label + a
+  //     muted suffix (e.g. `~~Ran Python~~ Denied`). The strikethrough
+  //     conveys "this didn't happen"; the suffix says why.
+  //
+  //   - `deniedReplace`: the entry-provided string IS the row label,
+  //     no strikethrough, no suffix. Used when the strikethrough'd
+  //     `done` label reads as self-contradictory — e.g. proposePlan's
+  //     `done: "Plan approved"` with strikethrough reads as "the plan
+  //     wasn't approved" (technically true, visually confusing). The
+  //     replace shape just shows "Make changes requested" — the
+  //     user's actual decision.
+  //
+  // Both read the labels from the original `labels` object, not
+  // `dynamicLabels` (the per-tool helpers like webFetchLabels only
+  // re-shape pending/done; they don't customize denied).
   if (denied) {
+    if (labels.deniedReplace) {
+      return (
+        <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
+          <X className="size-3 shrink-0 text-muted-foreground/60" />
+          <span className="text-muted-foreground/70">
+            {labels.deniedReplace}
+          </span>
+          {showTabBadge && <TabBadge toolCallId={toolCallId} />}
+        </div>
+      );
+    }
+    const deniedSuffix = labels.denied ?? "Denied";
     return (
       <div className="flex items-center gap-1.5 py-0.5 px-1 -mx-1 text-sm">
         <X className="size-3 shrink-0 text-muted-foreground/60" />
@@ -500,7 +568,7 @@ export function ToolCallBlock({
         </span>
         {showTabBadge && <TabBadge toolCallId={toolCallId} />}
         <span className="text-[11px] text-muted-foreground/60 ml-1">
-          Denied
+          {deniedSuffix}
         </span>
       </div>
     );

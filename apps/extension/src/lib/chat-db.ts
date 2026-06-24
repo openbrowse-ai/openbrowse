@@ -1,7 +1,13 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { queueDb } from "./queue-db";
 import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
-import type { ConversationUsage, SerializedUIPart, TodoItem } from "./types";
+import type {
+  ApprovedPlan,
+  ConversationMode,
+  ConversationUsage,
+  SerializedUIPart,
+  TodoItem,
+} from "./types";
 import { OPFS } from "./vfs/opfs";
 
 /**
@@ -87,6 +93,12 @@ interface ChatDB extends DBSchema {
       // needed (keyPath store stores whole objects). Mirrors `Conversation`
       // in lib/types.ts.
       usage?: ConversationUsage;
+      // v17 — per-conversation approval mode and approved plan. Both
+      // optional; pre-v17 rows read back as undefined which the agent
+      // treats as the default ("ask" mode, no plan). Mirrors
+      // `Conversation` in lib/types.ts.
+      mode?: ConversationMode;
+      plan?: ApprovedPlan;
     };
     indexes: {
       "by-updated": number;
@@ -236,7 +248,13 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      removed. v16 rewrites every message's `parts` array through
     //      the input-normalizer's persistence ladder so already-broken
     //      conversations recover without user action.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 16, {
+    // v17: Conversation rows gain optional `mode` and `plan` fields
+    //      (see types.ts). Approval-modes feature; additive — no row
+    //      migration. Pre-v17 rows hydrate as { ...existing, mode:
+    //      undefined, plan: undefined }, which the agent-transport's
+    //      `needsApproval` chain interprets as the default ("ask"
+    //      mode, no plan).
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 17, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -461,6 +479,20 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // this transaction so we can `await` the dynamic import of
           // the serializer module without auto-committing the txn.
           flags.needsV16Fixup = true;
+        }
+
+        if (oldVersion < 17) {
+          // v17: Conversation rows gain optional `mode` and `plan` fields
+          // (see types.ts). No row migration needed — pre-v17 rows read
+          // back as { ...existing, mode: undefined, plan: undefined } which
+          // the agent-transport's `needsApproval` chain interprets as the
+          // default ("ask" mode, no plan).
+          //
+          // No data backfill is required; bumping the version number alone
+          // is enough for IDB to treat the schema as up-to-date so writes
+          // setting these new fields go through cleanly on subsequent
+          // openDB calls. The store keyPath is unchanged; whole-object
+          // values automatically tolerate the new optional fields.
         }
       },
     });

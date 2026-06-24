@@ -100,6 +100,13 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
         // is silently dropped at serialize time and the conversation
         // looks like the gate never ran.
         return [{ type: "data-completion-check-rejection", data: part.data }];
+      case "data-plan-extension":
+        // Round-trip plan-extension markers so the inline notice
+        // ("Plan extended: <origin>" / "Plan extended: network access
+        // permitted") survives reload. Like `data-compaction`, this is
+        // a synthetic user-role marker that's stripped before reaching
+        // the LLM (see `rewriteForLLM`).
+        return [{ type: "data-plan-extension", data: part.data }];
       case "data-completion-check-running":
         // Strip running indicators at serialize time. They're a live-
         // stream concern only:
@@ -253,6 +260,10 @@ export function hasMeaningfulContent(parts: SerializedUIPart[]): boolean {
     // content is a rejection would be dropped by the `onFinish`
     // save gate, contradicting the persist-on-purpose contract.
     if (p.type === "data-completion-check-rejection") return true;
+    // Plan-extension markers are synthetic user messages whose only
+    // content is the marker part — they must count as meaningful so
+    // the inline "Plan extended: …" notice is preserved across reload.
+    if (p.type === "data-plan-extension") return true;
     // step-start and data-compaction are markers, not user-visible content.
     return false;
   });
