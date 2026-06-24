@@ -217,6 +217,53 @@ const TAB_INTERACTING_TOOLS = new Set([
   "read_console_messages",
 ]);
 
+/**
+ * Pure policy core for the Plan-mode in-plan check. Extracted from the
+ * per-tool closure inside `createAgent` so a regression test can drive
+ * the cid-pinning contract end-to-end without a live agent: the test
+ * supplies a `resolveTab` stub that asserts the cid it sees is the one
+ * the dispatcher pinned at entry, not whatever the module global has
+ * mutated to mid-await.
+ *
+ * Production callers wire `resolveTab` to `resolveTabFromInput` (which
+ * itself reads `agentConversationId` only through its `cid` parameter).
+ *
+ * Returns `true` when the call is "in plan" — the dispatcher should
+ * skip approval. Falls back to `false` (off-plan, prompt) when the tab
+ * can't be resolved or its URL doesn't parse, matching the FAIL CLOSED
+ * default the original closure used.
+ */
+export async function isInPlanCore(
+  toolKey: string,
+  input: unknown,
+  plan: ApprovedPlan,
+  cid: string | null,
+  resolveTab: (
+    cid: string | null,
+    input: unknown,
+  ) => Promise<{ tab: { url?: string } } | null>,
+): Promise<boolean> {
+  if (toolKey === "proposePlan") return true;
+
+  if (toolKey === "executePython") {
+    const wantsNetwork =
+      (input as { allow_network?: unknown })?.allow_network === true;
+    if (wantsNetwork) return plan.allowNetwork;
+    return true;
+  }
+
+  if (!TAB_INTERACTING_TOOLS.has(toolKey)) return true;
+
+  const resolved = await resolveTab(cid, input);
+  if (!resolved?.tab.url) return false;
+  try {
+    const origin = new URL(resolved.tab.url).origin;
+    return plan.sites.includes(origin);
+  } catch {
+    return false;
+  }
+}
+
 let agentActive = false;
 
 let agentConversationId: string | null = null;
@@ -800,12 +847,11 @@ export function toSDKTool<TInput, TOutput>(
    *     rather than failing the approval check entirely.
    *
    * Takes `cid` as a parameter rather than reading `agentConversationId`
-   * directly so callers can pin a snapshot at entry. The auto-extension
-   * hook in `execute` pins `cid` BEFORE its try block and passes it
-   * here, ensuring mode/plan reads and persistence operations refer to
-   * the same conversation even if the user switches mid-await.
-   * `needsApproval` (which has no later persistence to align with)
-   * passes `agentConversationId` directly.
+   * directly so callers pin a snapshot at entry. Both the auto-extension
+   * hook in `execute` and the mode-aware dispatcher in `needsApproval`
+   * capture cid before their first await; this keeps mode/plan reads,
+   * plan-extension persistence, and downstream tab resolution coherent
+   * across awaits even if the user switches conversations mid-call.
    */
   const resolveModeAndPlan = async (
     cid: string | null,
@@ -849,46 +895,19 @@ export function toSDKTool<TInput, TOutput>(
    *   - Other tools (todoWrite, recallMemory, etc.): in-plan by default.
    *     They have no origin or network semantics for the plan to gate.
    */
-  const isInPlan = async (
+  const isInPlan = (
     toolKeyArg: string,
     input: unknown,
     plan: ApprovedPlan,
-  ): Promise<boolean> => {
-    if (toolKeyArg === "proposePlan") return true;
-
-    if (toolKeyArg === "executePython") {
-      const wantsNetwork =
-        (input as { allow_network?: unknown })?.allow_network === true;
-      if (wantsNetwork) return plan.allowNetwork;
-      return true;
-    }
-
-    // Non-tab-targeted tools (todoWrite, recallMemory, saveMemory, etc.)
-    // have no origin to check against plan.sites — they're inherently
-    // in-plan because they don't reach out to any site. Short-circuit
-    // before the tab-resolution fallback so an unresolvable tab can't
-    // be confused with a non-tab tool's "no resolution needed" case.
-    if (!TAB_INTERACTING_TOOLS.has(toolKeyArg)) return true;
-
-    // Tab-targeted tools: resolve via the same path as
-    // tabToolNeedsApproval, then check origin against plan.sites.
-    // FAIL CLOSED: if the tab can't be resolved (stale handle, race
-    // with onReplaced/onRemoved, malformed URL), treat the call as
-    // off-plan so the user is prompted. The alternative (defaulting
-    // to in-plan) would let a write-tool fire on an unintended target
-    // when the agent's view of which tab a handle points to drifts —
-    // worst case is one extra prompt, vs the worst case of silent
-    // off-plan execution.
-    const cid = agentConversationId;
-    const resolved = await resolveTabFromInput(cid, input);
-    if (!resolved?.tab.url) return false;
-    try {
-      const origin = new URL(resolved.tab.url).origin;
-      return plan.sites.includes(origin);
-    } catch {
-      return false;
-    }
-  };
+    cid: string | null,
+  ): Promise<boolean> =>
+    // Delegate to the pure policy core (module-level, exported for
+    // tests). Wires `resolveTab` to the closure-bound
+    // `resolveTabFromInput` so production callers retain the same
+    // tabRegistry / chrome.tabs path as before; tests can call
+    // `isInPlanCore` directly with a stub resolver to verify the
+    // cid-pinning contract.
+    isInPlanCore(toolKeyArg, input, plan, cid, resolveTabFromInput);
 
   const askModeNeedsApproval =
     approvalRequired && toolKey === "executePython"
@@ -1011,7 +1030,15 @@ export function toSDKTool<TInput, TOutput>(
    */
   const needsApproval = approvalRequired
     ? async (input: unknown, opts: unknown): Promise<boolean> => {
-        const { mode, plan } = await resolveModeAndPlan(agentConversationId);
+        // Pin cid ONCE at entry so all downstream reads in this
+        // dispatch (resolveModeAndPlan, isInPlan → resolveTabFromInput)
+        // refer to the same conversation even if the user switches
+        // conversations during an await. Without this pin, a mid-flight
+        // switch could resolve `mode`/`plan` against conversation A and
+        // then resolve the tab handle against conversation B's tab map
+        // — silently mixing plan A's site list with B's tabs.
+        const cid = agentConversationId;
+        const { mode, plan } = await resolveModeAndPlan(cid);
 
         if (mode === "act") {
           // proposePlan is ALWAYS gated, in any mode. Without this,
@@ -1048,7 +1075,7 @@ export function toSDKTool<TInput, TOutput>(
           // other gated tool prompts). The user is expected to call
           // proposePlan first; off-plan calls re-prompt until they do.
           if (!plan) return true;
-          return !(await isInPlan(toolKey, input, plan));
+          return !(await isInPlan(toolKey, input, plan, cid));
         }
 
         // mode === "ask": defer to existing per-tool logic.
