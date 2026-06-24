@@ -87,7 +87,10 @@ async function seedV15MessageRow(row: {
 async function readMessageRaw(
   id: string,
 ): Promise<Record<string, unknown> | undefined> {
-  const db = await openDB("openbrowse-chat", 16);
+  // Re-open at the current chat-db version (v17 — approval-mode
+  // mode/plan fields landed on top of v16). Reads the
+  // post-v16-migration shape verbatim; v17 is additive, no row rewrite.
+  const db = await openDB("openbrowse-chat", 17);
   const v = await db.get("messages", id);
   db.close();
   return v as unknown as Record<string, unknown> | undefined;

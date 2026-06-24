@@ -23,6 +23,7 @@ import { openSettingsTab } from "@/lib/open-settings";
 import { storage } from "@/lib/storage";
 import type {
   AgentSettings,
+  ConversationMode,
   SerializedUIPart,
   Settings,
   Space,
@@ -135,6 +136,10 @@ export function LandingPage({
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(
     DEFAULT_AGENT_SETTINGS,
   );
+  // Pre-conversation approval mode. The user can pick a mode in the
+  // composer before sending the first message; we apply it when
+  // creating the new conversation in `handleSubmit`. Default Ask.
+  const [mode, setMode] = useState<ConversationMode>("ask");
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
@@ -271,6 +276,8 @@ export function LandingPage({
         spaceId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        // Apply the user's pre-conversation mode selection.
+        ...(mode !== "ask" && { mode }),
       });
 
       const baseText = input.trim();
@@ -384,6 +391,7 @@ export function LandingPage({
       onNewConversation,
       agentSettings.agentModel,
       settings.providerConfigs,
+      mode,
     ],
   );
 
@@ -550,6 +558,8 @@ export function LandingPage({
             agentSettings={agentSettings}
             setAgentSettings={setAgentSettings}
             providers={providers}
+            mode={mode}
+            onModeChange={setMode}
             focusTrigger={focusTrigger}
           />
         </div>
@@ -601,6 +611,8 @@ export function LandingPage({
               agentSettings={agentSettings}
               setAgentSettings={setAgentSettings}
               providers={providers}
+              mode={mode}
+              onModeChange={setMode}
               focusTrigger={focusTrigger}
             />
           </div>
@@ -825,6 +837,14 @@ interface HeroComposerProps {
   agentSettings: AgentSettings;
   setAgentSettings: (next: AgentSettings) => void;
   providers: ReturnType<typeof useProviders>["providers"];
+  /**
+   * Pre-conversation approval mode picker state. Lives on the parent
+   * (LandingPage) because it's read into `chatDb.createConversation`
+   * at submit time (`handleSubmit`); the composer just renders the
+   * picker and forwards changes back up via `onModeChange`.
+   */
+  mode: ConversationMode;
+  onModeChange: (next: ConversationMode) => void;
   chatInputRef?: React.Ref<ChatInputHandle>;
   /**
    * Bumped by the parent (LandingPage) when a one-shot refocus is
@@ -850,6 +870,8 @@ function HeroComposer({
   agentSettings,
   setAgentSettings,
   providers,
+  mode,
+  onModeChange,
   chatInputRef,
   focusTrigger,
 }: HeroComposerProps) {
@@ -890,6 +912,8 @@ function HeroComposer({
             setAgentSettings(updated);
             storage.setAgentSettings(updated);
           }}
+          mode={mode}
+          onModeChange={onModeChange}
           thinkingEnabled={agentSettings.thinkingEnabled}
           thinkingConfig={agentSettings.thinkingConfig}
           onThinkingChange={(enabled, config) => {

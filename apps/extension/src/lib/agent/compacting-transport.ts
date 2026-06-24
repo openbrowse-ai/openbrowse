@@ -435,6 +435,10 @@ export function rewriteForLLM(
   const rewritten = working.map((m, i) => {
     let parts = m.parts;
     parts = substituteCompactionPart(parts);
+    // Plan-extension markers are UI-only — strip before the LLM ever
+    // sees them. The empty-parts filter below removes user messages
+    // whose only content was a stripped marker.
+    parts = stripPlanExtensionParts(parts);
     // Only strip screenshots from messages older than the last
     // SCREENSHOT_PROTECTED_TURNS user turns. Recent screenshots ride
     // along intact so the model retains visual recall across one user-
@@ -866,6 +870,144 @@ function substituteCompactionPart(
 }
 
 /**
+ * Strip `data-plan-extension` marker parts from a parts array before
+ * sending to the LLM. The model has no use for these — they're a UI
+ * signal that the auto-extend hook flipped the plan — and a user
+ * message containing only this part would convert to a `user` model
+ * message with empty `content`, failing the SDK's prompt validation.
+ *
+ * The empty-parts filter in `rewriteForLLM` then drops any message
+ * whose only content was a stripped marker.
+ */
+function stripPlanExtensionParts(
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
+  if (!parts.some((p) => p.type === "data-plan-extension")) return parts;
+  return parts.filter((p) => p.type !== "data-plan-extension");
+}
+
+/**
+ * Mutates approval-responded tool parts to a terminal state using the
+ * raw tool outputs captured during a stream iteration.
+ *
+ * Why this exists
+ * ---------------
+ * When a Plan-mode user clicks "Approve" on a `proposePlan` (or any
+ * other approval-gated) tool call, the SDK marks that tool part
+ * `approval-responded(approved: true, output: undefined)` and fires
+ * the auto-resume. The resume runs *inside* the next `agent.stream`
+ * call (round 0 of the rejection loop), and the tool's actual output
+ * arrives as `tool-output-available` chunks — but those chunks flow
+ * to the controller and don't mutate the rejection loop's local
+ * `messages` array. The persisted/UI part stays at
+ * `approval-responded` until the chat layer reconciles it.
+ *
+ * The rejection loop reuses the same `messages` array across rounds.
+ * If round 0 was rejected, the loop appends a synthetic feedback user
+ * message and starts round 1. The `proposePlan` part is no longer the
+ * last message, so the SDK's `collect-tool-approvals` (which only
+ * inspects `messages.at(-1)`) won't resume it. `convertToModelMessages`
+ * then emits `tool_use` + `tool-approval-request` + `tool-approval-response`
+ * with NO `tool-result` block — and Anthropic/Bedrock rejects the
+ * payload with `tool_use ids were found without tool_result blocks
+ * immediately after`.
+ *
+ * The fix is to terminalize approved-but-unfinished parts between
+ * rounds, using the raw outputs `pipeAndObserve` collected from
+ * round 0's `tool-output-available` chunks. Matching is by
+ * `toolCallId` so we can preserve the correct output verbatim.
+ *
+ * Healing rules
+ * -------------
+ *  - Only `state === "approval-responded" && approval.approved === true
+ *    && output === undefined` parts are healed. Approved parts that
+ *    already have an `output` (defensive — shouldn't happen since the
+ *    SDK assigns it on resume but doesn't update the UI part) are left
+ *    alone, as are denied parts (those go through `repairToolPart`'s
+ *    output-denied path).
+ *  - `rawToolOutputs[id].state === "completed"` → `output-available`
+ *    with the raw output preserved.
+ *  - `"errored"` → `output-error` with the raw `errorText`.
+ *  - `"denied"` → `output-denied` (defensive — denied tools don't
+ *    reach approval-responded, but heal anyway).
+ *  - Missing entry, or `"pending"` → `output-error` with the generic
+ *    `TRANSPORT_HEAL_TEXT`. This is the conservative fallback when we
+ *    can't observe what happened (e.g. the chunk stream ended before
+ *    a result arrived). The model sees a benign "interrupted" tool
+ *    result instead of a dangling `tool_use`.
+ *
+ * The `approval` field is preserved on the part so the UI can still
+ * render the approval pill; the SDK ignores it once `state` is
+ * terminal. `input` is preserved unchanged.
+ *
+ * Returns a NEW `messages` array (immutable style — same as
+ * `healPendingTools`), so callers can `messages = terminalize(...)`
+ * without worrying about shared references.
+ */
+export function terminalizeApprovedToolCalls(
+  messages: AgentUIMessage[],
+  rawToolOutputs: Map<string, RawToolOutput>,
+): AgentUIMessage[] {
+  let mutated = false;
+  const next = messages.map((m) => {
+    let partsMutated = false;
+    const parts = m.parts.map((p) => {
+      const rec = p as Record<string, unknown>;
+      const isTool =
+        rec.type === "dynamic-tool" ||
+        (typeof rec.type === "string" &&
+          (rec.type as string).startsWith("tool-"));
+      if (!isTool) return p;
+      if (rec.state !== "approval-responded") return p;
+      const approval = rec.approval as
+        | { approved?: unknown }
+        | undefined;
+      if (!approval || approval.approved !== true) return p;
+      if (rec.output !== undefined) return p;
+      const toolCallId =
+        typeof rec.toolCallId === "string" ? rec.toolCallId : undefined;
+      const raw = toolCallId
+        ? rawToolOutputs.get(toolCallId)
+        : undefined;
+      partsMutated = true;
+      if (raw?.state === "completed") {
+        return {
+          ...rec,
+          state: "output-available",
+          output: raw.output,
+        } as typeof p;
+      }
+      if (raw?.state === "errored") {
+        return {
+          ...rec,
+          state: "output-error",
+          errorText: raw.errorText ?? TRANSPORT_HEAL_TEXT,
+          output: undefined,
+        } as typeof p;
+      }
+      if (raw?.state === "denied") {
+        return {
+          ...rec,
+          state: "output-denied",
+          output: undefined,
+        } as typeof p;
+      }
+      // No raw entry, or still pending → conservative heal.
+      return {
+        ...rec,
+        state: "output-error",
+        errorText: TRANSPORT_HEAL_TEXT,
+        output: undefined,
+      } as typeof p;
+    });
+    if (!partsMutated) return m;
+    mutated = true;
+    return { ...m, parts } as AgentUIMessage;
+  });
+  return mutated ? next : messages;
+}
+
+/**
  * Minimal contract the rejection loop needs from an `Agent`. We don't
  * import the SDK's full `Agent` here so this function can be exercised
  * by tests with a tiny stub instead of a real `ToolLoopAgent`.
@@ -1165,6 +1307,23 @@ export function runWithRejectionLoop(args: {
             outcome.verdict,
             rejectionRound + 1,
           );
+          // Heal any approval-responded(approved:true, no output) tool
+          // parts to a terminal state using the raw outputs observed in
+          // this iteration's stream. Without this step, the next round's
+          // `convertToModelMessages` would emit `tool_use` followed by a
+          // tool message with NO `tool_result` block — Anthropic/Bedrock
+          // rejects that with `tool_use ids were found without
+          // tool_result blocks immediately after`.
+          //
+          // This only matters across rounds (the auto-resume inside the
+          // current iteration handled the SDK side), so we run it after
+          // observing the iteration but before appending the synthetic
+          // feedback that turns the approved part into a non-last
+          // message.
+          messages = terminalizeApprovedToolCalls(
+            messages,
+            observed.rawToolOutputs,
+          );
           messages = [...messages, synthetic];
           rejectionRound++;
         }
@@ -1281,6 +1440,23 @@ export function assertModelMessageToolInputs(
  *    chunks (output before input — shouldn't happen, but defensively
  *    handled) are dropped.
  */
+/**
+ * Raw (untruncated) tool-output capture, parallel to the truncated
+ * `ToolCallTraceEntry` map. Used by the rejection-loop driver to
+ * terminalize approval-responded tool parts between rounds (so the
+ * model sees a real `tool-result` block instead of a stranded
+ * `tool_use`). The trace's `outputSummary` is hard-truncated for the
+ * evaluator's prompt budget; that's too lossy to feed back to the
+ * primary model as a tool result. Hence this parallel raw map.
+ */
+export interface RawToolOutput {
+  state: "completed" | "errored" | "denied" | "pending";
+  /** Raw, untruncated tool output. Set when `state === "completed"`. */
+  output?: unknown;
+  /** Raw error text. Set when `state === "errored"`. */
+  errorText?: string;
+}
+
 export function observeChunkForCompletionCheck(
   chunk: UIMessageChunk,
   state: {
@@ -1294,6 +1470,13 @@ export function observeChunkForCompletionCheck(
      * explicit list to make the contract obvious to readers).
      */
     toolCallOrder: string[];
+    /**
+     * Parallel raw-output capture, keyed by `toolCallId`. Optional so
+     * existing callers (tests, completion-check observers) that only
+     * need the truncated trace don't have to allocate it. Populated in
+     * lockstep with `toolCalls` when present.
+     */
+    rawToolOutputs?: Map<string, RawToolOutput>;
   },
 ): void {
   // The SDK's UIMessageChunk is a discriminated union. Narrow defensively;
@@ -1349,6 +1532,7 @@ export function observeChunkForCompletionCheck(
           state: "pending",
         });
         state.toolCallOrder.push(toolCallId);
+        state.rawToolOutputs?.set(toolCallId, { state: "pending" });
       }
       break;
     }
@@ -1357,6 +1541,31 @@ export function observeChunkForCompletionCheck(
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
+      // Always update rawToolOutputs first — independent of whether
+      // toolCalls saw a preceding `tool-input-available` chunk for
+      // this id. The SDK's auto-resume path (re-executing an
+      // approved-but-unfinished tool call) DOES NOT re-emit the input
+      // chunk; only the output chunk arrives. Without this lazy
+      // creation, terminalizeApprovedToolCalls would find no entry in
+      // rawToolOutputs and fall back to the generic interruption
+      // heal, dropping the real result.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "completed";
+          raw.output = c.output;
+        } else {
+          state.rawToolOutputs.set(toolCallId, {
+            state: "completed",
+            output: c.output,
+          });
+        }
+      }
+      // The truncated `toolCalls` trace still requires a preceding
+      // input chunk — without it we'd fabricate a `name` /
+      // `inputSummary`-less entry the evaluator can't read. Skip
+      // updating it in that case (the trace is best-effort signal for
+      // the gate, not authoritative).
       const entry = state.toolCalls.get(toolCallId);
       if (!entry) break;
       entry.outputSummary = stringifyTruncate(
@@ -1371,12 +1580,27 @@ export function observeChunkForCompletionCheck(
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
-      const entry = state.toolCalls.get(toolCallId);
-      if (!entry) break;
       const errorText =
         typeof c.errorText === "string" && c.errorText.length > 0
           ? c.errorText
           : "(tool error)";
+      // Lazy-create the rawToolOutputs entry so the auto-resume path
+      // (no preceding input chunk) still records the error. See the
+      // comment in the output-available branch above.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "errored";
+          raw.errorText = errorText;
+        } else {
+          state.rawToolOutputs.set(toolCallId, {
+            state: "errored",
+            errorText,
+          });
+        }
+      }
+      const entry = state.toolCalls.get(toolCallId);
+      if (!entry) break;
       entry.outputSummary =
         errorText.length > TRACE_OUTPUT_TRUNCATE_CHARS
           ? errorText.slice(0, TRACE_OUTPUT_TRUNCATE_CHARS) + "… (truncated)"
@@ -1388,6 +1612,15 @@ export function observeChunkForCompletionCheck(
       const toolCallId =
         typeof c.toolCallId === "string" ? c.toolCallId : undefined;
       if (!toolCallId) break;
+      // Lazy-create. See comment in the output-available branch above.
+      if (state.rawToolOutputs) {
+        const raw = state.rawToolOutputs.get(toolCallId);
+        if (raw) {
+          raw.state = "denied";
+        } else {
+          state.rawToolOutputs.set(toolCallId, { state: "denied" });
+        }
+      }
       const entry = state.toolCalls.get(toolCallId);
       if (!entry) break;
       entry.outputSummary = null;
@@ -1451,12 +1684,20 @@ export async function pipeAndObserve(
 ): Promise<{
   finalText: string;
   toolCallTrace: ToolCallTraceEntry[];
+  /**
+   * Raw (untruncated) tool outputs keyed by `toolCallId`. Built in
+   * lockstep with `toolCallTrace`. Consumed by the rejection-loop
+   * driver to terminalize approval-responded tool parts between
+   * rounds. Existing callers can ignore this field.
+   */
+  rawToolOutputs: Map<string, RawToolOutput>;
   aborted: boolean;
 }> {
   const textBuffers = new Map<string, string>();
   let lastTextMessageId: string | undefined;
   const toolCalls = new Map<string, ToolCallTraceEntry>();
   const toolCallOrder: string[] = [];
+  const rawToolOutputs = new Map<string, RawToolOutput>();
   let aborted = false;
 
   const reader = input.getReader();
@@ -1476,6 +1717,7 @@ export async function pipeAndObserve(
           },
           toolCalls,
           toolCallOrder,
+          rawToolOutputs,
         });
       } catch (err) {
         console.warn("[completion-check] observer error:", err);
@@ -1493,7 +1735,7 @@ export async function pipeAndObserve(
   const toolCallTrace = toolCallOrder
     .map((id) => toolCalls.get(id))
     .filter((e): e is ToolCallTraceEntry => e !== undefined);
-  return { finalText, toolCallTrace, aborted };
+  return { finalText, toolCallTrace, rawToolOutputs, aborted };
 }
 
 /**

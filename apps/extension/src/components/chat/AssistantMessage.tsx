@@ -264,7 +264,18 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
       );
     }
     if (part.type === "dynamic-tool") {
-            if (part.state === "approval-requested" && "approval" in part && onToolApproval) {
+            // proposePlan's approval surface lives in the chat composer
+            // (see `findPendingPlanApproval` + `<PlanApprovalCard>` in
+            // ChatView). Skip the inline approval block entirely; the
+            // fall-through below renders a `<ToolCallBlock>` showing
+            // "Drafting plan..." in the message stream as a breadcrumb,
+            // while the composer-level card carries the actual buttons.
+            if (
+              part.state === "approval-requested" &&
+              "approval" in part &&
+              onToolApproval &&
+              part.toolName !== "proposePlan"
+            ) {
               const approval = part.approval as { id: string };
               return (
                 <ToolApprovalBlock
@@ -346,7 +357,14 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             if ("toolCallId" in part && "state" in part && "input" in part) {
               const toolName = part.type.slice(5);
               const p = part as Record<string, unknown>;
-              if (p.state === "approval-requested" && "approval" in p && onToolApproval) {
+              // proposePlan's approval surface lives in the chat composer;
+              // see the parallel comment in the dynamic-tool branch above.
+              if (
+                p.state === "approval-requested" &&
+                "approval" in p &&
+                onToolApproval &&
+                toolName !== "proposePlan"
+              ) {
                 const approval = p.approval as { id: string };
                 return (
                   <ToolApprovalBlock

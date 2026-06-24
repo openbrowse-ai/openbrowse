@@ -7,49 +7,75 @@ import { readSiteSkillScript, parseScriptDesc } from "../../skills/site-skill-sc
 
 const TIMEOUT_MS = 30_000;
 
-const parameters = z.object({
-  tab: z
-    .string()
-    .describe(
-      "Tab handle to execute against (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
-    ),
-  code: z
-    .string()
-    .optional()
-    .describe(
-      "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return any JSON-serializable value (auto-stringified) or `{ __binary_b64: \"...\" }` for binary content. Provide EITHER `code` or `scriptRef`, not both.",
-    ),
-  scriptRef: z
-    .object({
-      skill: z
-        .string()
-        .describe("Site skill the script belongs to — its domain (e.g. 'linkedin.com')."),
-      script: z
-        .string()
-        .describe("Script filename within the skill (e.g. 'list-recent-posts.js')."),
-    })
-    .optional()
-    .describe(
-      "Run a saved site-skill script by reference instead of inlining `code`. The body is loaded from the skill's files and never enters your context. ALWAYS prefer this over writing inline `code` when the '## Site skills for open tabs' section lists a matching script. Pass inputs the script expects via `args`. Provide EITHER `code` OR `scriptRef`, never both.",
-    ),
-  args: z
-    .string()
-    .optional()
-    .describe("JSON-encoded data passed to the code, accessible as `args` (auto-parsed)"),
-  saveAs: z
-    .string()
-    .optional()
-    .describe(
-      "If set, write the script's return value to this path under /workspace " +
-        "instead of returning the value to the chat. Accepted return shapes: " +
-        "a string (written as text), any JSON-serializable value " +
-        "(object/array/number/boolean/null — pretty-printed JSON), or " +
-        "{ __binary_b64: string } (base64-decoded and written as bytes). " +
-        "On success the tool returns { tab, path, bytes, sha256 } — the data " +
-        "itself is NOT echoed back. Use this for any payload larger than a " +
-        "few KB to keep chat context clean.",
-    ),
-});
+const parameters = z
+  .object({
+    tab: z
+      .string()
+      .describe(
+        "Tab handle to execute against (e.g. 't1'). See the `## Tabs in this conversation` section of the system prompt, or call listTabs.",
+      ),
+    code: z
+      .string()
+      .optional()
+      .describe(
+        "JavaScript function body to execute in the page. Has full access to document, window, and page globals. Access passed data via `args`. Use `return` to produce output. Return value must be JSON-serializable; when `saveAs` is set, return any JSON-serializable value (auto-stringified) or `{ __binary_b64: \"...\" }` for binary content. Provide EITHER `code` or `scriptRef`, not both.",
+      ),
+    kind: z
+      .enum(["read", "write"])
+      .optional()
+      .describe(
+        "Required when `code` is set; ignored when `scriptRef` is set. Whether this script READS page state (returns data; no DOM/storage/network mutation, no clicks, no fetch) or WRITES (mutates DOM, types into fields, dispatches events, calls fetch, modifies storage, navigates). In **Ask** mode: read-shaped scripts skip approval on ANY origin (a static AST check on the body is the trust mechanism — same exfiltration surface as snapshot/readPage, both ungated); write-shaped scripts skip approval ONLY on user-allowlisted origins, otherwise prompt. In **Plan** mode: even read-shaped scripts require the tab's origin to be in the conversation's `plan.sites` (off-plan calls prompt regardless of `kind`). In **Act** mode: nothing prompts. When in doubt, declare 'write' — a misclassified read prompts unnecessarily but a misclassified write would silently bypass the gate.",
+      ),
+    scriptRef: z
+      .object({
+        skill: z
+          .string()
+          .describe("Site skill the script belongs to — its domain (e.g. 'linkedin.com')."),
+        script: z
+          .string()
+          .describe("Script filename within the skill (e.g. 'list-recent-posts.js')."),
+      })
+      .optional()
+      .describe(
+        "Run a saved site-skill script by reference instead of inlining `code`. The body is loaded from the skill's files and never enters your context. ALWAYS prefer this over writing inline `code` when the '## Site skills for open tabs' section lists a matching script. Pass inputs the script expects via `args`. Provide EITHER `code` OR `scriptRef`, never both.",
+      ),
+    args: z
+      .string()
+      .optional()
+      .describe("JSON-encoded data passed to the code, accessible as `args` (auto-parsed)"),
+    saveAs: z
+      .string()
+      .optional()
+      .describe(
+        "If set, write the script's return value to this path under /workspace " +
+          "instead of returning the value to the chat. Accepted return shapes: " +
+          "a string (written as text), any JSON-serializable value " +
+          "(object/array/number/boolean/null — pretty-printed JSON), or " +
+          "{ __binary_b64: string } (base64-decoded and written as bytes). " +
+          "On success the tool returns { tab, path, bytes, sha256 } — the data " +
+          "itself is NOT echoed back. Use this for any payload larger than a " +
+          "few KB to keep chat context clean.",
+      ),
+  })
+  // Enforce the contract documented on `kind`: when inline `code` is
+  // provided, `kind` must be set. The needsApproval predicate already
+  // treats a missing `kind` as a write (defensive, gates the call), but
+  // schema-level enforcement keeps the agent's calls well-formed and
+  // surfaces a clear validation error when the model omits `kind` —
+  // rather than silently routing the call through the write path.
+  // `scriptRef`-only inputs are unaffected (the description for `kind`
+  // says it's ignored in that case).
+  .refine(
+    (v) => {
+      const hasCode = typeof v.code === "string" && v.code.length > 0;
+      if (!hasCode) return true;
+      return v.kind === "read" || v.kind === "write";
+    },
+    {
+      message: "kind is required (\"read\" or \"write\") when `code` is set",
+      path: ["kind"],
+    },
+  );
 
 type Input = z.infer<typeof parameters>;
 const outputSchema = z.object({
@@ -78,7 +104,7 @@ type Output = z.infer<typeof outputSchema>;
 export const executeOnPageTool: BrowserTool<Input, Output> = {
   name: "executeOnPage",
   description:
-    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs) and EITHER inline `code` OR a `scriptRef` to a saved site-skill script. On a domain that has a site skill (see '## Site skills for open tabs'), check its scripts FIRST and use `scriptRef` if one matches — its body runs without filling your context. Otherwise write inline `code`. Inline `code` requires user approval before each execution; a `scriptRef` run of a saved script does NOT (it's trusted — you don't need to Read the body first, the script catalog is its contract). Use for complex DOM manipulation or page JavaScript state beyond what readPage/clickElement/typeInElement provide. For payloads larger than a few KB, set `saveAs` to write directly to /workspace instead of round-tripping through the chat.",
+    "Execute JavaScript in a tab's page context with full DOM access. Pass `tab` (handle from the tab legend or listTabs), `kind` ('read' or 'write' — required when `code` is set), and EITHER inline `code` OR a `scriptRef` to a saved site-skill script. On a domain that has a site skill (see '## Site skills for open tabs'), check its scripts FIRST and use `scriptRef` if one matches — its body runs without filling your context. Otherwise write inline `code`. Approval behavior depends on the conversation's mode: in **Ask** mode, read-shaped inline `code` skips approval on ANY origin (a static check on the body is the trust mechanism), write-shaped inline `code` skips approval ONLY on user-allowlisted origins, and a `scriptRef` run skips approval (it's trusted — the catalog is its contract). In **Plan** mode, every call (including read-shaped `code` and `scriptRef`) requires the tab's origin to be in the conversation's `plan.sites`; off-plan calls prompt the user to extend the plan. In **Act** mode, nothing prompts. Use for complex DOM manipulation or page JavaScript state beyond what readPage/clickElement/typeInElement provide. For payloads larger than a few KB, set `saveAs` to write directly to /workspace instead of round-tripping through the chat.",
   parameters,
   outputSchema,
   approval: { required: true },

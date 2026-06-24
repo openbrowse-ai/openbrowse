@@ -29,7 +29,7 @@
  */
 
 import type { BrowserDriver, BrowserTabInfo, TabId } from "./browser-driver";
-import type { TodoItem } from "../../types";
+import type { ApprovedPlan, ConversationMode, TodoItem } from "../../types";
 import { tabRegistry } from "../tab-registry";
 
 /**
@@ -107,6 +107,23 @@ export interface ToolSession {
   getTodos?: () => Promise<TodoItem[]>;
   /** Replace the current to-do list for this session. */
   setTodos?: (todos: TodoItem[]) => Promise<void>;
+  /**
+   * Read the approved plan persisted on the conversation row. Returns
+   * `undefined` when no plan has been approved yet (the agent's first
+   * Plan-mode action is to call `proposePlan`). Bench: undefined.
+   */
+  getPlan?: () => Promise<ApprovedPlan | undefined>;
+  /**
+   * Persist a fresh plan onto the conversation row, replacing any prior
+   * plan wholesale. Called by the `proposePlan` tool's execute after the
+   * SDK approval flow resolves to "approved". Bench: undefined.
+   */
+  setPlan?: (plan: ApprovedPlan) => Promise<void>;
+  /**
+   * Read the conversation's current approval mode. Returns `"ask"` for
+   * pre-v17 rows / new conversations / when no conversation is bound.
+   */
+  getMode?: () => Promise<ConversationMode>;
   /**
    * Set when this session is running as a subagent. Carries the parent's
    * conversation id and the depth in the agent tree (root = 0, first-level

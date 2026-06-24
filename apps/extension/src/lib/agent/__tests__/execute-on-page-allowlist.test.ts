@@ -189,3 +189,108 @@ describe("executeOnPage scriptRef approval (trusted saved-script runs)", () => {
     expect(out).toBe(true);
   });
 });
+
+describe("executeOnPage verified-read fast path (kind: read on allowlisted origin)", () => {
+  beforeEach(() => {
+    installChromeStub();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function setupHandle(): Promise<string> {
+    const { setAgentContext } = await import("@/lib/agent/agent-transport");
+    const { getOrCreateHandle } = await import("@/lib/agent/tab-handles");
+    const { tabRegistry } = await import("@/lib/agent/tab-registry");
+    setAgentContext(CID);
+    const ltid = tabRegistry.registerExisting(TAB_ID);
+    return getOrCreateHandle(CID, ltid);
+  }
+
+  async function needsApprovalFor(input: unknown): Promise<boolean | undefined> {
+    const { toSDKTool } = await import("@/lib/agent/agent-transport");
+    const { executeOnPageTool } = await import("@/lib/agent/tools");
+    const tool = toSDKTool(executeOnPageTool, "executeOnPage");
+    const fn = tool.needsApproval as (
+      i: unknown,
+      o: { toolCallId: string; messages: unknown[] },
+    ) => Promise<boolean> | boolean;
+    return fn(input, { toolCallId: "x", messages: [] });
+  }
+
+  it("skips approval for kind: read on an allowlisted origin (verified by static check)", async () => {
+    const handle = await setupHandle();
+    const { allowToolOnSite } = await import("@/lib/agent/agent-transport");
+    await allowToolOnSite("executeOnPage", ORIGIN);
+
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "read",
+      code: "return document.title;",
+    });
+
+    expect(out).toBe(false);
+  });
+
+  it("skips approval for kind: read on a NON-allowlisted origin (verified read needs no allowlist)", async () => {
+    const handle = await setupHandle();
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "read",
+      code: "return document.title;",
+    });
+    expect(out).toBe(false);
+  });
+
+  it("treats AST-rejected read as a write — skips on allowlisted origin", async () => {
+    const handle = await setupHandle();
+    const { allowToolOnSite } = await import("@/lib/agent/agent-transport");
+    await allowToolOnSite("executeOnPage", ORIGIN);
+
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "read",
+      // claims read but writes — fast path rejects, falls through to allowlist
+      code: "document.querySelector('a').click(); return 1;",
+    });
+
+    // AST-rejected: treated as write. Allowlisted origin → skip.
+    expect(out).toBe(false);
+  });
+
+  it("treats AST-rejected read as a write — gates on non-allowlisted origin", async () => {
+    const handle = await setupHandle();
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "read",
+      code: "document.querySelector('a').click(); return 1;",
+    });
+
+    // AST-rejected: treated as write. No allowlist → gate.
+    expect(out).toBe(true);
+  });
+
+  it("kind: write skips on allowlisted origin (existing tab-tool allowlist behavior)", async () => {
+    const handle = await setupHandle();
+    const { allowToolOnSite } = await import("@/lib/agent/agent-transport");
+    await allowToolOnSite("executeOnPage", ORIGIN);
+
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "write",
+      code: "return document.title;",
+    });
+    expect(out).toBe(false);
+  });
+
+  it("kind: write gates on a NON-allowlisted origin", async () => {
+    const handle = await setupHandle();
+    const out = await needsApprovalFor({
+      tab: handle,
+      kind: "write",
+      code: "return document.title;",
+    });
+    expect(out).toBe(true);
+  });
+});

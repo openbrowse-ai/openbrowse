@@ -44,7 +44,10 @@ describe("tab-arg schemas", () => {
       {
         name: "executeOnPage",
         tool: executeOnPageTool,
-        extra: { code: "return 1" },
+        // `code` requires `kind` — the schema's refinement enforces
+        // the documented contract that the agent declares read/write
+        // intent for inline scripts.
+        extra: { code: "return 1", kind: "read" },
       },
       {
         name: "extract",

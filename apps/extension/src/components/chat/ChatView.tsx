@@ -4,6 +4,9 @@ import {
   type Attachment,
 } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { PlanApprovalCard } from "./PlanApprovalCard";
+import { findPendingPlanApproval } from "./find-pending-plan-approval";
+import type { ProposePlanInput } from "@/lib/agent/tools/propose-plan";
 import {
   Conversation,
   ConversationContent,
@@ -32,6 +35,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useAgentChat } from "@/hooks/useAgentChat";
+import { chatDb } from "@/lib/chat-db";
 import { ConversationIdContext } from "@/lib/conversation-id-context";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { useProviders } from "@/hooks/useProviders";
@@ -39,7 +43,7 @@ import { useConfiguredModels } from "@/hooks/useConfiguredModels";
 import { parseAttachedFiles } from "@/lib/chat/parse-attached-files";
 import { openSettingsTab } from "@/lib/open-settings";
 import { storage } from "@/lib/storage";
-import type { Space } from "@/lib/types";
+import type { ApprovedPlan, ConversationMode, Space } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { classifyFile } from "@/lib/vfs/file-classify";
 import { CoworkBar } from "@/components/cowork/cowork-bar";
@@ -177,6 +181,20 @@ export function ChatView({
   const activeAgents = useActiveAgents();
   const isAgentActiveGlobally = conversationId ? activeAgents.has(conversationId) : false;
 
+  // Per-conversation approval mode + approved plan. Declared BEFORE
+  // useAgentChat so we can pass `initialMode: mode` to it — this lets
+  // the user pick a mode in the composer BEFORE sending the first
+  // message; useAgentChat applies the mode at conversation-create time.
+  // Read from chatDb when the conversation changes; subscribe so
+  // out-of-band updates (e.g. another tool/window mutating the row, or
+  // proposePlan landing a fresh plan mid-turn) reflect in the picker.
+  // `plan` is plumbed alongside `mode` so the ModeSwitch trigger can
+  // indicate "plan approved" via a small dot — without it the trigger
+  // label is identical between "Plan, no plan yet" and "Plan, plan
+  // approved", which obscures the most important plan-mode UI fact.
+  const [mode, setMode] = useState<ConversationMode>("ask");
+  const [plan, setPlan] = useState<ApprovedPlan | undefined>(undefined);
+
   const {
     messages,
     input,
@@ -213,6 +231,7 @@ export function ChatView({
     onNewConversation,
     initialInput,
     getSharedTabId,
+    initialMode: mode,
   });
 
   // Seed the composer from an external "seed-chat-input" event (e.g. the
@@ -260,6 +279,82 @@ export function ChatView({
       chrome.storage.onChanged.removeListener(onChanged);
     };
   }, [spaceId]);
+
+  // Hydrate the mode/plan state declared above from chatDb when the
+  // conversation changes; subscribe so out-of-band updates (e.g.
+  // another tool/window mutating the row, or proposePlan landing a
+  // fresh plan mid-turn) reflect in the picker.
+  useEffect(() => {
+    if (!conversationId) {
+      // No conversation yet → preserve the user's pending mode
+      // selection (resetting it would clobber the picker the moment
+      // they open the dropdown but before sending the first message),
+      // but DROP any plan that was hydrated from a previous
+      // conversation. Otherwise hopping from a Plan-mode chat (with an
+      // approved plan) to a fresh chat would carry the prior
+      // conversation's `plan` into the new ChatInput's "Plan approved"
+      // dot and into pendingPlanApproval shadowing.
+      setPlan(undefined);
+      return;
+    }
+    let cancelled = false;
+    async function refresh() {
+      const conv = await chatDb.getConversation(conversationId!);
+      if (cancelled) return;
+      setMode(conv?.mode ?? "ask");
+      setPlan(conv?.plan);
+    }
+    void refresh();
+    const unsubscribe = chatDb.subscribeConversationChange((convId) => {
+      if (convId === conversationId) void refresh();
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [conversationId]);
+
+  const handleModeChange = useCallback(
+    async (next: ConversationMode) => {
+      // Always update local display immediately so the picker is
+      // responsive even before the conversation exists. The next
+      // chatDb.createConversation call (in useAgentChat) reads
+      // `initialMode` and applies the mode at row creation. Once a
+      // conversation row exists, persist the change directly.
+      const prev = mode;
+      setMode(next);
+      if (!conversationId) return;
+      try {
+        await chatDb.updateConversation(conversationId, {
+          mode: next,
+          updatedAt: Date.now(),
+        });
+      } catch (err) {
+        // Persist failed (transient IDB error, etc.). Revert the
+        // optimistic UI update so the picker reflects what's actually
+        // stored. The user sees the dropdown snap back; better than a
+        // silent desync between picker label and agent behavior.
+        console.warn("[mode] persist failed; reverting picker", err);
+        setMode(prev);
+      }
+    },
+    [conversationId, mode],
+  );
+
+  // When the agent has a pending `proposePlan` approval, the chat
+  // composer is replaced with a {@link PlanApprovalCard} (mirrors
+  // Claude's UX where the plan card sits in the composer slot, not
+  // inline in the message stream). The inline message stream still
+  // shows a "Drafting plan..." `<ToolCallBlock>` row as a breadcrumb;
+  // see the comment in AssistantMessage's dynamic-tool branch.
+  //
+  // Memoized on `messages` so keystrokes in the composer (which
+  // re-render ChatView via `input` state) don't re-scan the message
+  // list. Cheap regardless — the scan is O(latest-message-parts).
+  const pendingPlanApproval = useMemo(
+    () => findPendingPlanApproval(messages),
+    [messages],
+  );
 
   const isLoading = hookIsLoading || isAgentActiveGlobally;
   const isStreaming = hookIsStreaming || isAgentActiveGlobally;
@@ -832,7 +927,17 @@ export function ChatView({
           </Queue>
         )}
         <ChatInputHalo space={space}>
-          <ChatInput
+          {pendingPlanApproval ? (
+            <PlanApprovalCard
+              variant="composer"
+              toolCallId={pendingPlanApproval.toolCallId}
+              args={pendingPlanApproval.input as Partial<ProposePlanInput>}
+              approvalId={pendingPlanApproval.approvalId}
+              onApprove={(id) => approveToolCall({ id, approved: true })}
+              onDeny={(id) => approveToolCall({ id, approved: false })}
+            />
+          ) : (
+            <ChatInput
             value={input}
             onChange={setInput}
             onSubmit={isEditing ? handleEditSubmit : handleSubmit}
@@ -868,6 +973,9 @@ export function ChatView({
             }}
             selectedModel={agentSettings.agentModel}
             onModelChange={setAgentModel}
+            mode={mode}
+            onModeChange={handleModeChange}
+            hasPlan={!!plan}
             thinkingEnabled={agentSettings.thinkingEnabled}
             thinkingConfig={agentSettings.thinkingConfig}
             onThinkingChange={setThinkingSettings}
@@ -886,6 +994,7 @@ export function ChatView({
             autoFocus
             focusTrigger={`${conversationId ?? "new"}-${editing?.id ?? ""}-${seedNonce}`}
           />
+          )}
         </ChatInputHalo>
       </div>
     </div>
