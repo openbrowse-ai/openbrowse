@@ -225,10 +225,35 @@ function convertProperty(schema: JsonSchema | undefined): z.ZodTypeAny {
     ) as z.ZodTypeAny;
   }
 
-  // type can be a string or array (JSON Schema allows multi-type).
-  const type = Array.isArray(schema.type)
-    ? schema.type[0]
-    : schema.type;
+  // type can be a string or array. JSON Schema allows multi-type
+  // declarations (`type: ["string", "null"]`) to mean "any of these".
+  // When we see an array, fan out into a union — collapsing to
+  // `type[0]` would silently drop the other branches and reject inputs
+  // the schema actually allows.
+  if (Array.isArray(schema.type) && schema.type.length > 1) {
+    // Build per-type sub-schemas by re-entering convertProperty with
+    // each individual type. We strip `type` so a recursive call with
+    // `enum`/`anyOf` on the same schema doesn't double-fire.
+    const { type: _t, ...rest } = schema;
+    void _t;
+    const variants = schema.type.map((t) =>
+      convertProperty({ ...rest, type: t }),
+    );
+    if (variants.length === 1) {
+      return withDescription(variants[0], schema) as z.ZodTypeAny;
+    }
+    return withDescription(
+      z.union(
+        variants as unknown as readonly [
+          z.ZodTypeAny,
+          z.ZodTypeAny,
+          ...z.ZodTypeAny[]
+        ],
+      ),
+      schema,
+    ) as z.ZodTypeAny;
+  }
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
 
   switch (type) {
     case "string":
@@ -294,11 +319,20 @@ export function jsonSchemaToZod(schema: JsonSchema | undefined): z.ZodTypeAny {
     return z.object({}).passthrough();
   }
 
-  // Top-level object (the common case).
-  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
-  if (type === "object" || schema.properties) {
+  // Top-level object (the common case). For a multi-type at top level
+  // (which is non-conformant per the MCP spec — tool inputs must be
+  // objects — but tolerated): if `"object"` is one of the listed types,
+  // treat the schema as object-typed. Otherwise fall through to the
+  // non-object warning below.
+  const types = Array.isArray(schema.type)
+    ? schema.type
+    : schema.type !== undefined
+      ? [schema.type]
+      : [];
+  if (types.includes("object") || schema.properties) {
     return convertObjectSchema(schema);
   }
+  const type = types[0];
 
   // Top-level non-object schema: this is invalid for an MCP tool input
   // (the spec requires object). Coerce to a passthrough object so the

@@ -25,6 +25,37 @@ describe("isPlainObject", () => {
   ])("%s -> %s", (_label, value, expected) => {
     expect(isPlainObject(value)).toBe(expected);
   });
+
+  // Strict plain-object check: only literal {} and Object.create(null)
+  // pass. Class instances, Date, Map, Set, RegExp etc. fail — they
+  // would JSON-serialize to a non-conforming shape (or empty {}) and
+  // bypass the Anthropic `tool_use.input` validation downstream.
+  it("rejects Date instances", () => {
+    expect(isPlainObject(new Date())).toBe(false);
+  });
+
+  it("rejects Map instances", () => {
+    expect(isPlainObject(new Map())).toBe(false);
+  });
+
+  it("rejects Set instances", () => {
+    expect(isPlainObject(new Set())).toBe(false);
+  });
+
+  it("rejects RegExp instances", () => {
+    expect(isPlainObject(/foo/)).toBe(false);
+  });
+
+  it("rejects class instances", () => {
+    class Foo {
+      x = 1;
+    }
+    expect(isPlainObject(new Foo())).toBe(false);
+  });
+
+  it("accepts Object.create(null) (no prototype)", () => {
+    expect(isPlainObject(Object.create(null))).toBe(true);
+  });
 });
 
 describe("schemaAcceptsEmptyObject", () => {

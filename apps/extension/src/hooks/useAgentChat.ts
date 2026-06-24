@@ -289,12 +289,29 @@ function deserializeToolPart(p: SerializedToolPart): DynamicToolUIPart | null {
   // (return null) so the live UI never sees them. The transport's
   // send-time normalizer is the eventual backstop, but dropping at
   // deserialization keeps the runtime UIMessage list clean.
-  const inputResult = normalizeToolInputForPersistence({ value: p.input });
+  //
+  // Legacy rows may also carry a `rawInput` field even though
+  // `SerializedToolPart` doesn't declare it (IDB stores whole objects;
+  // older versions of `serializeParts` may have written rawInput
+  // through). Surface it to the normalizer so a part with
+  // `{ input: undefined, rawInput: { url: "x" } }` recovers cleanly
+  // instead of being treated as input-less and bypassing the rescue.
+  const persistedRaw = p as unknown as Record<string, unknown>;
+  const rawInput = persistedRaw.rawInput;
+  const inputResult = normalizeToolInputForPersistence({
+    value: p.input,
+    rawValue: rawInput,
+  });
   // Distinguish "input intentionally absent" (legitimate persisted shape
   // for a terminal output-error/output-denied) from "input was a
   // malformed non-object" (must be dropped). The persistence-side
   // normalizer collapses both to `drop`, so we re-check here.
-  const inputWasIntentionallyAbsent = p.input === undefined;
+  // A part with `rawInput` data is NOT intentionally absent — the writer
+  // had something to record but it didn't make it into `input`. Such a
+  // part falls through to the drop path only when rawInput also fails
+  // recovery (covered by the normalizer).
+  const inputWasIntentionallyAbsent =
+    p.input === undefined && rawInput === undefined;
   let recoveredInput: unknown;
   if (inputResult.kind === "object") {
     recoveredInput = inputResult.value;

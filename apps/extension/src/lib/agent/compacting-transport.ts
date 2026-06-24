@@ -18,7 +18,7 @@ import {
   prunePartsAtSendTime,
   stripScreenshotsFromParts,
 } from "./compaction";
-import { normalizeToolInput } from "./tool-input-normalize";
+import { isPlainObject, normalizeToolInput } from "./tool-input-normalize";
 import {
   runCompletionCheck,
   shouldGate,
@@ -1218,9 +1218,13 @@ export function assertModelMessageToolInputs(
       const c = m.content[j] as { type?: string; input?: unknown; toolName?: string; toolCallId?: string };
       if (c.type !== "tool-call") continue;
       const input = c.input;
-      const isObject =
-        typeof input === "object" && input !== null && !Array.isArray(input);
-      if (isObject) continue;
+      // Anthropic requires tool_use.input to be a PLAIN JSON object —
+      // not a Date, Map, Set, RegExp, or class instance. Use the strict
+      // plain-object predicate so a non-serializable object can't slip
+      // through the assertion (it would JSON.stringify to either an
+      // empty `{}` or a non-conforming shape and either silently lose
+      // information or trip a downstream validation error).
+      if (isPlainObject(input)) continue;
 
       // Truncate the JSON-stringified value for the log so a giant blob
       // doesn't blow up the DevTools console. Catch in case the value

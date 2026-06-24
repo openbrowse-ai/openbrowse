@@ -656,9 +656,14 @@ async function runV16Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
         }
         const tp = part as Record<string, unknown>;
         const input = tp.input;
-        // Untouched: input intentionally absent. Legitimate persisted
-        // shape for terminal output-error/output-denied parts.
-        if (input === undefined) {
+        const rawInput = "rawInput" in tp ? tp.rawInput : undefined;
+        // Untouched: input intentionally absent AND no rawInput data to
+        // recover from. Legitimate persisted shape for terminal
+        // output-error/output-denied parts. (A part with `input:
+        // undefined` but a recoverable `rawInput` falls through to the
+        // recovery block below — we want to clean those up rather than
+        // leaving the rescue work for every subsequent send.)
+        if (input === undefined && rawInput === undefined) {
           newParts.push(part);
           continue;
         }
@@ -671,8 +676,8 @@ async function runV16Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
           newParts.push(part);
           continue;
         }
-        // Present-and-malformed. Try to recover.
-        const rawInput = "rawInput" in tp ? tp.rawInput : undefined;
+        // Either present-and-malformed, or absent-but-rawInput-available.
+        // Try to recover via the normalizer's full ladder.
         const result = normalizeToolInputForPersistence({
           value: input,
           rawValue: rawInput,
@@ -681,10 +686,19 @@ async function runV16Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
           newParts.push({ ...(part as object), input: result.value } as SerializedUIPart);
           mutated = true;
           cleaned++;
+        } else if (input === undefined) {
+          // input was intentionally absent AND rawInput (if any) didn't
+          // recover. Preserve the part as-is — the SDK tolerates
+          // input:undefined on terminal output-error/output-denied
+          // parts, and the runtime normalizer will drop it at send time
+          // if it's truly unsendable. The migration goal is to clean
+          // recoverable shapes, not to be more aggressive than runtime.
+          newParts.push(part);
         } else {
-          // Irrecoverable — drop the part entirely. Its paired tool-result
-          // (if any) lives on the same UI part, so dropping the whole part
-          // leaves no orphan.
+          // Present-and-malformed AND irrecoverable. Drop the part
+          // entirely; saving it would re-poison every subsequent send.
+          // The paired tool-result (if any) lives on the same UI part,
+          // so dropping the whole part leaves no orphan.
           mutated = true;
           dropped++;
         }

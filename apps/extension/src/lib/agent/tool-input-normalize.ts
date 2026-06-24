@@ -53,9 +53,29 @@ export type NormalizeResult =
   | { kind: "object"; value: Record<string, unknown> }
   | { kind: "drop"; reason: string };
 
-/** True iff `v` is a non-null, non-array object literal. */
+/**
+ * True iff `v` is a plain JSON-shaped object dictionary — accepts object
+ * literals (`{}`, `Object.create(null)`) and rejects arrays, `null`,
+ * primitives, AND non-plain objects (Date, Map, Set, class instances,
+ * RegExp, etc.).
+ *
+ * The Anthropic API requires `tool_use.input` to be a plain JSON object;
+ * a `Date` or class instance would JSON-serialize to a non-conforming
+ * shape (or throw on circular references). The model can't *emit* a
+ * non-plain object directly — it only emits JSON — but a future code
+ * path that programmatically injects a tool input could, and the
+ * normalizer is the chokepoint that catches it.
+ *
+ * Implementation: walks the prototype chain. A plain object's prototype
+ * is either `Object.prototype` (literal `{}`) or `null`
+ * (`Object.create(null)`). Any other prototype indicates a class
+ * instance or built-in (Date, Map, etc.).
+ */
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+  if (typeof v !== "object" || v === null) return false;
+  if (Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
 }
 
 /**

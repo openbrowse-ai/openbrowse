@@ -192,6 +192,28 @@ describe("serializeParts — tool input sanitization", () => {
       url: "https://example.com",
     });
   });
+
+  it("preserves a tool-<name> part that has no input field (intentionally absent)", () => {
+    // Pre-fix the fallback branch had `"input" in p` in its guard, so a
+    // tool-<name> part without an input field was silently dropped at
+    // serialize time. The dynamic-tool branch above had no such gate,
+    // creating an asymmetry. Now both branches let absent-input parts
+    // through to the sanitizer, which preserves them as input:undefined
+    // (legitimate persisted shape for terminal states).
+    const parts: AgentMessageParts = [
+      {
+        type: "tool-navigate",
+        toolCallId: "c1",
+        state: "output-error",
+        errorText: "interrupted",
+        // no input key
+      } as never,
+    ];
+    const out = serializeParts(parts);
+    expect(out).toHaveLength(1);
+    expect((out[0] as SerializedToolPart).input).toBeUndefined();
+    expect((out[0] as SerializedToolPart).errorText).toBe("interrupted");
+  });
 });
 
 describe("deserializePart — tool input sanitization", () => {
@@ -276,5 +298,42 @@ describe("deserializePart — tool input sanitization", () => {
     const out = deserializePart(p);
     expect(out).not.toBeNull();
     expect((out as { input: unknown }).input).toBeUndefined();
+  });
+
+  it("recovers a legacy persisted part via rawInput when input is absent", () => {
+    // Pre-fix serialize never wrote rawInput, but legacy IDB rows from
+    // older code paths may carry it (IDB stores whole objects). The
+    // deserializer threads rawInput through the normalizer so a row
+    // like `{ input: undefined, rawInput: { url: "x" } }` recovers
+    // cleanly instead of being treated as input-less.
+    const p = {
+      type: "dynamic-tool",
+      toolName: "navigate",
+      toolCallId: "c1",
+      state: "output-error",
+      errorText: "interrupted",
+      rawInput: { url: "https://example.com" },
+    } as unknown as SerializedUIPart;
+    const out = deserializePart(p);
+    expect(out).not.toBeNull();
+    expect((out as { input: unknown }).input).toEqual({
+      url: "https://example.com",
+    });
+  });
+
+  it("recovers a legacy persisted part via stringified-JSON rawInput", () => {
+    const p = {
+      type: "dynamic-tool",
+      toolName: "navigate",
+      toolCallId: "c1",
+      state: "output-error",
+      errorText: "interrupted",
+      rawInput: '{"url":"https://example.com"}',
+    } as unknown as SerializedUIPart;
+    const out = deserializePart(p);
+    expect(out).not.toBeNull();
+    expect((out as { input: unknown }).input).toEqual({
+      url: "https://example.com",
+    });
   });
 });

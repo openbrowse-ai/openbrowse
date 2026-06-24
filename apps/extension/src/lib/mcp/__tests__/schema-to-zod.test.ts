@@ -297,6 +297,58 @@ describe("jsonSchemaToZod — anyOf / oneOf", () => {
     expect(schema.safeParse({ v: "x" }).success).toBe(true);
     expect(schema.safeParse({ v: 1 }).success).toBe(false);
   });
+
+  it("multi-type array `[\"string\",\"null\"]` behaves like nullable string", () => {
+    // JSON Schema allows `type: ["string", "null"]` as shorthand for a
+    // string-or-null union. Pre-fix we collapsed to `type[0]` and
+    // silently rejected `null`. Now we fan out into a Zod union.
+    const schema = jsonSchemaToZod({
+      type: "object",
+      properties: { v: { type: ["string", "null"] } },
+      required: ["v"],
+    });
+    expect(schema.safeParse({ v: "hello" }).success).toBe(true);
+    expect(schema.safeParse({ v: null }).success).toBe(true);
+    expect(schema.safeParse({ v: 42 }).success).toBe(false);
+    expect(schema.safeParse({ v: true }).success).toBe(false);
+    expect(schema.safeParse({ v: [] }).success).toBe(false);
+  });
+
+  it("multi-type array `[\"number\",\"boolean\"]` accepts both", () => {
+    const schema = jsonSchemaToZod({
+      type: "object",
+      properties: { v: { type: ["number", "boolean"] } },
+      required: ["v"],
+    });
+    expect(schema.safeParse({ v: 1 }).success).toBe(true);
+    expect(schema.safeParse({ v: 1.5 }).success).toBe(true);
+    expect(schema.safeParse({ v: true }).success).toBe(true);
+    expect(schema.safeParse({ v: false }).success).toBe(true);
+    expect(schema.safeParse({ v: "1" }).success).toBe(false);
+    expect(schema.safeParse({ v: null }).success).toBe(false);
+  });
+
+  it("multi-type array preserves description", () => {
+    const schema = jsonSchemaToZod({
+      type: "object",
+      properties: {
+        v: { type: ["string", "null"], description: "name or null" },
+      },
+      required: ["v"],
+    });
+    expect(schema.safeParse({ v: "x" }).success).toBe(true);
+    expect(schema.safeParse({ v: null }).success).toBe(true);
+  });
+
+  it("single-element type array `[\"string\"]` collapses to that type", () => {
+    const schema = jsonSchemaToZod({
+      type: "object",
+      properties: { v: { type: ["string"] } },
+      required: ["v"],
+    });
+    expect(schema.safeParse({ v: "x" }).success).toBe(true);
+    expect(schema.safeParse({ v: 1 }).success).toBe(false);
+  });
 });
 
 describe("jsonSchemaToZod — arrays", () => {

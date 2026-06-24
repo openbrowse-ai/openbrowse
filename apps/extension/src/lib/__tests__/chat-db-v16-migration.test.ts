@@ -188,6 +188,64 @@ describe("chatDb v16 migration: tool-input shape sweep", () => {
     });
   });
 
+  it("recovers a tool part using rawInput when input is INTENTIONALLY ABSENT", async () => {
+    // Pre-fix the migration short-circuited `input === undefined` and
+    // skipped recovery entirely, so a legacy row with
+    // `{ input: undefined, rawInput: { url: "x" } }` stayed unmigrated
+    // and the runtime normalizer rescued it on every send. The
+    // migration now attempts recovery via rawInput in this case too.
+    await seedV15MessageRow({
+      id: "m3b",
+      conversationId: "c3b",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "navigate",
+          toolCallId: "toolu_3b",
+          state: "output-error",
+          errorText: "interrupted",
+          rawInput: { url: "https://recovered.example.com" },
+          // input deliberately missing
+        } as unknown as SerializedUIPart,
+      ],
+    });
+    await chatDb.getMessages("c3b");
+    const row = (await readMessageRaw("m3b"))!;
+    const parts = row.parts as SerializedUIPart[];
+    expect(parts).toHaveLength(1);
+    expect((parts[0] as { input: unknown }).input).toEqual({
+      url: "https://recovered.example.com",
+    });
+  });
+
+  it("preserves an input-undefined part when rawInput is also unrecoverable", async () => {
+    // The migration only drops irrecoverable parts that had a
+    // present-but-malformed input. An input-undefined part is the
+    // legitimate "Interrupted" persisted shape — even if rawInput
+    // failed recovery, we keep the part so the UI badge still renders.
+    // The runtime normalizer drops it at send time if it's truly
+    // unsendable.
+    await seedV15MessageRow({
+      id: "m3c",
+      conversationId: "c3c",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "x",
+          toolCallId: "toolu_3c",
+          state: "output-error",
+          errorText: "interrupted",
+          rawInput: '{"url":"https://incomplete', // ← unparseable
+        } as unknown as SerializedUIPart,
+      ],
+    });
+    await chatDb.getMessages("c3c");
+    const row = (await readMessageRaw("m3c"))!;
+    const parts = row.parts as SerializedUIPart[];
+    expect(parts).toHaveLength(1);
+    expect("input" in (parts[0] as object)).toBe(false);
+  });
+
   it("preserves a tool part with a valid object input verbatim", async () => {
     await seedV15MessageRow({
       id: "m4",

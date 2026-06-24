@@ -126,6 +126,62 @@ describe("assertModelMessageToolInputs", () => {
     }
   });
 
+  it("coerces a Date instance to {} (non-plain object — would JSON-serialize to non-conforming shape)", () => {
+    // Anthropic requires tool_use.input to be a plain JSON object.
+    // A Date / Map / Set / class instance JSON-serializes to either
+    // an empty `{}` or a non-conforming string — silently losing data
+    // or tripping a downstream provider error. The strict plain-object
+    // check rejects these.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const messages: ModelMessage[] = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolName: "x",
+              toolCallId: "c1",
+              input: new Date(), // ← non-plain object
+            },
+          ],
+        },
+      ];
+      assertModelMessageToolInputs(messages as never, "test");
+      expect(messages[0].content[0].input).toEqual({});
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("coerces a class instance to {}", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      class Custom {
+        x = 1;
+      }
+      const messages: ModelMessage[] = [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolName: "x",
+              toolCallId: "c1",
+              input: new Custom(),
+            },
+          ],
+        },
+      ];
+      assertModelMessageToolInputs(messages as never, "test");
+      expect(messages[0].content[0].input).toEqual({});
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it("leaves non-tool-call content alone", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

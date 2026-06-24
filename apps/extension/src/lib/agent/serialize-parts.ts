@@ -162,13 +162,20 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
           typeof part.type === "string" &&
           part.type.startsWith("tool-") &&
           "toolCallId" in p &&
-          "state" in p &&
-          "input" in p
+          "state" in p
         ) {
           // Same input-sanitization contract as the dynamic-tool branch
           // above. The fallback path is hit by the SDK's `tool-<name>`
           // shape (built-in browser tools) — a non-object input here is
           // just as fatal at send time as in the dynamic-tool case.
+          //
+          // Note: we do NOT gate on `"input" in p`. A tool-<name> part
+          // can legitimately reach this branch with no input field set
+          // (e.g. an aborted call mid input-streaming). The sanitizer
+          // returns `keep-undefined` for that case, matching the
+          // dynamic-tool branch above; gating on `"input" in p` here
+          // would silently drop those parts and lose the "Interrupted"
+          // UI badge.
           const rawInput = "rawInput" in p ? p.rawInput : undefined;
           const sanitized = sanitizeToolInputForPersistence(p.input, rawInput);
           if (sanitized.kind === "drop") {
