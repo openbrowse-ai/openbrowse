@@ -3,6 +3,7 @@ import type { AgentUIMessage } from "@/lib/types";
 import { ChatMessage } from "./ChatMessage";
 import { CompactionDivider } from "./CompactionDivider";
 import { ExpandableText } from "./tool-results/expandable-text";
+import { GeneratingIndicator as ThinkingIndicator } from "./GeneratingIndicator";
 import { AlertCircle, RefreshCw } from "lucide-react";
 
 interface MessageListProps {
@@ -123,25 +124,6 @@ function MessageListImpl({
 }
 
 export const MessageList = memo(MessageListImpl);
-
-function ThinkingIndicator() {
-  return (
-    <div className="flex w-full items-start pt-3">
-      <svg viewBox="0 0 9 9" className="h-4 w-4 animate-scale-pulse" style={{ imageRendering: "pixelated" }} aria-label="Generating">
-        <rect x="4" y="2" width="1" height="5" fill="currentColor" className="text-blue-500 outward-core" />
-        <rect x="2" y="4" width="5" height="1" fill="currentColor" className="text-blue-500 outward-core" />
-        <rect x="2" y="2" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-        <rect x="6" y="2" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-        <rect x="2" y="6" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-        <rect x="6" y="6" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-        <rect x="4" y="0" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-        <rect x="4" y="8" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-        <rect x="0" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-        <rect x="8" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-      </svg>
-    </div>
-  );
-}
 
 function ErrorMessage({
   error,

@@ -11,6 +11,7 @@ import { CompletionCheckRunningBlock } from "./CompletionCheckRunningBlock";
 import { ToolCallBlock } from "./ToolCallBlock";
 import { ToolApprovalBlock } from "./ToolApprovalBlock";
 import { StepGroup } from "./StepGroup";
+import { GeneratingIndicator } from "./GeneratingIndicator";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
 import { memo } from "react";
@@ -431,22 +432,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             </StepGroup>
           );
         })}
-        {isStreaming && (
-          <div className="flex w-full items-start pt-3">
-            <svg viewBox="0 0 9 9" className="h-4 w-4 animate-scale-pulse" style={{ imageRendering: "pixelated" }} aria-label="Generating">
-              <rect x="4" y="2" width="1" height="5" fill="currentColor" className="text-blue-500 outward-core" />
-              <rect x="2" y="4" width="5" height="1" fill="currentColor" className="text-blue-500 outward-core" />
-              <rect x="2" y="2" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-              <rect x="6" y="2" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-              <rect x="2" y="6" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-              <rect x="6" y="6" width="1" height="1" fill="currentColor" className="text-blue-500 outward-mid" />
-              <rect x="4" y="0" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-              <rect x="4" y="8" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-              <rect x="0" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-              <rect x="8" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
-            </svg>
-          </div>
-        )}
+        {isStreaming && <GeneratingIndicator />}
       </div>
       <MessageActions message={message} />
     </div>
