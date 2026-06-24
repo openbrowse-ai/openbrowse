@@ -1,5 +1,58 @@
 # openbrowse
 
+## 0.12.0
+
+### Minor Changes
+
+- 58dd402: **Approval modes.** A new picker in the chat composer lets you pick how the agent gets your permission per conversation: **Ask before acting** (the default — pause and approve each gated action), **Plan before acting** (the agent proposes a plan once; you approve it; it executes within those bounds), and **Act without asking** (no approvals — use only on trusted, repeated workflows). Press **⌘.** to cycle modes from the keyboard.
+
+  **Plan mode in detail.** When you're in Plan mode, the agent's first action is always to draft a plan: a goal, the sites it intends to touch, the steps it'll take, and whether it needs network access via Python. The plan card replaces the chat composer so you can review and approve in one keystroke (Enter). If the agent later needs to touch a site you didn't approve up front, you'll be asked once — and that approval extends the plan for the rest of the conversation, so you don't get prompted again for the same site. Extensions show up inline in the chat as small "Plan extended: example.com" notices so you can see the boundary moving. Subagents the planning agent delegates to inherit the same plan, so the boundary you approved binds transitively.
+
+  **Verified-read fast path for `executeOnPage`.** Inline JavaScript the agent runs against a page now declares whether it's reading or writing. Read-shaped scripts — that don't click, type, fetch, mutate the DOM, modify storage, or navigate — skip the approval prompt entirely (a static AST check on the script body is the trust mechanism, no allowlist required). Write-shaped scripts behave like before: skip approval on origins you've explicitly trusted, prompt elsewhere. The agent gets clearer guidance about which shape to declare. Net effect: fewer prompts on routine scraping/extraction tasks.
+
+  **Act mode safety floor.** Even in Act mode, calling Python with network access still requires approval if your conversation's plan said network was off-limits — and approving once flips the plan permanently for that conversation, so you're not re-prompted on every subsequent network call.
+
+### Patch Changes
+
+- 27c34d6: **Fix `clickElement` stalling indefinitely when chatting from home / new tab, and lift Chrome's background-tab throttling on every worked tab.**
+
+  When the user submitted a message from `home.html` or `newtab.html`, the agent's `clickElement` tool would freeze in the "pending" state until the user manually switched to the tab the agent was working on — at which point the click would finally complete and the agent would resume. Root cause: `viewport.waitForLayoutFlush` issued an in-page `await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))` via CDP `Runtime.evaluate { awaitPromise: true }`, and Chrome throttles `requestAnimationFrame` to ~1 Hz then 0 Hz on backgrounded tabs. The intended `timeout: 1000` field on `Runtime.evaluate` is silently dropped by Chrome (the field exists for `Runtime.callFunctionOn`, not `Runtime.evaluate`), so the await actually had no bound — the click pipeline hung until rAF fired again, which only happened when the tab became visible.
+
+  Fixed at three layers, complementary not redundant:
+
+  - `cdp-session.attach` now issues `Emulation.setPageVisibilityOverride { visibility: "visible" }` and `Page.setWebLifecycleState { state: "active" }` on every CDP-attached tab. The page sees `document.visibilityState === "visible"`, so Chrome stops throttling rAF, `setTimeout`, and the lifecycle freeze that bites long-running background tabs. Both calls are best-effort (some targets reject the override) and need no detach reciprocal — Chrome resets them when the debugger detaches.
+  - `viewport.waitForLayoutFlush` now races the `Runtime.evaluate` call against a host-side 1500 ms `setTimeout`. Even if the visibility override doesn't take effect for some reason (Chrome version regressing the override, page using `requestPostAnimationFrame`/compositor timeline that's compositor-paused), the click pipeline can never wedge — proceeding with a slightly-stale layout read is strictly better than hanging. Drops the misleading unused `timeout: 1000` CDP field.
+  - `capture-utils.captureScreenshot`'s `-32000 Unable to capture screenshot` retry path now flips `captureBeyondViewport: true` for the second attempt (when not already set). The off-screen renderer path doesn't depend on a fresh compositor frame, so it succeeds on tabs whose compositor has paused — the dominant `-32000` cause in production. Retry without the 600 ms wait in this case (the wait only helped the legacy "renderer mid-paint" race, not compositor pause).
+
+  Net effect: agent tools (clickElement, screenshot, executeOnPage with in-page awaits, CUA loop captures) all run at foreground speed on backgrounded worked tabs, no matter which surface the user is chatting from.
+
+- 7be3dfa: **Fix overlapping Memory cards in Settings.**
+
+  The Memory tab's User Memories and Space Memories sections were rendering on top of each other — the space section's heading visually overlapped the last User Memories card, and the empty-state text appeared in the wrong place. Cause: each list was wrapped in a Radix `ScrollArea` with `max-h-[300px]` but no fixed height, so `ScrollArea.Root` collapsed to 0px while its absolutely-positioned content painted out of flow. Removed the inner scroll regions; the settings panel already has its own outer scroll container, so the two `<section>`s now flow normally with correct spacing.
+
+- 6e8552e: Make the Anthropic `tool_use.input: Input should be a valid dictionary` error structurally impossible.
+
+  The bug: Opus (and any provider) sometimes emits a non-object `input` for a tool call — most commonly `input: ""` for a no-arg MCP tool like Attio's `list-attribute-definitions`. The Anthropic API rejects it with HTTP 400; Gemini coerces it silently, which is why the same conversation 400'd on Opus but worked when retried on Gemini. Once the bad shape was persisted to chat-db, every subsequent send failed until the row was manually purged.
+
+  This change closes the failure path at five layers — any one of which would have prevented the bug, and all five together make it impossible to recur from any direction:
+
+  1. **`tool-input-normalize.ts`** — new module with a recovery ladder applied at every outbound and persisted boundary. Recovers a stringified-JSON object input (Opus quirk), falls back to `rawInput`, and rescues no-arg MCP tools by coercing `""` / `null` / `42` / `[]` to `{}` when the tool's schema accepts an empty object. Irrecoverable values (e.g. `""` for a tool with required fields) are dropped rather than producing a malformed `tool_use` on the wire.
+  2. **`mcp/schema-to-zod.ts`** — tightened so every MCP tool's resolved Zod schema is a top-level `z.object({...})`. A non-object input now fails `validateUIMessages` structurally instead of slipping through the previous `z.any()` / `z.record(...)` fallthroughs. Property-level `passthrough()` keeps MCP-server schema drift forward-compatible. Adds support for `additionalProperties`, n-ary `oneOf` / `anyOf`, `allOf`, `format` (uuid / email / url / date-time), `const`, multi-type `type`, and tuple-form `items`.
+  3. **Persistence sanitization** — `serializeParts` and `deserializeToolPart` route every tool part's `input` through the normalizer, so a non-object value never reaches chat-db (or, for legacy rows, never reaches the live UIMessage list).
+  4. **chat-db v16 migration** — sweeps every persisted message's parts on first open and either recovers (stringified-JSON / rawInput → object) or excises any tool part with a malformed input. Fixes already-broken conversations without user action.
+  5. **Last-mile assertion** — `assertModelMessageToolInputs` runs immediately before `agent.stream(...)` (both fast-path and rejection-loop). If a non-object `tool_use.input` somehow slips through layers 1–4, it's coerced to `{}` in place and a `console.error` logs the model-message index, content-block index, tool name, and offending value — converting "the agent mysteriously 400'd on Opus once last week" into a one-look DevTools entry.
+
+  Bench harness (`packages/bench/src/agent/headless-chat.ts`) gets the same normalization on its `tool-call` chunk path so future regressions surface in `pnpm bench`.
+
+  109 new tests, 6 in a dedicated end-to-end regression suite (`opus-input-bug-regression.test.ts`) that exercises the full pipeline with real-world Attio-style MCP tool schemas. All 1496 tests pass; type checking clean.
+
+- 1ba8462: **Sidebar polish + clearer "agent is working" indicator.**
+
+  - Clicking the toolbar icon now toggles the side panel, replacing the previous spotlight overlay. Works on every page including `chrome://` URLs where the overlay couldn't inject.
+  - Removed the redundant logo button from the side panel header — the sidebar already conveys the app context, and `Alt+H` still opens the home view.
+  - The "Retry from this message" dialog now advertises and accepts `⌘⏎` (or `Ctrl+Enter`) as a confirmation shortcut, matching the rest of the app's keyboard conventions.
+  - A pulsing blue pixel-art sparkle now marks the active assistant turn from the moment you hit Send through the end of streaming. It replaces the old gray bouncing-dots bubble during the "submitted" phase and stays visible at the end of the streaming text — gating on the local-stream signal so it doesn't disappear in the brief window between agent-start and first token (a regression caused by the cross-tab `isAgentActiveGlobally` flag flipping `isStreaming` on prematurely).
+
 ## 0.11.0
 
 ### Minor Changes
