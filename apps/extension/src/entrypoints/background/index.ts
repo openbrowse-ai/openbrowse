@@ -74,21 +74,25 @@ export default defineBackground({
       }
     })();
 
-    chrome.action.onClicked.addListener(async (tab) => {
+    chrome.action.onClicked.addListener((tab) => {
       if (!tab.id || !tab.windowId) return;
       const ownExtUrl = chrome.runtime.getURL("");
       if (tab.url?.startsWith(ownExtUrl)) {
         chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId: tab.windowId });
         return;
       }
-      if (tab.url?.startsWith("chrome://") || tab.url?.startsWith("chrome-extension://")) {
-        return;
-      }
-      const { sendToContentScript } = await import("@/lib/agent/active-tab");
-      try {
-        await sendToContentScript(tab.id, { type: "TOGGLE_OVERLAY" });
-      } catch {
-        // Cannot inject into this page
+
+      // Must be synchronous off the user gesture
+      const tabId = tab.id;
+      const opened = isUserOpenedSidePanel(tabId);
+      if (opened && chrome.sidePanel.close) {
+        markUserClosedSidePanel(tabId);
+        chrome.sidePanel.close({ tabId }).catch(() => {});
+        chrome.sidePanel
+          .setOptions({ tabId, path: "sidepanel.html", enabled: false })
+          .catch(() => {});
+      } else {
+        openSidePanelOnTab(tabId);
       }
     });
 

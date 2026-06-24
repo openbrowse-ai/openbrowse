@@ -7,7 +7,6 @@ import { useTheme } from "@/hooks/useTheme";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { ChatPicker } from "@/components/chat/ChatPicker";
-import { Logo } from "@/components/ui/logo";
 import { CopyIcon, Download, ExternalLink, FileDown, MessageSquarePlus, MoreVertical, Settings, PictureInPicture, PanelRight } from "lucide-react";
 import {
   Tooltip,
@@ -456,19 +455,6 @@ export default function App() {
     <FileSelectionContext.Provider value={handleSelectFile}>
       <div className="relative flex flex-col h-screen">
         <div className="relative flex items-center gap-1.5 border-b border-border px-2 py-1.5">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={handleOpenFullView}
-                className="rounded p-1 hover:bg-accent"
-                aria-label="Open OpenBrowse home"
-              >
-                <Logo className="size-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Open home</TooltipContent>
-          </Tooltip>
           {conversationTitle && (
             <>
               <span className="text-muted-foreground text-xs">/</span>
