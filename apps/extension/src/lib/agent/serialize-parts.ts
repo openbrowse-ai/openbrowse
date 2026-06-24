@@ -10,12 +10,61 @@
  * If you add a new `SerializedUIPart` variant, update both `serializeParts`
  * (forward conversion from SDK parts) and `hasMeaningfulContent`
  * (predicate that decides whether a streamed turn is worth saving).
+ *
+ * Tool-input shape contract: every persisted tool part's `input` MUST be
+ * a JSON object (or `undefined`). A non-object `input` (e.g. `""` from
+ * Opus's no-arg-tool quirk) is rejected by Anthropic with
+ * `tool_use.input: Input should be a valid dictionary` and silently
+ * coerced by Gemini — so persisting it would re-poison every subsequent
+ * Anthropic send. The `normalizeToolInputForPersistence` runs the same
+ * recovery ladder as the transport's send-time normalizer (parse
+ * stringified JSON, fall back to rawInput) before persisting; if the
+ * value is still irrecoverable, the entire tool part is dropped from
+ * the saved parts array. The transport's send-time pass would have
+ * dropped it too, but doing it here keeps chat-db clean.
  */
 
 import type { UIMessage } from "ai";
 import type { AgentDataParts, SerializedUIPart } from "./message-types";
+import { normalizeToolInputForPersistence } from "./tool-input-normalize";
 
 type AgentMessageParts = UIMessage<unknown, AgentDataParts>["parts"];
+
+/**
+ * Persistence-time tool-input sanitizer. Returns:
+ *   - `keep-undefined` when the input was never assigned (truly absent —
+ *     the SDK and runtime normalizer both tolerate this on terminal
+ *     states, and the user sees an "Interrupted" badge in the UI),
+ *   - `object` with a recovered plain-object value (input was already
+ *     an object, or rawInput / a stringified-JSON input parsed to one),
+ *   - `drop` when the input was present-and-malformed and no recovery
+ *     was possible. The whole tool part must be dropped from
+ *     persistence — saving it would re-poison every subsequent send.
+ */
+function sanitizeToolInputForPersistence(
+  input: unknown,
+  rawInput: unknown,
+):
+  | { kind: "object"; value: Record<string, unknown> }
+  | { kind: "keep-undefined" }
+  | { kind: "drop" } {
+  // Truly absent: persist with input:undefined; the runtime normalizer at
+  // send time will decide whether to drop the part (no rescue available)
+  // or coerce to {} (tool accepts empty object). Keeping the persisted
+  // copy lets the UI render the part as "Interrupted" until the user's
+  // next send.
+  if (input === undefined && rawInput === undefined) {
+    return { kind: "keep-undefined" };
+  }
+  const result = normalizeToolInputForPersistence({
+    value: input,
+    rawValue: rawInput,
+  });
+  if (result.kind === "object") {
+    return { kind: "object", value: result.value };
+  }
+  return { kind: "drop" };
+}
 
 /**
  * Convert AI SDK `UIMessage.parts` into the `SerializedUIPart[]` shape
@@ -67,35 +116,87 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
         // CompletionCheckRunningBlock) handles in-memory mid-stream
         // aborts; we never need this part on disk.
         return [];
-      case "dynamic-tool":
+      case "dynamic-tool": {
+        // Sanitize input before persistence: a non-object value (Opus
+        // emits `""` for no-arg tool calls) would re-poison every
+        // subsequent send if persisted verbatim. The recovery ladder
+        // matches the transport's runtime normalizer.
+        const rawInput =
+          "rawInput" in part
+            ? (part as { rawInput?: unknown }).rawInput
+            : undefined;
+        const sanitized = sanitizeToolInputForPersistence(
+          part.input,
+          rawInput,
+        );
+        if (sanitized.kind === "drop") {
+          // Present-but-malformed input that we cannot recover. Drop
+          // the entire tool part rather than persist a value the
+          // provider would reject on the next send.
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn(
+              `[serialize-parts] dropping dynamic-tool part with ` +
+                `unrecoverable non-object input ` +
+                `(toolName=${part.toolName}, state=${part.state}); ` +
+                `see tool-input-normalize.ts.`,
+            );
+          }
+          return [];
+        }
         return [
           {
             type: "dynamic-tool",
             toolName: part.toolName,
             toolCallId: part.toolCallId,
             state: part.state,
-            input: part.input,
+            input: sanitized.kind === "object" ? sanitized.value : undefined,
             output: "output" in part ? part.output : undefined,
             errorText: "errorText" in part ? part.errorText : undefined,
             approval: "approval" in part ? part.approval : undefined,
           },
         ];
+      }
       default: {
         const p = part as Record<string, unknown>;
         if (
           typeof part.type === "string" &&
           part.type.startsWith("tool-") &&
           "toolCallId" in p &&
-          "state" in p &&
-          "input" in p
+          "state" in p
         ) {
+          // Same input-sanitization contract as the dynamic-tool branch
+          // above. The fallback path is hit by the SDK's `tool-<name>`
+          // shape (built-in browser tools) — a non-object input here is
+          // just as fatal at send time as in the dynamic-tool case.
+          //
+          // Note: we do NOT gate on `"input" in p`. A tool-<name> part
+          // can legitimately reach this branch with no input field set
+          // (e.g. an aborted call mid input-streaming). The sanitizer
+          // returns `keep-undefined` for that case, matching the
+          // dynamic-tool branch above; gating on `"input" in p` here
+          // would silently drop those parts and lose the "Interrupted"
+          // UI badge.
+          const rawInput = "rawInput" in p ? p.rawInput : undefined;
+          const sanitized = sanitizeToolInputForPersistence(p.input, rawInput);
+          if (sanitized.kind === "drop") {
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn(
+                `[serialize-parts] dropping ${part.type} part with ` +
+                  `unrecoverable non-object input ` +
+                  `(state=${p.state as string}); see ` +
+                  `tool-input-normalize.ts.`,
+              );
+            }
+            return [];
+          }
           return [
             {
               type: "dynamic-tool",
               toolName: part.type.slice(5),
               toolCallId: p.toolCallId as string,
               state: p.state as string,
-              input: p.input,
+              input:
+                sanitized.kind === "object" ? sanitized.value : undefined,
               output: "output" in p ? p.output : undefined,
               errorText: "errorText" in p ? (p.errorText as string) : undefined,
               // Preserve approval metadata on the round-trip so a part

@@ -78,6 +78,12 @@ export class McpRegistry {
         if (permission === "disabled") continue;
 
         const toolKey = `mcp_${mcpTool.serverId}_${mcpTool.name}`;
+        // jsonSchemaToZod handles undefined / malformed inputSchema by
+        // returning `z.object({}).passthrough()` — which still enforces
+        // the top-level object invariant required by Anthropic
+        // (`tool_use.input` must be a dictionary), so a server that
+        // forgot to declare an inputSchema still produces a valid tool
+        // surface that rejects non-object inputs structurally.
         const zodSchema = jsonSchemaToZod(mcpTool.inputSchema);
 
         sdkTools[toolKey] = tool({

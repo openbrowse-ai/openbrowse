@@ -18,6 +18,7 @@ import {
   prunePartsAtSendTime,
   stripScreenshotsFromParts,
 } from "./compaction";
+import { isPlainObject, normalizeToolInput } from "./tool-input-normalize";
 import {
   runCompletionCheck,
   shouldGate,
@@ -197,7 +198,7 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
     const buildCompletionCheckInput = this.buildCompletionCheckInput;
     const onCompletionCheckApproved = this.onCompletionCheckApproved;
     const pinnedConversationId = this.getActiveConversationId?.() ?? null;
-    let rewritten = rewriteForLLM(messages);
+    let rewritten = rewriteForLLM(messages, this.agent.tools);
     if (this.keepOnlyLatestImage) {
       rewritten = keepOnlyLatestScreenshot(rewritten, this.screenshotToolNames);
     }
@@ -232,6 +233,7 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
         this.agent.tools,
         "transport.fast-path",
       );
+      assertModelMessageToolInputs(modelMessages, "transport.fast-path");
       try {
         const result = await this.agent.stream({
           prompt: modelMessages,
@@ -377,8 +379,19 @@ function extractCausedByPath(err: unknown): number | null {
  * Operates on `AgentUIMessage` directly — its `DATA_PARTS = AgentDataParts`
  * gives us a real `data-compaction` variant in the parts union, so all the
  * helpers below narrow on `p.type === "data-compaction"` without casts.
+ *
+ * The optional `tools` argument is threaded into `repairToolPart` so the
+ * input-normalizer can rescue no-arg tool calls (Opus emits `input: ""`)
+ * by coercing them to `{}` when the tool's schema accepts an empty object.
+ * Tests that call `rewriteForLLM` without a ToolSet still work — the
+ * normalizer just falls through to its drop path for non-object inputs,
+ * which is the pre-fix behavior for tests that didn't depend on the
+ * rescue.
  */
-export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
+export function rewriteForLLM(
+  messages: AgentUIMessage[],
+  tools?: ToolSet,
+): AgentUIMessage[] {
   // Step 1: repair legacy broken compaction events. An earlier version of
   // `runCompaction` had a "prune-only fast path" that wrote a compaction
   // event with an empty summary assistant. Sending that message fails the
@@ -460,7 +473,7 @@ export function rewriteForLLM(messages: AgentUIMessage[]): AgentUIMessage[] {
   // part must be removed too — an empty assistant message would otherwise
   // reach `convertToModelMessages`.
   return filtered
-    .map(healNonTerminalToolParts)
+    .map((m) => healNonTerminalToolParts(m, tools))
     .filter((m) => m.parts.length > 0);
 }
 
@@ -493,27 +506,26 @@ const DROP_TOOL_PART = Symbol("drop-tool-part");
  *
  * The healer enforces these invariants:
  *
- *  1. A tool part must carry a usable `input`. A real `input` is preserved;
- *     a MISSING input is left `undefined` (never `{}` — that re-triggers the
- *     tool's strict, e.g. MCP, schema validation in validateUIMessages and
- *     fails its required fields). Critically, ANY tool call with no usable
- *     input at all (no real `input` and no partial `rawInput`) is DROPPED —
- *     returned as `DROP_TOOL_PART`. This covers an interrupted call aborted
- *     mid-`input-streaming` AND an already-terminal `output-error` /
- *     `output-denied` part whose input was never captured (e.g. a tool whose
- *     arguments failed to parse, or a part healed from a non-terminal state on
- *     a prior pass). Such a part would otherwise reach
- *     `convertToModelMessages`, which emits a `tool-call` block whose `input`
- *     is missing. validateUIMessages skips that (input is undefined), but the
- *     PROVIDER rejects it: Anthropic/Bedrock with
- *     `tool_use.input: Field required` (HTTP 400) and Gemini/Vertex with a
- *     silent `Malformed function call ... Function call is empty` error
- *     finish (Gemini also coerces some of these, which is why the terminal
- *     `output-error` case reproduced only on Anthropic). A `tool_use` with no
- *     input carries no information for the model, and each UI tool part
- *     expands to a self-contained `tool-call` + paired `tool-result`, so
- *     dropping the whole part removes both sides cleanly (no orphaned
- *     `tool_result`).
+ *  1. A tool part must carry a usable `input` THAT IS A JSON OBJECT.
+ *     `normalizeToolInput` runs the recovery ladder:
+ *       - plain object → keep
+ *       - stringified-JSON object (Opus quirk) → parse and use
+ *       - rawInput (object or stringified) → use it
+ *       - tool's schema accepts `{}` → coerce no-arg call to `{}`
+ *       - else → DROP. Substituting `{}` here would re-trigger the
+ *         tool's strict required-fields schema in validateUIMessages
+ *         and crash the whole turn instead of just dropping one call.
+ *     A non-object input (e.g. `""`, `null`, an array, a non-JSON
+ *     string) reaches the provider as-is otherwise:
+ *       - Anthropic/Bedrock 400 with
+ *         `tool_use.input: Input should be a valid dictionary` /
+ *         `tool_use.input: Field required`.
+ *       - Gemini/Vertex coerces silently (which is why Gemini retries
+ *         "just work" on a conversation that 400s on Opus).
+ *     A `tool_use` with no recoverable input carries no information for
+ *     the model, and each UI tool part expands to a self-contained
+ *     `tool-call` + paired `tool-result`, so dropping the whole part
+ *     removes both sides cleanly (no orphaned `tool_result`).
  *
  *  2. State is terminal. Any non-terminal state collapses to
  *     `output-error` with `errorText: TRANSPORT_HEAL_TEXT` and the
@@ -529,6 +541,7 @@ const DROP_TOOL_PART = Symbol("drop-tool-part");
  */
 function repairToolPart(
   part: AgentUIMessage["parts"][number],
+  tools?: ToolSet,
 ): AgentUIMessage["parts"][number] | typeof DROP_TOOL_PART {
   const p = part as { type?: unknown; state?: unknown };
   const isTool =
@@ -538,22 +551,26 @@ function repairToolPart(
 
   const raw = part as Record<string, unknown>;
   const state = typeof raw.state === "string" ? raw.state : undefined;
+  const partType = typeof raw.type === "string" ? raw.type : "";
+  const toolName =
+    typeof raw.toolName === "string" ? raw.toolName : undefined;
 
-  // Preserve a real `input`; otherwise set it to `undefined` (key present,
-  // value undefined) — never `{}`. The structural UIMessage schema requires
-  // the `input` key to be present on tool parts, but validateUIMessages
-  // schema-checks an output-error part's input only when it is !== undefined.
-  // Substituting `{}` makes it validate against the tool's (possibly strict,
-  // e.g. MCP) schema and fail required fields; `undefined` is skipped, and
-  // convertToModelMessages tolerates undefined input on errored/denied calls.
-  const hasInput = raw.input !== undefined && raw.input !== null;
-  // Fall back to a captured `rawInput` (some SDK paths stash the partial /
-  // raw argument string here) before giving up on input entirely.
-  const rawInput = raw.rawInput;
-  const hasRawInput = rawInput !== undefined && rawInput !== null;
-  const input: unknown = hasInput ? raw.input : undefined;
-  // The structural schema rejects a tool part missing the `input` key, so a
-  // terminal part that lacks it must still be rewritten to add it.
+  // Normalize `input` against the strict provider contract: must be a JSON
+  // object. The normalizer applies the recovery ladder (parse stringified
+  // JSON, fall back to rawInput, rescue no-arg tools by coercing to `{}`)
+  // and signals `drop` for irrecoverable non-object inputs. See
+  // `normalizeToolInput` for the full ladder.
+  const normalized = normalizeToolInput({
+    value: raw.input,
+    rawValue: raw.rawInput,
+    tools,
+    partType,
+    toolName,
+  });
+  // The structural schema rejects a tool part missing the `input` key,
+  // so a part that's keeping its existing input still needs the key
+  // re-added if it was absent. `inputKeyMissing` covers that case for
+  // the few branches where we'd otherwise return the part verbatim.
   const inputKeyMissing = !("input" in raw);
 
   // `approval-responded` is NOT a terminal state, but it is a
@@ -569,7 +586,8 @@ function repairToolPart(
   // generic non-terminal branch below would), the tool NEVER runs and
   // the user sees "Interrupted" the instant they approve. So:
   //   - approved (approved === true), no output yet → pass through so
-  //     the SDK runs `execute`.
+  //     the SDK runs `execute`. Drop if the input couldn't be normalized
+  //     (the call would 400 the provider on the auto-resume turn).
   //   - explicitly denied (approved === false) → fold to output-denied,
   //     the canonical terminal shape for a denial.
   //   - malformed approval (no id / approved not boolean) → fall through
@@ -580,20 +598,24 @@ function repairToolPart(
       | undefined;
     if (approval && typeof approval.id === "string") {
       if (approval.approved === true) {
-        // Awaiting execution — preserve verbatim. This path serves the
-        // legitimate auto-resume: when the approved call is still the last
-        // message, the SDK re-executes it. (The client-side healPendingTools
-        // terminalizes approved calls instead, because by the time IT runs a
-        // user message has been appended and resume is impossible.)
-        if (raw.input !== input) {
-          return { ...raw, input } as typeof part;
+        // Awaiting execution — preserve verbatim. Without a normalized
+        // input the SDK would emit a `tool_use` the provider rejects on
+        // auto-resume, so drop irrecoverable parts here too.
+        if (normalized.kind === "drop") {
+          return DROP_TOOL_PART;
+        }
+        if (raw.input !== normalized.value) {
+          return { ...raw, input: normalized.value } as typeof part;
         }
         return part;
       }
       if (approval.approved === false) {
+        if (normalized.kind === "drop") {
+          return DROP_TOOL_PART;
+        }
         return {
           ...raw,
-          input,
+          input: normalized.value,
           state: "output-denied",
           approval: {
             id: approval.id,
@@ -612,20 +634,15 @@ function repairToolPart(
   // Non-terminal state → collapse to output-error. Drop any partial
   // output so the part is unambiguous.
   if (!state || !TERMINAL_TOOL_STATES.has(state)) {
-    // An interrupted call that never received ANY input (aborted mid
-    // `input-streaming`, no `rawInput` either) cannot be emitted as a valid
-    // `tool_use`: convertToModelMessages would produce a `tool-call` with no
-    // `input` field, which the provider rejects (Anthropic/Bedrock
-    // `tool_use.input: Field required`; Gemini silent malformed-call error).
-    // Such a part carries no information — drop it entirely. The paired
-    // `tool-result` is emitted from the same UI part, so dropping the whole
-    // part leaves no orphan.
-    if (!hasInput && !hasRawInput) {
+    // An interrupted call whose input cannot be normalized to an object
+    // (no real `input`, no `rawInput`, schema doesn't accept `{}`)
+    // cannot be emitted as a valid `tool_use`. Drop it entirely.
+    if (normalized.kind === "drop") {
       return DROP_TOOL_PART;
     }
     return {
       ...raw,
-      input,
+      input: normalized.value,
       state: "output-error",
       errorText: TRANSPORT_HEAL_TEXT,
       output: undefined,
@@ -638,49 +655,52 @@ function repairToolPart(
   // converter.
   if (state === "output-available") {
     if (raw.output === undefined || raw.output === null) {
-      // Downgrading to output-error; same input-less guard as the
-      // non-terminal branch — a resulting `tool-call` with no input is
-      // rejected by the provider, so drop it instead.
-      if (!hasInput && !hasRawInput) {
+      // Downgrading to output-error; same drop guard as above.
+      if (normalized.kind === "drop") {
         return DROP_TOOL_PART;
       }
       return {
         ...raw,
-        input,
+        input: normalized.value,
         state: "output-error",
         errorText: TRANSPORT_HEAL_TEXT,
         output: undefined,
       } as typeof part;
     }
-    if (raw.input === undefined || raw.input === null) {
-      return { ...raw, input } as typeof part;
+    if (normalized.kind === "drop") {
+      // A successful tool call (it has output!) whose input we cannot
+      // normalize. This shouldn't happen in practice because the SDK
+      // wouldn't have called execute() with a bad input, but if a stale
+      // chat-db row has it, drop rather than send a malformed tool_use.
+      return DROP_TOOL_PART;
+    }
+    if (raw.input !== normalized.value || inputKeyMissing) {
+      return { ...raw, input: normalized.value } as typeof part;
     }
     return part;
   }
 
   if (state === "output-error") {
-    // A terminal errored call with NO usable input (neither a real `input`
-    // nor a partial `rawInput`) cannot be emitted as a valid `tool_use`:
-    // convertToModelMessages forwards `input: undefined`, which Anthropic
-    // rejects (`tool_use.input: Field required`). Gemini tolerates it, which
-    // is why the bug only reproduced on Anthropic/Opus. Such a part carries
-    // no information — drop it (its paired tool-result comes from the same
-    // part, so nothing is orphaned). When `rawInput` is present the SDK fills
-    // the emitted input from it (a defined value the provider accepts), so we
-    // keep those. This complements the non-terminal/`output-available` drop
-    // above; an `output-error` reached here either streamed in that way or was
-    // healed from a non-terminal state on a prior pass.
-    if (!hasInput && !hasRawInput) {
+    // A terminal errored call whose input cannot be normalized cannot be
+    // emitted as a valid `tool_use`. Drop it. (Pre-fix this was the
+    // exact Opus reproduction: a failed MCP call whose input was never
+    // captured persisted as output-error with no input → 400 from
+    // Anthropic on every subsequent send.)
+    if (normalized.kind === "drop") {
       return DROP_TOOL_PART;
     }
     const errorText =
       typeof raw.errorText === "string" && raw.errorText.length > 0
         ? raw.errorText
         : TRANSPORT_HEAL_TEXT;
-    if (raw.input !== input || inputKeyMissing || raw.errorText !== errorText) {
+    if (
+      raw.input !== normalized.value ||
+      inputKeyMissing ||
+      raw.errorText !== errorText
+    ) {
       return {
         ...raw,
-        input,
+        input: normalized.value,
         state: "output-error",
         errorText,
       } as typeof part;
@@ -692,9 +712,8 @@ function repairToolPart(
     const approval = raw.approval as
       | { id?: unknown; approved?: unknown; reason?: unknown }
       | undefined;
-    // Same input-less guard as output-error: a denied call with no usable
-    // input also emits a provider-rejected `tool_use`. Drop it.
-    if (!hasInput && !hasRawInput) {
+    // Same drop guard as output-error.
+    if (normalized.kind === "drop") {
       return DROP_TOOL_PART;
     }
     // Strict denial shape: state=output-denied REQUIRES `approved: false`.
@@ -707,14 +726,14 @@ function repairToolPart(
     if (!hasValidApproval) {
       return {
         ...raw,
-        input,
+        input: normalized.value,
         state: "output-error",
         errorText: TRANSPORT_HEAL_TEXT,
         output: undefined,
       } as typeof part;
     }
-    if (raw.input !== input || inputKeyMissing) {
-      return { ...raw, input } as typeof part;
+    if (raw.input !== normalized.value || inputKeyMissing) {
+      return { ...raw, input: normalized.value } as typeof part;
     }
     return part;
   }
@@ -723,11 +742,14 @@ function repairToolPart(
   return part;
 }
 
-function healNonTerminalToolParts(message: AgentUIMessage): AgentUIMessage {
+function healNonTerminalToolParts(
+  message: AgentUIMessage,
+  tools?: ToolSet,
+): AgentUIMessage {
   let changed = false;
   const newParts: AgentUIMessage["parts"] = [];
   for (const part of message.parts) {
-    const repaired = repairToolPart(part);
+    const repaired = repairToolPart(part, tools);
     if (repaired === DROP_TOOL_PART) {
       // Input-less interrupted tool call — omit it entirely (see
       // repairToolPart). Its paired tool-result comes from the same part,
@@ -932,6 +954,10 @@ export function runWithRejectionLoop(args: {
           const modelMessages = await convertModelMessagesWithDiag(
             messages,
             agent.tools,
+            `rejection-loop.iter-${i}`,
+          );
+          assertModelMessageToolInputs(
+            modelMessages,
             `rejection-loop.iter-${i}`,
           );
           let result;
@@ -1153,6 +1179,81 @@ export function runWithRejectionLoop(args: {
     },
   });
 }
+
+/**
+ * Last-mile defense before `agent.stream(...)`: walks the converted
+ * `ModelMessage[]` and asserts every `tool-call` block carries a
+ * plain-object `input`. A non-object input would 400 the Anthropic API
+ * (`tool_use.input: Input should be a valid dictionary`) — the exact
+ * failure mode this whole module is built to prevent. By the time we
+ * reach this function, repairToolPart, the persistence sanitizer, and
+ * the v16 chat-db migration should all have caught any malformed
+ * shape; this is the assertion that proves they did.
+ *
+ * On detection:
+ *   1. Coerces the bad input to `{}` IN PLACE (mutates the
+ *      ModelMessage array). Coercion matches the Gemini adapter's
+ *      lenient behavior — the user's request still completes — and
+ *      avoids a hard failure on what should be unreachable.
+ *   2. Logs a `console.error` with the message index, content-block
+ *      index, tool name, the offending value's typeof, and a truncated
+ *      JSON string. This is the diagnostic that turns "the agent
+ *      mysteriously 400'd on Opus once last week" into a one-look
+ *      DevTools entry.
+ *
+ * Why coerce instead of throw: throwing here aborts the user's turn even
+ * though the upstream layers should have caught the error. Coercing to
+ * `{}` matches what Gemini does silently and what the user expects when
+ * an empty-args tool is called. The log makes it easy to find and fix
+ * the root cause if this ever fires.
+ */
+export function assertModelMessageToolInputs(
+  modelMessages: Awaited<ReturnType<typeof convertToModelMessages>>,
+  label: string,
+): void {
+  for (let i = 0; i < modelMessages.length; i++) {
+    const m = modelMessages[i];
+    if (!Array.isArray(m.content)) continue;
+    for (let j = 0; j < m.content.length; j++) {
+      const c = m.content[j] as { type?: string; input?: unknown; toolName?: string; toolCallId?: string };
+      if (c.type !== "tool-call") continue;
+      const input = c.input;
+      // Anthropic requires tool_use.input to be a PLAIN JSON object —
+      // not a Date, Map, Set, RegExp, or class instance. Use the strict
+      // plain-object predicate so a non-serializable object can't slip
+      // through the assertion (it would JSON.stringify to either an
+      // empty `{}` or a non-conforming shape and either silently lose
+      // information or trip a downstream validation error).
+      if (isPlainObject(input)) continue;
+
+      // Truncate the JSON-stringified value for the log so a giant blob
+      // doesn't blow up the DevTools console. Catch in case the value
+      // is a circular structure.
+      let valueRepr: string;
+      try {
+        const s = JSON.stringify(input);
+        valueRepr = s == null ? String(input) : s.length > 120 ? s.slice(0, 120) + "…" : s;
+      } catch {
+        valueRepr = "<unstringifiable>";
+      }
+      console.error(
+        `[transport] ${label}: tool-call at modelMessages[${i}].content[${j}] ` +
+          `(toolName=${c.toolName ?? "?"}, toolCallId=${c.toolCallId ?? "?"}) ` +
+          `has non-object input (typeof=${typeof input}, value=${valueRepr}). ` +
+          `Coercing to {}. ` +
+          `This is unreachable if compacting-transport's repairToolPart, ` +
+          `serialize-parts' sanitizer, and the chat-db v16 migration all ` +
+          `ran — please file a bug if you see this in production.`,
+      );
+
+      // Coerce in place. The ModelMessage array is locally owned at
+      // this call site (we just produced it via convertToModelMessages),
+      // so mutating it has no observable side-effect outside this turn.
+      (m.content[j] as { input: unknown }).input = {};
+    }
+  }
+}
+
 
 /**
  * Mutates the observer state for one streaming chunk. Extracted from the

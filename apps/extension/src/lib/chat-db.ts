@@ -200,7 +200,7 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     // needed. Read inside the post-open `then` (which runs *after* the
     // upgrade callback completes), so by then the flag reflects whether
     // the synchronous upgrade actually ran the v15 hop.
-    const flags = { needsV15Fixup: false };
+    const flags = { needsV15Fixup: false, needsV16Fixup: false };
     // v7: migrates legacy `{ type: "compaction", auto, ... }` parts
     // to the AI SDK's DataUIPart contract:
     // `{ type: "data-compaction", data: { auto, ... } }`.
@@ -226,7 +226,17 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      `chrome.tabs.get` rejects (the tab is gone) are dropped.
     //      Per-row try/catch — corrupt rows degrade to empty owned-state
     //      with a console.warn rather than aborting the whole upgrade.
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 15, {
+    // v16: tool-input shape sweep. Earlier versions persisted whatever
+    //      `input` shape the SDK gave us on a tool part — including
+    //      Opus's `input: ""` quirk for no-arg MCP calls and other
+    //      non-object values. The Anthropic API rejects a non-object
+    //      `tool_use.input` with HTTP 400 (`Input should be a valid
+    //      dictionary`), so any conversation containing a non-object
+    //      input was permanently broken on Opus until the bad part was
+    //      removed. v16 rewrites every message's `parts` array through
+    //      the input-normalizer's persistence ladder so already-broken
+    //      conversations recover without user action.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 16, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -442,18 +452,35 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // version number so the post-open fixup runs.
           flags.needsV15Fixup = true;
         }
+
+        if (oldVersion < 16) {
+          // v16: tool-input shape sweep. Re-runs every message's
+          // `parts` through the input-normalizer to evict non-object
+          // `input` values left over from before the sanitization fix.
+          // Like v15, the actual rewrite runs in `runV16Fixup` outside
+          // this transaction so we can `await` the dynamic import of
+          // the serializer module without auto-committing the txn.
+          flags.needsV16Fixup = true;
+        }
       },
     });
-    // Chain the v15 fixup pass into the open promise unconditionally; the
-    // chained handler reads `flags.needsV15Fixup` *after* the upgrade
-    // callback has finished, so it correctly reflects whether the hop ran.
-    // No-op when not needed; failures are logged but not propagated.
+    // Chain the v15 / v16 fixup passes into the open promise unconditionally;
+    // the chained handler reads the flags *after* the upgrade callback has
+    // finished, so they correctly reflect whether each hop ran. No-op when
+    // not needed; failures are logged but not propagated.
     dbPromise = dbPromise.then(async (db) => {
       if (flags.needsV15Fixup) {
         try {
           await runV15Fixup(db);
         } catch (err) {
           console.warn("[chat-db v15] fixup pass failed", err);
+        }
+      }
+      if (flags.needsV16Fixup) {
+        try {
+          await runV16Fixup(db);
+        } catch (err) {
+          console.warn("[chat-db v16] fixup pass failed", err);
         }
       }
       return db;
@@ -567,6 +594,131 @@ async function runV15Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
         // Even the degrade write failed; leave the row alone.
       }
     }
+  }
+}
+
+/**
+ * Post-upgrade fixup for chat-db v16: rewrites every persisted message's
+ * `parts` so any tool part with a non-object `input` is either recovered
+ * (stringified-JSON / rawInput object → parsed) or dropped. Targets the
+ * Anthropic-only failure mode `tool_use.input: Input should be a valid
+ * dictionary`, which made conversations stuck on Opus until the bad
+ * row was manually purged.
+ *
+ * Lives outside the upgrade transaction so we can `await` the dynamic
+ * import of the persistence-side normalizer without IDB auto-committing
+ * the txn mid-iteration.
+ *
+ * Idempotent: rerunning is safe because the normalizer treats an
+ * already-clean object input as a no-op. Per-row try/catch — a corrupt
+ * message degrades to its original shape (the deserializer's runtime
+ * sanitization is the next line of defense) rather than aborting the
+ * whole pass.
+ */
+async function runV16Fixup(db: IDBPDatabase<ChatDB>): Promise<void> {
+  // Dynamic import: the normalizer module imports zod and other agent
+  // utilities, which we don't want to pay for on every chat-db open.
+  const { normalizeToolInputForPersistence } = await import(
+    "./agent/tool-input-normalize"
+  );
+
+  const isToolPart = (
+    p: unknown,
+  ): p is Record<string, unknown> => {
+    if (!p || typeof p !== "object") return false;
+    const pp = p as { type?: unknown };
+    if (pp.type === "dynamic-tool") return true;
+    if (typeof pp.type === "string" && (pp.type as string).startsWith("tool-"))
+      return true;
+    return false;
+  };
+
+  // Read all messages once, process each in its own short readwrite
+  // transaction. Per-row failure isolation matches the v15 pattern.
+  let allMessages: ChatDB["messages"]["value"][];
+  try {
+    allMessages = await db.getAll("messages");
+  } catch (err) {
+    console.warn("[chat-db v16] failed to read messages:", err);
+    return;
+  }
+
+  let cleaned = 0;
+  let dropped = 0;
+  for (const msg of allMessages) {
+    try {
+      let mutated = false;
+      const newParts: SerializedUIPart[] = [];
+      for (const part of msg.parts) {
+        if (!isToolPart(part)) {
+          newParts.push(part);
+          continue;
+        }
+        const tp = part as Record<string, unknown>;
+        const input = tp.input;
+        const rawInput = "rawInput" in tp ? tp.rawInput : undefined;
+        // Untouched: input intentionally absent AND no rawInput data to
+        // recover from. Legitimate persisted shape for terminal
+        // output-error/output-denied parts. (A part with `input:
+        // undefined` but a recoverable `rawInput` falls through to the
+        // recovery block below — we want to clean those up rather than
+        // leaving the rescue work for every subsequent send.)
+        if (input === undefined && rawInput === undefined) {
+          newParts.push(part);
+          continue;
+        }
+        // Already a plain object: untouched.
+        if (
+          input !== null &&
+          typeof input === "object" &&
+          !Array.isArray(input)
+        ) {
+          newParts.push(part);
+          continue;
+        }
+        // Either present-and-malformed, or absent-but-rawInput-available.
+        // Try to recover via the normalizer's full ladder.
+        const result = normalizeToolInputForPersistence({
+          value: input,
+          rawValue: rawInput,
+        });
+        if (result.kind === "object") {
+          newParts.push({ ...(part as object), input: result.value } as SerializedUIPart);
+          mutated = true;
+          cleaned++;
+        } else if (input === undefined) {
+          // input was intentionally absent AND rawInput (if any) didn't
+          // recover. Preserve the part as-is — the SDK tolerates
+          // input:undefined on terminal output-error/output-denied
+          // parts, and the runtime normalizer will drop it at send time
+          // if it's truly unsendable. The migration goal is to clean
+          // recoverable shapes, not to be more aggressive than runtime.
+          newParts.push(part);
+        } else {
+          // Present-and-malformed AND irrecoverable. Drop the part
+          // entirely; saving it would re-poison every subsequent send.
+          // The paired tool-result (if any) lives on the same UI part,
+          // so dropping the whole part leaves no orphan.
+          mutated = true;
+          dropped++;
+        }
+      }
+      if (!mutated) continue;
+      // Avoid emitting the change event during a migration sweep — we'd
+      // wake every active listener for every conversation.
+      await db.put("messages", { ...msg, parts: newParts });
+    } catch (err) {
+      console.warn(
+        `[chat-db v16] failed to clean message ${msg.id}:`,
+        err,
+      );
+    }
+  }
+  if (cleaned > 0 || dropped > 0) {
+    console.info(
+      `[chat-db v16] tool-input sweep: recovered ${cleaned} part(s), ` +
+        `dropped ${dropped} unrecoverable part(s).`,
+    );
   }
 }
 
