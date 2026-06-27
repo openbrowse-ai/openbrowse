@@ -419,8 +419,11 @@ describe("readBodyCapped", () => {
           cancel: async () => {},
         };
       },
-    } as unknown as ReadableStream<Uint8Array>;
-    return { body, arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    return {
+      body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    } as unknown as Pick<Response, "body" | "arrayBuffer">;
   }
 
   it("returns all bytes when under the cap", async () => {
@@ -440,9 +443,12 @@ describe("readBodyCapped", () => {
   });
 
   it("falls back to arrayBuffer when no stream, still enforcing the cap", async () => {
-    const big = { body: null, arrayBuffer: async () => new ArrayBuffer(20) };
+    const big = { body: null, arrayBuffer: async (): Promise<ArrayBuffer> => new ArrayBuffer(20) };
     expect(await readBodyCapped(big, 10)).toBeNull();
-    const ok = { body: null, arrayBuffer: async () => new Uint8Array([9, 9]).buffer };
+    const ok = {
+      body: null,
+      arrayBuffer: async (): Promise<ArrayBuffer> => new Uint8Array([9, 9]).buffer as ArrayBuffer,
+    };
     const out = await readBodyCapped(ok, 10);
     expect(out && Array.from(out)).toEqual([9, 9]);
   });
