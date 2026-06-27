@@ -7,8 +7,15 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { animatePanelResize } from "@/lib/animate-panel-resize";
+import {
+  FILE_MIN_PX,
+  FILE_AUTO_WIDEN_THRESHOLD_PX,
+  FILE_AUTO_WIDEN_PX,
+  TWEEN_MS,
+} from "./file-panel-constants";
 import { CoworkPanel } from "./CoworkPanel";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import { ArtifactViewerPanel } from "@/components/files/ArtifactViewerPanel";
 
 interface RightRailProps {
   conversationId: string;
@@ -31,6 +38,13 @@ interface RightRailProps {
   selectedSpaceFile: string | null;
   onSelectSpaceFile: (file: string | null) => void;
   /**
+   * Artifact open in the in-panel viewer (mirrors the file viewer). Mutually
+   * exclusive with `selectedFile`/`selectedSpaceFile` — the parent clears the
+   * others when setting this. `null` shows the workspace panel.
+   */
+  selectedArtifact: { id: string; title: string } | null;
+  onSelectArtifact: (artifact: { id: string; title: string } | null) => void;
+  /**
    * Whether the rail is open (visible) at all. Driven by the parent's
    * side-panel toggle button. Toggling animates the rail width to/from 0.
    */
@@ -44,14 +58,6 @@ interface RightRailProps {
 
 /** Fixed width for workspace mode. The user does not resize this. */
 export const WORKSPACE_WIDTH_PX = 360;
-/** Lower drag bound for file mode — user can't drag below this. */
-export const FILE_MIN_PX = 320;
-/** Soft minimum for file mode — auto-widen kicks in below this. */
-export const FILE_AUTO_WIDEN_THRESHOLD_PX = 480;
-/** Width used by auto-widen when the persisted width is below threshold. */
-export const FILE_AUTO_WIDEN_PX = 560;
-/** Animation duration for programmatic open/close and mode switches. */
-const TWEEN_MS = 240;
 
 /**
  * Right-side drawer hosting either the workspace ("Cowork") or a file viewer.
@@ -78,6 +84,8 @@ export function RightRail({
   onSelectFile,
   selectedSpaceFile,
   onSelectSpaceFile,
+  selectedArtifact,
+  onSelectArtifact,
   isOpen,
   fileWidthPx,
   onFileWidthChange,
@@ -87,10 +95,10 @@ export function RightRail({
   const railPanelRef = useRef<PanelImperativeHandle | null>(null);
   /** Latest in-file-mode flag, read inside onResize without re-binding. */
   const inFileModeRef = useRef<boolean>(
-    selectedFile !== null || selectedSpaceFile !== null,
+    selectedFile !== null || selectedSpaceFile !== null || selectedArtifact !== null,
   );
   inFileModeRef.current =
-    selectedFile !== null || selectedSpaceFile !== null;
+    selectedFile !== null || selectedSpaceFile !== null || selectedArtifact !== null;
   /** Latest persisted file width, read inside the mode/open effect. */
   const fileWidthRef = useRef(fileWidthPx);
   fileWidthRef.current = fileWidthPx;
@@ -100,7 +108,7 @@ export function RightRail({
   const cancelTweenRef = useRef<(() => void) | null>(null);
   const hasInitializedRef = useRef(false);
 
-  const inFileMode = selectedFile !== null || selectedSpaceFile !== null;
+  const inFileMode = selectedFile !== null || selectedSpaceFile !== null || selectedArtifact !== null;
 
   /**
    * Initial defaultSize for the rail panel, captured ONCE at mount. We
@@ -119,7 +127,7 @@ export function RightRail({
     // the division yields a tiny percentage (like 1.6%) and permanently locks
     // the panel to a sliver. Providing a percentage bypasses the math bug.
     const getTargetPx = () => {
-      if (selectedFile !== null || selectedSpaceFile !== null) {
+      if (selectedFile !== null || selectedSpaceFile !== null || selectedArtifact !== null) {
         return fileWidthPx < FILE_AUTO_WIDEN_THRESHOLD_PX
           ? FILE_AUTO_WIDEN_PX
           : fileWidthPx;
@@ -148,7 +156,7 @@ export function RightRail({
     
     const target = !isOpen
       ? 0
-      : selectedFile !== null || selectedSpaceFile !== null
+      : selectedFile !== null || selectedSpaceFile !== null || selectedArtifact !== null
         ? fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
           ? FILE_AUTO_WIDEN_PX
           : fileWidthRef.current
@@ -175,7 +183,7 @@ export function RightRail({
       durationMs: TWEEN_MS,
       flagRef: animatingRef,
     });
-  }, [isOpen, selectedFile, selectedSpaceFile]);
+  }, [isOpen, selectedFile, selectedSpaceFile, selectedArtifact]);
 
   useEffect(() => {
     return () => {
@@ -254,6 +262,22 @@ export function RightRail({
                   spaceId={spaceId}
                   onSelectFile={onSelectFile}
                   onSelectSpaceFile={onSelectSpaceFile}
+                  onSelectArtifact={onSelectArtifact}
+                />
+              </motion.div>
+            ) : selectedArtifact !== null ? (
+              <motion.div
+                key="artifact"
+                className="absolute inset-0"
+                initial={{ x: -16, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -16, opacity: 0 }}
+                transition={{ duration: 0.18, ease: "easeOut" }}
+              >
+                <ArtifactViewerPanel
+                  artifactId={selectedArtifact.id}
+                  title={selectedArtifact.title}
+                  onClose={() => onSelectArtifact(null)}
                 />
               </motion.div>
             ) : selectedSpaceFile !== null && spaceId !== null ? (

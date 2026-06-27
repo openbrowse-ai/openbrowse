@@ -25,6 +25,7 @@ import {
   Settings,
   Trash2,
   Clock,
+  Boxes,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useActiveAgents } from "@/hooks/useActiveAgents";
@@ -46,6 +47,9 @@ interface HomeSidebarProps {
   onOpenSpaces: () => void;
   /** True when the Spaces page is the active main pane. */
   spacesActive?: boolean;
+  onOpenLibrary: () => void;
+  /** True when the Library page is the active main pane. */
+  libraryActive?: boolean;
 }
 
 interface ConversationItem {
@@ -72,6 +76,8 @@ export function HomeSidebar({
   scheduledActive,
   onOpenSpaces,
   spacesActive,
+  onOpenLibrary,
+  libraryActive,
 }: HomeSidebarProps) {
   const [pinned, setPinned] = useState(() => {
     const stored = localStorage.getItem("openbrowse-sidebar-pinned");
@@ -369,6 +375,18 @@ export function HomeSidebar({
           >
             <FoldersIcon className="size-3.5 shrink-0" />
             <span className="flex-1 text-left">Spaces</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenLibrary}
+            className={`flex h-7 items-center gap-2 rounded-md px-2 text-xs transition-colors ${
+              libraryActive
+                ? "bg-sidebar-accent text-sidebar-foreground"
+                : "hover:bg-sidebar-accent"
+            }`}
+          >
+            <Boxes className="size-3.5 shrink-0" />
+            <span className="flex-1 text-left">Artifacts</span>
           </button>
         </div>
 

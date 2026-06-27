@@ -35,6 +35,8 @@ import {
   ListScheduledTasksResult,
   UpdateScheduledTaskResult,
 } from "./tool-results/scheduled-task";
+import { ArtifactResult } from "./tool-results/artifact";
+import { ArtifactDiagnosticsResult } from "./tool-results/artifact-diagnostics";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -106,6 +108,12 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   ),
   update_scheduled_task: ({ args, result }) => (
     <UpdateScheduledTaskResult args={args} result={result} />
+  ),
+  create_artifact: ({ args, result }) => (
+    <ArtifactResult args={args} result={result} />
+  ),
+  read_artifact_diagnostics: ({ args, result }) => (
+    <ArtifactDiagnosticsResult args={args} result={result} />
   ),
 };
 
@@ -213,6 +221,16 @@ const TOOL_LABELS: Record<
   update_scheduled_task: {
     pending: "Updating scheduled task...",
     done: "Updated scheduled task",
+  },
+
+  // Artifact tools
+  create_artifact: { pending: "Creating artifact...", done: "Created artifact" },
+  update_artifact: { pending: "Updating artifact...", done: "Updated artifact" },
+  delete_artifact: { pending: "Deleting artifact...", done: "Deleted artifact" },
+  list_artifacts:  { pending: "Listing artifacts...", done: "Listed artifacts" },
+  read_artifact_diagnostics: {
+    pending: "Verifying artifact...",
+    done: "Verified artifact",
   },
 
   // (No `delegate` entry — `delegate` bypasses the outer ToolCallBlock
@@ -476,6 +494,34 @@ export function executeOnPageLabels(
   };
 }
 
+/**
+ * Refine the `read_artifact_diagnostics` done label from its result so the
+ * collapsed row tells the verification outcome at a glance ("Rendered cleanly"
+ * / "Found 2 errors" / "No render reported") instead of the generic
+ * "Verified artifact". Pending stays as-is.
+ */
+export function artifactDiagnosticsLabels(
+  result: unknown,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  if (!result || typeof result !== "object") return fallback;
+  const r = result as {
+    rendered?: unknown;
+    errors?: unknown[];
+  };
+  const errorCount = Array.isArray(r.errors) ? r.errors.length : 0;
+  if (errorCount > 0) {
+    return {
+      ...fallback,
+      done: errorCount === 1 ? "Found 1 error" : `Found ${errorCount} errors`,
+    };
+  }
+  if (r.rendered) {
+    return { ...fallback, done: "Rendered cleanly" };
+  }
+  return { ...fallback, done: "No render reported" };
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -526,7 +572,9 @@ export function ToolCallBlock({
                 : toolName === "patch_site_skill" ||
                     toolName === "delete_site_skill"
                   ? siteSkillLabels(args, labels)
-                  : labels;
+                  : toolName === "read_artifact_diagnostics"
+                    ? artifactDiagnosticsLabels(resolvedResult, labels)
+                    : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 

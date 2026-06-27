@@ -40,6 +40,7 @@ import { useActiveTabs } from "@/hooks/useActiveTabs";
 import { useTheme } from "@/hooks/useTheme";
 import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
 import { FileSelectionContext } from "@/lib/file-selection-context";
+import { artifactsEvents, type ArtifactCreatedDetail } from "@/lib/artifacts/events";
 import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
@@ -57,6 +58,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
+import { LibraryView } from "./components/LibraryView";
 import { RightRail } from "./components/RightRail";
 import { ScheduledView } from "./components/ScheduledView";
 import { ScheduledRunHost } from "./components/ScheduledRunHost";
@@ -144,7 +146,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
    * route delta and routes through `navigate`.
    */
   const setView = useCallback(
-    (v: "chat" | "scheduled" | "spaces") => {
+    (v: "chat" | "scheduled" | "spaces" | "library") => {
       const prev = routeRef.current;
       if (v === "chat") {
         navigate({
@@ -159,6 +161,8 @@ export default function HomeApp({ surface }: HomeAppProps) {
         });
       } else if (v === "scheduled") {
         navigate({ view: "scheduled" });
+      } else if (v === "library") {
+        navigate({ view: "library" });
       } else {
         navigate({ view: "spaces" });
       }
@@ -211,6 +215,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
   const [selectedSpaceFile, setSelectedSpaceFile] = useState<string | null>(
     null,
   );
+  // Artifact open in the rail's in-panel viewer. Mutually exclusive with the
+  // file/space-file selections — only one viewer occupies the rail at a time.
+  const [selectedArtifact, setSelectedArtifact] = useState<
+    { id: string; title: string } | null
+  >(null);
   const [filePanelWidth, setFilePanelWidth] = useFilePanelWidth();
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(
     new Set(),
@@ -387,11 +396,13 @@ export default function HomeApp({ surface }: HomeAppProps) {
       setConversationTitle(null);
       setSelectedFile(null);
       setSelectedSpaceFile(null);
+      setSelectedArtifact(null);
       return;
     }
     setIsCoworkPanelOpen(true);
     setSelectedFile(null);
     setSelectedSpaceFile(null);
+    setSelectedArtifact(null);
     // Guard against stale resolutions: if `activeConversationId` flips
     // again before this getConversation resolves (rapid sidebar clicks),
     // discard the late response so it can't overwrite the title we've
@@ -604,13 +615,43 @@ export default function HomeApp({ surface }: HomeAppProps) {
   const handleSelectFile = useCallback((file: string | null) => {
     setSelectedFile(file);
     if (file !== null) {
-      // Mutually exclusive with the space-file selection — only one
-      // FileViewerPanel can be open at a time.
+      // Mutually exclusive with the space-file / artifact selections — only one
+      // viewer can occupy the rail at a time.
       setSelectedSpaceFile(null);
+      setSelectedArtifact(null);
       // Selecting a file always implies the rail should be visible.
       setIsCoworkPanelOpen(true);
     }
   }, []);
+
+  const handleSelectArtifact = useCallback(
+    (artifact: { id: string; title: string } | null) => {
+      setSelectedArtifact(artifact);
+      if (artifact !== null) {
+        // Mutually exclusive with the file selections.
+        setSelectedFile(null);
+        setSelectedSpaceFile(null);
+        setIsCoworkPanelOpen(true);
+      }
+    },
+    [],
+  );
+
+  // Auto-open a newly created artifact in the in-panel viewer. The
+  // create_artifact tool fires `artifacts:created`; opening the viewer makes
+  // the artifact actually run, which is what lets the agent's follow-up
+  // read_artifact_diagnostics get a live signal instead of "never mounted".
+  useEffect(() => {
+    const onCreated = (e: Event) => {
+      const detail = (e as CustomEvent<ArtifactCreatedDetail>).detail;
+      if (detail?.id) {
+        handleSelectArtifact({ id: detail.id, title: detail.title });
+      }
+    };
+    artifactsEvents.addEventListener("artifacts:created", onCreated);
+    return () =>
+      artifactsEvents.removeEventListener("artifacts:created", onCreated);
+  }, [handleSelectArtifact]);
 
   const handleSelectSpaceFile = useCallback(
     (file: string | null) => {
@@ -623,8 +664,9 @@ export default function HomeApp({ surface }: HomeAppProps) {
       if (file !== null && activeSpaceId === null) return;
       setSelectedSpaceFile(file);
       if (file !== null) {
-        // Mutually exclusive with the conversation-file selection.
+        // Mutually exclusive with the conversation-file / artifact selections.
         setSelectedFile(null);
+        setSelectedArtifact(null);
         // Selecting a file always implies the rail should be visible.
         setIsCoworkPanelOpen(true);
       }
@@ -643,10 +685,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
         spaces={spaces}
         activeSpaceId={activeSpaceId}
         activeConversationId={
-          view === "scheduled" || view === "spaces" ? null : activeConversationId
+          view === "scheduled" || view === "spaces" || view === "library" ? null : activeConversationId
         }
         scheduledActive={view === "scheduled"}
         spacesActive={view === "spaces"}
+        libraryActive={view === "library"}
         onSelectConversation={handleSelectConversation}
         onNewConversation={() => handleNewConversation("")}
         onGoHome={() => {
@@ -654,19 +697,17 @@ export default function HomeApp({ surface }: HomeAppProps) {
           setActiveConversationId(null);
         }}
         onOpenOverlay={() => setShowOverlay(true)}
-        onOpenSpaces={() => {
-          // navigate directly to the route to avoid the back-compat
-          // shims overwriting each other (setActiveConversationId would
-          // route us back to chat).
-          navigate({ view: "spaces" });
-        }}
+        onOpenSpaces={() => navigate({ view: "spaces" })}
+        onOpenLibrary={() => setView("library")}
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
         onOpenScheduled={handleOpenScheduled}
         onScheduleConversation={handleScheduleConversation}
       />
 
-      {view === "spaces" ? (
+      {view === "library" ? (
+        <LibraryView />
+      ) : view === "spaces" ? (
         <SpacesPage activeSpaceId={activeSpaceId} />
       ) : view === "scheduled" ? (
         <ScheduledView
@@ -686,6 +727,8 @@ export default function HomeApp({ surface }: HomeAppProps) {
           onSelectFile={handleSelectFile}
           selectedSpaceFile={selectedSpaceFile}
           onSelectSpaceFile={handleSelectSpaceFile}
+          selectedArtifact={selectedArtifact}
+          onSelectArtifact={handleSelectArtifact}
           isOpen={isCoworkPanelOpen}
           fileWidthPx={filePanelWidth}
           onFileWidthChange={setFilePanelWidth}
@@ -755,7 +798,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  {selectedFile === null && selectedSpaceFile === null && (
+                  {selectedFile === null && selectedSpaceFile === null && selectedArtifact === null && (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <button

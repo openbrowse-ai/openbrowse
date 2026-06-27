@@ -87,6 +87,11 @@ import {
   updateMemoryTool,
   updateScheduledTaskTool,
   patchSiteSkillTool,
+  createArtifactTool,
+  updateArtifactTool,
+  deleteArtifactTool,
+  listArtifactsTool,
+  readArtifactDiagnosticsTool,
   proposePlanTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
@@ -103,6 +108,7 @@ import type { PlanExtensionData, SerializedUIPart } from "./message-types";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
+import { buildEditingArtifactBlock } from "./artifact-edit-context";
 
 /**
  * When true, the background site-skill curator logs each pipeline stage to the
@@ -599,6 +605,11 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     Grep: toSDKTool(fsTools.grepTool, "Grep"),
     LS: toSDKTool(fsTools.lsTool, "LS"),
     Delete: toSDKTool(fsTools.deleteTool, "Delete"),
+    create_artifact: toSDKTool(createArtifactTool, "create_artifact"),
+    update_artifact: toSDKTool(updateArtifactTool, "update_artifact"),
+    delete_artifact: toSDKTool(deleteArtifactTool, "delete_artifact"),
+    list_artifacts:  toSDKTool(listArtifactsTool,  "list_artifacts"),
+    read_artifact_diagnostics: toSDKTool(readArtifactDiagnosticsTool, "read_artifact_diagnostics"),
   };
 }
 
@@ -1947,6 +1958,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       .join("\n");
   }
 
+  // The editing-artifact block is NOT baked here. The transport may be built
+  // against a stale/null conversationId (it's constructed asynchronously while
+  // the edit conversation id is assigned), which would omit the block. Instead
+  // it's injected per-turn in `prepareCall` below, keyed on the live
+  // `agentConversationId`, so it's always present and current.
+
   // The tab legend is intentionally NOT appended to `instructions` here.
   // ownedLtids and tab URLs change mid-conversation (navigate adds a tab,
   // user closes a tab, etc.); a static legend baked at transport-construction
@@ -2060,7 +2077,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
 
-    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use Read({ file_path }) with the skill's path (e.g. "/skills/<name>/references/<file>").\nTo author and install a new skill you've drafted for the user, use create_skill.`;
+    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation BEFORE you start the work — do this even when you think you already know how, because skills carry workflow and verification steps that are easy to skip from memory. Already knowing the relevant API or concept is not a reason to skip loading the matching skill.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use Read({ file_path }) with the skill's path (e.g. "/skills/<name>/references/<file>").\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
   // Compose the parent's full tool set BEFORE constructing `runSubagentAgentLoop`,
@@ -2604,58 +2621,82 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       const cid = agentConversationId;
       const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
 
-      // Per-turn mode + plan injection. Read fresh from chatDb so a mode
-      // switch or plan approval mid-conversation takes effect on the next
-      // turn (instead of being frozen at transport construction).
-      let modeBlock = "";
-      let activeToolsOverride: string[] | undefined;
+      // Fetch the conversation row ONCE per turn and reuse it for both the
+      // editing-artifact block and the mode/plan block (previously two separate
+      // chatDb.getConversation reads). Read per-turn (keyed on the live
+      // agentConversationId) to dodge the transport-build race where
+      // conversationId isn't settled, and so a mode switch / plan approval /
+      // edit-target change mid-conversation takes effect on the next turn.
+      let convRow: Awaited<ReturnType<typeof chatDb.getConversation>> | null = null;
       if (cid) {
         try {
-          const conv = await chatDb.getConversation(cid);
-          if (conv?.mode === "plan") {
-            if (!conv.plan) {
-              modeBlock = `## Plan mode
+          convRow = await chatDb.getConversation(cid);
+        } catch (err) {
+          // Same fallback as resolveModeAndPlan: on a read failure fall through
+          // to Ask-mode semantics (no mode block) and omit the edit block. The
+          // user gets prompted per tool call rather than the agent running
+          // unconstrained — safe default.
+          console.warn(
+            "[agent] conversation refresh failed; falling back to Ask mode",
+            err,
+          );
+        }
+      }
+
+      // Editing-artifact block: when this conversation is editing an artifact,
+      // inject its id + manifest + current HTML so the agent edits inline via
+      // update_artifact.
+      let editBlock = "";
+      if (convRow?.editingArtifactId) {
+        try {
+          const { loadArtifact } = await import("@/lib/artifacts/registry");
+          const art = await loadArtifact(convRow.editingArtifactId);
+          if (art) editBlock = buildEditingArtifactBlock(art);
+        } catch {
+          /* best-effort; omit the block on failure */
+        }
+      }
+
+      // Per-turn mode + plan injection.
+      let modeBlock = "";
+      let activeToolsOverride: string[] | undefined;
+      {
+        const conv = convRow;
+        if (conv?.mode === "plan") {
+          if (!conv.plan) {
+            modeBlock = `## Plan mode
 
 You are in Plan mode. Your FIRST action MUST be \`proposePlan\` — do not call any other approval-gated tool until the user approves the plan.
 
 Be specific in \`sites\` — list every origin you intend to touch. Set \`allowNetwork: true\` ONLY if the task requires \`executePython\` with outbound network access (most tasks don't).
 
 If the user clicks 'Make changes', revise the plan based on their feedback and call \`proposePlan\` again.`;
-              // Hard enforcement: restrict the available tool set to just
-              // proposePlan so the model can't take any other action this
-              // turn. Once the plan is approved, the next turn's prepareCall
-              // sees conv.plan exists and lifts this restriction.
-              activeToolsOverride = ["proposePlan"];
-            } else {
-              const sitesList =
-                conv.plan.sites.length > 0
-                  ? conv.plan.sites.join(", ")
-                  : "(none yet — call proposePlan to extend)";
-              modeBlock = `## Plan mode (plan approved)
+            // Hard enforcement: restrict the available tool set to just
+            // proposePlan so the model can't take any other action this
+            // turn. Once the plan is approved, the next turn's prepareCall
+            // sees conv.plan exists and lifts this restriction.
+            activeToolsOverride = ["proposePlan"];
+          } else {
+            const sitesList =
+              conv.plan.sites.length > 0
+                ? conv.plan.sites.join(", ")
+                : "(none yet — call proposePlan to extend)";
+            modeBlock = `## Plan mode (plan approved)
 
 Sites: ${sitesList}
 Network access: ${conv.plan.allowNetwork ? "permitted" : "not permitted"}
 
 Stay within the approved sites. If you need to touch a site not listed, call \`proposePlan\` again to extend the plan; the user will approve the extension. Do NOT use sites outside the list without re-proposing.`;
-            }
           }
-        } catch (err) {
-          // Same fallback as resolveModeAndPlan: if the read fails for any
-          // reason (transient IDB error, etc.), fall through to Ask mode
-          // semantics. The user gets prompted on each tool call instead of
-          // the agent silently running unconstrained — safe default.
-          console.warn(
-            "[agent] mode/plan refresh failed; falling back to Ask mode",
-            err,
-          );
         }
       }
 
       const baseInstructions =
         typeof callArgs.instructions === "string" ? callArgs.instructions : "";
       // Append blocks; any can be empty. Mode block goes first (framing),
-      // then situational state (legend, workspace).
-      const tail = [modeBlock, legend, wsBlock].filter(Boolean).join("\n\n");
+      // then situational state (legend, workspace), then the editing-artifact
+      // block. Double-newline separators render them as distinct sections.
+      const tail = [modeBlock, legend, wsBlock, editBlock].filter(Boolean).join("\n\n");
       return {
         ...callArgs,
         instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,

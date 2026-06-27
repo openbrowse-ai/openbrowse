@@ -1,0 +1,135 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@plugin "@tailwindcss/typography";
+@import "../../styles/fonts.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+:root {
+  --radius: 0.125rem;
+  --background: oklch(0.98 0.005 85);
+  --foreground: oklch(0.18 0.01 75);
+  --card: oklch(1 0.003 85);
+  --card-foreground: oklch(0.18 0.01 75);
+  --popover: oklch(1 0.003 85);
+  --popover-foreground: oklch(0.18 0.01 75);
+  --primary: oklch(0.22 0.01 75);
+  --primary-foreground: oklch(0.98 0.005 85);
+  --secondary: oklch(0.955 0.008 85);
+  --secondary-foreground: oklch(0.22 0.01 75);
+  --muted: oklch(0.955 0.008 85);
+  --muted-foreground: oklch(0.52 0.01 75);
+  --accent: oklch(0.94 0.01 85);
+  --accent-foreground: oklch(0.22 0.01 75);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.90 0.01 85);
+  --input: oklch(0.90 0.01 85);
+  --ring: oklch(0.55 0.15 250);
+}
+
+.dark {
+  --background: oklch(0.24 0.01 75);
+  --foreground: oklch(0.93 0.005 85);
+  --card: oklch(0.28 0.01 75);
+  --card-foreground: oklch(0.93 0.005 85);
+  --popover: oklch(0.30 0.01 75);
+  --popover-foreground: oklch(0.93 0.005 85);
+  --primary: oklch(0.90 0.005 85);
+  --primary-foreground: oklch(0.28 0.01 75);
+  --secondary: oklch(0.30 0.01 75);
+  --secondary-foreground: oklch(0.93 0.005 85);
+  --muted: oklch(0.35 0.01 75);
+  --muted-foreground: oklch(0.65 0.008 85);
+  --accent: oklch(0.38 0.01 75);
+  --accent-foreground: oklch(0.93 0.005 85);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.55 0.15 250);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Shiki dual-theme switching (mirrors _shared/home.css). Shiki emits
+ * `--shiki-light` / `--shiki-dark` (and bg variants) on each token; apply the
+ * light theme by default and override with the dark theme under `.dark`. */
+.shiki {
+  background-color: var(--shiki-light-bg);
+}
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+
+.dark .shiki {
+  background-color: var(--shiki-dark-bg);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
+}
+
+/* Line-number gutter for `<CodeViewer lineNumbers>`. Shiki wraps each source
+ * line in `<span class="line">`, so we increment a counter on each one and
+ * render its value via a `::before` pseudo-element. */
+.with-line-numbers .shiki code {
+  counter-reset: line;
+}
+.with-line-numbers .shiki .line::before {
+  content: counter(line);
+  counter-increment: line;
+  display: inline-block;
+  width: 2.5rem;
+  padding-right: 1rem;
+  text-align: right;
+  color: var(--color-muted-foreground);
+  opacity: 0.6;
+  user-select: none;
+}

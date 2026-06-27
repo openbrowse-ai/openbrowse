@@ -27,6 +27,9 @@ import { Kbd } from "@/components/ui/kbd";
 import { ContextUsage } from "@/components/chat/ContextUsage";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
 import { FileSelectionContext } from "@/lib/file-selection-context";
+import { loadArtifact } from "@/lib/artifacts/registry";
+import { takePendingFixRequest, pollPendingFixRequest } from "@/lib/artifacts/pending-fix-request";
+import { parsePopupParams } from "./parsePopupParams";
 import { toast } from "sonner";
 
 function readPopupParams() {
@@ -38,35 +41,55 @@ function readPopupParams() {
       originTabId: null,
       originUrl: null,
       initialConversationId: null,
+      editArtifactId: null,
+      seedPrompt: null,
+      autoSubmit: false,
     };
   }
-  const params = new URLSearchParams(window.location.search);
-  const isPopupMode = params.get("mode") === "popup";
-  const isGlobalChat = params.get("globalChat") === "true";
-  const owid = params.get("originWindowId");
-  const otid = params.get("originTabId");
-  const ourl = params.get("originUrl");
-  const cid = params.get("conversationId");
-  return {
-    isPopupMode,
-    isGlobalChat,
-    originWindowId: owid ? Number(owid) : null,
-    originTabId: otid ? Number(otid) : null,
-    originUrl: ourl && ourl.length > 0 ? ourl : null,
-    initialConversationId: cid && cid.length > 0 ? cid : null,
-  };
+  return parsePopupParams(window.location.search);
 }
 
 export default function App() {
   useTheme();
-  const { isPopupMode, isGlobalChat, originWindowId, originTabId, originUrl, initialConversationId } = readPopupParams();
+  const { isPopupMode, isGlobalChat, originWindowId, originTabId, originUrl, initialConversationId, editArtifactId, seedPrompt, autoSubmit } = readPopupParams();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(initialConversationId);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
+  const [editingArtifactId, setEditingArtifactId] = useState<string | null>(null);
   const [generatingTitleIds, setGeneratingTitleIds] = useState<Set<string>>(new Set());
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
+
+  // Pending composer seed (from the artifact "Fix with OpenBrowse" banner),
+  // delivered once the matching conversation is active and ChatView has bound
+  // its "seed-chat-input" listener. Dispatched by the effect below.
+  //
+  // `conversationId` is `null` for the "Edit this artifact in chat" flows:
+  // the conversation row is created lazily on first send (so abandoning the
+  // edit panel leaves no empty row in the sidebar), so the seed targets the
+  // pre-creation null-conversation state. ChatView compares with `?? null`,
+  // so a null here matches its not-yet-created active chat.
+  const [pendingSeed, setPendingSeed] = useState<
+    { conversationId: string | null; text: string; autoSubmit: boolean } | null
+  >(null);
+
+  // Synchronous in-progress guard for the "Edit this artifact in chat" flow.
+  // React.StrictMode runs the init effect twice on mount with no render in
+  // between, so a render-coupled check cannot stop the second run from also
+  // loading the artifact + queuing the seed. This ref is flipped true
+  // synchronously before the await, deduping both the StrictMode double-mount
+  // and the concurrent-await race. (No DB row is created here — see
+  // useAgentChat's lazy createConversation, which tags the row with
+  // editingArtifactId on first send.)
+  const loadingEditArtifactRef = useRef(false);
+
+  // Holds the artifact id while "Edit this artifact in chat" is active but the
+  // conversation hasn't been created yet (deferred to first send). The title
+  // effect keys on activeConversationId; when that's null this ref tells it to
+  // preserve edit mode instead of resetting editingArtifactId to null. Cleared
+  // once a real conversation id is adopted, or when edit mode ends.
+  const pendingEditArtifactRef = useRef<string | null>(null);
 
   // Workspace-relative path of the file open in the full-panel viewer.
   const [viewerFile, setViewerFile] = useState<string | null>(null);
@@ -97,14 +120,66 @@ export default function App() {
       const allSpaces = await storage.getSpaces();
       setSpaces(allSpaces);
 
+      // "Edit this artifact in chat": when launched with ?editArtifactId and
+      // no explicit conversation, enter edit mode WITHOUT creating a
+      // conversation row. The row is created lazily by useAgentChat on first
+      // send (tagged with editingArtifactId), so opening the edit panel and
+      // closing it without typing leaves nothing in the sidebar. Here we only
+      // set the local edit state + composer seed.
+      async function maybeEnterEditMode() {
+        if (!editArtifactId) return;
+        if (initialConversationId) return;
+        if (activeConversationIdRef.current) return;
+        // Synchronous bail: a prior invocation (StrictMode double-mount or a
+        // concurrent code path) is already setting up edit mode.
+        if (loadingEditArtifactRef.current) return;
+        // Claim the in-progress slot synchronously, before any await, so the
+        // second StrictMode run sees it set and bails above.
+        loadingEditArtifactRef.current = true;
+
+        // No active conversation yet — edit mode runs in the fresh-chat state.
+        pendingEditArtifactRef.current = editArtifactId;
+        setActiveConversationId(null);
+        setEditingArtifactId(editArtifactId);
+
+        let artifactTitle = "artifact";
+        try {
+          const a = await loadArtifact(editArtifactId);
+          if (a) artifactTitle = a.manifest.title;
+        } catch (err) {
+          console.warn("[sidepanel] failed to load artifact for edit mode:", err);
+        }
+        setConversationTitle(`Edit: ${artifactTitle}`);
+
+        // Seed the composer. Prefer the "Fix with OpenBrowse" prompt stashed in
+        // chrome.storage.local by the artifact tab (polled briefly because the
+        // artifact fires the async write then opens the panel). Falls back to
+        // the URL `seedPrompt`. The seed targets the null (not-yet-created)
+        // conversation; sending it triggers useAgentChat's lazy create.
+        try {
+          const reqd = await pollPendingFixRequest();
+          if (reqd && reqd.artifactId === editArtifactId) {
+            setPendingSeed({ conversationId: null, text: reqd.prompt, autoSubmit: reqd.autoSubmit !== false });
+          } else if (seedPrompt) {
+            setPendingSeed({ conversationId: null, text: seedPrompt, autoSubmit });
+          }
+        } catch {
+          if (seedPrompt) {
+            setPendingSeed({ conversationId: null, text: seedPrompt, autoSubmit });
+          }
+        }
+      }
+
       if (isPopupMode) {
         if (originWindowId != null) {
           const space = await storage.getSpaceByWindowId(originWindowId);
           setActiveSpaceId(space?.id ?? null);
+          await maybeEnterEditMode();
           return;
         }
         // No origin window → run space-less.
         setActiveSpaceId(null);
+        await maybeEnterEditMode();
         return;
       }
 
@@ -112,6 +187,17 @@ export default function App() {
       if (currentWindow.id) {
         const space = await storage.getSpaceByWindowId(currentWindow.id);
         setActiveSpaceId(space?.id ?? null);
+
+        // When launched to edit an artifact, edit mode takes priority over
+        // whatever conversation the active tab owns. Adopting the tab's owned
+        // conversation first would set activeConversationId, making
+        // maybeEnterEditMode bail on its guard — so the agent would run in an
+        // ordinary conversation with no editingArtifactId and never receive
+        // the artifact's HTML. Skip the adoption in that case.
+        if (editArtifactId) {
+          await maybeEnterEditMode();
+          return;
+        }
 
         try {
           const owned = await chrome.runtime.sendMessage({
@@ -122,9 +208,11 @@ export default function App() {
             setActiveConversationId((prev) => prev ?? owned.conversationId);
           }
         } catch {}
+        await maybeEnterEditMode();
         return;
       }
       setActiveSpaceId(null);
+      await maybeEnterEditMode();
     }
     init();
 
@@ -133,7 +221,95 @@ export default function App() {
     };
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
-  }, [isPopupMode, originWindowId]);
+  }, [isPopupMode, originWindowId, editArtifactId, initialConversationId]);
+
+  // Deliver a queued composer seed once its conversation is the active one.
+  // ChatView (re)binds its "seed-chat-input" listener whenever conversationId
+  // changes; by the time this effect runs the listener is bound for the active
+  // conversation. We dispatch on a macrotask that is intentionally NOT canceled
+  // by the effect cleanup — clearing `pendingSeed` re-renders immediately, and
+  // an rAF/cleanup-canceled timer would be aborted before it ever fired.
+  useEffect(() => {
+    if (!pendingSeed) return;
+    if (activeConversationId !== pendingSeed.conversationId) return;
+    const seed = pendingSeed;
+    setPendingSeed(null);
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("seed-chat-input", {
+          detail: {
+            conversationId: seed.conversationId,
+            text: seed.text,
+            autoSubmit: seed.autoSubmit,
+          },
+        }),
+      );
+    }, 0);
+  }, [pendingSeed, activeConversationId]);
+
+  // React to "Fix with OpenBrowse" requests written by an artifact tab into
+  // chrome.storage.local (see pending-fix-request.ts — session storage is
+  // context-partitioned, so the artifact tab and this side panel wouldn't see
+  // each other's values). This works even when the side panel was already
+  // open (chrome.sidePanel.open doesn't reload an open panel, so init() and
+  // its URL-param handling don't re-run). Each request enters edit mode for a
+  // fresh chat and queues the (auto-submitted) seed prompt; the conversation
+  // row is created lazily by useAgentChat on send, so no empty row appears if
+  // the request is somehow abandoned.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function startFromFixRequest() {
+      const reqd = await takePendingFixRequest();
+      if (cancelled || !reqd) return;
+      let artifactTitle = "artifact";
+      try {
+        const a = await loadArtifact(reqd.artifactId);
+        if (a) artifactTitle = a.manifest.title;
+      } catch {
+        /* fall back to generic title */
+      }
+      if (cancelled) return;
+      // Enter edit mode in the fresh-chat (null conversation) state. Set the
+      // pending edit-artifact id BEFORE clearing the active conversation so the
+      // title effect (which keys on activeConversationId) surfaces edit mode
+      // rather than resetting it.
+      pendingEditArtifactRef.current = reqd.artifactId;
+      setActiveConversationId(null);
+      setEditingArtifactId(reqd.artifactId);
+      setConversationTitle(`Edit: ${artifactTitle}`);
+      setPendingSeed({
+        conversationId: null,
+        text: reqd.prompt,
+        autoSubmit: reqd.autoSubmit !== false,
+      });
+    }
+
+    function onChanged(
+      changes: Record<string, chrome.storage.StorageChange>,
+    ) {
+      if (!changes["openbrowse:pending-fix-request"]) return;
+      const next = changes["openbrowse:pending-fix-request"].newValue as
+        | { artifactId?: string }
+        | undefined;
+      if (!next) return; // ignore our own clear (remove)
+      // Cold-open is handled by init's maybeEnterEditMode (it polls storage
+      // for the same request). If this panel was launched for this very
+      // artifact, defer to init to avoid double-handling. The warm-panel case
+      // (request for an artifact we weren't launched for, or panel already
+      // settled) is handled here.
+      if (editArtifactId && next.artifactId === editArtifactId && !activeConversationIdRef.current) {
+        return;
+      }
+      void startFromFixRequest();
+    }
+
+    chrome.storage.local.onChanged.addListener(onChanged);
+    return () => {
+      cancelled = true;
+      chrome.storage.local.onChanged.removeListener(onChanged);
+    };
+  }, []);
 
   useEffect(() => {
     let myWindowId: number | undefined;
@@ -146,6 +322,11 @@ export default function App() {
         typeof msg === "object" &&
         (msg as { type?: string }).type === "FOCUS_CONVERSATION"
       ) {
+        // In edit-artifact mode the conversation is fixed to the edit
+        // conversation; ignore tab-focus-driven conversation switches that
+        // would otherwise replace it (and strip the editingArtifactId
+        // context the agent needs).
+        if (editArtifactId) return;
         const m = msg as { windowId?: number; conversationId?: string | null };
         if (m.windowId != null && m.windowId === myWindowId) {
           setActiveConversationId(m.conversationId ?? null);
@@ -154,13 +335,24 @@ export default function App() {
     };
     chrome.runtime.onMessage.addListener(handler);
     return () => chrome.runtime.onMessage.removeListener(handler);
-  }, []);
+  }, [editArtifactId]);
 
   useEffect(() => {
     if (!activeConversationId) {
+      // Pre-send "Edit this artifact in chat" state: no conversation row
+      // exists yet (created lazily on first send), but we must keep edit mode
+      // so ChatView shows the editing banner and useAgentChat tags the row.
+      if (pendingEditArtifactRef.current) {
+        setEditingArtifactId(pendingEditArtifactRef.current);
+        return;
+      }
       setConversationTitle(null);
+      setEditingArtifactId(null);
       return;
     }
+    // A real conversation id is now active; the deferred edit state (if any)
+    // has been promoted onto the persisted row, so stop preserving it here.
+    pendingEditArtifactRef.current = null;
     chatDb.getConversation(activeConversationId).then((conv) => {
       if (!conv) {
         // Defense in depth: the background command handler validates the
@@ -171,9 +363,11 @@ export default function App() {
         // popup launch).
         setActiveConversationId(null);
         setConversationTitle(null);
+        setEditingArtifactId(null);
         return;
       }
       setConversationTitle(conv.title ?? null);
+      setEditingArtifactId(conv.editingArtifactId ?? null);
     });
   }, [activeConversationId]);
 
@@ -456,10 +650,7 @@ export default function App() {
       <div className="relative flex flex-col h-screen">
         <div className="relative flex items-center gap-1.5 border-b border-border px-2 py-1.5">
           {conversationTitle && (
-            <>
-              <span className="text-muted-foreground text-xs">/</span>
-              <span className={`text-xs truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}>{conversationTitle}</span>
-            </>
+            <span className={`text-xs truncate min-w-0 ${activeConversationId && generatingTitleIds.has(activeConversationId) ? "shimmer-text" : ""}`}>{conversationTitle}</span>
           )}
           <div className="flex-1" />
           <Tooltip>
@@ -578,6 +769,7 @@ export default function App() {
             originWindowId={isPopupMode ? originWindowId : null}
             originTabId={isPopupMode ? originTabId : null}
             originUrl={isPopupMode ? originUrl : null}
+            editingArtifactId={editingArtifactId}
           />
         </div>
         {viewerFile !== null && activeConversationId && (

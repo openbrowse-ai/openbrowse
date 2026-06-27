@@ -92,9 +92,18 @@ export default defineConfig({
     content_security_policy: {
       extension_pages:
         "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+      // Artifact runtime runs in a sandboxed page (opaque origin) so the
+      // agent-authored HTML can use inline <script>. The per-artifact
+      // CSP <meta> injected by buildIframeDoc further narrows connect-src
+      // to the manifest's declared network allowlist.
+      sandbox:
+        "sandbox allow-scripts allow-forms allow-popups allow-modals; " +
+        "script-src 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://esm.sh https://unpkg.com; " +
+        "style-src 'unsafe-inline' https://cdn.jsdelivr.net https://esm.sh https://unpkg.com; " +
+        "img-src * data: blob:; font-src * data:; connect-src *;",
     },
     sandbox: {
-      pages: ["sandbox.html", "python-sandbox.html"],
+      pages: ["sandbox.html", "python-sandbox.html", "artifact-sandbox.html"],
     },
     icons: {
       "16": "icon/16.png",

@@ -240,6 +240,34 @@ class BackgroundMcpRegistry {
     return this.connections.get(serverId)?.client;
   }
 
+  /**
+   * Ensure a server has a live, connected client — reconnecting from stored
+   * settings if the in-memory connection is missing or not connected. The
+   * MV3 service worker is ephemeral: it can be torn down when idle and
+   * respawned for an incoming message (e.g. an artifact tab's MCP RPC) with
+   * an empty connection map. Pages like the sidepanel call connectAll on
+   * mount, but standalone artifact tabs don't, so the registry may have no
+   * live connection even though Settings shows the server as configured.
+   *
+   * Returns true if the server ends up connected.
+   */
+  async ensureServerConnected(serverId: string): Promise<boolean> {
+    const existing = this.connections.get(serverId);
+    if (existing && existing.state.status === "connected") return true;
+
+    let config: McpServerConfig | undefined;
+    try {
+      const settings = await storage.getSettings();
+      config = settings.mcpServers.find((s) => s.id === serverId);
+    } catch {
+      config = undefined;
+    }
+    if (!config || !config.enabled) return false;
+
+    await this.connectServer(config);
+    return this.connections.get(serverId)?.state.status === "connected";
+  }
+
   private broadcastStateChange() {
     chrome.runtime.sendMessage({ type: "MCP_STATE_CHANGED", states: this.getStates() }).catch(() => {});
   }

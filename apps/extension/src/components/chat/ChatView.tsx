@@ -126,6 +126,11 @@ interface ChatViewProps {
    * renders the Working folder and Context cards.
    */
   showWorkspaceControls?: boolean;
+  /**
+   * When set, the conversation is editing this artifact. Swaps the empty
+   * state for a tailored "update this artifact" prompt with suggestion chips.
+   */
+  editingArtifactId?: string | null;
 }
 
 export function ChatView({
@@ -146,6 +151,7 @@ export function ChatView({
   originUrl,
   showWorkspaceControls = false,
   initialInput,
+  editingArtifactId,
 }: ChatViewProps) {
   // Track the live origin tab id in popup mode. May change if the original
   // origin tab is closed and later restored from history (the URL matches a
@@ -231,6 +237,7 @@ export function ChatView({
     onNewConversation,
     initialInput,
     getSharedTabId,
+    editingArtifactId,
     initialMode: mode,
   });
 
@@ -239,19 +246,36 @@ export function ChatView({
   // conversation so only the visible chat responds. Bumps a focus nonce so
   // ChatInput refocuses on the seeded text.
   const [seedNonce, setSeedNonce] = useState(0);
+  // Set when a seed event requested auto-submission; consumed by the effect
+  // below once `input` has been committed for the seeded text.
+  const [pendingAutoSubmit, setPendingAutoSubmit] = useState(false);
   useEffect(() => {
     function onSeed(e: Event) {
       const detail = (e as CustomEvent).detail as
-        | { conversationId: string | null; text: string }
+        | { conversationId: string | null; text: string; autoSubmit?: boolean }
         | undefined;
       if (!detail) return;
       if ((detail.conversationId ?? null) !== (conversationId ?? null)) return;
       setInput(detail.text);
       setSeedNonce((n) => n + 1);
+      // Only arm auto-submit for a submittable seed. A whitespace/empty seed
+      // must NOT leave the flag set, or a later user-typed draft would be
+      // auto-submitted by the effect below once `input` becomes non-empty.
+      // Setting unconditionally also disarms a stale flag from a prior seed.
+      setPendingAutoSubmit(Boolean(detail.autoSubmit && detail.text.trim()));
     }
     window.addEventListener("seed-chat-input", onSeed);
     return () => window.removeEventListener("seed-chat-input", onSeed);
   }, [conversationId, setInput]);
+
+  // Auto-submit a seeded prompt once `input` has been committed (next render
+  // after the seed event). Guarded so it fires exactly once per request.
+  useEffect(() => {
+    if (!pendingAutoSubmit) return;
+    if (!input.trim()) return;
+    setPendingAutoSubmit(false);
+    void handleSubmit([], []);
+  }, [pendingAutoSubmit, input, handleSubmit]);
 
   // Resolve the active space's row so the bottom composer can paint
   // its color halo on focus. Refetches when `spaceId` changes or when
@@ -702,7 +726,36 @@ export function ChatView({
                 </button>
               </div>
             )}
-            {isConfigured && messages.length === 0 && (
+            {isConfigured && messages.length === 0 && editingArtifactId && (
+              <div className="flex flex-col items-center justify-center gap-4 text-center px-4 min-h-[calc(100vh-180px)]">
+                <Logo className="size-10" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">Update this artifact</p>
+                  <p className="text-xs text-muted-foreground">
+                    How do you want to update this artifact?
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 gap-2 w-full max-w-[280px]">
+                  {[
+                    "Change the color scheme",
+                    "Add a filter or sort",
+                    "Show more detail",
+                  ].map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => {
+                        setInput(label);
+                      }}
+                      className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors text-left"
+                    >
+                      <span>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isConfigured && messages.length === 0 && !editingArtifactId && (
               <div className="flex flex-col items-center justify-center gap-4 text-center px-4 min-h-[calc(100vh-180px)]">
                 <Logo className="size-10" />
                 <div className="space-y-1">

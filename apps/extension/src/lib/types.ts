@@ -175,6 +175,13 @@ export interface Conversation {
   id: string;
   title: string;
   spaceId: string | null;
+  /**
+   * When set, this conversation is an "edit this artifact in chat" session
+   * launched from the artifact tab's pencil button. Holds the artifact's id.
+   * Optional; absent on ordinary conversations. No migration needed (the
+   * conversations store keeps whole objects).
+   */
+  editingArtifactId?: string;
   ownedGroupId: number | null;
   /**
    * Logical tab ids (UUIDs minted by `tab-registry.ts`) the conversation
