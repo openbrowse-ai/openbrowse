@@ -11,7 +11,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { listArtifacts, deleteArtifact, setFavorite, type SavedArtifact } from "@/lib/artifacts/registry";
+import { artifactsEvents } from "@/lib/artifacts/events";
 import { ArrowUpRight, Trash2, Star } from "lucide-react";
+import { toast } from "sonner";
 
 export function groupArtifacts(items: SavedArtifact[]) {
   return {
@@ -31,7 +33,15 @@ export function LibraryView() {
     setItems(await listArtifacts());
     setLoading(false);
   }
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    void refresh();
+    // Reload when any context mutates the registry (create/update/rename/
+    // favorite/install/delete) so an open Library stays in sync.
+    const onChange = () => void refresh();
+    artifactsEvents.addEventListener("artifacts:changed", onChange);
+    return () =>
+      artifactsEvents.removeEventListener("artifacts:changed", onChange);
+  }, []);
 
   async function confirmDelete() {
     if (!pendingDelete || deleting) return;
@@ -40,6 +50,12 @@ export function LibraryView() {
       await deleteArtifact(pendingDelete.manifest.id);
       await refresh();
       setPendingDelete(null);
+    } catch (err) {
+      toast.error(
+        `Failed to delete "${pendingDelete.manifest.title}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     } finally {
       setDeleting(false);
     }
@@ -60,6 +76,10 @@ export function LibraryView() {
           aria-label={`Open ${a.manifest.title}`}
           onClick={() => openArtifact(a)}
           onKeyDown={(e) => {
+            // Ignore keys that bubbled up from a nested interactive control
+            // (Favorite/Delete buttons) — otherwise Enter/Space on those would
+            // both run the button action AND open the artifact.
+            if (e.target !== e.currentTarget) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               openArtifact(a);

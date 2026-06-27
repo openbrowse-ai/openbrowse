@@ -99,9 +99,14 @@ export function checkAllowlist(
   sidecar: ArtifactSidecar,
   toolName: string,
 ): AllowlistOk | AllowlistErr {
-  const entry = manifest.tools.find((t) => t.name === toolName);
-  if (!entry) return { ok: false, error: `tool '${toolName}' not declared in artifact manifest` };
-  if (entry.mode === "write" && !sidecar.approvedWrites.includes(toolName)) {
+  const matches = manifest.tools.filter((t) => t.name === toolName);
+  if (matches.length === 0) return { ok: false, error: `tool '${toolName}' not declared in artifact manifest` };
+  // Defence in depth against duplicate names (validateManifest already rejects
+  // them): if ANY matching entry is write-mode, require approval. This prevents
+  // a [{name, read}, {name, write}] pair from bypassing approvedWrites via the
+  // first match.
+  const needsApproval = matches.some((t) => t.mode === "write");
+  if (needsApproval && !sidecar.approvedWrites.includes(toolName)) {
     return { ok: false, error: `write tool '${toolName}' not approved by user` };
   }
   return { ok: true };

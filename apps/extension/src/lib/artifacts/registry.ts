@@ -18,7 +18,16 @@ export interface SaveOptions {
   sourceConversationId: string | null;
 }
 
-const META_TAG_RE = /<meta\s+name=["']openbrowse:artifact["'][^>]*>/gi;
+// Match the manifest meta tag without stopping at a `>` inside a quoted
+// attribute value (the inlined `content='...'` JSON can contain one). Each attr
+// char is a "..." / '...' quoted run or a single non-`>` char, so only an
+// unquoted `>` terminates the tag. inlineManifestMeta escapes `>` in the JSON it
+// writes, but extractManifest may read tags from other sources.
+const META_ATTR = `(?:"[^"]*"|'[^']*'|[^>])`;
+const META_TAG_RE = new RegExp(
+  `<meta\\s+name=["']openbrowse:artifact["']${META_ATTR}*>`,
+  "gi",
+);
 const HEAD_INSERT_RE = /(<head[^>]*>)/i;
 
 function htmlPath(id: string) { return `${ROOT}/${id}.html`; }

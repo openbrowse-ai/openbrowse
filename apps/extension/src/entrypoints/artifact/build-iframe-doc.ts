@@ -3,7 +3,15 @@ import { buildCsp } from "@/lib/artifacts/csp";
 import { BRIDGE_SHIM_SOURCE } from "./bridge-shim";
 import type { ArtifactManifest } from "@/lib/artifacts/manifest";
 
-const META_TAG_RE = /<meta[^>]+name=["']openbrowse:artifact["'][^>]*>/gi;
+// Match the manifest meta tag without stopping at a `>` that appears INSIDE a
+// quoted attribute value (the manifest JSON in `content='...'` can contain
+// `>`). Each attribute char is consumed as either a "..." / '...' quoted run or
+// a single non-`>` char, so only an unquoted `>` ends the tag.
+const ATTR = `(?:"[^"]*"|'[^']*'|[^>])`;
+const META_TAG_RE = new RegExp(
+  `<meta\\b${ATTR}*?\\bname=(?:"openbrowse:artifact"|'openbrowse:artifact')${ATTR}*>`,
+  "gi",
+);
 
 /**
  * Inject CSP <meta> and the bridge shim <script> into the artifact HTML.

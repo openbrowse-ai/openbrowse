@@ -55,7 +55,7 @@ export function ArtifactDiagnosticsResult({ args, result }: Props) {
   const artifactId =
     typeof args?.artifactId === "string" ? args.artifactId : out.artifactId;
   const errors = out.errors ?? [];
-  const console = out.console ?? [];
+  const consoleEntries = out.console ?? [];
   const rendered = out.rendered ?? null;
 
   const status: "errored" | "rendered" | "pending" =
@@ -132,14 +132,14 @@ export function ArtifactDiagnosticsResult({ args, result }: Props) {
       )}
 
       {/* Forwarded console. */}
-      {console.length > 0 && (
+      {consoleEntries.length > 0 && (
         <div className="bg-background/50">
           <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
             <Terminal className="size-3 shrink-0" />
-            Console ({console.length})
+            Console ({consoleEntries.length})
           </div>
           <div className="max-h-48 overflow-y-auto px-2.5 py-1.5 font-mono text-[11px] leading-relaxed styled-scrollbar">
-            {console.map((c, i) => (
+            {consoleEntries.map((c, i) => (
               <div key={i} className={levelTone(c.level)}>
                 <span className="select-none text-muted-foreground/60">
                   {c.level}{" "}
@@ -153,7 +153,7 @@ export function ArtifactDiagnosticsResult({ args, result }: Props) {
 
       {/* Body sample on a clean render (no console / no errors to show). */}
       {status === "rendered" &&
-        console.length === 0 &&
+        consoleEntries.length === 0 &&
         rendered?.bodyTextSample && (
           <div className="bg-background/50 px-2.5 py-1.5">
             <div className="mb-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/70">

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { loadArtifact, saveArtifact } from "@/lib/artifacts/registry";
-import { validateManifest } from "@/lib/artifacts/validate";
+import { validateManifest, canonicalizeManifest, manifestVersion } from "@/lib/artifacts/validate";
 import { applyEdits } from "@/lib/artifacts/apply-edits";
 import type { ArtifactManifest } from "@/lib/artifacts/manifest";
 import type { BrowserTool } from "../types";
@@ -65,7 +65,13 @@ export const updateArtifactTool: BrowserTool<Input, Output> = {
     const html = input.edits ? applyEdits(existing.html, input.edits) : existing.html;
 
     const saved = await saveArtifact({ manifest: next, html, sourceConversationId: ctx.session.conversationId });
-    const approvalsReset = !saved.sidecar.installedAt;
+    // approvalsReset must reflect an actual security-surface change, not merely
+    // "not installed". `!installedAt` is also true for never-approved artifacts,
+    // which would falsely report a reset on a plain metadata edit. Derive it
+    // from the manifest-version delta (the same security subset saveArtifact
+    // hashes). TODO: have saveArtifact return this directly to avoid re-hashing.
+    const priorVersion = await manifestVersion(canonicalizeManifest(existing.manifest));
+    const approvalsReset = priorVersion !== saved.sidecar.manifestVersion;
     return {
       artifactId: saved.manifest.id,
       openUrl: chrome.runtime.getURL(`artifact.html?id=${encodeURIComponent(saved.manifest.id)}`),

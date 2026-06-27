@@ -145,3 +145,19 @@ describe("readArtifactDiagnosticsTool.execute", () => {
     expect(out.note).toMatch(/update_artifact/);
   });
 });
+
+describe("readArtifactDiagnosticsTool.parameters waitMs bounds", () => {
+  const schema = readArtifactDiagnosticsTool.parameters;
+
+  it("accepts the in-range and omitted cases", () => {
+    expect(schema.safeParse({ artifactId: "x" }).success).toBe(true);
+    expect(schema.safeParse({ artifactId: "x", waitMs: 0 }).success).toBe(true);
+    expect(schema.safeParse({ artifactId: "x", waitMs: 30_000 }).success).toBe(true);
+  });
+
+  it("rejects negative and excessive waits", () => {
+    expect(schema.safeParse({ artifactId: "x", waitMs: -1 }).success).toBe(false);
+    expect(schema.safeParse({ artifactId: "x", waitMs: 30_001 }).success).toBe(false);
+    expect(schema.safeParse({ artifactId: "x", waitMs: 999_999_999 }).success).toBe(false);
+  });
+});

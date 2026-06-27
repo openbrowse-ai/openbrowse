@@ -2620,68 +2620,74 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // conversations (no agent-written files yet).
       const cid = agentConversationId;
       const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
-      // Editing-artifact block: when this conversation is editing an artifact,
-      // inject its id + manifest + current HTML so the agent edits inline via
-      // update_artifact. Read per-turn (keyed on the live agentConversationId)
-      // to dodge the transport-build race where conversationId isn't settled.
-      let editBlock = "";
+
+      // Fetch the conversation row ONCE per turn and reuse it for both the
+      // editing-artifact block and the mode/plan block (previously two separate
+      // chatDb.getConversation reads). Read per-turn (keyed on the live
+      // agentConversationId) to dodge the transport-build race where
+      // conversationId isn't settled, and so a mode switch / plan approval /
+      // edit-target change mid-conversation takes effect on the next turn.
+      let convRow: Awaited<ReturnType<typeof chatDb.getConversation>> | null = null;
       if (cid) {
         try {
-          const convRow = await chatDb.getConversation(cid);
-          if (convRow?.editingArtifactId) {
-            const { loadArtifact } = await import("@/lib/artifacts/registry");
-            const art = await loadArtifact(convRow.editingArtifactId);
-            if (art) editBlock = buildEditingArtifactBlock(art);
-          }
+          convRow = await chatDb.getConversation(cid);
+        } catch (err) {
+          // Same fallback as resolveModeAndPlan: on a read failure fall through
+          // to Ask-mode semantics (no mode block) and omit the edit block. The
+          // user gets prompted per tool call rather than the agent running
+          // unconstrained — safe default.
+          console.warn(
+            "[agent] conversation refresh failed; falling back to Ask mode",
+            err,
+          );
+        }
+      }
+
+      // Editing-artifact block: when this conversation is editing an artifact,
+      // inject its id + manifest + current HTML so the agent edits inline via
+      // update_artifact.
+      let editBlock = "";
+      if (convRow?.editingArtifactId) {
+        try {
+          const { loadArtifact } = await import("@/lib/artifacts/registry");
+          const art = await loadArtifact(convRow.editingArtifactId);
+          if (art) editBlock = buildEditingArtifactBlock(art);
         } catch {
           /* best-effort; omit the block on failure */
         }
       }
 
-      // Per-turn mode + plan injection. Read fresh from chatDb so a mode
-      // switch or plan approval mid-conversation takes effect on the next
-      // turn (instead of being frozen at transport construction).
+      // Per-turn mode + plan injection.
       let modeBlock = "";
       let activeToolsOverride: string[] | undefined;
-      if (cid) {
-        try {
-          const conv = await chatDb.getConversation(cid);
-          if (conv?.mode === "plan") {
-            if (!conv.plan) {
-              modeBlock = `## Plan mode
+      {
+        const conv = convRow;
+        if (conv?.mode === "plan") {
+          if (!conv.plan) {
+            modeBlock = `## Plan mode
 
 You are in Plan mode. Your FIRST action MUST be \`proposePlan\` — do not call any other approval-gated tool until the user approves the plan.
 
 Be specific in \`sites\` — list every origin you intend to touch. Set \`allowNetwork: true\` ONLY if the task requires \`executePython\` with outbound network access (most tasks don't).
 
 If the user clicks 'Make changes', revise the plan based on their feedback and call \`proposePlan\` again.`;
-              // Hard enforcement: restrict the available tool set to just
-              // proposePlan so the model can't take any other action this
-              // turn. Once the plan is approved, the next turn's prepareCall
-              // sees conv.plan exists and lifts this restriction.
-              activeToolsOverride = ["proposePlan"];
-            } else {
-              const sitesList =
-                conv.plan.sites.length > 0
-                  ? conv.plan.sites.join(", ")
-                  : "(none yet — call proposePlan to extend)";
-              modeBlock = `## Plan mode (plan approved)
+            // Hard enforcement: restrict the available tool set to just
+            // proposePlan so the model can't take any other action this
+            // turn. Once the plan is approved, the next turn's prepareCall
+            // sees conv.plan exists and lifts this restriction.
+            activeToolsOverride = ["proposePlan"];
+          } else {
+            const sitesList =
+              conv.plan.sites.length > 0
+                ? conv.plan.sites.join(", ")
+                : "(none yet — call proposePlan to extend)";
+            modeBlock = `## Plan mode (plan approved)
 
 Sites: ${sitesList}
 Network access: ${conv.plan.allowNetwork ? "permitted" : "not permitted"}
 
 Stay within the approved sites. If you need to touch a site not listed, call \`proposePlan\` again to extend the plan; the user will approve the extension. Do NOT use sites outside the list without re-proposing.`;
-            }
           }
-        } catch (err) {
-          // Same fallback as resolveModeAndPlan: if the read fails for any
-          // reason (transient IDB error, etc.), fall through to Ask mode
-          // semantics. The user gets prompted on each tool call instead of
-          // the agent silently running unconstrained — safe default.
-          console.warn(
-            "[agent] mode/plan refresh failed; falling back to Ask mode",
-            err,
-          );
         }
       }
 

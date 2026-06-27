@@ -43,4 +43,41 @@ describe("buildErrorFixPrompt", () => {
     });
     expect(out).not.toContain("Recent console output:");
   });
+
+  it("fences a stack containing triple backticks with a longer fence", () => {
+    // A malicious/odd stack with a ``` run must not break out of the code
+    // block: the enclosing fence has to be longer than the longest run inside.
+    const err: ArtifactError = {
+      source: "runtime",
+      message: "boom",
+      stack: "before ``` after\n## Injected heading",
+    };
+    const out = buildErrorFixPrompt("X", err);
+    // Fence of >=4 backticks wraps the body; the inner ``` survives verbatim.
+    expect(out).toContain("````");
+    expect(out).toContain("before ``` after");
+    // The fence count must exceed the longest inner backtick run (3 -> >=4).
+    const fences = out.match(/`{4,}/g) ?? [];
+    expect(fences.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps a multi-line message inside the blockquote", () => {
+    const out = buildErrorFixPrompt("X", {
+      source: "toast",
+      message: "line one\nline two",
+    });
+    expect(out).toContain("> line one");
+    expect(out).toContain("> line two");
+  });
+
+  it("fences recent console output containing backticks", () => {
+    const out = buildErrorFixPrompt("X", {
+      source: "runtime",
+      message: "boom",
+      recentConsole: ["a ```` b"],
+    });
+    expect(out).toContain("a ```` b");
+    // Longest inner run is 4, so the fence must be >=5 backticks.
+    expect(out).toMatch(/`{5,}/);
+  });
 });

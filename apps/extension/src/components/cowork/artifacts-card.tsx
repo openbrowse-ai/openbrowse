@@ -106,9 +106,17 @@ export function ArtifactsCard({
     try {
       await deleteArtifact(pendingDelete.manifest.id);
       toast.success(`Deleted "${pendingDelete.manifest.title}"`);
+      // Only dismiss the dialog on success; on failure we keep it open and
+      // surface the error so the user can retry.
       setPendingDelete(null);
       // listArtifacts re-read is driven by the artifacts:changed event that
       // deleteArtifact emits; no explicit refresh needed.
+    } catch (err) {
+      toast.error(
+        `Failed to delete "${pendingDelete.manifest.title}": ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     } finally {
       setDeleting(false);
     }

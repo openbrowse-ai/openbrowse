@@ -7,9 +7,11 @@ const parameters = z
     artifactId: z.string().describe("The id returned by create_artifact."),
     waitMs: z
       .number()
+      .min(0)
+      .max(30_000)
       .optional()
       .describe(
-        "How long to wait (ms) for the artifact to load and report diagnostics before returning. Default 3000. The call returns early as soon as the artifact reports it rendered or an error occurs.",
+        "How long to wait (ms) for the artifact to load and report diagnostics before returning. Default 3000, max 30000. The call returns early as soon as the artifact reports it rendered or an error occurs.",
       ),
   })
   .strict();

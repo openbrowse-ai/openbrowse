@@ -148,4 +148,37 @@ describe("updateArtifactTool", () => {
       ),
     ).rejects.toThrow(/conversation/i);
   });
+
+  it("does NOT report approvalsReset for a metadata-only change", async () => {
+    // title isn't in the security subset canonicalizeManifest hashes, so the
+    // manifest version is unchanged -> approvals are not reset, even though the
+    // fixture artifact was never installed (installedAt undefined).
+    const result = await updateArtifactTool.execute(
+      { id: "linear-triage", title: "Renamed Triage" },
+      ctx("conv-A"),
+    );
+    expect(result.approvalsReset).toBe(false);
+  });
+
+  it("does NOT report approvalsReset for an HTML-only edit", async () => {
+    const result = await updateArtifactTool.execute(
+      { id: "linear-triage", edits: [{ find: "OLD", replace: "NEW" }] },
+      ctx("conv-A"),
+    );
+    expect(result.approvalsReset).toBe(false);
+  });
+
+  it("reports approvalsReset when the tool surface changes", async () => {
+    const result = await updateArtifactTool.execute(
+      {
+        id: "linear-triage",
+        tools: [
+          { name: "mcp.linear.list_issues", mode: "read" },
+          { name: "mcp.linear.update_issue", mode: "write" },
+        ],
+      },
+      ctx("conv-A"),
+    );
+    expect(result.approvalsReset).toBe(true);
+  });
 });

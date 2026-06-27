@@ -258,7 +258,11 @@ export function ChatView({
       if ((detail.conversationId ?? null) !== (conversationId ?? null)) return;
       setInput(detail.text);
       setSeedNonce((n) => n + 1);
-      if (detail.autoSubmit) setPendingAutoSubmit(true);
+      // Only arm auto-submit for a submittable seed. A whitespace/empty seed
+      // must NOT leave the flag set, or a later user-typed draft would be
+      // auto-submitted by the effect below once `input` becomes non-empty.
+      // Setting unconditionally also disarms a stale flag from a prior seed.
+      setPendingAutoSubmit(Boolean(detail.autoSubmit && detail.text.trim()));
     }
     window.addEventListener("seed-chat-input", onSeed);
     return () => window.removeEventListener("seed-chat-input", onSeed);

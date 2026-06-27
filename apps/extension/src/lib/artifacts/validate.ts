@@ -42,10 +42,20 @@ export function validateManifest(m: unknown): ValidationResult {
   if (!Array.isArray(x.tools)) {
     errors.push("tools must be an array");
   } else {
+    const seenNames = new Set<string>();
     for (const [i, t] of x.tools.entries()) {
       if (!t || typeof t !== "object") { errors.push(`tools[${i}] must be an object`); continue; }
       if (typeof t.name !== "string" || !TOOL_RE.test(t.name)) errors.push(`tools[${i}].name must match mcp.<server>.<tool> | browser.<tool> | system.<tool>`);
       if (t.mode !== "read" && t.mode !== "write") errors.push(`tools[${i}].mode must be 'read' or 'write'`);
+      // Reject duplicate tool names. checkAllowlist() resolves a tool by the
+      // FIRST matching entry, so a manifest with [{name, read}, {name, write}]
+      // would let a write tool bypass approvedWrites. Disallow repeats outright.
+      if (typeof t.name === "string") {
+        if (seenNames.has(t.name)) {
+          errors.push(`tools[${i}].name duplicates an earlier entry '${t.name}'`);
+        }
+        seenNames.add(t.name);
+      }
       const inferred = classifyMode(t.name);
       if (inferred && inferred !== t.mode) {
         warnings.push(`tools[${i}] (${t.name}): heuristic suggests mode='${inferred}', got '${t.mode}'`);

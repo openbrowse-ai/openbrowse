@@ -83,6 +83,31 @@ describe("validateManifest", () => {
     expect(validateManifest({ ...valid, network: ["*example.com"] }).ok).toBe(false);
   });
 
+  it("rejects duplicate tool names (read+write would bypass approval)", () => {
+    // checkAllowlist resolves by first match, so a read entry shadowing a write
+    // entry of the same name would skip approvedWrites. Must be rejected here.
+    const r = validateManifest({
+      ...valid,
+      tools: [
+        { name: "mcp.linear.update_issue", mode: "read" },
+        { name: "mcp.linear.update_issue", mode: "write" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.includes("duplicates an earlier entry"))).toBe(true);
+  });
+
+  it("rejects duplicate tool names even with identical modes", () => {
+    const r = validateManifest({
+      ...valid,
+      tools: [
+        { name: "mcp.linear.search_issues", mode: "read" },
+        { name: "mcp.linear.search_issues", mode: "read" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+  });
+
   it("warns on read/write mode mismatch", () => {
     const r = validateManifest({
       ...valid,

@@ -51,7 +51,7 @@ const opfs = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/vfs/opfs", () => ({ OPFS: opfs }));
 
-import { handleArtifactRpc } from "../artifact-rpc";
+import { handleArtifactRpc, readBodyCapped } from "../artifact-rpc";
 import { base64ToArrayBuffer, arrayBufferToBase64 } from "@/lib/artifacts/base64";
 
 /** Decode the brokered result's base64 body back to bytes / text. */
@@ -403,5 +403,47 @@ describe("artifact-rpc network.fetch", () => {
     fetchMock.mockResolvedValue(res("ok"));
     await call("https://api.example.com/x", { method: "POST", body: "hello=1" });
     expect((fetchMock.mock.calls[0][1] as { body: unknown }).body).toBe("hello=1");
+  });
+});
+
+describe("readBodyCapped", () => {
+  function streamResponse(chunks: Uint8Array[]): Pick<Response, "body" | "arrayBuffer"> {
+    let i = 0;
+    const body = {
+      getReader() {
+        return {
+          read: async () =>
+            i < chunks.length
+              ? { done: false, value: chunks[i++] }
+              : { done: true, value: undefined },
+          cancel: async () => {},
+        };
+      },
+    } as unknown as ReadableStream<Uint8Array>;
+    return { body, arrayBuffer: async () => new ArrayBuffer(0) };
+  }
+
+  it("returns all bytes when under the cap", async () => {
+    const out = await readBodyCapped(
+      streamResponse([new Uint8Array([1, 2]), new Uint8Array([3])]),
+      10,
+    );
+    expect(out && Array.from(out)).toEqual([1, 2, 3]);
+  });
+
+  it("returns null (overflow) and stops reading once the cap is exceeded", async () => {
+    const out = await readBodyCapped(
+      streamResponse([new Uint8Array(8), new Uint8Array(8)]),
+      10,
+    );
+    expect(out).toBeNull();
+  });
+
+  it("falls back to arrayBuffer when no stream, still enforcing the cap", async () => {
+    const big = { body: null, arrayBuffer: async () => new ArrayBuffer(20) };
+    expect(await readBodyCapped(big, 10)).toBeNull();
+    const ok = { body: null, arrayBuffer: async () => new Uint8Array([9, 9]).buffer };
+    const out = await readBodyCapped(ok, 10);
+    expect(out && Array.from(out)).toEqual([9, 9]);
   });
 });

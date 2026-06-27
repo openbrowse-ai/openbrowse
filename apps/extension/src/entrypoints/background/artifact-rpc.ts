@@ -26,6 +26,45 @@ const FORBIDDEN_REQUEST_HEADERS = new Set([
 ]);
 
 /**
+ * Read a Response body incrementally, aborting as soon as the running total
+ * exceeds `max` so we never buffer an oversized (or unbounded streamed) body in
+ * the service worker. Returns `null` on overflow (the caller maps that to the
+ * existing size-limit error). Extracted + exported for unit testing.
+ */
+export async function readBodyCapped(
+  response: Pick<Response, "body" | "arrayBuffer">,
+  max: number,
+): Promise<Uint8Array | null> {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    // No stream (e.g. a mocked Response): fall back to arrayBuffer, still
+    // enforcing the cap before returning.
+    const buf = new Uint8Array(await response.arrayBuffer());
+    return buf.byteLength > max ? null : buf;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+}
+
+/**
  * Resolve a manifest server token (the stable connector id, e.g. "linear")
  * to the live server config id in the user's settings.
  *
@@ -249,8 +288,18 @@ async function handleNetworkFetch(
       }
     }
 
-    const buf = await response.arrayBuffer();
-    if (buf.byteLength > MAX_RESPONSE_BODY) {
+    // Reject oversized bodies BEFORE buffering. Check the declared
+    // Content-Length first (cheap), then stream and abort if the running total
+    // exceeds the cap (covers chunked/streamed responses with no length).
+    const declared = response.headers.get("content-length");
+    if (declared) {
+      const n = Number.parseInt(declared, 10);
+      if (Number.isFinite(n) && n > MAX_RESPONSE_BODY) {
+        return { ok: false, error: `network.fetch: response body exceeds ${MAX_RESPONSE_BODY} bytes` };
+      }
+    }
+    const respBytes = await readBodyCapped(response, MAX_RESPONSE_BODY);
+    if (respBytes === null) {
       return { ok: false, error: `network.fetch: response body exceeds ${MAX_RESPONSE_BODY} bytes` };
     }
 
@@ -268,8 +317,10 @@ async function handleNetworkFetch(
         statusText: response.statusText,
         headers: outHeaders,
         // base64 so the bytes survive chrome.runtime.sendMessage's JSON
-        // serialization (a raw ArrayBuffer would arrive as `{}`).
-        bodyB64: arrayBufferToBase64(buf),
+        // serialization (a raw ArrayBuffer would arrive as `{}`). respBytes is
+        // a freshly-allocated Uint8Array exactly sized to the body, so its
+        // backing buffer can be passed directly.
+        bodyB64: arrayBufferToBase64(respBytes.buffer as ArrayBuffer),
       },
     };
   } catch (e) {

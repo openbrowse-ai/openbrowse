@@ -36,6 +36,21 @@ describe("checkAllowlist", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/not approved/i);
   });
+
+  it("requires approval when ANY duplicate entry is write-mode (defence in depth)", () => {
+    // validateManifest rejects duplicate names, but checkAllowlist must not rely
+    // on that: a read entry shadowing a write entry of the same name must still
+    // require approvedWrites rather than passing via the first (read) match.
+    const dup: ArtifactManifest = {
+      ...m,
+      tools: [
+        { name: "mcp.linear.update_issue", mode: "read" },
+        { name: "mcp.linear.update_issue", mode: "write" },
+      ],
+    };
+    expect(checkAllowlist(dup, { ...s, approvedWrites: [] }, "mcp.linear.update_issue").ok).toBe(false);
+    expect(checkAllowlist(dup, s, "mcp.linear.update_issue")).toEqual({ ok: true });
+  });
 });
 
 describe("isArtifactRpcMessage", () => {
