@@ -39,6 +39,12 @@ interface ChatDB extends DBSchema {
       id: string;
       title: string;
       spaceId: string | null;
+      // "Edit this artifact in chat" tag. Set when the conversation was
+      // launched from the artifact tab's pencil button; holds the artifact
+      // id. Optional; absent on ordinary conversations. No migration needed
+      // (keyPath store stores whole objects). Mirrors `Conversation` in
+      // lib/types.ts.
+      editingArtifactId?: string;
       ownedGroupId: number | null;
       /**
        * Logical tab ids (UUIDs minted by `tab-registry.ts`) the conversation

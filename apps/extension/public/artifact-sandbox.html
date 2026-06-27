@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8" /></head>
+<body>
+<script>
+"use strict";
+// Artifact sandbox runtime.
+//
+// This is a Chrome "sandbox" page (declared in manifest sandbox.pages), so it
+// runs with an opaque origin and is exempt from the extension's strict
+// extension_pages CSP — which is what lets the agent-authored artifact use
+// inline <script>. It cannot touch chrome.* APIs.
+//
+// Flow:
+//   1. The trusted host (artifact.html) embeds this page in an <iframe>.
+//   2. Host posts { type: "ART_DOC", html } where `html` is the full artifact
+//      document (already containing the per-artifact CSP <meta>, the bridge
+//      shim <script>, and the agent's HTML — built by buildIframeDoc).
+//   3. We write that document into THIS page via document.open/write/close.
+//   4. The written document's bridge shim posts ART_RPC messages to
+//      window.parent (the host), which performs the privileged work.
+//
+// Because we replace our own document, the bridge shim's window.parent still
+// resolves to the host frame after the rewrite.
+
+let written = false;
+
+window.addEventListener("message", (e) => {
+  const m = e.data;
+  if (!m || typeof m !== "object") return;
+  if (m.type === "ART_DOC" && typeof m.html === "string" && !written) {
+    written = true;
+    try {
+      document.open();
+      document.write(m.html);
+      document.close();
+    } catch (err) {
+      document.body && (document.body.textContent =
+        "Failed to render artifact: " + (err && err.message ? err.message : String(err)));
+    }
+  }
+});
+
+// Signal readiness so the host knows it can post the document.
+window.parent.postMessage({ type: "ART_SANDBOX_READY" }, "*");
+</script>
+</body>
+</html>

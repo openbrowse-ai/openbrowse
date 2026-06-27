@@ -13,7 +13,7 @@ export const definition: ConnectorDefinition = {
   icon: { light: "linear.svg" },
   description: "Project management and issue tracking",
   category: "developer-tools",
-  url: "https://mcp.linear.app/sse",
+  url: "https://mcp.linear.app/mcp",
   auth: { type: "oauth" },
   docsUrl: "https://linear.app/docs/mcp",
   formatLabel(toolName, result): ToolResultLabel | null {

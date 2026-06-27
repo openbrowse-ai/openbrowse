@@ -1,4 +1,4 @@
-import { ProgressCard, WorkingFolderCard, ContextCard } from "@/components/cowork";
+import { ProgressCard, WorkingFolderCard, ArtifactsCard, ContextCard } from "@/components/cowork";
 
 interface CoworkPanelProps {
   conversationId: string;
@@ -20,6 +20,11 @@ interface CoworkPanelProps {
    * `poem.md`). When omitted, Space file rows render as non-clickable.
    */
   onSelectSpaceFile?: (file: string | null) => void;
+  /**
+   * Click handler for an Artifacts card row. Opens the artifact in the rail's
+   * in-panel viewer. When omitted, artifact rows open in a separate tab.
+   */
+  onSelectArtifact?: (artifact: { id: string; title: string } | null) => void;
 }
 
 export function CoworkPanel({
@@ -27,6 +32,7 @@ export function CoworkPanel({
   spaceId,
   onSelectFile,
   onSelectSpaceFile,
+  onSelectArtifact,
 }: CoworkPanelProps) {
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
@@ -35,6 +41,10 @@ export function CoworkPanel({
         conversationId={conversationId}
         spaceId={spaceId}
         onSelectFile={onSelectFile}
+      />
+      <ArtifactsCard
+        conversationId={conversationId}
+        onSelectArtifact={onSelectArtifact}
       />
       <ContextCard
         conversationId={conversationId}

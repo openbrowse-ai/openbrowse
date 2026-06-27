@@ -29,3 +29,8 @@ export { listScheduledTasksTool } from "./list-scheduled-tasks";
 export { updateScheduledTaskTool } from "./update-scheduled-task";
 export { readNetworkRequestsTool } from "./read-network-requests";
 export { readConsoleMessagesTool } from "./read-console-messages";
+export { createArtifactTool } from "./create-artifact";
+export { updateArtifactTool } from "./update-artifact";
+export { deleteArtifactTool } from "./delete-artifact";
+export { listArtifactsTool } from "./list-artifacts";
+export { readArtifactDiagnosticsTool } from "./read-artifact-diagnostics";

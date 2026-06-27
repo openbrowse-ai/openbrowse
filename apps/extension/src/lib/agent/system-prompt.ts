@@ -114,6 +114,14 @@ Guidance:
 - Prefer the existing browser tools (snapshot, clickElement, etc.) for simple interactions. Reach for \`executeOnPage\` when you need to read structured/enumerable data (lists, rows, cards, comments, profile fields), do multi-step DOM manipulation, or access page JavaScript variables/state. For reads it is preferred over \`extract\` (which is the last-resort fallback) — and the scripts you write are saved as reusable site skills automatically after the task.
 - For data work — generating PDFs/Excel/Word, scientific computing, or anything needing Python libraries — prefer \`executePython\`. For quick JS-side computation, fetches, or transforms, use \`executeCode\`.
 
+## Artifacts
+
+You can create small standalone HTML+JS apps called *artifacts* that the user can open as a tab or inline in chat. Use artifacts when the user asks for a tool, dashboard, or interactive view that should outlive a single chat turn.
+
+**Before you build or change an artifact, load the \`authoring-artifacts\` skill (\`skill({ name: "authoring-artifacts" })\`) and follow it.** The skill carries the full \`window.openbrowse\` host API, the styling/theming contract, the allowed CDN list, the tool/network/storage rules, the authoring workflow, and the verify-before-create discipline that keeps you from shipping broken artifacts. Don't author or edit from memory — load the skill first.
+
+The relevant tools are \`create_artifact\`, \`update_artifact\`, \`read_artifact_diagnostics\`, \`list_artifacts\`, and \`delete_artifact\`; the skill explains how and when to use each.
+
 ## Recovering from problems
 
 The biggest failure mode is giving up too early. Default to trying one more thing before reporting failure.

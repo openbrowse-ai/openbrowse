@@ -142,6 +142,15 @@ interface UseAgentChatOptions {
    */
   modelOverride?: string | null;
   /**
+   * When set, a conversation created lazily by this chat (on first send) is
+   * tagged with this artifact id. This is how "Edit this artifact in chat"
+   * defers the conversation row until the user actually sends — so opening
+   * the edit panel and closing it without typing leaves no empty row in the
+   * sidebar. The agent reads `editingArtifactId` off the persisted row at
+   * send time to inject the artifact's HTML for inline editing.
+   */
+  editingArtifactId?: string | null;
+  /**
    * Initial approval mode for a NEW conversation created by `handleSubmit`
    * or `queueMessage`. Lets the user pick a mode in the composer BEFORE
    * sending the first message; otherwise `handleModeChange` in ChatView
@@ -586,6 +595,7 @@ export function useAgentChat({
   getSharedTabId,
   headless,
   modelOverride,
+  editingArtifactId,
   initialMode,
 }: UseAgentChatOptions) {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -863,7 +873,13 @@ export function useAgentChat({
       if (!cancelled) setTransport(t);
     })();
     return () => { cancelled = true; };
-  }, [settings, agentSettings.agentModel, agentSettings.thinkingEnabled, agentSettings.thinkingConfig, spaceId, mcpVersion, headless?.autoApprove]);
+    // `conversationId` is a dep so the transport rebuilds when the active
+    // conversation changes. The system prompt bakes in per-conversation
+    // context at construction time (todos, and the editing-artifact HTML
+    // block); without this dep an edit conversation whose id is assigned
+    // asynchronously after mount would build its transport against a stale
+    // (usually null) id and silently omit that context.
+  }, [settings, agentSettings.agentModel, agentSettings.thinkingEnabled, agentSettings.thinkingConfig, spaceId, mcpVersion, headless?.autoApprove, conversationId]);
 
   // Get or create a Chat instance for the current conversation
   const origin: "sidepanel" | "home" = window.location.pathname.includes("home")
@@ -1850,6 +1866,7 @@ export function useAgentChat({
           id: convId,
           title: truncatedTitle,
           spaceId,
+          ...(editingArtifactId ? { editingArtifactId } : {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
           // Apply the mode the user selected in the composer before
@@ -2006,7 +2023,7 @@ export function useAgentChat({
         });
       }
     },
-    [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages, getSharedTabId],
+    [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages, getSharedTabId, editingArtifactId],
   );
 
   /**
@@ -2041,6 +2058,7 @@ export function useAgentChat({
           id: convId,
           title: truncatedTitle,
           spaceId,
+          ...(editingArtifactId ? { editingArtifactId } : {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
           // Apply the mode the user selected in the composer before
@@ -2098,7 +2116,7 @@ export function useAgentChat({
         onNewConversation(convId);
       }
     },
-    [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation, getSharedTabId],
+    [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation, getSharedTabId, editingArtifactId],
   );
 
   const removeQueued = useCallback(async (id: string) => {

@@ -40,8 +40,41 @@ import { toast } from "sonner";
 import { SpaceCustomization } from "./SpaceCustomization";
 import { TabCard } from "./TabCard";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
+import { animatePanelResize } from "@/lib/animate-panel-resize";
+import {
+  FILE_MIN_PX,
+  FILE_AUTO_WIDEN_THRESHOLD_PX,
+  FILE_AUTO_WIDEN_PX,
+  TWEEN_MS,
+} from "./file-panel-constants";
+import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
+import { AnimatePresence, motion } from "motion/react";
 import { Upload } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/** Tracks the Tailwind `xl` (min-width: 1280px) breakpoint. */
+function useIsXl(): boolean {
+  const [isXl, setIsXl] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(min-width: 1280px)").matches
+      : true,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1280px)");
+    const onChange = (e: MediaQueryListEvent) => setIsXl(e.matches);
+    mq.addEventListener("change", onChange);
+    setIsXl(mq.matches);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isXl;
+}
 
 interface LandingPageProps {
   space: Space | null;
@@ -117,6 +150,80 @@ export function LandingPage({
   useEffect(() => {
     setSelectedSpaceFile(null);
   }, [space?.id]);
+
+  // ── Resizable right-aside plumbing (mirrors RightRail) ────────────────────
+  // The aside hosts either SpaceCustomization (fixed width) or the file viewer
+  // (user-resizable, width shared with the chat rail via useFilePanelWidth).
+  const isXl = useIsXl();
+  const [fileWidthPx, setFileWidthPx] = useFilePanelWidth();
+  const asidePanelRef = useRef<PanelImperativeHandle | null>(null);
+  const inFileMode = selectedSpaceFile !== null;
+  const inFileModeRef = useRef(inFileMode);
+  inFileModeRef.current = inFileMode;
+  const fileWidthRef = useRef(fileWidthPx);
+  fileWidthRef.current = fileWidthPx;
+  const animatingRef = useRef(false);
+  const cancelTweenRef = useRef<(() => void) | null>(null);
+  const hasInitializedAsideRef = useRef(false);
+
+  /** Fixed width for the customization view; matches the old `xl:w-96`. */
+  const CUSTOMIZATION_WIDTH_PX = 384;
+
+  // Initial defaultSize captured once at mount, as a percentage to dodge the
+  // react-resizable-panels pixel-conversion mount bug (see RightRail).
+  const [initialAsideSize] = useState<string>(() => {
+    const targetPx = inFileMode
+      ? fileWidthPx < FILE_AUTO_WIDEN_THRESHOLD_PX
+        ? FILE_AUTO_WIDEN_PX
+        : fileWidthPx
+      : CUSTOMIZATION_WIDTH_PX;
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+    const estimatedContainerWidth = Math.max(800, vw - 260);
+    return `${(targetPx / estimatedContainerWidth) * 100}%`;
+  });
+
+  // Drive the aside width on mode change: file mode → persisted width (auto-
+  // widened if narrow); customization → fixed width. Animated, like RightRail.
+  useEffect(() => {
+    if (!isXl) return;
+    const handle = asidePanelRef.current;
+    if (!handle) return;
+
+    const target = inFileMode
+      ? fileWidthRef.current < FILE_AUTO_WIDEN_THRESHOLD_PX
+        ? FILE_AUTO_WIDEN_PX
+        : fileWidthRef.current
+      : CUSTOMIZATION_WIDTH_PX;
+
+    if (!hasInitializedAsideRef.current) {
+      hasInitializedAsideRef.current = true;
+      const rafId = requestAnimationFrame(() => {
+        asidePanelRef.current?.resize(`${target}px`);
+      });
+      return () => cancelAnimationFrame(rafId);
+    }
+
+    const fromPx = handle.getSize?.()?.inPixels ?? 0;
+    if (Math.abs(fromPx - target) < 0.5) return;
+    cancelTweenRef.current?.();
+    cancelTweenRef.current = animatePanelResize(handle, fromPx, target, {
+      durationMs: TWEEN_MS,
+      flagRef: animatingRef,
+    });
+  }, [isXl, inFileMode]);
+
+  useEffect(() => () => cancelTweenRef.current?.(), []);
+
+  const maxAsidePx = `${Math.max(
+    FILE_AUTO_WIDEN_PX,
+    Math.min(
+      900,
+      Math.round(
+        (typeof window !== "undefined" ? window.innerWidth : 1280) * 0.7,
+      ),
+    ),
+  )}px`;
+
 
   // Seed the composer from a "seed-chat-input" event targeting a new chat
   // (conversationId === null) — used by the Scheduled view's "Create with
@@ -568,6 +675,81 @@ export function LandingPage({
     );
   }
 
+  const heroContent = (
+    <div className="w-full max-w-xl flex flex-col items-center gap-8 mx-auto">
+      <Wordmark className="h-7 w-auto" />
+      <HeroComposer
+        chatInputRef={chatInputRef}
+        space={space}
+        input={input}
+        setInput={setInput}
+        handleSubmit={handleSubmit}
+        handleSuggestion={handleSuggestion}
+        handleTabCardClick={handleTabCardClick}
+        recentTabs={recentTabs}
+        isConfigured={isConfigured}
+        providerModels={providerModels}
+        settings={settings}
+        updateSettings={updateSettings}
+        agentSettings={agentSettings}
+        setAgentSettings={setAgentSettings}
+        providers={providers}
+        mode={mode}
+        onModeChange={setMode}
+        focusTrigger={focusTrigger}
+      />
+    </div>
+  );
+
+  const heroColumnClass = cn(
+    // Narrow viewports: hero column fills the viewport below the (sticky)
+    // header so the customization rail (Instructions / Files / …) sits below
+    // the fold and is only revealed on scroll. The CSS variable is published
+    // by the layout effect above; the `7rem` fallback covers first paint
+    // before the ResizeObserver has measured.
+    "min-h-[calc(100svh-var(--landing-header-h,7rem))] flex flex-col items-center justify-center",
+    "xl:min-h-0",
+    "flex-1 min-w-0 px-6 py-12",
+    "xl:overflow-y-auto xl:flex xl:flex-col xl:items-center xl:justify-center",
+  );
+
+  // The aside body switches between the file viewer and the customization
+  // rail with the same slide transition the chat RightRail uses.
+  const asideBody = (
+    <div className="relative h-full w-full overflow-hidden">
+      <AnimatePresence mode="wait" initial={false}>
+        {selectedSpaceFile !== null ? (
+          <motion.div
+            key="space-file"
+            className="absolute inset-0"
+            initial={{ x: -16, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: -16, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+          >
+            <FileViewerPanel
+              filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
+              fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
+              spaceId={space.id}
+              onClose={() => setSelectedSpaceFile(null)}
+            />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="customization"
+            className="absolute inset-0 overflow-y-auto"
+            initial={{ x: 16, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: 16, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+          >
+            <SpaceCustomization space={space} onSelectFile={setSelectedSpaceFile} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+
   return (
     <div
       {...pageDndHandlers}
@@ -578,64 +760,60 @@ export function LandingPage({
       )}
     >
       <SpaceLandingHeader space={space} headerRef={headerRef} />
-      <div className="flex flex-col xl:flex-row xl:flex-1 xl:min-h-0">
-        <div
-          className={cn(
-            // Narrow viewports: hero column fills the viewport below
-            // the (sticky) header so the customization rail
-            // (Instructions / Files / …) sits below the fold and is
-            // only revealed on scroll. The CSS variable is published
-            // by the layout effect above; the `7rem` fallback covers
-            // first paint before the ResizeObserver has measured.
-            "min-h-[calc(100svh-var(--landing-header-h,7rem))] flex flex-col items-center justify-center",
-            "xl:min-h-0",
-            "flex-1 min-w-0 px-6 py-12",
-            "xl:overflow-y-auto xl:flex xl:flex-col xl:items-center xl:justify-center",
-          )}
-        >
-          <div className="w-full max-w-xl flex flex-col items-center gap-8 mx-auto">
-            <Wordmark className="h-7 w-auto" />
-            <HeroComposer
-              chatInputRef={chatInputRef}
-              space={space}
-              input={input}
-              setInput={setInput}
-              handleSubmit={handleSubmit}
-              handleSuggestion={handleSuggestion}
-              handleTabCardClick={handleTabCardClick}
-              recentTabs={recentTabs}
-              isConfigured={isConfigured}
-              providerModels={providerModels}
-              settings={settings}
-              updateSettings={updateSettings}
-              agentSettings={agentSettings}
-              setAgentSettings={setAgentSettings}
-              providers={providers}
-              mode={mode}
-              onModeChange={setMode}
-              focusTrigger={focusTrigger}
-            />
-          </div>
-        </div>
 
-        <aside className="w-full xl:w-96 xl:shrink-0 xl:h-full xl:min-h-0 xl:overflow-y-auto border-t border-border xl:border-t-0 xl:border-l">
-          {selectedSpaceFile !== null ? (
-            <FileViewerPanel
-              filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
-              fileName={
-                selectedSpaceFile.split("/").pop() ?? selectedSpaceFile
+      {isXl ? (
+        <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
+          <ResizablePanel
+            minSize="400px"
+            groupResizeBehavior="preserve-relative-size"
+          >
+            <div className={heroColumnClass}>{heroContent}</div>
+          </ResizablePanel>
+          <ResizableHandle
+            // Only draggable in file mode. In customization mode the handle is
+            // hidden (non-interactive, transparent) so the rail keeps its fixed
+            // width like the original layout.
+            disabled={!inFileMode}
+            className={
+              inFileMode
+                ? undefined
+                : "bg-transparent! cursor-default after:hidden"
+            }
+          />
+          <ResizablePanel
+            panelRef={asidePanelRef}
+            defaultSize={initialAsideSize}
+            minSize={inFileMode ? `${FILE_MIN_PX}px` : `${CUSTOMIZATION_WIDTH_PX}px`}
+            maxSize={inFileMode ? maxAsidePx : `${CUSTOMIZATION_WIDTH_PX}px`}
+            groupResizeBehavior="preserve-pixel-size"
+            onResize={(panelSize: PanelSize) => {
+              if (animatingRef.current) return;
+              if (panelSize.inPixels > 0 && inFileModeRef.current) {
+                setFileWidthPx(Math.round(panelSize.inPixels));
               }
-              spaceId={space.id}
-              onClose={() => setSelectedSpaceFile(null)}
-            />
-          ) : (
-            <SpaceCustomization
-              space={space}
-              onSelectFile={setSelectedSpaceFile}
-            />
-          )}
-        </aside>
-      </div>
+            }}
+            className="border-l border-border bg-background"
+          >
+            {asideBody}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <div className="flex flex-col">
+          <div className={heroColumnClass}>{heroContent}</div>
+          <aside className="w-full border-t border-border">
+            {selectedSpaceFile !== null ? (
+              <FileViewerPanel
+                filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
+                fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
+                spaceId={space.id}
+                onClose={() => setSelectedSpaceFile(null)}
+              />
+            ) : (
+              <SpaceCustomization space={space} onSelectFile={setSelectedSpaceFile} />
+            )}
+          </aside>
+        </div>
+      )}
       {pageDragOver && <PageDropOverlay />}
     </div>
   );

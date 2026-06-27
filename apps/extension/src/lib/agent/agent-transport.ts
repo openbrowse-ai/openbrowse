@@ -87,6 +87,11 @@ import {
   updateMemoryTool,
   updateScheduledTaskTool,
   patchSiteSkillTool,
+  createArtifactTool,
+  updateArtifactTool,
+  deleteArtifactTool,
+  listArtifactsTool,
+  readArtifactDiagnosticsTool,
   proposePlanTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
@@ -103,6 +108,7 @@ import type { PlanExtensionData, SerializedUIPart } from "./message-types";
 import type { BrowserTool } from "./types";
 
 import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
+import { buildEditingArtifactBlock } from "./artifact-edit-context";
 
 /**
  * When true, the background site-skill curator logs each pipeline stage to the
@@ -599,6 +605,11 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
     Grep: toSDKTool(fsTools.grepTool, "Grep"),
     LS: toSDKTool(fsTools.lsTool, "LS"),
     Delete: toSDKTool(fsTools.deleteTool, "Delete"),
+    create_artifact: toSDKTool(createArtifactTool, "create_artifact"),
+    update_artifact: toSDKTool(updateArtifactTool, "update_artifact"),
+    delete_artifact: toSDKTool(deleteArtifactTool, "delete_artifact"),
+    list_artifacts:  toSDKTool(listArtifactsTool,  "list_artifacts"),
+    read_artifact_diagnostics: toSDKTool(readArtifactDiagnosticsTool, "read_artifact_diagnostics"),
   };
 }
 
@@ -1947,6 +1958,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       .join("\n");
   }
 
+  // The editing-artifact block is NOT baked here. The transport may be built
+  // against a stale/null conversationId (it's constructed asynchronously while
+  // the edit conversation id is assigned), which would omit the block. Instead
+  // it's injected per-turn in `prepareCall` below, keyed on the live
+  // `agentConversationId`, so it's always present and current.
+
   // The tab legend is intentionally NOT appended to `instructions` here.
   // ownedLtids and tab URLs change mid-conversation (navigate adds a tab,
   // user closes a tab, etc.); a static legend baked at transport-construction
@@ -2060,7 +2077,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       .map((s) => `- ${s.name}: ${s.description}`)
       .join("\n");
 
-    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use Read({ file_path }) with the skill's path (e.g. "/skills/<name>/references/<file>").\nTo author and install a new skill you've drafted for the user, use create_skill.`;
+    instructions += `\n\n## Available Skills\n\nYou have access to the following skills. Each skill is knowledge you can load on demand. When a user's request matches a skill's description, call skill({ name }) to load its full instructions into the conversation BEFORE you start the work — do this even when you think you already know how, because skills carry workflow and verification steps that are easy to skip from memory. Already knowing the relevant API or concept is not a reason to skip loading the matching skill.\n\n${skillsSection}\n\nTo install a new skill from a URL or GitHub repo, use install_skill({ source }).\nTo read a file bundled with a skill, use Read({ file_path }) with the skill's path (e.g. "/skills/<name>/references/<file>").\nTo author and install a new skill you've drafted for the user, use create_skill.`;
   }
 
   // Compose the parent's full tool set BEFORE constructing `runSubagentAgentLoop`,
@@ -2603,6 +2620,23 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // conversations (no agent-written files yet).
       const cid = agentConversationId;
       const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
+      // Editing-artifact block: when this conversation is editing an artifact,
+      // inject its id + manifest + current HTML so the agent edits inline via
+      // update_artifact. Read per-turn (keyed on the live agentConversationId)
+      // to dodge the transport-build race where conversationId isn't settled.
+      let editBlock = "";
+      if (cid) {
+        try {
+          const convRow = await chatDb.getConversation(cid);
+          if (convRow?.editingArtifactId) {
+            const { loadArtifact } = await import("@/lib/artifacts/registry");
+            const art = await loadArtifact(convRow.editingArtifactId);
+            if (art) editBlock = buildEditingArtifactBlock(art);
+          }
+        } catch {
+          /* best-effort; omit the block on failure */
+        }
+      }
 
       // Per-turn mode + plan injection. Read fresh from chatDb so a mode
       // switch or plan approval mid-conversation takes effect on the next
@@ -2654,8 +2688,9 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
       const baseInstructions =
         typeof callArgs.instructions === "string" ? callArgs.instructions : "";
       // Append blocks; any can be empty. Mode block goes first (framing),
-      // then situational state (legend, workspace).
-      const tail = [modeBlock, legend, wsBlock].filter(Boolean).join("\n\n");
+      // then situational state (legend, workspace), then the editing-artifact
+      // block. Double-newline separators render them as distinct sections.
+      const tail = [modeBlock, legend, wsBlock, editBlock].filter(Boolean).join("\n\n");
       return {
         ...callArgs,
         instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,

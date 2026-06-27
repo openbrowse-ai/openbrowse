@@ -6,6 +6,7 @@ import { handleNewWindowAutoHome } from "./auto-home";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { registerScheduler } from "./scheduler";
 import { chatDb } from "@/lib/chat-db";
+import { isArtifactRpcMessage } from "@/lib/artifacts/rpc";
 import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
 
 /**
@@ -541,6 +542,19 @@ export default defineBackground({
           } catch (err) {
             console.error("[MCP bg] Error:", err);
             sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      if (isArtifactRpcMessage(message)) {
+        (async () => {
+          try {
+            const { handleArtifactRpc } = await import("./artifact-rpc");
+            handleArtifactRpc(message, sendResponse);
+          } catch (err) {
+            console.error("[ARTIFACT_RPC bg] Error:", err);
+            sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
           }
         })();
         return true;

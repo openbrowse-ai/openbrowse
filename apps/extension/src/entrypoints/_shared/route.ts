@@ -31,9 +31,10 @@
 export type HomeRoute =
   | { view: "chat"; conversationId: string | null }
   | { view: "scheduled" }
-  | { view: "spaces" };
+  | { view: "spaces" }
+  | { view: "library" };
 
-const RESERVED_VIEW_TOKENS = new Set(["scheduled", "spaces"]);
+const RESERVED_VIEW_TOKENS = new Set(["scheduled", "spaces", "library"]);
 
 /**
  * Parse the hash portion of `window.location.hash` (with or without a
@@ -48,6 +49,7 @@ export function parseHomeRoute(hash: string): HomeRoute {
 
   if (raw === "scheduled") return { view: "scheduled" };
   if (raw === "spaces") return { view: "spaces" };
+  if (raw === "library") return { view: "library" };
 
   // Back-compat: legacy `spaces/<spaceId>` URLs (from before the detail
   // view was removed) collapse to the argument-less spaces list. The
@@ -83,6 +85,8 @@ export function formatHomeRoute(route: HomeRoute): string {
       return "#scheduled";
     case "spaces":
       return "#spaces";
+    case "library":
+      return "#library";
   }
 }
 
