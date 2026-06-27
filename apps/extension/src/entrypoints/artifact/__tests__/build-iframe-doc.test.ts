@@ -30,6 +30,34 @@ describe("buildIframeDoc", () => {
     expect(out).not.toContain("openbrowse:artifact");
   });
 
+  it("strips the meta tag when other attributes precede name (order-agnostic)", () => {
+    const html = `<html><head><meta http-equiv="x" name="openbrowse:artifact" content='{"v":1}'></head><body>hi</body></html>`;
+    const out = buildIframeDoc(html, manifest);
+    expect(out).not.toContain("openbrowse:artifact");
+  });
+
+  it("strips the meta tag with whitespace around the name equals sign", () => {
+    const html = `<html><head><meta name = "openbrowse:artifact" content='{"v":1}'></head><body>hi</body></html>`;
+    const out = buildIframeDoc(html, manifest);
+    expect(out).not.toContain("openbrowse:artifact");
+  });
+
+  it("strips a tag whose content JSON contains a raw '>' character", () => {
+    // `>` inside the quoted content must not terminate the match early.
+    const html = `<html><head><meta name="openbrowse:artifact" content='{"note":"a > b"}'></head><body>hi</body></html>`;
+    const out = buildIframeDoc(html, manifest);
+    expect(out).not.toContain("openbrowse:artifact");
+  });
+
+  it("does NOT mangle an unrelated tag whose quoted value mentions the marker", () => {
+    // A benign attribute value containing name='openbrowse:artifact' must be
+    // left intact (the marker is inside quotes, not the tag's own name attr).
+    const html = `<html><head><meta property="og:desc" content="see name='openbrowse:artifact' here"><title>T</title></head><body>hi</body></html>`;
+    const out = buildIframeDoc(html, manifest);
+    expect(out).toContain(`content="see name='openbrowse:artifact' here"`);
+    expect(out).toContain("<title>T</title>");
+  });
+
   it("injects CSP meta and bridge shim script after <head>", () => {
     const html = `<!doctype html><html><head><title>X</title></head><body>hi</body></html>`;
     const out = buildIframeDoc(html, manifest);

@@ -1,17 +1,8 @@
 // apps/extension/src/entrypoints/artifact/build-iframe-doc.ts
 import { buildCsp } from "@/lib/artifacts/csp";
 import { BRIDGE_SHIM_SOURCE } from "./bridge-shim";
+import { manifestMetaTagRegex } from "@/lib/artifacts/manifest-meta-regex";
 import type { ArtifactManifest } from "@/lib/artifacts/manifest";
-
-// Match the manifest meta tag without stopping at a `>` that appears INSIDE a
-// quoted attribute value (the manifest JSON in `content='...'` can contain
-// `>`). Each attribute char is consumed as either a "..." / '...' quoted run or
-// a single non-`>` char, so only an unquoted `>` ends the tag.
-const ATTR = `(?:"[^"]*"|'[^']*'|[^>])`;
-const META_TAG_RE = new RegExp(
-  `<meta\\b${ATTR}*?\\bname=(?:"openbrowse:artifact"|'openbrowse:artifact')${ATTR}*>`,
-  "gi",
-);
 
 /**
  * Inject CSP <meta> and the bridge shim <script> into the artifact HTML.
@@ -23,7 +14,7 @@ export function buildIframeDoc(html: string, manifest: ArtifactManifest): string
     network: manifest.network ?? [],
     cdns: manifest.cdns ?? [],
   });
-  const cleaned = html.replace(META_TAG_RE, "");
+  const cleaned = html.replace(manifestMetaTagRegex(), "");
   const cspMeta  = `<meta http-equiv="Content-Security-Policy" content="${csp.replace(/"/g, "&quot;")}">`;
   const shimTag  = `<script>${BRIDGE_SHIM_SOURCE}</script>`;
   if (/<head[^>]*>/i.test(cleaned)) {

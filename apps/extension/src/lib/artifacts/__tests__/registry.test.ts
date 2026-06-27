@@ -140,6 +140,17 @@ describe("loadArtifact", () => {
     opfs.exists.mockResolvedValueOnce(false);
     expect(await loadArtifact("nope")).toBeNull();
   });
+
+  it("parses manifest when other attributes precede name (order-agnostic)", async () => {
+    const html =
+      '<!doctype html><meta http-equiv="x" name="openbrowse:artifact" content=\'{"v":1,"id":"art","title":"X","tools":[]}\'><html></html>';
+    opfs.exists.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+    opfs.readFile.mockResolvedValueOnce(html).mockResolvedValueOnce(JSON.stringify({
+      id: "art", createdAt: "t", updatedAt: "t", approvedWrites: [], approvedNetwork: [], manifestVersion: "v",
+    }));
+    const result = await loadArtifact("art");
+    expect(result?.manifest.id).toBe("art");
+  });
 });
 
 describe("listArtifacts", () => {

@@ -3,6 +3,7 @@ import type { ArtifactManifest, ArtifactSidecar } from "./manifest";
 import { canonicalizeManifest, manifestVersion, validateManifest } from "./validate";
 import { emitArtifactsChanged } from "./events";
 import { clearDiagnostics } from "./diagnostics";
+import { manifestMetaTagRegex } from "./manifest-meta-regex";
 
 const ROOT = "artifacts";
 
@@ -18,16 +19,6 @@ export interface SaveOptions {
   sourceConversationId: string | null;
 }
 
-// Match the manifest meta tag without stopping at a `>` inside a quoted
-// attribute value (the inlined `content='...'` JSON can contain one). Each attr
-// char is a "..." / '...' quoted run or a single non-`>` char, so only an
-// unquoted `>` terminates the tag. inlineManifestMeta escapes `>` in the JSON it
-// writes, but extractManifest may read tags from other sources.
-const META_ATTR = `(?:"[^"]*"|'[^']*'|[^>])`;
-const META_TAG_RE = new RegExp(
-  `<meta\\s+name=["']openbrowse:artifact["']${META_ATTR}*>`,
-  "gi",
-);
 const HEAD_INSERT_RE = /(<head[^>]*>)/i;
 
 function htmlPath(id: string) { return `${ROOT}/${id}.html`; }
@@ -35,7 +26,7 @@ function metaPath(id: string) { return `${ROOT}/${id}.meta.json`; }
 function dirPath(id: string)  { return `${ROOT}/${id}`; }
 
 function inlineManifestMeta(html: string, manifest: ArtifactManifest): string {
-  const cleaned = html.replace(META_TAG_RE, "");
+  const cleaned = html.replace(manifestMetaTagRegex(), "");
   const tag = `<meta name="openbrowse:artifact" content='${
     JSON.stringify(manifest)
       .replace(/'/g, "&#39;")
@@ -48,7 +39,7 @@ function inlineManifestMeta(html: string, manifest: ArtifactManifest): string {
 }
 
 export function extractManifest(html: string): ArtifactManifest | null {
-  const tag = html.match(META_TAG_RE)?.[0];
+  const tag = html.match(manifestMetaTagRegex())?.[0];
   if (!tag) return null;
   const content = tag.match(/content=(['"])([\s\S]*?)\1/)?.[2];
   if (!content) return null;

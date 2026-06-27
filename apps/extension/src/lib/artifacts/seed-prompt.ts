@@ -37,7 +37,9 @@ export function buildErrorFixPrompt(
 
   if (error.sourceFile) {
     lines.push("");
-    for (const ln of `Location: ${error.sourceFile}`.split("\n")) lines.push(ln);
+    // Keep the Location label visible but inside the blockquote (like message)
+    // so newline-injected markdown in sourceFile can't escape into raw prompt.
+    for (const ln of `Location: ${error.sourceFile}`.split("\n")) lines.push(`> ${ln}`);
   }
 
   if (error.stack) {
