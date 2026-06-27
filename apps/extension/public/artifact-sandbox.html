@@ -26,6 +26,11 @@
 let written = false;
 
 window.addEventListener("message", (e) => {
+  // Only accept the document from our embedder (the trusted host frame). The
+  // host posts ART_DOC to this iframe's contentWindow, so a legitimate message
+  // always has e.source === window.parent. Rejecting anything else stops any
+  // other frame from injecting a document via the document.write below.
+  if (e.source !== window.parent) return;
   const m = e.data;
   if (!m || typeof m !== "object") return;
   if (m.type === "ART_DOC" && typeof m.html === "string" && !written) {
