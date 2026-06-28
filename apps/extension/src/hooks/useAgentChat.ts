@@ -1013,6 +1013,14 @@ export function useAgentChat({
   // marked as "Pending/Running" for as long as the SW is running them.
   const isStreaming = isLoading;
   const wasLoadingRef = useRef(false);
+  // Tracks whether THIS renderer was the initiator at any point during
+  // the current loading window. Distinct from `wasLoadingRef` (which
+  // mirrors `isLoading = isInitiator || isViewer`) so the post-turn
+  // compaction block only fires for the renderer that actually drove
+  // the run. Without this gate, every viewer surface watching the run
+  // would also enter the compaction branch when `isLoading` flips to
+  // false (e.g. on STREAM_DONE), duplicating the "Continue" turn.
+  const wasInitiatorRef = useRef(false);
   // Mirror `isInitiator` for use in cross-context listeners that need
   // to know "is THIS renderer actively driving the run right now?"
   // without the effect rebinding on every status flip. Used by the
@@ -1313,6 +1321,9 @@ export function useAgentChat({
   }, [isCompacting, isLoading, messages, runCompaction]);
 
   useEffect(() => {
+    if (isInitiator) {
+      wasInitiatorRef.current = true;
+    }
     if (isLoading) {
       wasLoadingRef.current = true;
       if (conversationId) {
@@ -1325,6 +1336,11 @@ export function useAgentChat({
       }
     } else if (wasLoadingRef.current) {
       wasLoadingRef.current = false;
+      // Snapshot + reset `wasInitiatorRef` for the next loading window.
+      // The compaction gate below honors the snapshot so a viewer-only
+      // surface (`wasInitiator === false`) never reaches `runCompaction`.
+      const wasInitiator = wasInitiatorRef.current;
+      wasInitiatorRef.current = false;
       // Under SW-host the authoritative `resetAgentIndicator()` call
       // happens in the SW agent host's terminal-state handler (see
       // `entrypoints/background/agent-host/run.ts`) — that's the realm
@@ -1351,13 +1367,23 @@ export function useAgentChat({
       // threshold). Either way, status flips out of streaming and we
       // land here.
       //
+      // Gated on `wasInitiator`: viewer surfaces also pass through this
+      // branch when the run finishes (their `isLoading` flips from true
+      // to false via `isViewer` dropping). A viewer must NOT enter
+      // `runCompaction` — that would race the initiator's compaction
+      // and duplicate the "Continue" turn injection.
+      //
       // Under SW-host the agent loop runs in a different realm than this
       // hook, so the legacy `needsCompaction()` (which read a
       // module-scope `lastTotalTokens` mutated by the loop) always
       // returned false here. We instead read the authoritative
       // `conv.usage.totalTokens` that the SW persists to chat-db on
       // every step, and feed it directly to `shouldCompact`.
-      if (conversationId && messages.length >= MIN_MESSAGES_FOR_COMPACTION) {
+      if (
+        wasInitiator &&
+        conversationId &&
+        messages.length >= MIN_MESSAGES_FOR_COMPACTION
+      ) {
         const cid = conversationId;
         const localMessages = messages;
         void chatDb.getConversation(cid).then((conv) => {
@@ -1378,7 +1404,7 @@ export function useAgentChat({
         });
       }
     }
-  }, [status, conversationId, messages, runCompaction, stop, isViewer]);
+  }, [status, conversationId, messages, runCompaction, stop, isViewer, isInitiator]);
 
   // Heartbeat + host-broadcaster effects intentionally removed.
   //
@@ -1635,14 +1661,32 @@ export function useAgentChat({
   }, [conversationId, isViewer, addToolApprovalResponse]);
 
   useEffect(() => {
-    const listener = (message: { type: string }) => {
-      if (message.type === "AGENT_STOP" && isLoading) {
-        stop();
+    const listener = (message: {
+      type: string;
+      conversationId?: string;
+    }) => {
+      if (message.type !== "AGENT_STOP") return;
+      if (!isLoading) return;
+      // Conversation-scoped: only act if the sender's cid matches
+      // ours. Backward-compat for legacy senders that omit cid (e.g.
+      // the content-script in-page Stop overlay, which doesn't know
+      // the cid of the run working its tab): treat missing cid as a
+      // broadcast and fall through to the legacy behavior so the
+      // in-page Stop still aborts the active run for single-conversation
+      // users. With multiple parallel conversations, the renderer-side
+      // viewer Stop button (ChatView.tsx) DOES include the cid, so
+      // cross-conversation crosstalk is prevented for that path.
+      if (
+        message.conversationId != null &&
+        message.conversationId !== conversationId
+      ) {
+        return;
       }
+      stop();
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [isLoading, stop]);
+  }, [isLoading, stop, conversationId]);
 
   const latestUndoRef = useRef<{ undo: AgentTabsClosedUndo; toastId: string | number } | null>(null);
 

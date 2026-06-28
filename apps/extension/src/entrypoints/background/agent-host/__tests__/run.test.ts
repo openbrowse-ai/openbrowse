@@ -8,6 +8,16 @@ vi.mock("../heal-chatdb", () => ({
   healLastAssistantInChatDb: vi.fn().mockResolvedValue({ healed: false }),
 }));
 
+// Spy on `resetAgentIndicator` so the ownership-re-check tests below
+// can assert it is NOT called when a new run claimed the cid during
+// the dynamic-import await window. The same module also exports
+// helpers the production code never reaches from run.ts; we only need
+// to intercept this one symbol.
+const resetAgentIndicatorMock = vi.fn();
+vi.mock("@/lib/agent/agent-transport", () => ({
+  resetAgentIndicator: resetAgentIndicatorMock,
+}));
+
 /**
  * `run.ts` orchestrates one SW-hosted agent turn:
  *
@@ -99,6 +109,7 @@ describe("SW agent-host run.ts", () => {
     persistCalls = [];
     snapshotEmits = [];
     snapshotDones = 0;
+    resetAgentIndicatorMock.mockReset();
   });
 
   function makeDeps(stream: ReadableStream<UIMessageChunk>): StartRunDeps {
@@ -613,5 +624,100 @@ describe("SW agent-host run.ts", () => {
     await run.completion;
 
     expect(registry.get("conv-A")).toBeUndefined();
+  });
+
+  it("does NOT reset the indicator or release the registry slot if a new run claimed the cid during the dynamic-import await (normal-termination path)", async () => {
+    // Regression: `run.ts`'s finally block does `await import(...)`
+    // before calling `resetAgentIndicator(conversationId)` and
+    // `deps.registry.release(conversationId)`. The dynamic import is a
+    // yield point — the renderer's queue watcher can fire a new run
+    // for the same cid during the await (via port-router's
+    // terminal-handle eviction + startRun). Without a re-check after
+    // the import, the OLD run's cleanup would tear down the NEW run's
+    // indicator and evict the NEW handle from the registry.
+    //
+    // Setup: the mocked `resetAgentIndicator` (intercepting the
+    // dynamic-import resolve) flips the registry to simulate a new run
+    // claiming the cid right at the moment the old run is about to
+    // call `resetAgentIndicator`. The old run's cleanup must detect
+    // the swap and bail.
+    const newHandle = {
+      conversationId: "conv-A",
+      abort: new AbortController(),
+      startedAt: Date.now() + 1,
+      status: "running" as const,
+      subscribers: new Set<chrome.runtime.Port>(),
+    };
+    resetAgentIndicatorMock.mockImplementation(() => {
+      // Simulate the queue watcher: evict the old (already terminal)
+      // handle, then register a new one for the same cid. This is
+      // the same pattern port-router does on a duplicate START.
+      registry.release("conv-A");
+      registry.register(newHandle);
+    });
+
+    const stream = new ReadableStream<UIMessageChunk>({
+      start(c) {
+        c.enqueue({
+          type: "start",
+          messageId: "a-1",
+        } as unknown as UIMessageChunk);
+        c.enqueue({ type: "finish" } as unknown as UIMessageChunk);
+        c.close();
+      },
+    });
+
+    const run = startRun(
+      { conversationId: "conv-A", messages: [], origin: "sidepanel" },
+      makeDeps(stream),
+    );
+    await run.completion;
+
+    // The new handle must still be registered — the old run's
+    // `registry.release(conversationId)` must NOT have evicted it.
+    expect(registry.get("conv-A")).toBe(newHandle);
+  });
+
+  it("does NOT reset the indicator or release the registry slot if a new run claimed the cid during the early-exit cleanup (transport-error path)", async () => {
+    // Same invariant for the early-exit path. `sendMessages` rejects;
+    // the catch block does `await import(...)` before reset+release.
+    // A new run can race in during that await window via the same
+    // queue-watcher path.
+    const newHandle = {
+      conversationId: "conv-A",
+      abort: new AbortController(),
+      startedAt: Date.now() + 1,
+      status: "running" as const,
+      subscribers: new Set<chrome.runtime.Port>(),
+    };
+    resetAgentIndicatorMock.mockImplementation(() => {
+      registry.release("conv-A");
+      registry.register(newHandle);
+    });
+
+    const deps: StartRunDeps = {
+      registry,
+      buildTransport: () => ({
+        sendMessages: vi.fn().mockRejectedValue(new Error("transport boom")),
+      }),
+      buildPersister: () => ({
+        persist: async (m: AgentUIMessage) => {
+          persistCalls.push(m);
+        },
+        final: () => ({ finalText: "", messageCount: 0, transcript: [] }),
+      }),
+      buildSnapshotBroadcaster: () => ({
+        emit: () => {},
+        done: () => {},
+      }),
+    };
+
+    const run = startRun(
+      { conversationId: "conv-A", messages: [], origin: "sidepanel" },
+      deps,
+    );
+    await run.completion;
+
+    expect(registry.get("conv-A")).toBe(newHandle);
   });
 });

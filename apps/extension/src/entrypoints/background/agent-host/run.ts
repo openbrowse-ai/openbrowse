@@ -183,14 +183,24 @@ export function startRun(args: StartRunArgs, deps: StartRunDeps): RunControl {
       // working state dirty in pathological cases — clear it. Pass the
       // cid so the per-tab teardown only touches THIS run's overlays,
       // leaving peer parallel runs untouched.
+      //
+      // Ownership re-check: the dynamic import is a yield point. The
+      // queue watcher can fire a new run for the same cid in the
+      // microtask window between this `await import` resolving and
+      // `resetAgentIndicator` being called. Without re-checking, the
+      // old run's cleanup would tear down the new run's indicator and
+      // evict its registry handle. See run.test.ts's "during the
+      // dynamic-import await" regression tests for the exact race.
       try {
         const { resetAgentIndicator } = await import(
           "@/lib/agent/agent-transport"
         );
+        if (deps.registry.get(conversationId) !== handle) return;
         resetAgentIndicator(conversationId);
       } catch {
         // ignore
       }
+      if (deps.registry.get(conversationId) !== handle) return;
       deps.registry.release(conversationId);
       return;
     }
@@ -271,15 +281,24 @@ export function startRun(args: StartRunArgs, deps: StartRunDeps): RunControl {
       // `notifyAgentStatus(true)` injected via the tool wrapper, and
       // detaches `chrome.debugger` from every worked tab (parity with
       // the pre-SW-host renderer-side call).
+      //
+      // Ownership re-check: the `await import(...)` is a yield point.
+      // Even though we already validated ownership above (line 262),
+      // a new run can claim the cid in the microtask window between
+      // here and `resetAgentIndicator`/`registry.release`. Re-check
+      // both before and after the import so the old run never tears
+      // down the new run's indicator or evicts its registry handle.
       try {
         const { resetAgentIndicator } = await import(
           "@/lib/agent/agent-transport"
         );
+        if (deps.registry.get(conversationId) !== handle) return;
         resetAgentIndicator(conversationId);
       } catch {
         // Best-effort: the run already finished; leaving the indicator
         // up is annoying but not blocking.
       }
+      if (deps.registry.get(conversationId) !== handle) return;
       deps.registry.release(conversationId);
     }
   })();

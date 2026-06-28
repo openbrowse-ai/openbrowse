@@ -390,17 +390,25 @@ export function ChatView({
   // (New messages typed in a viewer already route to the queue because
   // `isLoading` is true, so ChatInput queues instead of submitting; the
   // host drains the queue. So only stop needs special handling here.)
+  //
+  // Include `conversationId` so the matching listener in `useAgentChat`
+  // can scope `stop()` to just this conversation — without it, every
+  // loading renderer (including peer conversations) would call its own
+  // `useChat.stop()` on this broadcast.
   const handleStop = useCallback(() => {
     if (isViewer) {
       try {
-        chrome.runtime?.sendMessage?.({ type: "AGENT_STOP" })?.catch?.(() => {});
+        chrome.runtime?.sendMessage?.({
+          type: "AGENT_STOP",
+          conversationId: conversationId ?? undefined,
+        })?.catch?.(() => {});
       } catch {
         /* ignore */
       }
       return;
     }
     stop();
-  }, [isViewer, stop]);
+  }, [isViewer, stop, conversationId]);
 
   const { providers } = useProviders();
 
