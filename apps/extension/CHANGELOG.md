@@ -1,5 +1,40 @@
 # openbrowse
 
+## 0.13.0
+
+### Minor Changes
+
+- 441dcf1: **Artifacts.** The agent can now build self-contained mini-apps — dashboards, widgets, interactive HTML tools — and you can open them as a tab or pin them in your workspace. Ask for "a tool that…", "a dashboard for…", or "an app that shows…" and the agent writes a single sandboxed HTML+JS artifact, then verifies it actually renders before handing it back.
+
+  **Sandboxed runtime.** Artifacts run in an isolated, opaque-origin iframe with no access to your browser, extension storage, or other pages. They reach the outside world only through a small `window.openbrowse` bridge: scoped key/value storage, brokered `fetch` (routed through the extension so artifacts avoid third-party CORS proxies), and the browser/MCP tools you've granted. A per-artifact permission manifest gates network hosts and write-capable tools; expanding that surface re-prompts for your approval. Artifacts follow your light/dark theme automatically.
+
+  **Pinned dependencies.** Artifacts may load a small allowlist of pinned libraries (Chart.js, Grid.js, Mermaid, D3) from a trusted CDN; the script tags carry Subresource Integrity hashes so a tampered or swapped file is rejected by the browser.
+
+  **Workspace & editing.** New artifacts open in a side-rail viewer with a rendered/source toggle and a live console. Use **Edit this artifact in chat** to revise an existing one — the agent makes surgical edits rather than rewriting the whole file — or **Fix with OpenBrowse** in one click when an artifact throws an error.
+
+- 194ed81: **Service-worker-hosted agent runs.** The agent loop has moved out of the renderer and into the MV3 background service worker. Previously, the AI SDK chat loop, tool execution, persistence, and indicator state all lived inside whichever React surface (side panel, home tab, new-tab page) initiated the turn — so closing that surface mid-turn killed the run, opening a second surface created a duplicate competing loop, and switching tabs while the agent worked could orphan tool calls. The whole thing now runs in the service worker as a single deterministic host per conversation; every renderer is a thin viewer subscribing over a `chrome.runtime.Port` named `agent-run:<conversationId>`.
+
+  **What this changes for you.**
+
+  - **Closing a tab no longer interrupts the agent.** Start a task in the side panel, close the panel, open the new-tab page — the agent keeps running and you see the live transcript wherever you re-open the conversation.
+  - **Parallel chats stay independent.** N conversations can run concurrently across the home tab, new-tab page, and per-tab side panels without surfaces stepping on each other (no more "the panel I'm watching froze because another conversation finished" desync).
+  - **Queued messages flush deterministically.** Queue a follow-up while the agent is running, press Esc to stop the current turn, and the queued message dispatches as soon as the SW finishes its teardown — no more silently-stuck queues across tab/space/window boundaries.
+  - **The "agent is working" blue dot survives backgrounding.** The sidebar dot, in-chat sparkle, and per-tab overlay now reflect the SW's authoritative state instead of the renderer's local React state, so the indicator stays accurate while you're on another tab and while tools are executing between text turns.
+  - **Approvals route to the live owner.** Approve / deny from any renderer; the click is forwarded to the SW which applies it to the actual `approval-requested` part. Viewers can stop the run too — a viewer's Stop button now sends `AGENT_RUN_STOP` to the SW host, not just to the (idle) local SDK.
+  - **Tool execution is durable.** `navigate`, `close-tabs`, MCP connector tools, Python/sandbox execution, skills, subagent delegation, and CUA all run inside the SW realm now. Tools that need a specific tab (capture, debugger-attached actions) use a new `tab-binding-rpc` channel to drive the target tab remotely.
+
+  **Crash + restart recovery.** When the SW is evicted mid-run (Chrome memory pressure, browser update), chat-db's last assistant message can be left with `input-streaming` / `approval-requested` tool parts. On the next user action, a heal pass rewrites those to `output-error` with a muted "Interrupted" badge, so you can resume the conversation cleanly instead of getting stuck behind unmatched tool calls. `resetActiveAgentsAtStartup` clears stale "agent is running" flags at SW boot so the composer never opens with a stuck Stop button.
+
+  **Implementation highlights.**
+
+  - `entrypoints/background/agent-host/` — new package: `registry.ts` (one `RunHandle` per conversationId), `run.ts` (drives a single turn end-to-end, tees the chunk stream into fan-out + persistence + snapshot pipelines), `port-router.ts` (handles `chrome.runtime.onConnect` for `agent-run:*` ports, ACKs `hasActiveRun`, folds duplicate STARTs into viewer attaches), `snapshot-broadcast.ts` (throttled `STREAM_PARTS` + terminal `STREAM_DONE` for viewer surfaces), `heal-chatdb.ts` (SW-side healer for stranded tool parts on run termination), `bootstrap.ts` (wires the lot at SW boot).
+  - `lib/agent/remote-transport.ts` — new renderer-side `ChatTransport` (`RemoteChatTransport`) that proxies `Chat.sendMessage` to the SW host over a port, plus `probeAgentRun` / `probeAgentRunAwaitIdle` / `abortAgentRun` helpers used by `handleSubmit`, the queue auto-flush watcher, and the wrapped `stop()`.
+  - `hooks/useAgentChat.ts` — viewer-aware: `isInitiator` = "this surface's local `useChat` is driving"; `isLoading` = "any surface (or the SW alone) is driving" — used for spinner + Stop button visibility; `isStreaming` is synced to `isLoading` so tools don't flash "Interrupted" while the SW is between text deltas. STREAM_DONE drops viewer mode unconditionally. The queue auto-flush effect lists `isViewer` as a dep so it re-arms when the SW finishes a long run. `isFlushingRef` was removed — `queueDb.claimHead` is the authoritative lock, the React ref was racing the SW finally block.
+  - `entrypoints/background/agent-host/run.ts` finally-block — when an old run terminates and the renderer's queue watcher has already started a new run on the same conversation, the old finally backs off instead of calling `resetAgentIndicator` (which would tear down the new run's blue dot and abort its mid-flight tools globally). `healLastAssistantInChatDb` runs **before** `emitDone`/`emitError` so subscribers never see a tool flash as "Interrupted" against the new run's already-persisted message.
+  - `port-router.ts` — on a fresh `AGENT_RUN_START`, evicts any terminal-status handle whose finally block hasn't yet reached `registry.release` so the new run can register without throwing.
+
+  **Test surface.** 1,893 tests pass. New coverage: `agent-host/__tests__/*` (registry, run lifecycle, port router, snapshot broadcast, heal-chatdb), `lib/agent/__tests__/remote-transport.test.ts` (24 tests covering chunk pump, abort semantics, port-disconnect Chrome quirks, `probeAgentRun`, `probeAgentRunAwaitIdle`, `abortAgentRun`), `lib/agent/__tests__/agent-indicator-parallel-tabs.test.ts`, `lib/agent/__tests__/conversation-window-resolution.test.ts`, `lib/agent/__tests__/active-tab-per-cid.test.ts`, `lib/agent/__tests__/tab-binding-rpc.test.ts`, `lib/agent/__tests__/sw-import-graph.test.ts` (guard against accidentally pulling browser-only modules into the SW bundle), `lib/agent/subagents/__tests__/subagent-runs-in-sw.test.ts`, `lib/active-agents-startup-reset.test.ts`, and dispatch tests for the MCP / skills / Python / sandbox SW message channels.
+
 ## 0.12.0
 
 ### Minor Changes
