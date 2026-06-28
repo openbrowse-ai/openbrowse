@@ -422,7 +422,13 @@ export async function bindTabByHandle(
   }
   if (tabId == null) return null;
 
-  const tabs = await ctx.driver.listTabs();
+  // Scope the verification to the conversation's window. Belt-and-
+  // suspenders: even if the agent picked a handle from a stale or
+  // foreign-window awareness list, binding it would fail with a
+  // not-found rather than silently bridging windows. When
+  // `targetWindowId` is unset (renderer-realm tests, scheduled runs),
+  // the driver falls back to focused-window (legacy behavior).
+  const tabs = await ctx.driver.listTabs(ctx.session?.targetWindowId);
   const target = tabs.find((t) => t.id === tabId);
   if (!target) return null;
 

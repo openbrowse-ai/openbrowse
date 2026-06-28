@@ -4,6 +4,7 @@ import {
   type Attachment,
 } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { computeShowThinking } from "./compute-show-thinking";
 import { PlanApprovalCard } from "./PlanApprovalCard";
 import { findPendingPlanApproval } from "./find-pending-plan-approval";
 import type { ProposePlanInput } from "@/lib/agent/tools/propose-plan";
@@ -638,14 +639,14 @@ export function ChatView({
     void openSettingsTab();
   }
 
-  // Use the hook's local streaming signal (not the cross-tab `isStreaming`
-  // that includes `isAgentActiveGlobally`). The global flag flips on as
-  // soon as the agent starts running anywhere, but our local `messages`
-  // array only contains a streaming assistant message once
-  // `hookIsStreaming` is true. Gating on the global flag would unmount
-  // <ThinkingIndicator> before the assistant message exists, leaving a
-  // gap with no dot visible.
-  const showThinking = isLoading && !hookIsStreaming;
+  // Trailing `<ThinkingIndicator>` gate. We mount it ONLY when a run is
+  // active and the visible list hasn't yet got an in-flight assistant
+  // row (whose own `<GeneratingIndicator>` would otherwise double up
+  // with the trailing one). See `compute-show-thinking.ts` for the full
+  // surface×status quadrant breakdown — most importantly, the viewer
+  // case (where `hookIsStreaming` is always false but the SW is
+  // streaming and `isAgentActiveGlobally` is true).
+  const showThinking = computeShowThinking(isLoading, messages);
 
   // Sent-message edits dim everything below the edited row. Queued
   // edits don't affect the transcript, so they don't dim anything.

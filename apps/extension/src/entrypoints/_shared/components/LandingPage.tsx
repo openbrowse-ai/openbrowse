@@ -377,12 +377,27 @@ export function LandingPage({
       if (!input.trim() && attachments.length === 0) return;
 
       const convId = crypto.randomUUID();
+      // Stamp the renderer's current window so the SW-hosted agent loop
+      // can scope its tab queries (system-prompt awareness, listTabs,
+      // navigate-no-handle) to THIS window. Mirrors the useAgentChat
+      // handleSubmit branch (see useAgentChat.ts). Without this stamp,
+      // LandingPage-created chats fall back to step 3 of the resolver
+      // chain (space.windowId), which can be null after window
+      // close/reopen between SW boots.
+      let originWindowId: number | null = null;
+      try {
+        const w = await chrome.windows.getCurrent();
+        originWindowId = typeof w?.id === "number" ? w.id : null;
+      } catch {
+        // Non-extension realm — leave null.
+      }
       await chatDb.createConversation({
         id: convId,
         title: input.trim().slice(0, 100) || "Image",
         spaceId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        originWindowId,
         // Apply the user's pre-conversation mode selection.
         ...(mode !== "ask" && { mode }),
       });

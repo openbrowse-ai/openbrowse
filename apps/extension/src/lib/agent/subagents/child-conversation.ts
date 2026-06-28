@@ -70,6 +70,15 @@ export async function createChildConversation(args: {
     subagentSlug: args.slug,
     subagentStatus: "running",
     isolationProfile: args.isolation,
+    // Peer subagents inherit the parent's originWindowId so their tab
+    // queries scope to the parent's window (the user's mental model:
+    // "this delegate is part of this chat, in this window"). Incognito
+    // subagents have their own ephemeralWindowId stamped separately
+    // and don't use originWindowId for window resolution — the
+    // session.targetWindowId set in subagents/runner.ts wins for them.
+    ...(parent.originWindowId !== undefined && {
+      originWindowId: parent.originWindowId,
+    }),
     ...(parent.mode !== undefined && { mode: parent.mode }),
     ...(parent.plan !== undefined && { plan: parent.plan }),
     ...(args.ephemeralWindowId !== undefined && {

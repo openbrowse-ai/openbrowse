@@ -62,20 +62,65 @@ export const navigateTool: BrowserTool<Input, Output> = {
       // path used on the first action of a conversation. The new tab
       // should land in the conversation's own window — where the chat
       // and the agent's existing tabs live — not whatever window Chrome
-      // happens to have focused. For incognito subagents the runner sets
-      // a static `session.targetWindowId` (their fresh incognito window);
-      // for the root agent we resolve it dynamically via
-      // `resolveNewTabWindowId` (owned-tab window → space window). When
-      // neither yields a window, `windowId` is omitted and Chrome falls
-      // back to the focused window (legacy behavior). The resolver runs
-      // best-effort: a rejection is swallowed to `undefined` so a transient
-      // lookup failure degrades to the focused window rather than aborting
-      // the navigation.
-      const targetWindowId =
-        ctx.session?.targetWindowId ??
-        (await Promise.resolve(ctx.session?.resolveNewTabWindowId?.()).catch(
-          () => undefined,
-        ));
+      // happens to have focused.
+      //
+      // Window resolution has THREE layered defenses, in order:
+      //
+      //   1. `session.targetWindowId` (sync): stamped by the runner for
+      //      incognito subagents (their fresh incognito window) and by
+      //      `buildExtensionToolContext` for the root agent from the
+      //      pre-warmed cache.
+      //   2. `session.resolveNewTabWindowId()` (async): the parent's
+      //      closure that resolves owned-tab → originWindowId → space
+      //      window for the PARENT's cid. Subagents inherit this closure
+      //      via the runner's `...parentToolContext.session` spread, so
+      //      a peer subagent's navigate resolves to the PARENT's window
+      //      (which is the user's mental model: subagents work in the
+      //      same window as their parent chat).
+      //   3. Direct fallback (async): when (1) AND (2) both fail (e.g.
+      //      the renderer-cached session didn't get a chance to stamp
+      //      targetWindowId AND the parent closure isn't wired), we
+      //      resolve the conversation's window from the SUBAGENT's own
+      //      cid via `resolveConversationWindowId`. Child conversations
+      //      inherit `originWindowId` from their parent at creation
+      //      time (see `subagents/child-conversation.ts`), so this
+      //      degrades to the parent's origin window. Only kicks in for
+      //      pathological harnesses where both upper layers are absent.
+      //
+      // When all three yield undefined, `windowId` is omitted and
+      // Chrome falls back to the focused window (legacy behavior).
+      let targetWindowId: number | undefined = ctx.session?.targetWindowId;
+      if (targetWindowId === undefined) {
+        try {
+          targetWindowId = await Promise.resolve(
+            ctx.session?.resolveNewTabWindowId?.(),
+          ).catch(() => undefined);
+        } catch {
+          targetWindowId = undefined;
+        }
+      }
+      if (targetWindowId === undefined && ctx.session?.conversationId) {
+        try {
+          // Variable-indirection import (instead of a string-literal
+          // `import("../conversation-window")`) is deliberate: it hides
+          // the module from tsc's static module-graph walk so
+          // `packages/bench` (no `@/*` path alias, no chrome ambient
+          // types) doesn't transitively typecheck this chain. Runtime
+          // resolution via the bundler is unaffected. See the
+          // matching comment in `active-tab.ts`.
+          const modulePath: string = "../conversation-window";
+          const mod = (await import(modulePath)) as {
+            resolveConversationWindowId: (
+              cid: string,
+            ) => Promise<number | undefined>;
+          };
+          targetWindowId = await mod.resolveConversationWindowId(
+            ctx.session.conversationId,
+          );
+        } catch {
+          // best-effort
+        }
+      }
       tabId = await ctx.driver.createTab(url, {
         active: false,
         ...(targetWindowId !== undefined && { windowId: targetWindowId }),

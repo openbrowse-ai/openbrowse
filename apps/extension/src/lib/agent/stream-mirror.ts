@@ -110,6 +110,38 @@ export function applyStreamSnapshot<
 }
 
 /**
+ * Reconcile a renderer's in-memory `messages` array with the persisted
+ * chatDb state after a turn terminates.
+ *
+ * Use case: the user clicks Stop and immediately sends a new message.
+ * The side panel (initiator) has accumulated in-memory stream chunks
+ * for the aborted assistant message, and may have an in-flight new
+ * assistant message for the next turn already streaming. We need to:
+ *
+ *   1. Replace the pre-existing messages with chatDb's canonical
+ *      (post-heal, post-persister) versions. This converges the
+ *      aborted message with whatever the SW persister + the
+ *      renderer's `healPendingTools` write committed.
+ *   2. PRESERVE local messages whose ids are NOT in chatDb yet — those
+ *      are the brand-new user message and the in-progress assistant
+ *      message for the next turn. Clobbering them would erase the
+ *      live stream the user is watching.
+ *
+ * Strategy: take chatDb's messages as the base; append any local
+ * messages whose ids are not in chatDb. Order: chatDb messages come
+ * first (their order is authoritative for the historical transcript),
+ * then local-only messages in their original local order (they're the
+ * tail of the new turn).
+ */
+export function mergeChatDbWithLocal<
+  M extends { id: string; role: string },
+>(dbMessages: M[], localMessages: M[]): M[] {
+  const dbIds = new Set(dbMessages.map((m) => m.id));
+  const localOnly = localMessages.filter((m) => !dbIds.has(m.id));
+  return [...dbMessages, ...localOnly];
+}
+
+/**
  * Tracks the highest `seq` applied per message id so a viewer can drop
  * stale/out-of-order frames. Returns true if the frame should be applied.
  */
@@ -126,4 +158,102 @@ export class SeqGuard {
   reset(): void {
     this.seen.clear();
   }
+}
+
+/**
+ * Watchdog decision: should the initiator renderer recover from a
+ * stuck-streaming state by force-rehydrating from chatDb and resetting
+ * its local Chat status?
+ *
+ * Context: the AI SDK's `Chat` instance drives the streaming lifecycle
+ * in the renderer. Under SW-host the actual model loop runs in the SW
+ * and chunks flow back via a `chrome.runtime.connect` port. If the port
+ * gets disrupted (browser internals, message-passing edge cases, the
+ * SW finished but the DONE chunk never made it back), `Chat.status`
+ * stays at `streaming` indefinitely. Consequences:
+ *
+ *   - Queue auto-flush gates on `status === "ready"` and never drains.
+ *   - The UI shows perpetual "Navigating..." or similar tool-running
+ *     indicator.
+ *   - The viewer watchdog (see useAgentChat.ts) does NOT help: that
+ *     watchdog only fires for viewer renderers, not the initiator.
+ *
+ * This is the symmetric initiator-side recovery: if the local Chat has
+ * been "streaming" or "submitted" for longer than `idleThresholdMs`
+ * since the last chunk activity AND chatDb's last assistant message
+ * shows a clean terminal state (no in-flight tool inputs, no pending
+ * approval), force convergence with chatDb.
+ *
+ * Returns `false` (skip recovery) in any of these cases — each is a
+ * legitimate non-stuck state we shouldn't disrupt:
+ *
+ *   - `status` is `ready` or `error` — no stuck state to recover.
+ *   - `now - lastActivityMs <= idleThresholdMs` — recent activity, the
+ *     run might just be slow.
+ *   - `dbLastAssistantParts` is `undefined` — we have no chatDb signal
+ *     to converge against; better to wait than to clobber an empty
+ *     turn record.
+ *   - Any tool part is in `input-streaming` state — the tool's
+ *     arguments are still being built; the model is genuinely mid-flight.
+ *   - Any tool part is in `approval-requested` state — the user is
+ *     intentionally paused awaiting action; recovery here would discard
+ *     the approval prompt.
+ *
+ * All time arithmetic uses an open interval (`>` not `>=`) for the
+ * threshold so a test that schedules recovery for exactly the threshold
+ * doesn't fire on the edge.
+ */
+export function shouldRecoverFromStuckStreaming(args: {
+  status: "ready" | "submitted" | "streaming" | "error";
+  lastActivityMs: number;
+  now: number;
+  idleThresholdMs: number;
+  /**
+   * The `parts` array of the last assistant message in chatDb, or
+   * `undefined` if chatDb has no assistant message yet. Used to decide
+   * whether the run actually finished (clean terminal state) versus
+   * being genuinely mid-flight or paused on approval.
+   *
+   * Only the `state` field is read; extra fields on each part (text,
+   * input, output, etc.) are accepted but ignored.
+   */
+  dbLastAssistantParts?: ReadonlyArray<{
+    type: string;
+    state?: string;
+    [key: string]: unknown;
+  }>;
+}): boolean {
+  // Only stuck if Chat thinks a run is in progress.
+  if (args.status !== "streaming" && args.status !== "submitted") {
+    return false;
+  }
+  // Must be idle past the threshold (open interval).
+  if (args.now - args.lastActivityMs <= args.idleThresholdMs) {
+    return false;
+  }
+  // Need a chatDb signal to converge against.
+  if (!args.dbLastAssistantParts) {
+    return false;
+  }
+  // Bail if any part indicates "genuinely mid-flight" or "user must act".
+  // The full bail set:
+  //   - "input-streaming": tool input still being built by the model
+  //   - "input-available": input complete, tool execution dispatched
+  //     but no output yet; converging would discard the in-flight call
+  //   - "approval-requested": INTENTIONAL pause waiting on user action
+  //   - "approval-responded": user just responded; SDK is resuming and
+  //     output hasn't materialised yet
+  //
+  // All four are non-terminal: converging the local message list to
+  // the db snapshot would clobber state the SW is still producing.
+  // Terminal states ("output-available", "output-error",
+  // "output-denied") are safe to converge against and trigger the
+  // recovery.
+  for (const part of args.dbLastAssistantParts) {
+    if (part.state === "input-streaming") return false;
+    if (part.state === "input-available") return false;
+    if (part.state === "approval-requested") return false;
+    if (part.state === "approval-responded") return false;
+  }
+  return true;
 }

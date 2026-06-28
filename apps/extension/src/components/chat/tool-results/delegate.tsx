@@ -67,19 +67,55 @@ export function DelegateResult({ args, result, toolCallId, state, errorText }: P
   // Live child id (assigned mid-run for peer/incognito). Used to drive
   // the chat-db live subscription below; we no longer expose any
   // navigation to the child view.
+  //
+  // Two delivery channels listened to in parallel:
+  //   - `window` CustomEvent: legacy path when the agent loop ran in
+  //     the renderer (and still used for any future in-renderer test).
+  //   - `chrome.runtime.onMessage`: SW-host path. The `delegate` tool
+  //     now runs inside the service worker, which has no `window` to
+  //     dispatch into; it forwards via runtime messaging instead. See
+  //     `.superpowers/plans/2026-06-25-sw-host-agent-runs.md`.
+  const parentConversationId = useConversationId();
   const [liveChildId, setLiveChildId] = useState<string | null>(null);
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<SubagentChildAssignedDetail>).detail;
-      if (detail?.toolCallId === toolCallId && detail.childConversationId) {
-        setLiveChildId(detail.childConversationId);
+    const apply = (detail: SubagentChildAssignedDetail | undefined) => {
+      if (!detail || !detail.childConversationId) return;
+      if (detail.toolCallId !== toolCallId) return;
+      // Scope on the parent conversation when the emitter provided one.
+      // Older emitters (or fall-back paths) may omit the field; in that
+      // case toolCallId alone is the match key (legacy behavior).
+      if (
+        detail.parentConversationId &&
+        parentConversationId &&
+        detail.parentConversationId !== parentConversationId
+      ) {
+        return;
+      }
+      setLiveChildId(detail.childConversationId);
+    };
+    const winHandler = (e: Event) => {
+      apply((e as CustomEvent<SubagentChildAssignedDetail>).detail);
+    };
+    const rtHandler = (msg: unknown) => {
+      if (
+        typeof msg === "object" &&
+        msg !== null &&
+        (msg as { type?: string }).type === SUBAGENT_CHILD_ASSIGNED_EVENT
+      ) {
+        apply((msg as { detail?: SubagentChildAssignedDetail }).detail);
       }
     };
-    window.addEventListener(SUBAGENT_CHILD_ASSIGNED_EVENT, handler);
+    window.addEventListener(SUBAGENT_CHILD_ASSIGNED_EVENT, winHandler);
+    try {
+      chrome.runtime?.onMessage?.addListener?.(rtHandler);
+    } catch {}
     return () => {
-      window.removeEventListener(SUBAGENT_CHILD_ASSIGNED_EVENT, handler);
+      window.removeEventListener(SUBAGENT_CHILD_ASSIGNED_EVENT, winHandler);
+      try {
+        chrome.runtime?.onMessage?.removeListener?.(rtHandler);
+      } catch {}
     };
-  }, [toolCallId]);
+  }, [toolCallId, parentConversationId]);
 
   // Recovered child id (reload path). When the parent turn was aborted
   // mid-run, `healPendingTools` strips the delegate call's `output` —
@@ -97,7 +133,6 @@ export function DelegateResult({ args, result, toolCallId, state, errorText }: P
   // already broken before this fix shipped. Only runs when we have no
   // child id from the other two sources, and tolerates `undefined`
   // (older child rows created before `parentToolCallId` existed).
-  const parentConversationId = useConversationId();
   const [recoveredChildId, setRecoveredChildId] = useState<string | null>(
     null,
   );
@@ -281,17 +316,35 @@ function useTraceTitle(
   const [eventTitle, setEventTitle] = useState<string | null>(null);
   const [persistedTitle, setPersistedTitle] = useState<string | null>(null);
 
-  // DOM event channel.
+  // DOM event channel + SW runtime-message channel (post-SW-host the
+  // setTaskTitle tool runs in the SW and forwards via runtime messaging).
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<SubagentTitleUpdatedDetail>).detail;
+    const apply = (detail: SubagentTitleUpdatedDetail | undefined) => {
       if (detail?.toolCallId === toolCallId && detail.title) {
         setEventTitle(detail.title);
       }
     };
-    window.addEventListener(SUBAGENT_TITLE_UPDATED_EVENT, handler);
+    const winHandler = (e: Event) => {
+      apply((e as CustomEvent<SubagentTitleUpdatedDetail>).detail);
+    };
+    const rtHandler = (msg: unknown) => {
+      if (
+        typeof msg === "object" &&
+        msg !== null &&
+        (msg as { type?: string }).type === SUBAGENT_TITLE_UPDATED_EVENT
+      ) {
+        apply((msg as { detail?: SubagentTitleUpdatedDetail }).detail);
+      }
+    };
+    window.addEventListener(SUBAGENT_TITLE_UPDATED_EVENT, winHandler);
+    try {
+      chrome.runtime?.onMessage?.addListener?.(rtHandler);
+    } catch {}
     return () => {
-      window.removeEventListener(SUBAGENT_TITLE_UPDATED_EVENT, handler);
+      window.removeEventListener(SUBAGENT_TITLE_UPDATED_EVENT, winHandler);
+      try {
+        chrome.runtime?.onMessage?.removeListener?.(rtHandler);
+      } catch {}
     };
   }, [toolCallId]);
 

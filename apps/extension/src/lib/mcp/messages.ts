@@ -29,6 +29,13 @@ export function sendMcpMessage(message: { type: "MCP_CALL_TOOL"; serverId: strin
 export function sendMcpMessage(message: { type: "MCP_READ_RESOURCE"; serverId: string; uri: string }): Promise<McpResultResponse>;
 export function sendMcpMessage(message: { type: "MCP_GET_PROMPT"; serverId: string; promptName: string; args?: Record<string, string> }): Promise<McpResultResponse>;
 export function sendMcpMessage(message: McpMessage): Promise<McpResponse>;
-export function sendMcpMessage(message: McpMessage): Promise<McpResponse> {
-  return chrome.runtime.sendMessage(message);
+export async function sendMcpMessage(message: McpMessage): Promise<McpResponse> {
+  // Realm-aware: SW callers (e.g. the SW-hosted agent loop calling MCP
+  // tools) bypass chrome.runtime.sendMessage (which can't reach the SW's
+  // own listeners) and invoke the handler in-process.
+  const { swRpc } = await import("@/lib/runtime/sw-rpc");
+  return (await swRpc<McpMessage, McpResponse>(message, async () => {
+    const mod = await import("@/entrypoints/background/mcp-messages");
+    return mod.handleMcpMessage as never;
+  }));
 }

@@ -14,6 +14,7 @@ import {
   getPersistedPythonLog,
   getPyodideManager,
 } from "./python";
+import { handleSandboxExecute, isSandboxExecutePayload } from "./sandbox-host";
 import { sortTabs } from "./sort";
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -92,6 +93,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case "PYTHON_CLEAR_LOG":
         await clearPersistedPythonLog();
         return { ok: true };
+      case "SANDBOX_EXECUTE": {
+        // Validate the incoming runtime message at the boundary
+        // rather than re-shaping it from untyped fields. Malformed or
+        // empty payloads (e.g. a third-party message reusing this
+        // type) should be rejected here so `executeInSandboxLocal`
+        // never receives untrusted input.
+        const candidate = {
+          target: "offscreen",
+          type: "SANDBOX_EXECUTE",
+          code: message.code,
+          input: message.input,
+          options: message.options,
+        };
+        if (!isSandboxExecutePayload(candidate)) {
+          return { error: "Invalid SANDBOX_EXECUTE payload" };
+        }
+        return handleSandboxExecute(candidate);
+      }
       default:
         return { error: "Unknown message type" };
     }

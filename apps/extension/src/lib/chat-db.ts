@@ -105,6 +105,13 @@ interface ChatDB extends DBSchema {
       // `Conversation` in lib/types.ts.
       mode?: ConversationMode;
       plan?: ApprovedPlan;
+      // Chrome window the conversation was opened in. Additive (no
+      // schema bump): pre-existing rows hydrate as undefined and the
+      // window-resolution chain (`conversation-window.ts`) degrades
+      // gracefully to space-window scoping. Stamped at create time
+      // from `chrome.windows.getCurrent()` (renderer realm). Mirrors
+      // `Conversation` in lib/types.ts.
+      originWindowId?: number | null;
     };
     indexes: {
       "by-updated": number;

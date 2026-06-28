@@ -26,8 +26,16 @@ export interface NotifyPayload {
 export interface RunScheduledTaskDeps {
   /**
    * Ensure a home page exists to host the run, record the pending run, and
-   * broadcast the host request. The agent itself runs in that home page (the
-   * only realm with DOM + chrome.debugger/tabs/scripting).
+   * broadcast the host request.
+   *
+   * Architectural note (post-SW-host migration, 2026-06-25): the agent
+   * loop runs in the service worker now, not in the home page. The home
+   * page is the connection holder: its `useAgentChat`-built
+   * `RemoteChatTransport` opens an `agent-run:<conversationId>` Port to
+   * the SW, which then drives the LLM stream + tools. Deleting the
+   * home-page host indirection is possible (the SW could initiate the
+   * run directly) but is deferred — see
+   * `.superpowers/plans/2026-06-25-sw-host-agent-runs.md` Task 8.
    */
   hostRun: (args: ScheduledLoopArgs) => Promise<void>;
   /** Await the home page's SCHEDULED_RUN_DONE for this run (with timeout). */

@@ -17,6 +17,16 @@ export const definition: ProviderDefinition = {
     { id: "SmolLM2-1.7B-Instruct-q4f16_1-MLC", name: "SmolLM2 1.7B", capabilities: ["chat"], contextWindow: 8_192, maxOutputTokens: 2_048, downloadSize: "1.0 GB" },
   ],
   createLanguageModel(_config, _modelId) {
+    // WebLLM inference runs in the offscreen document (`@browser-ai/web-llm`
+    // is loaded there by `entrypoints/offscreen/ai.ts`). Non-agent
+    // consumers (tab tidy, chat-title generation) route directly to
+    // offscreen via the existing `ai.ts` handlers and never call
+    // `createLanguageModel`. The agent loop — whether renderer-hosted
+    // (legacy) or SW-hosted (post-SW-host migration) — does not currently
+    // support local models because there is no offscreen→host streaming
+    // bridge yet; adding one is a future expansion, not a regression
+    // (this throw has always been the behaviour). See
+    // `.superpowers/plans/2026-06-25-sw-host-agent-runs.md` Task 5.
     throw new Error("WebLLM models are created via web-llm runtime in offscreen document");
   },
 };

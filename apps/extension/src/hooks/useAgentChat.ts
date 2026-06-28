@@ -1,10 +1,9 @@
 import { chatDb } from "@/lib/chat-db";
-import { createAgentTransport } from "@/lib/chat-transport";
 import { formatAttachments } from "@/lib/chat/format-attachments";
 import { queueDb, subscribeQueueChange } from "@/lib/queue-db";
 import {
   resetAgentIndicator,
-  setAgentSpaceColor,
+  setAgentColor,
   setAgentContext,
   needsCompaction,
   resetTokenTracking,
@@ -15,23 +14,27 @@ import { healPendingTools } from "@/lib/agent/heal-pending-tools";
 import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
 import { normalizeToolInputForPersistence } from "@/lib/agent/tool-input-normalize";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
-import { runOwnership, HEARTBEAT_MS, STALE_OWNER_MS } from "@/lib/agent/run-ownership";
+import {
+  abortAgentRun,
+  probeAgentRun,
+  probeAgentRunAwaitIdle,
+  RemoteChatTransport,
+} from "@/lib/agent/remote-transport";
 import {
   markPendingFirstTurn,
   hasPendingFirstTurn,
   clearPendingFirstTurn,
 } from "@/lib/agent/pending-first-turn";
 import {
-  broadcastStreamParts,
-  broadcastStreamDone,
   isStreamPartsMessage,
   isStreamDoneMessage,
   applyStreamSnapshot,
+  mergeChatDbWithLocal,
+  shouldRecoverFromStuckStreaming,
   SeqGuard,
 } from "@/lib/agent/stream-mirror";
 import {
   RUNTIME_MESSAGES,
-  STREAM_MIRROR_THROTTLE_MS,
 } from "@/lib/constants";
 import {
   pruneMessages as pruneMessageParts,
@@ -42,6 +45,7 @@ import {
   getCompactionSystemPrompt,
   prepareMessagesForSummarization,
   findCompactionEvents,
+  shouldCompact,
   shouldDebounceCompaction,
   MIN_MESSAGES_FOR_COMPACTION,
 } from "@/lib/agent/compaction";
@@ -516,26 +520,18 @@ function getOrCreateChat(
 
       const parts = serializeParts(message.parts);
 
-      // Skip persisting an "empty turn" — fired when the agent errored
-      // before producing any content. Saving an empty assistant
-      // message would leave a bare regenerate-icon bubble in the
-      // conversation after a refresh (the in-memory error banner
-      // doesn't survive reloads). Partial content (mid-stream errors,
-      // user aborts) still persists because at least one meaningful
-      // part exists by then.
-      if (hasMeaningfulContent(parts)) {
-        await chatDb.saveMessage({
-          id: message.id,
-          conversationId,
-          role: "assistant",
-          content: extractTextContent(parts),
-          parts,
-          createdAt: Date.now(),
-        });
-        await chatDb.updateConversation(conversationId, {
-          updatedAt: Date.now(),
-        });
-      }
+      // Persistence is owned by the SW agent host now
+      // (`agent-host/persist-stream.ts` upserts assistant messages on
+      // every step boundary, including the final terminal one). The
+      // renderer onFinish used to call `chatDb.saveMessage` here too;
+      // doing so under SW-host would race the SW's write and produce
+      // double-emit IndexedDB events. The empty-turn skip + meaningful-
+      // content filter both already happen on the SW side.
+      //
+      // What stays renderer-side: clearing the "agent running" indicator,
+      // notifying the user when the surface isn't focused, and evicting
+      // the cached `Chat` instance after a grace period.
+
       const hasApprovalPending = parts.some(
         (p) => p.type === "dynamic-tool" && p.state === "approval-requested"
       );
@@ -628,13 +624,10 @@ export function useAgentChat({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
-  /**
-   * Stable per-mount identity for the run-ownership lock. Exactly one
-   * context may own (drive) a conversation's agent loop at a time; this
-   * token is how `run-ownership` distinguishes "me" from sibling tabs.
-   * Minted once per hook mount and never changes.
-   */
-  const ownerTokenRef = useRef<string>(generateId());
+  // Note: `ownerTokenRef` (the per-mount IndexedDB ownership token) was
+  // removed in the SW-host migration. The SW is the single deterministic
+  // host for every conversationId, so per-renderer ownership tokens are
+  // moot. See `.superpowers/plans/2026-06-25-sw-host-agent-runs.md` Task 7.
 
   /**
    * True when a *different* live context currently owns this
@@ -646,13 +639,12 @@ export function useAgentChat({
   const isViewerRef = useRef(false);
   isViewerRef.current = isViewer;
 
-  // Monotonic sequence for outgoing stream snapshots (host side) and a
-  // guard that drops stale/out-of-order frames (viewer side).
-  const streamSeqRef = useRef(0);
+  // Sequence guard that drops stale/out-of-order frames received from
+  // the SW host's STREAM_PARTS broadcast (viewer-receiver side).
   const seqGuardRef = useRef(new SeqGuard());
-  // Wall-clock of the last mirror signal (frame or done) this context
-  // received as a viewer. Used by the viewer watchdog to detect a host
-  // that died mid-stream (no STREAM_DONE will ever arrive).
+  // Wall-clock of the last mirror signal (frame or done) received as a
+  // viewer. Used by the viewer watchdog to detect a host that died
+  // mid-stream (no STREAM_DONE will ever arrive).
   const lastMirrorActivityRef = useRef(0);
 
   /**
@@ -777,16 +769,24 @@ export function useAgentChat({
     }
   }, [mcpConnectionKey]);
 
+  // Eagerly cache the working-overlay glow color for this conversation
+  // BEFORE the first tool runs. The SW agent-transport tool wrapper looks
+  // up via `getAgentColor(cid)` and falls back to a lazy storage read if
+  // unset, but the lazy path means the first tool call paints with default
+  // tint until the read completes. Setting it here from the renderer side
+  // is a renderer-realm convenience (the SW realm also resolves it on
+  // demand). Cleared to null whenever the conversation has no space.
   useEffect(() => {
+    if (!conversationId) return;
     if (!spaceId) {
-      setAgentSpaceColor(null);
+      setAgentColor(conversationId, null);
       return;
     }
     storage.getSpaces().then((spaces) => {
       const space = spaces.find((s) => s.id === spaceId);
-      setAgentSpaceColor(space?.colors?.[0] ?? null);
+      setAgentColor(conversationId, space?.colors?.[0] ?? null);
     });
-  }, [spaceId]);
+  }, [conversationId, spaceId]);
 
   const [hasVisionSupport, setHasVisionSupport] = useState(true);
 
@@ -851,35 +851,62 @@ export function useAgentChat({
 
   const [transport, setTransport] = useState<ChatTransport<AgentMessage> | null>(null);
 
+  // Build the RemoteChatTransport. The actual agent loop now lives in the
+  // service worker (see `.superpowers/plans/2026-06-25-sw-host-agent-runs.md`);
+  // this renderer-side transport is a thin proxy that opens a per-conversation
+  // Port and pumps SW-emitted chunks into the AI SDK's `Chat`/`useChat`.
+  //
+  // The transport is rebuilt when the renderer-side settings snapshot (model,
+  // space, thinking config, headless policy) changes. Re-keying the transport
+  // makes the freshly opened port carry the up-to-date `settingsSnapshot` on
+  // its first AGENT_RUN_START; the SW reads global settings (provider configs,
+  // MCP servers, ...) from storage itself.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let spaceName: string | null = null;
-      if (spaceId) {
-        const spaces = await storage.getSpaces();
-        spaceName = spaces.find((s) => s.id === spaceId)?.name ?? null;
-      }
-      const t = await createAgentTransport(
-        settings,
-        agentSettings.agentModel,
-        spaceId,
-        spaceName,
-        conversationId,
-        agentSettings.thinkingEnabled
-          ? { enabled: true, config: agentSettings.thinkingConfig }
-          : undefined,
+    if (!conversationId) {
+      setTransport(null);
+      return;
+    }
+    if (!agentSettings.agentModel) {
+      setTransport(null);
+      return;
+    }
+    const origin: "sidepanel" | "home" | "newtab" | "popup" =
+      typeof window !== "undefined" &&
+      window.location.pathname.includes("newtab")
+        ? "newtab"
+        : typeof window !== "undefined" &&
+          window.location.pathname.includes("home")
+        ? "home"
+        : typeof window !== "undefined" &&
+          window.location.search.includes("mode=popup")
+        ? "popup"
+        : "sidepanel";
+    const t = new RemoteChatTransport(
+      conversationId,
+      {
+        agentModel: agentSettings.agentModel,
+        spaceId: spaceId ?? null,
+        thinkingEnabled: agentSettings.thinkingEnabled,
+        thinkingConfig: agentSettings.thinkingConfig,
         headless,
-      );
-      if (!cancelled) setTransport(t);
-    })();
-    return () => { cancelled = true; };
-    // `conversationId` is a dep so the transport rebuilds when the active
-    // conversation changes. The system prompt bakes in per-conversation
-    // context at construction time (todos, and the editing-artifact HTML
-    // block); without this dep an edit conversation whose id is assigned
-    // asynchronously after mount would build its transport against a stale
-    // (usually null) id and silently omit that context.
-  }, [settings, agentSettings.agentModel, agentSettings.thinkingEnabled, agentSettings.thinkingConfig, spaceId, mcpVersion, headless?.autoApprove, conversationId]);
+      },
+      origin,
+    );
+    setTransport(t);
+    return () => {
+      // No teardown needed — opening a fresh transport just means the
+      // next sendMessages will open a fresh Port. The SW keeps the run
+      // alive across renderer re-mounts.
+    };
+  }, [
+    conversationId,
+    agentSettings.agentModel,
+    agentSettings.thinkingEnabled,
+    agentSettings.thinkingConfig,
+    spaceId,
+    mcpVersion,
+    headless?.autoApprove,
+  ]);
 
   // Get or create a Chat instance for the current conversation
   const origin: "sidepanel" | "home" = window.location.pathname.includes("home")
@@ -916,19 +943,86 @@ export function useAgentChat({
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
 
+  // Forward ref to `queueMessage` (defined below, after `handleSubmit`).
+  // `handleSubmit` needs to be able to divert to the queue when the SW
+  // probe reports an active run; without a forward ref we'd have an
+  // init-order problem (handleSubmit captures queueMessage before it's
+  // defined). The ref is assigned right after `queueMessage`'s
+  // useCallback returns.
+  const queueMessageRef = useRef<
+    ((
+      mentions?: TabMentionAttrs[],
+      attachments?: Attachment[],
+    ) => Promise<void>) | null
+  >(null);
+
+  // Track whether an explicit user-driven stop happened so the next
+  // AGENT_RUN_DONE for this conversation can force a chatDb rehydrate
+  // even when this renderer is mid-loading-state on the FOLLOW-UP turn.
+  // Without this, the side panel's in-memory `messages` for the aborted
+  // turn can diverge from the persisted (healed) version: chunks keep
+  // flowing through the local Chat for a moment after stop() fires,
+  // and the standard `isLoadingRef.current` gate in the DONE handler
+  // skips re-hydrate when the queue auto-flush has already started a
+  // new turn. See `mergeChatDbWithLocal` for the convergence logic.
+  const forceRehydrateOnNextDoneRef = useRef(false);
+
   // Wrap the chat's stop() so it also aborts any in-flight compaction
   // summarization call. Without this, clicking Stop while a summary is
   // generating would silently let the LLM call continue and write a
   // compaction event into the chat after the user thought they had
   // cancelled.
+  //
+  // Also fires `abortAgentRun` against the SW so that *viewer* surfaces
+  // (whose local `useChat` is in `status: "ready"` because they didn't
+  // start the run) can still kill the SW-side run. `chatStop()` alone
+  // aborts only the local AI SDK stream — which for a viewer is a
+  // no-op against an already-idle local Chat — and would leave the SW
+  // run executing tools in the background.
   const stop = useCallback(() => {
     compactionAbortRef.current?.abort();
+    forceRehydrateOnNextDoneRef.current = true;
     chatStop();
+    const cid = conversationIdRef.current;
+    if (cid) abortAgentRun(cid);
   }, [chatStop]);
 
-  const isLoading = status === "submitted" || status === "streaming";
-  const isStreaming = status === "streaming";
-  const wasStreamingRef = useRef(false);
+  // `isInitiator` is true only when *this* renderer's local `useChat`
+  // is actively driving a run. Used by listeners that need to gate on
+  // "am I the source of truth for the local message list" — e.g. the
+  // STREAM_PARTS receiver, which must skip applying snapshots when the
+  // local chunk stream is already updating messages.
+  const isInitiator = status === "submitted" || status === "streaming";
+  // `isLoading` is what the UI uses to decide whether to show the Stop
+  // button + spinner. It must be true for BOTH initiators (this tab
+  // started the run) AND viewers (a different surface — or the SW
+  // continuing after all tabs were closed — is driving the run, and
+  // this surface is mirroring via STREAM_PARTS). Without the
+  // `isViewer` arm here the side panel would show the Send button as
+  // if the chat were idle while the SW is busy executing tools, and
+  // the auto-flush watcher would happily race the active SW run.
+  const isLoading = isInitiator || isViewer;
+  
+  // `isStreaming` is used by the MessageList to decide if the *entire
+  // conversation* is active, which controls whether the latest tool
+  // call shows as "Pending..." vs "Interrupted". If we just used
+  // `status === "streaming"`, the UI would instantly flash the tool as
+  // "Interrupted" the moment the AI SDK finished generating text and
+  // handed execution off to the tool (because SDK status drops to
+  // "ready" while tools run). Syncing this to `isLoading` keeps tools
+  // marked as "Pending/Running" for as long as the SW is running them.
+  const isStreaming = isLoading;
+  const wasLoadingRef = useRef(false);
+  // Mirror `isInitiator` for use in cross-context listeners that need
+  // to know "is THIS renderer actively driving the run right now?"
+  // without the effect rebinding on every status flip. Used by the
+  // STREAM_PARTS receiver to avoid double-applying snapshots in the
+  // initiator renderer (whose `useChat` is already updating messages
+  // from the live chunk stream). Named `isLoadingRef` historically;
+  // semantics are now strictly "am I the initiator", not "am I in a
+  // loading-display state" (those diverge for viewer surfaces).
+  const isLoadingRef = useRef(isInitiator);
+  isLoadingRef.current = isInitiator;
 
   const runCompaction = useCallback(
     async (
@@ -1219,50 +1313,35 @@ export function useAgentChat({
   }, [isCompacting, isLoading, messages, runCompaction]);
 
   useEffect(() => {
-    if (status === "streaming" || status === "submitted") {
-      wasStreamingRef.current = true;
+    if (isLoading) {
+      wasLoadingRef.current = true;
       if (conversationId) {
         setAgentActive(conversationId);
-        // Claim ownership the moment this context starts driving a run.
-        // If a different live context already owns it, we lost the race:
-        // stop our local loop and fall back to viewer mode (mirror the
-        // owner's stream instead of duplicating the work).
-        const cid = conversationId;
-        const token = ownerTokenRef.current;
-        void runOwnership.claimOwnership(cid, token).then((won) => {
-          if (conversationIdRef.current !== cid) return;
-          if (won) {
-            setIsViewer(false);
-          } else {
-            setIsViewer(true);
-            stop();
-          }
-        });
+        // Under the SW-host model the service worker owns the single
+        // deterministic host for every conversation. We no longer claim
+        // ownership in IndexedDB here — there is no cross-renderer
+        // contention because every renderer is now a subscriber, not
+        // a host candidate.
       }
-    } else if (wasStreamingRef.current) {
-      wasStreamingRef.current = false;
-      resetAgentIndicator();
+    } else if (wasLoadingRef.current) {
+      wasLoadingRef.current = false;
+      // Under SW-host the authoritative `resetAgentIndicator()` call
+      // happens in the SW agent host's terminal-state handler (see
+      // `entrypoints/background/agent-host/run.ts`) — that's the realm
+      // where `agentActive` was flipped true by the tool wrapper and
+      // where `chrome.debugger` sessions were attached. This call is a
+      // defensive no-op in the renderer realm (the renderer's
+      // `agentActive` is always false post-SW-host) but is kept to
+      // tear down any future renderer-side overlay state cleanly.
+      // Pass the cid so the per-tab teardown only touches THIS
+      // conversation's overlays — peer parallel runs are not disturbed.
+      resetAgentIndicator(conversationId ?? null);
       if (conversationId) {
         setAgentInactive(conversationId);
-        // Terminal state for this context's run: emit one final snapshot
-        // (the throttled broadcaster may have skipped the last partial
-        // when status flipped out of "streaming"), then release ownership
-        // and tell viewers to re-read the authoritative transcript.
-        const cid = conversationId;
-        if (!isViewer) {
-          const lastMsg = messages[messages.length - 1];
-          if (lastMsg && lastMsg.role === "assistant") {
-            streamSeqRef.current += 1;
-            broadcastStreamParts({
-              conversationId: cid,
-              messageId: lastMsg.id,
-              parts: serializeParts(lastMsg.parts),
-              seq: streamSeqRef.current,
-            });
-          }
-        }
-        void runOwnership.releaseOwnership(cid, ownerTokenRef.current);
-        broadcastStreamDone(cid);
+        // Terminal-state broadcast is owned by the SW host now
+        // (`agent-host/snapshot-broadcast.ts`'s `done()` emits the final
+        // STREAM_PARTS + STREAM_DONE). The renderer no longer needs to
+        // re-emit on its `status` transition.
       }
 
       // Check if compaction is needed after response completes. This
@@ -1271,72 +1350,55 @@ export function useAgentChat({
       // exit early at a step boundary because tokens crossed the
       // threshold). Either way, status flips out of streaming and we
       // land here.
-      if (conversationId && needsCompaction() && messages.length >= MIN_MESSAGES_FOR_COMPACTION) {
-        runCompaction(conversationId, messages, { auto: true });
+      //
+      // Under SW-host the agent loop runs in a different realm than this
+      // hook, so the legacy `needsCompaction()` (which read a
+      // module-scope `lastTotalTokens` mutated by the loop) always
+      // returned false here. We instead read the authoritative
+      // `conv.usage.totalTokens` that the SW persists to chat-db on
+      // every step, and feed it directly to `shouldCompact`.
+      if (conversationId && messages.length >= MIN_MESSAGES_FOR_COMPACTION) {
+        const cid = conversationId;
+        const localMessages = messages;
+        void chatDb.getConversation(cid).then((conv) => {
+          if (!conv?.usage) return;
+          if (conversationIdRef.current !== cid) return;
+          // Build a TokenLimits-shaped view of the persisted snapshot so
+          // `shouldCompact` has the right ceiling for the model the SW
+          // actually used this turn (rather than falling back to the
+          // renderer's stale `currentModelDef`, which is no longer
+          // mutated by the agent loop under SW-host).
+          const modelLimits = {
+            contextWindow: conv.usage.contextWindow,
+            maxOutputTokens: getCurrentModelDef()?.maxOutputTokens,
+          };
+          if (shouldCompact(conv.usage.totalTokens, modelLimits)) {
+            runCompaction(cid, localMessages, { auto: true });
+          }
+        });
       }
     }
   }, [status, conversationId, messages, runCompaction, stop, isViewer]);
 
-  // Heartbeat: while this context owns a streaming run, renew the
-  // ownership claim periodically so sibling tabs don't reap it as stale.
-  // If renewal fails (we lost ownership, e.g. after a stale reap), stop
-  // the local loop and become a viewer.
-  useEffect(() => {
-    if (!conversationId) return;
-    if (status !== "streaming" && status !== "submitted") return;
-    if (isViewer) return;
-    const cid = conversationId;
-    const token = ownerTokenRef.current;
-    const interval = setInterval(() => {
-      void runOwnership.renewOwnership(cid, token).then((stillMine) => {
-        if (conversationIdRef.current !== cid) return;
-        if (!stillMine) {
-          setIsViewer(true);
-          stop();
-        }
-      });
-    }, HEARTBEAT_MS);
-    return () => clearInterval(interval);
-  }, [status, conversationId, isViewer, stop]);
+  // Heartbeat + host-broadcaster effects intentionally removed.
+  //
+  // Pre-SW-host architecture: every renderer ran its own agent loop and
+  // arbitrated single-host status via an IndexedDB ownership lock with
+  // 10s heartbeat + 30s stale threshold (`runOwnership`), and the
+  // elected host emitted throttled STREAM_PARTS snapshots to viewer
+  // surfaces. Both effects lived here.
+  //
+  // Post-SW-host architecture (this branch): the service worker is the
+  // single deterministic host for every conversationId. Every renderer
+  // is a subscriber via `RemoteChatTransport`. The SW emits the same
+  // STREAM_PARTS snapshots via `agent-host/snapshot-broadcast.ts`, so
+  // the receive side below is unchanged. The heartbeat / broadcaster
+  // effects are net-removed.
 
-  // Host broadcaster: while this context owns a streaming run, broadcast
-  // throttled full-message snapshots of the in-flight assistant message
-  // so viewer tabs can mirror progress live. Full snapshots (not deltas)
-  // self-heal dropped frames and instantly catch up late joiners.
-  const lastBroadcastRef = useRef(0);
-  useEffect(() => {
-    if (!conversationId) return;
-    if (isViewer) return;
-    if (status !== "streaming") return;
-    const lastMsg = messages[messages.length - 1];
-    if (!lastMsg || lastMsg.role !== "assistant") return;
-
-    const now = Date.now();
-    const elapsed = now - lastBroadcastRef.current;
-    const cid = conversationId;
-    const emit = () => {
-      lastBroadcastRef.current = Date.now();
-      streamSeqRef.current += 1;
-      broadcastStreamParts({
-        conversationId: cid,
-        messageId: lastMsg.id,
-        parts: serializeParts(lastMsg.parts),
-        seq: streamSeqRef.current,
-      });
-    };
-    if (elapsed >= STREAM_MIRROR_THROTTLE_MS) {
-      emit();
-      return;
-    }
-    // Trailing edge: ensure the final partial state for this render
-    // lands even if updates stop arriving before the next interval.
-    const t = setTimeout(emit, STREAM_MIRROR_THROTTLE_MS - elapsed);
-    return () => clearTimeout(t);
-  }, [messages, status, isViewer, conversationId]);
-
-  // Viewer receiver: in a non-owner context, apply mirrored snapshots
-  // from the host into the local message list and converge on the
-  // authoritative transcript when the turn finishes.
+  // Viewer receiver: any renderer surface displays mirrored snapshots
+  // from the SW host into the local message list and converges on the
+  // authoritative transcript when the turn finishes. Under SW-host this
+  // is the universal "catch-up after the renderer was frozen" channel.
   useEffect(() => {
     if (!conversationId) return;
     const cid = conversationId;
@@ -1344,9 +1406,19 @@ export function useAgentChat({
 
     const onMessage = (msg: unknown) => {
       if (isStreamPartsMessage(msg) && msg.conversationId === cid) {
-        // Receiving a frame means another context is the host: we're a
-        // viewer for the duration of this run.
         lastMirrorActivityRef.current = Date.now();
+        // Under SW-host the SW broadcasts STREAM_PARTS to EVERY open
+        // renderer — including the one that initiated this run. The
+        // initiator's `useChat` is already pulling chunks from the
+        // RemoteChatTransport's ReadableStream and applying them to the
+        // local message list. Applying the SW's snapshot on top would
+        // race the chunk pipeline and could clobber the local in-flight
+        // message with a slightly-stale snapshot. So if THIS renderer is
+        // actively loading (status is `streaming` / `submitted`), we
+        // skip the snapshot — the chunk stream is the authoritative
+        // source for the initiator. Renderers that are NOT actively
+        // loading are viewers: the snapshot is exactly what they need.
+        if (isLoadingRef.current) return;
         if (!isViewerRef.current) setIsViewer(true);
         if (!guard.shouldApply(msg.messageId, msg.seq)) return;
         const snapshot = dbMessageToUIMessage({
@@ -1358,10 +1430,39 @@ export function useAgentChat({
         return;
       }
       if (isStreamDoneMessage(msg) && msg.conversationId === cid) {
-        // Host finished the turn. Re-read the persisted transcript so we
-        // converge on the authoritative state (covers any dropped frame)
-        // and drop viewer mode.
+        // SW host finished the turn. Re-read the persisted transcript so
+        // we converge on the authoritative state (covers any dropped
+        // frame) and drop viewer mode. Skip for the initiator renderer:
+        // its `useChat.onFinish` already ran with the live message state.
         lastMirrorActivityRef.current = Date.now();
+        const forceRehydrate = forceRehydrateOnNextDoneRef.current;
+        if (forceRehydrate) {
+          // Post-stop convergence: the user clicked Stop on the previous
+          // turn. The local Chat instance kept accumulating chunks for
+          // the aborted message after `stop()` (chunks in-flight on the
+          // disconnected port + provider's tail emission). The
+          // queue/handleSubmit path persisted a HEALED version of the
+          // aborted message to chatDb; rehydrate against that and
+          // preserve any in-flight new turn (local-only messages).
+          forceRehydrateOnNextDoneRef.current = false;
+          guard.reset();
+          void chatDb.getMessages(cid).then((dbMsgs) => {
+            if (conversationIdRef.current !== cid) return;
+            if (dbMsgs.length === 0) return;
+            const dbUiMsgs = dbMsgs.map(dbMessageToUIMessage);
+            setMessages((local) => mergeChatDbWithLocal(dbUiMsgs, local));
+            // Defensively clear viewer mode here too. The forceRehydrate
+            // flag is normally set by the initiator's `stop()`, where
+            // `isViewer` is already false — but viewer surfaces also
+            // route their stop through the same `abortAgentRun` helper
+            // and can hit this branch with `isViewer === true`. Without
+            // this clear, the viewer's UI would stay in spinner/Stop
+            // mode after the stop succeeded.
+            if (isViewerRef.current) setIsViewer(false);
+          });
+          return;
+        }
+        if (isLoadingRef.current) return;
         guard.reset();
         void chatDb.getMessages(cid).then((dbMsgs) => {
           if (conversationIdRef.current !== cid) return;
@@ -1383,37 +1484,126 @@ export function useAgentChat({
     return () => chrome.runtime.onMessage.removeListener(onMessage);
   }, [conversationId, setMessages]);
 
-  // Viewer watchdog: if this context is mirroring a host (isViewer) but
-  // the host dies mid-stream, no STREAM_DONE will ever arrive and the
-  // viewer would stay stuck read-only forever. Periodically check: if no
-  // mirror activity for a while AND the ownership claim is gone/stale,
-  // exit viewer mode and converge on whatever the host last persisted.
-  // This realizes the "host death -> run stops; user manually continues"
-  // behavior on the viewer side (auto-resume stays disabled).
+  // Viewer watchdog: if this renderer is mirroring an SW-hosted run but
+  // the SW dies mid-stream (memory pressure, browser update) and the
+  // STREAM_DONE never arrives, the viewer would stay stuck read-only
+  // forever. Periodically check: if no mirror activity for a while,
+  // exit viewer mode and re-read whatever the SW last persisted to
+  // chat-db. Under SW-host there is no IDB ownership probe — the SW
+  // either has a live run (and is emitting STREAM_PARTS) or it doesn't.
+  // A long idle implies the latter.
+  const VIEWER_STALE_MS = 30_000;
+  const VIEWER_CHECK_MS = 10_000;
   useEffect(() => {
     if (!conversationId) return;
     if (!isViewer) return;
     const cid = conversationId;
     const interval = setInterval(() => {
       const idle = Date.now() - lastMirrorActivityRef.current;
-      if (idle < STALE_OWNER_MS) return;
-      void runOwnership.getOwner(cid).then((owner) => {
+      if (idle < VIEWER_STALE_MS) return;
+      void chatDb.getMessages(cid).then((dbMsgs) => {
         if (conversationIdRef.current !== cid) return;
-        // getOwner returns null for both "no owner" and "stale owner".
-        if (owner === null) {
-          void chatDb.getMessages(cid).then((dbMsgs) => {
-            if (conversationIdRef.current !== cid) return;
-            if (dbMsgs.length > 0) {
-              setMessages(dbMsgs.map(dbMessageToUIMessage));
-            }
-            seqGuardRef.current.reset();
-            setIsViewer(false);
-          });
+        if (dbMsgs.length > 0) {
+          setMessages(dbMsgs.map(dbMessageToUIMessage));
         }
+        seqGuardRef.current.reset();
+        setIsViewer(false);
       });
-    }, HEARTBEAT_MS);
+    }, VIEWER_CHECK_MS);
     return () => clearInterval(interval);
   }, [conversationId, isViewer, setMessages]);
+
+  // Initiator watchdog: symmetric to the viewer watchdog above.
+  //
+  // The initiator surface drives a run via `RemoteChatTransport`. Chunks
+  // flow back over a `chrome.runtime.connect` port. The AI SDK's local
+  // `Chat` instance stays in `streaming` status until the chunk stream
+  // closes (via AGENT_RUN_DONE or port disconnect). If the port
+  // mechanism gets disrupted — e.g. the SW broadcasts DONE but the
+  // chunk-pump's onMessage never delivers it, or the port half-closes
+  // on disconnect without erroring the controller — `Chat.status` stays
+  // at `streaming` forever. Consequences:
+  //
+  //   - `queue.length > 0` waits forever (auto-flush gates on `ready`).
+  //   - UI shows a perpetual tool-running indicator.
+  //   - User has no way to recover except reload.
+  //
+  // Recovery: if `Chat.status` is `streaming`/`submitted` and `messages`
+  // hasn't changed for `INITIATOR_STALE_MS` AND chatDb's last assistant
+  // message is in clean terminal state (no `input-streaming` parts, no
+  // `approval-requested`), force convergence:
+  //
+  //   1. Call `chat.stop()` to best-effort abort the activeResponse.
+  //   2. Force-set status to `ready` via the AI SDK's internal
+  //      `setStatus` (typed as `private` but accessible at runtime).
+  //   3. Re-hydrate `messages` from chatDb.
+  //   4. The queue auto-flush effect re-runs on the status change and
+  //      drains any pending message.
+  //
+  // The viewer watchdog only fires when `isViewer === true`; this one
+  // fires only when `isInitiator === true` (this renderer's `useChat`
+  // is the source of truth, and its local chunk pump has gone idle).
+  //
+  // See `shouldRecoverFromStuckStreaming` in `stream-mirror.ts` for the
+  // exact decision logic and its rationale.
+  const lastChunkActivityRef = useRef(Date.now());
+  useEffect(() => {
+    lastChunkActivityRef.current = Date.now();
+  }, [messages]);
+
+  const INITIATOR_STALE_MS = 30_000;
+  const INITIATOR_CHECK_MS = 10_000;
+  useEffect(() => {
+    if (!conversationId) return;
+    if (!isInitiator) return;
+    const cid = conversationId;
+    const interval = setInterval(async () => {
+      try {
+        const dbMsgs = await chatDb.getMessages(cid);
+        if (conversationIdRef.current !== cid) return;
+        const lastAssistantParts = (() => {
+          for (let i = dbMsgs.length - 1; i >= 0; i--) {
+            if (dbMsgs[i].role === "assistant") {
+              return dbMsgs[i].parts;
+            }
+          }
+          return undefined;
+        })();
+        const should = shouldRecoverFromStuckStreaming({
+          status: status as "ready" | "submitted" | "streaming" | "error",
+          lastActivityMs: lastChunkActivityRef.current,
+          now: Date.now(),
+          idleThresholdMs: INITIATOR_STALE_MS,
+          dbLastAssistantParts: lastAssistantParts as
+            | ReadonlyArray<{ type: string; state?: string }>
+            | undefined,
+        });
+        if (!should) return;
+        // Recover: stop the activeResponse, reset status, converge state.
+        try {
+          await chat.stop();
+        } catch {
+          // best-effort
+        }
+        try {
+          (chat as unknown as {
+            setStatus: (s: { status: string; error?: unknown }) => void;
+          }).setStatus({ status: "ready" });
+        } catch {
+          // best-effort — if the SDK rejects the cast, fall through
+        }
+        if (dbMsgs.length > 0) {
+          setMessages(dbMsgs.map(dbMessageToUIMessage));
+        }
+        // Bump activity so the watchdog doesn't immediately re-fire if
+        // status takes a tick to propagate.
+        lastChunkActivityRef.current = Date.now();
+      } catch {
+        // chatDb lookup failed; try again next interval.
+      }
+    }, INITIATOR_CHECK_MS);
+    return () => clearInterval(interval);
+  }, [conversationId, isInitiator, status, chat, setMessages]);
 
   // Host-side approval forwarding: a viewer tab can't resolve the live
   // `approval-requested` tool part (it lives in the host's in-memory
@@ -1560,14 +1750,12 @@ export function useAgentChat({
    * usual `healPendingTools` runs first so a denied/aborted tool call
    * in the prior turn doesn't trip `MissingToolResultsError` on send.
    */
-  const isFlushingRef = useRef(false);
   useEffect(() => {
     if (!conversationId) return;
     if (status !== "ready") return;
     if (isCompacting) return;
     if (error) return;
     if (queue.length === 0) return;
-    if (isFlushingRef.current) return;
     // Pause if the user is actively editing a queued item — draining
     // it would invalidate their pending edit. The watcher will retry
     // when `setQueueEditing(null)` is called and any of the existing
@@ -1592,11 +1780,49 @@ export function useAgentChat({
 
     let cancelled = false;
     (async () => {
-      isFlushingRef.current = true;
       let claimed: QueuedMessage | null = null;
       try {
+        // Defensive: probe the SW agent host for an active run and,
+        // if one exists, wait for it to terminate before draining the
+        // queue. `probeAgentRunAwaitIdle` stays attached as a subscriber
+        // and resolves only after the run actually emits its terminal
+        // event (or after `waitMs` as a safety cap), closing the race
+        // where the SW's run-termination sequence hasn't released the
+        // registry handle yet.
+        const swStillRunning = await probeAgentRunAwaitIdle(conversationId);
+        if (cancelled) return;
+        if (swStillRunning) {
+          // Promote to viewer mode while the SW finishes its turn so
+          // the UI shows "agent is busy" (Stop button, spinner) for
+          // the duration. Without this, the side panel would show the
+          // composer as idle while the SW continues running tools —
+          // user can't tell anything is happening and may try to send
+          // again, which also diverts into the queue and stacks up.
+          //
+          // Critical: `isViewer` is listed in this effect's dep array,
+          // so when the SW finishes and the STREAM_DONE handler flips
+          // viewer mode off, this effect re-runs and drains the queue.
+          // Without that dep, a SW run longer than `waitMs` (5s) would
+          // leave the queue permanently stuck — the watcher would
+          // never re-trigger until some unrelated dep (status, queue,
+          // messages) happens to change.
+          if (!isViewerRef.current) setIsViewer(true);
+          // Seed the watchdog clock when we enter viewer mode through a
+          // path that isn't a STREAM_PARTS receive (which seeds it
+          // naturally at line 1409). Without this, a quiet phase of the
+          // SW run (long tool call, no chunks for >30s) would let the
+          // viewer watchdog (line 1497) decide the session is stale
+          // immediately and tear down viewer mode prematurely.
+          lastMirrorActivityRef.current = Date.now();
+          return;
+        }
+
         claimed = await queueDb.claimHead(conversationId);
-        if (!claimed || cancelled) return;
+        if (!claimed) return;
+        if (cancelled) {
+          await queueDb.releaseHead(conversationId, claimed.id, false).catch(() => {});
+          return;
+        }
 
         // Heal any stranded tool calls before adding the queued message.
         // Same rationale as in handleSubmit.
@@ -1671,8 +1897,6 @@ export function useAgentChat({
             () => {},
           );
         }
-      } finally {
-        isFlushingRef.current = false;
       }
     })();
     return () => {
@@ -1687,6 +1911,12 @@ export function useAgentChat({
     messages,
     setMessages,
     sendMessage,
+    // `isViewer` is load-bearing here: when the SW finishes a long
+    // run, the STREAM_DONE handler flips viewer mode off. That
+    // transition is what re-arms this effect to drain the queue.
+    // Without `isViewer` in deps, queued messages would sit forever
+    // any time the SW run outlasted `probeAgentRunAwaitIdle`'s waitMs.
+    isViewer,
   ]);
 
   // Track what triggered the load effect to avoid overwriting in-memory approval state.
@@ -1804,6 +2034,51 @@ export function useAgentChat({
       if (!input.trim() && attachments.length === 0) return;
       if (!isConfigured) return;
 
+      // Defensive: probe the SW agent host directly to see if there's
+      // an active run for this conversation. The local `isLoading`
+      // signal (used by ChatInput to route Enter to queue vs submit)
+      // is derived from `useChat.status` and `isViewer`; both can
+      // desync from the SW's truth — in particular, this renderer may
+      // have just mounted while the SW is mid-run, so `status` reads
+      // `"ready"` and `isViewer` is still false until the first
+      // STREAM_PARTS broadcast arrives. If we submit anyway, the port
+      // router silently folds our new START into a viewer attach
+      // (per `port-router.ts:96-106`), DROPPING the new message
+      // payload — the user's text vanishes from chat-db entirely.
+      // Probe synchronously here and divert to the queue path if the
+      // SW has a live run.
+      //
+      // Only runs when we already have a conversationId — for a brand
+      // new conversation there can't be an active run.
+      const existingConvId = conversationIdRef.current;
+      if (existingConvId) {
+        const swHasActiveRun = await probeAgentRun(existingConvId);
+        if (swHasActiveRun) {
+          // Promote this surface to viewer mode immediately so the UI
+          // reflects "agent is busy" (Stop button, spinner) without
+          // waiting for the first STREAM_PARTS broadcast — otherwise
+          // the composer would flash back to the Send button between
+          // the user clicking Send and the SW publishing its next
+          // snapshot, which is jarring and invites a second Send
+          // click that would also divert into the queue.
+          if (!isViewerRef.current) setIsViewer(true);
+          // Seed the viewer watchdog clock — same rationale as the
+          // matching site in the queue auto-flush effect. We are
+          // entering viewer mode without a STREAM_PARTS receive, so
+          // `lastMirrorActivityRef` would otherwise be 0 and the
+          // 30s-idle watchdog (line 1497) would tear viewer mode down
+          // on its next tick during a quiet phase of the SW run.
+          lastMirrorActivityRef.current = Date.now();
+          // Divert to the queue. `queueMessage` reads the editor via
+          // the same `input` state we just checked, so we don't need
+          // to rebuild the payload — but `queueMessage` is defined
+          // BELOW `handleSubmit` in this file, so we call it via the
+          // ref captured during render to avoid an init-order foot-gun.
+          await queueMessageRef.current?.(mentions, attachments);
+          return;
+        }
+      }
+
       // Heal any stranded tool calls in the existing history before
       // we append a new user message:
       //
@@ -1862,6 +2137,17 @@ export function useAgentChat({
         convId = generateId();
         isNew = true;
         const truncatedTitle = input.trim().slice(0, 100) || "Image";
+        // Capture the renderer's window id so the SW-hosted agent loop
+        // can scope its tab queries (system-prompt awareness, listTabs)
+        // to THIS window even when the user later focuses a different
+        // Chrome window. See Conversation.originWindowId.
+        let originWindowId: number | null = null;
+        try {
+          const w = await chrome.windows.getCurrent();
+          originWindowId = typeof w?.id === "number" ? w.id : null;
+        } catch {
+          // Non-extension realm or no current window — leave null.
+        }
         await chatDb.createConversation({
           id: convId,
           title: truncatedTitle,
@@ -1869,6 +2155,7 @@ export function useAgentChat({
           ...(editingArtifactId ? { editingArtifactId } : {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          originWindowId,
           // Apply the mode the user selected in the composer before
           // sending the first message (see useAgentChat.initialMode JSDoc).
           // Falls back to "ask" implicitly when undefined.
@@ -2054,6 +2341,13 @@ export function useAgentChat({
         convId = generateId();
         isNew = true;
         const truncatedTitle = input.trim().slice(0, 100) || "Image";
+        let originWindowId: number | null = null;
+        try {
+          const w = await chrome.windows.getCurrent();
+          originWindowId = typeof w?.id === "number" ? w.id : null;
+        } catch {
+          // ignore
+        }
         await chatDb.createConversation({
           id: convId,
           title: truncatedTitle,
@@ -2061,6 +2355,7 @@ export function useAgentChat({
           ...(editingArtifactId ? { editingArtifactId } : {}),
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          originWindowId,
           // Apply the mode the user selected in the composer before
           // queuing/sending (see useAgentChat.initialMode JSDoc).
           ...(initialModeRef.current !== undefined && {
@@ -2118,6 +2413,11 @@ export function useAgentChat({
     },
     [input, isConfigured, spaceId, agentSettings.agentModel, onNewConversation, getSharedTabId, editingArtifactId],
   );
+
+  // Forward reference so `handleSubmit` (defined above) can divert to
+  // queueMessage when the SW probe reports an active run. Initialised
+  // here, after `queueMessage`'s `useCallback` returns.
+  queueMessageRef.current = queueMessage;
 
   const removeQueued = useCallback(async (id: string) => {
     await queueDb.remove(id);
@@ -2401,7 +2701,7 @@ export function useAgentChat({
     isCompacting,
     isConfigured,
     // True once the chat transport has finished building. The transport is
-    // constructed asynchronously (createAgentTransport), so on first render it
+    // constructed synchronously (RemoteChatTransport), so on first render it
     // is null and the underlying Chat has no transport — sending then would
     // fall through to the AI SDK's default `api/chat` endpoint (ERR_FILE_NOT_FOUND
     // in the extension). Headless/background runs auto-send and must wait for
