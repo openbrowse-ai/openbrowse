@@ -1,10 +1,24 @@
 // src/entrypoints/_shared/components/ScheduledRunHost.tsx
 //
-// Hosts scheduled-task agent runs as BACKGROUND chats inside the home app —
-// the only realm with both a DOM and chrome.debugger/tabs/scripting. A run
-// does NOT need to be the focused conversation: the per-conversation `Chat`
-// (cached in chatInstances) runs independently of what's displayed, exactly
-// like any other background agent chat in OpenBrowse.
+// Hosts scheduled-task agent runs as BACKGROUND chats inside the home app.
+//
+// Architectural note (post-SW-host migration, 2026-06-25): the agent loop
+// no longer runs in this realm. The `useAgentChat` hook below now uses
+// `RemoteChatTransport`, which proxies to the service-worker agent host.
+// The home tab's role here is reduced to: maintain the per-conversation
+// `RemoteChatTransport` Port, claim the run via session-storage
+// first-writer-wins (so only one home tab drives any given scheduled
+// run), and post SCHEDULED_RUN_DONE back to the scheduler when the SW
+// emits the terminal-state chunk.
+//
+// Deleting this component entirely is possible (the SW could start the
+// run directly without a renderer), but doing so requires the SW to
+// synthesize the per-task `settingsSnapshot` from `taskDb` and bridge
+// it into `agent-host/run.ts`. That work is deferred; the current
+// home-tab indirection preserves all existing semantics while still
+// giving scheduled runs the SW-host pause-immunity benefit (the loop
+// itself runs in the SW even though it was kicked off from this
+// component).
 //
 // The service worker, when a task fires, ensures a home page exists, records
 // the pending run in chrome.storage.session, and broadcasts SCHEDULER_HOST_RUN.

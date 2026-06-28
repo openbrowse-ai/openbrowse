@@ -13,6 +13,7 @@
  */
 
 import "fake-indexeddb/auto";
+import { IDBFactory } from "fake-indexeddb";
 import { tabRegistry } from "../tab-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chatDb } from "../../chat-db";
@@ -46,6 +47,19 @@ function makeDriver() {
 }
 
 describe("navigate — new tab windowId precedence", () => {
+  beforeEach(() => {
+    indexedDB = new IDBFactory();
+    chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    chatDb._resetForTests();
+    tabRegistry.__resetForTests!();
+  });
+
   it("uses static session.targetWindowId when set (incognito subagent)", async () => {
     const { driver, created } = makeDriver();
     const resolveNewTabWindowId = vi.fn(async () => 7);
@@ -124,6 +138,72 @@ describe("navigate — new tab windowId precedence", () => {
     expect(created).toHaveLength(1);
     expect("windowId" in created[0].opts).toBe(false);
   });
+
+  it("third-defense: falls through to resolveConversationWindowId(cid) when targetWindowId AND resolveNewTabWindowId both fail", async () => {
+    // Simulates the subagent-failure case observed in production: the
+    // parent's pre-warmed `targetWindowId` cache miss + the parent's
+    // closure-bound resolver isn't wired (e.g. constructed in a code
+    // path that didn't go through `buildExtensionToolContext`). The
+    // navigate tool MUST still resolve to the conversation's window
+    // by directly reading chatDb via `resolveConversationWindowId`.
+    vi.stubGlobal(
+      "chrome",
+      makeChromeStub({
+        windows: new Set([42]),
+      }),
+    );
+    await seedConv("c-subagent", { originWindowId: 42 });
+    const { driver, created } = makeDriver();
+    await navigateTool.execute(
+      { url: "https://example.com" },
+      {
+        driver,
+        session: {
+          conversationId: "c-subagent",
+          spaceId: null,
+          // No targetWindowId, no resolveNewTabWindowId — both upper
+          // layers fail. The third defense reads chatDb directly.
+          getOrCreateHandle: () => "t1",
+          bindTabsToConversation: async () => {},
+        },
+      },
+    );
+    expect(created[0].opts.windowId).toBe(42);
+  });
+
+  it("third-defense: subagent inheriting originWindowId from parent lands in parent's window", async () => {
+    // The user-reported scenario: parent chat is in window 1. Subagent's
+    // session.conversationId = childCid. child-conversation.ts inherits
+    // originWindowId from parent. When subagent's navigate falls through
+    // all defenses to the third one, `resolveConversationWindowId(childCid)`
+    // returns the parent's originWindowId.
+    vi.stubGlobal(
+      "chrome",
+      makeChromeStub({
+        windows: new Set([100, 200]), // window 100 = parent's, window 200 = focused
+      }),
+    );
+    await seedConv("parent-cid", { originWindowId: 100 });
+    // Children inherit originWindowId from parent (mirrors
+    // child-conversation.ts behavior).
+    await seedConv("child-cid", { originWindowId: 100 });
+
+    const { driver, created } = makeDriver();
+    await navigateTool.execute(
+      { url: "https://news.google.com" },
+      {
+        driver,
+        session: {
+          conversationId: "child-cid",
+          spaceId: null,
+          getOrCreateHandle: () => "t1",
+          bindTabsToConversation: async () => {},
+        },
+      },
+    );
+    // MUST land in window 100 (parent's), NOT window 200 (focused).
+    expect(created[0].opts.windowId).toBe(100);
+  });
 });
 
 // ─── buildExtensionToolContext.resolveNewTabWindowId ─────────────────────
@@ -166,7 +246,11 @@ function makeChromeStub(opts: {
 
 async function seedConv(
   id: string,
-  opts: { ownedLtids?: string[]; spaceId?: string | null } = {},
+  opts: {
+    ownedLtids?: string[];
+    spaceId?: string | null;
+    originWindowId?: number | null;
+  } = {},
 ) {
   await chatDb.createConversation({
     id,
@@ -176,6 +260,9 @@ async function seedConv(
     ownedLtids: opts.ownedLtids ?? [],
     createdAt: 0,
     updatedAt: 0,
+    ...(opts.originWindowId !== undefined && {
+      originWindowId: opts.originWindowId,
+    }),
   });
 }
 
@@ -205,7 +292,16 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
   it("returns the window of the first live owned tab", async () => {
     vi.stubGlobal(
       "chrome",
-      makeChromeStub({ tabs: { 101: { windowId: 3 }, 102: { windowId: 9 } } }),
+      makeChromeStub({
+        tabs: { 101: { windowId: 3 }, 102: { windowId: 9 } },
+        // `resolveConversationWindowId` (the new shared helper) verifies the
+        // owned tab's window still exists via `chrome.windows.get` before
+        // returning it, so we have to seed the window set too. Old behavior
+        // returned the windowId from `chrome.tabs.get` immediately without
+        // this check; the new behavior is strictly more defensive (rejects
+        // zombie tabs whose window was closed).
+        windows: new Set([3, 9]),
+      }),
     );
     await seedConv("c1", { ownedLtids: [ltidFor(101), ltidFor(102)] });
     const ctx = buildExtensionToolContext("c1");
@@ -215,7 +311,10 @@ describe("buildExtensionToolContext — resolveNewTabWindowId", () => {
   it("skips dead owned tabs and uses the first live one", async () => {
     vi.stubGlobal(
       "chrome",
-      makeChromeStub({ tabs: { 102: { windowId: 9 } } }), // 101 is gone
+      makeChromeStub({
+        tabs: { 102: { windowId: 9 } }, // 101 is gone
+        windows: new Set([9]),
+      }),
     );
     // Mint ltids for BOTH ctids in the registry — the registry maps
     // ltid → ctid; whether the ctid is alive in chrome is checked via

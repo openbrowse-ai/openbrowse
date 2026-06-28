@@ -267,6 +267,29 @@ export interface Conversation {
    * and on conversations that have never run a step.
    */
   usage?: ConversationUsage;
+
+  /**
+   * Chrome window id the conversation was opened in. Stamped at create
+   * time from `chrome.windows.getCurrent()` (renderer realm) or the
+   * caller's known window id. Used to scope agent tab queries (system-
+   * prompt awareness block, `listTabs` tool, owned-tab resolution) to
+   * the conversation's window rather than whichever Chrome window
+   * currently has focus — without this, two parallel chats in two
+   * different windows would step on each other's tabs.
+   *
+   * Resolution order for the agent's effective target window is:
+   *   1. An owned tab's window (the agent already opened tabs here).
+   *   2. `originWindowId` (where the chat was opened).
+   *   3. The conversation's space window.
+   *   4. Focused window (legacy fallback, used in tests + when none of
+   *      the above resolve).
+   *
+   * Null = conversation has no associated window (scheduled runs,
+   * background scheduler runs). Undefined on rows from before this
+   * field existed — same fallback chain applies, so old conversations
+   * degrade gracefully to space-window scoping.
+   */
+  originWindowId?: number | null;
 }
 
 /**

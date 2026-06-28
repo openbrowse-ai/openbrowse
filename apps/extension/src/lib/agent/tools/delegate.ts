@@ -26,6 +26,13 @@ export const SUBAGENT_CHILD_ASSIGNED_EVENT =
 export interface SubagentChildAssignedDetail {
   toolCallId: string;
   childConversationId: string;
+  /**
+   * The id of the parent conversation that issued the delegate call.
+   * Recipients (e.g. the `DelegateResult` block in the renderer) MUST
+   * scope event handling on this to avoid acting on events fired by a
+   * peer conversation that happens to share a toolCallId.
+   */
+  parentConversationId?: string;
 }
 
 const isolationSchema = z.enum(["peer", "incognito", "attached"]);
@@ -231,6 +238,12 @@ export function createDelegateTool(
           // transcript source to a live chat-db subscription so the
           // user sees the subagent's work appear in the inline trace
           // while the run is still in flight.
+          //
+          // The payload includes `parentConversationId` so the listener
+          // can scope the match to its own parent — without it, the
+          // tool-callId on its own is a soft identifier (UUID per
+          // generateText step), and two concurrent parents that
+          // happened to mint the same id would cross-talk.
           ...(toolCallId && {
             onChildAssigned: (childConversationId: string) => {
               try {
@@ -239,14 +252,32 @@ export function createDelegateTool(
                     new CustomEvent<SubagentChildAssignedDetail>(
                       SUBAGENT_CHILD_ASSIGNED_EVENT,
                       {
-                        detail: { toolCallId, childConversationId },
+                        detail: {
+                          toolCallId,
+                          childConversationId,
+                          parentConversationId,
+                        },
                       },
                     ),
                   );
+                } else if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                  // SW realm (post-SW-host): no `window` to dispatch into.
+                  // Forward via runtime messaging so the renderer's
+                  // `DelegateResult` block still sees the live update.
+                  chrome.runtime
+                    .sendMessage({
+                      type: SUBAGENT_CHILD_ASSIGNED_EVENT,
+                      detail: {
+                        toolCallId,
+                        childConversationId,
+                        parentConversationId,
+                      },
+                    })
+                    ?.catch?.(() => {});
                 }
               } catch {
-                // Non-DOM context (service worker, tests). Live updates
-                // simply won't fire there — final result still surfaces
+                // Non-DOM context without runtime messaging (tests). Live
+                // updates simply won't fire — final result still surfaces
                 // the transcript via SubagentRunResult.transcript.
               }
             },

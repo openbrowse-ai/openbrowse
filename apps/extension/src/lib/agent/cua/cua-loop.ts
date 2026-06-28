@@ -276,8 +276,15 @@ export async function runCuaToolLoop(
         if (ev.ltid === cuaLtid) {
           currentCtid = ev.newCtid;
           // Refresh the working-overlay glow on the new ctid so the user
-          // gets continuous feedback across the swap.
-          notifyAgentStatus(true, undefined, ev.newCtid);
+          // gets continuous feedback across the swap. Carry the cid and
+          // color so the per-tab indicator state correctly attributes
+          // ownership (parent vs child subagent overlays must not clobber
+          // each other when one of them follows a tab swap).
+          notifyAgentStatus(true, {
+            tabId: ev.newCtid,
+            color: cfg.spaceColor ?? null,
+            conversationId: cfg.conversationId ?? null,
+          });
         }
       })
     : () => {};
@@ -320,9 +327,14 @@ export async function runCuaToolLoop(
   // Show the "OpenBrowse is working on this page" overlay (glow border +
   // input blocker) for the duration of the run. Routes through the shared
   // indicator so it gets the same space-color tint + robust delivery as the
-  // main agent. Best-effort; removed in the finally below so it never lingers
-  // after completion/error/abort.
-  notifyAgentStatus(true, undefined, currentCtid as number);
+  // main agent. Per-tab + per-cid state lets parallel subagents drive their
+  // own tab indicators without clobbering each other. Best-effort; removed
+  // in the finally below so it never lingers after completion/error/abort.
+  notifyAgentStatus(true, {
+    tabId: currentCtid as number,
+    color: cfg.spaceColor ?? null,
+    conversationId: cfg.conversationId ?? null,
+  });
 
   let stepCount = 0;
 
@@ -350,7 +362,14 @@ export async function runCuaToolLoop(
       ...(cfg.abortSignal && { abortSignal: cfg.abortSignal }),
     });
     let finalText = "";
-    const uiStream = readUIMessageStream({ stream: stream.toUIMessageStream() });
+    const uiStream = readUIMessageStream({
+      stream: stream.toUIMessageStream({
+        // Without an explicit `generateMessageId`, the start chunk omits
+        // `messageId` and downstream `state.message.id` initialises to
+        // `""`. Generate so persistence is per-message-id.
+        generateMessageId: () => crypto.randomUUID(),
+      }),
+    });
     for await (const msg of uiStream) {
       if (cfg.abortSignal?.aborted) {
         const err = new Error("aborted");
@@ -383,8 +402,13 @@ export async function runCuaToolLoop(
     };
   } finally {
     // Always tear down the "working on this page" overlay so it never lingers
-    // after the run ends (completion, error, or abort).
-    notifyAgentStatus(false, undefined, currentCtid as number);
+    // after the run ends (completion, error, or abort). Pass the cid so the
+    // teardown only touches THIS run's overlay state — sibling subagents on
+    // other tabs keep their indicators.
+    notifyAgentStatus(false, {
+      tabId: currentCtid as number,
+      conversationId: cfg.conversationId ?? null,
+    });
     // Unsubscribe the registry listener so the loop's closure can be GC'd.
     offReplace();
   }

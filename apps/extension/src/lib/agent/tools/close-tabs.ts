@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { chatDb } from "../../chat-db";
+import { isServiceWorkerContext } from "@/lib/runtime/context";
 import type { BrowserTool } from "../types";
 
 const parameters = z.object({
@@ -80,14 +81,43 @@ export const closeTabsTool: BrowserTool<Input, Output> = {
     }
 
     try {
-      const res = (await chrome.runtime.sendMessage({
-        type: "CLOSE_AGENT_TABS",
-        conversationId: cid,
-        // Send ltids over the wire. The background handler resolves each
-        // ltid back to a live ctid via the registry just before
-        // `chrome.tabs.remove`.
-        ltids: ltidsToClose,
-      })) as { ok: boolean; undo?: Output["undo"]; error?: string };
+      // Realm-aware: SW callers (under SW-host) cannot deliver
+      // chrome.runtime.sendMessage to the SW's own listener for
+      // CLOSE_AGENT_TABS. Call the handler in-process; otherwise fall
+      // back to the wire protocol the renderer has always used.
+      let res: { ok: boolean; undo?: Output["undo"]; error?: string };
+      if (isServiceWorkerContext()) {
+        const { handleCloseAgentTabs } = await import(
+          "@/entrypoints/background/close-agent-tabs"
+        );
+        res = (await handleCloseAgentTabs({
+          conversationId: cid,
+          ltids: ltidsToClose,
+        })) as typeof res;
+        // The SW listener also broadcasts AGENT_TABS_CLOSED so the
+        // renderer can show its Undo toast. Mirror that here so the UX
+        // is identical regardless of which realm initiated the close.
+        if (res.ok && res.undo && res.undo.tabs.length > 0) {
+          try {
+            await chrome.runtime.sendMessage({
+              type: "AGENT_TABS_CLOSED",
+              conversationId: cid,
+              undo: res.undo,
+            });
+          } catch {
+            // No renderer listening; the close still succeeded.
+          }
+        }
+      } else {
+        res = (await chrome.runtime.sendMessage({
+          type: "CLOSE_AGENT_TABS",
+          conversationId: cid,
+          // Send ltids over the wire. The background handler resolves each
+          // ltid back to a live ctid via the registry just before
+          // `chrome.tabs.remove`.
+          ltids: ltidsToClose,
+        })) as typeof res;
+      }
       if (!res?.ok) {
         return { closed: 0, error: res?.error ?? "Close failed." };
       }

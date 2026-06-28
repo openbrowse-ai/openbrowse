@@ -239,7 +239,19 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
           prompt: modelMessages,
           abortSignal,
         });
-        return result.toUIMessageStream();
+        return result.toUIMessageStream({
+          // Mint a stable id for this assistant response. Without this,
+          // the SDK's `processUIMessageStream` leaves `state.message.id`
+          // at its `""` default (the `start` chunk omits `messageId`
+          // when `generateMessageId` isn't supplied), and every
+          // `readUIMessageStream` consumer downstream sees id `""`.
+          // Under SW-host that meant the persister upserted every
+          // assistant chunk to the same `id:""` row in chat-db, and
+          // any UI logic that resolves messages by id (STREAM_PARTS
+          // snapshot apply, approval-response matching) collapsed
+          // multiple turns into one slot. Always generate.
+          generateMessageId: () => crypto.randomUUID(),
+        });
       } catch (err) {
         // Re-log with the converted ModelMessage[] payload, since
         // standardizePrompt failures inside agent.stream don't include
@@ -1019,7 +1031,9 @@ export interface RejectionLoopAgent {
     prompt: Awaited<ReturnType<typeof convertToModelMessages>>;
     abortSignal?: AbortSignal;
   }): Promise<{
-    toUIMessageStream(): ReadableStream<UIMessageChunk>;
+    toUIMessageStream(options?: {
+      generateMessageId?: () => string;
+    }): ReadableStream<UIMessageChunk>;
   }>;
 }
 
@@ -1121,7 +1135,11 @@ export function runWithRejectionLoop(args: {
           }
 
           const observed = await pipeAndObserve(
-            result.toUIMessageStream(),
+            result.toUIMessageStream({
+              // See the fast-path call site above for why this matters
+              // (id:"" → all chunks coalesce into one chat-db row).
+              generateMessageId: () => crypto.randomUUID(),
+            }),
             controller,
           );
 

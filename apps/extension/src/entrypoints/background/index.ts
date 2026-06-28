@@ -5,9 +5,11 @@ import { openHomePage } from "./messages";
 import { handleNewWindowAutoHome } from "./auto-home";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { registerScheduler } from "./scheduler";
+import { installAgentHost } from "./agent-host/bootstrap";
 import { chatDb } from "@/lib/chat-db";
 import { isArtifactRpcMessage } from "@/lib/artifacts/rpc";
 import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
+import { resetActiveAgentsAtStartup } from "@/lib/active-agents";
 
 /**
  * Undo ids already applied by the `OVERLAY_UNDO` `reopen` handler. Makes
@@ -30,6 +32,36 @@ export default defineBackground({
   main() {
     registerModelsDevRefresh();
     registerScheduler();
+
+    // Blanket-clear stale `active-agents` storage at SW boot. The flag
+    // is persisted in chrome.storage.local so the "running" dot
+    // survives renderer reloads, but renderer death (Chrome quit,
+    // extension reload, tab crash) bypasses
+    // `useChat.onFinish` → `setAgentInactive`, leaking the flag. A
+    // fresh SW process has an empty in-memory `agentHostRegistry` by
+    // construction, so ANY persisted active-agents id at boot is
+    // necessarily stale. Without this reset, post-restart UIs are
+    // stuck with `isLoading === true`, the composer renders the Stop
+    // button instead of Send, and `useChat.stop()` is inert (no
+    // `activeResponse` to abort).
+    //
+    // Order matters: chain `installAgentHost()` onto the reset's
+    // promise so the host's `chrome.runtime.onConnect` registration
+    // happens AFTER the storage is clean. If a renderer attaches in
+    // the microtask gap between SW start and reset completion, Chrome
+    // drops the port silently — the renderer's auto-reconnect path
+    // covers that case.
+    void resetActiveAgentsAtStartup()
+      .catch((err) => {
+        console.warn("[active-agents] startup reset failed:", err);
+      })
+      .then(() => {
+        // Register the SW agent host: takes over hosting agent runs
+        // from the renderer-side `useAgentChat`-built transport.
+        // Idempotent. See
+        // `.superpowers/plans/2026-06-25-sw-host-agent-runs.md`.
+        installAgentHost();
+      });
 
     // Defensive cleanup for orphaned subagent runs that survived an
     // MV3 service-worker death. Any conversation row with
@@ -98,8 +130,15 @@ export default defineBackground({
     });
 
     let lastFocusedWindowId: number | undefined;
-    let agentWorkingTabId: number | null | undefined = null;
-    let agentWorkingColor: string | null = null;
+    // Per-tab "agent is working here" tracker. Each entry maps a tab id to
+    // its glow color. Multiple tabs may be in this map simultaneously (one
+    // chat with N parallel subagents, or N parallel top-level chats — every
+    // working tab gets its own entry). Used to:
+    //   - Re-tint the overlay on chrome.tabs.onUpdated (navigation completes
+    //     -> re-inject the working overlay).
+    //   - Swap the key on chrome.tabs.onReplaced (Speculation Rules /
+    //     prerender activation produces a new ctid for the same logical tab).
+    const agentWorkingByTab = new Map<number, { color: string | null }>();
     let globalChatPopupWindowId: number | null = null;
     // Serializes Option+Space toggles so rapid presses can't race and spawn
     // orphan popups (or attempt to remove a window twice).
@@ -574,51 +613,20 @@ export default defineBackground({
       }
 
       // Python runtime (Pyodide) lives in the offscreen document. Pages
-      // can't create offscreen contexts, so the background relays.
+      // can't create offscreen contexts, so the background relays. The
+      // handler is shared with the SW-realm `swRpc` path so that the
+      // SW-hosted agent loop can call `executePythonRPC` without going
+      // through `chrome.runtime.sendMessage` (which doesn't deliver
+      // back to the sender's own listeners). See
+      // `./python-messages.ts` for details.
       if (message.type?.startsWith("PYTHON_")) {
         (async () => {
-          // Persist a breadcrumb at every layer so we can debug from
-          // chrome.storage.local even when the offscreen document crashes
-          // and clears its console.
-          const persist = (event: string, data?: unknown) => {
-            try {
-              chrome.storage.local.get("__python_debug_log__").then((cur) => {
-                const arr = Array.isArray(cur.__python_debug_log__)
-                  ? (cur.__python_debug_log__ as unknown[])
-                  : [];
-                arr.push({
-                  ts: Date.now(),
-                  conversationId: message.conversationId ?? "(none)",
-                  event: `bg.${event}`,
-                  data,
-                });
-                while (arr.length > 200) arr.shift();
-                chrome.storage.local.set({ __python_debug_log__: arr });
-              });
-            } catch { /* noop */ }
-          };
-          persist("PYTHON_received", { type: message.type });
           try {
-            const { ensureOffscreenDocument } = await import("./messages");
-            await ensureOffscreenDocument();
-            persist("offscreen-ensured");
-            const { sendToOffscreen } = await import("@/lib/messages");
-            const { type, ...rest } = message;
-            const result = await sendToOffscreen({
-              type,
-              ...rest,
-            } as Parameters<typeof sendToOffscreen>[0]);
-            persist("offscreen-responded", {
-              hasResult: result !== undefined,
-              keys: result && typeof result === "object"
-                ? Object.keys(result as Record<string, unknown>)
-                : null,
-            });
-            sendResponse(result);
+            const { handlePythonMessage } = await import("./python-messages");
+            handlePythonMessage(message, sendResponse);
           } catch (err) {
-            const error = err instanceof Error ? err.message : String(err);
-            persist("error", { error });
-            sendResponse({ error });
+            console.error("[PYTHON bg] Error:", err);
+            sendResponse({ error: String(err) });
           }
         })();
         return true;
@@ -1909,20 +1917,38 @@ export default defineBackground({
         const working = message.type === "AGENT_TAB_WORKING";
         const tabId = message.tabId as number | undefined;
         if (tabId) {
-          agentWorkingTabId = working ? tabId : null;
-          agentWorkingColor = working ? (message.color ?? null) : null;
+          if (working) {
+            agentWorkingByTab.set(tabId, { color: message.color ?? null });
+          } else {
+            agentWorkingByTab.delete(tabId);
+          }
         }
         sendResponse({ ok: true });
         return false;
       }
 
       if (message.type === "AGENT_STATUS_CHECK") {
-        sendResponse({ working: agentWorkingTabId === sender.tab?.id });
+        const tid = sender.tab?.id;
+        sendResponse({ working: tid != null && agentWorkingByTab.has(tid) });
         return false;
       }
 
       if (message.type === "AGENT_STOP") {
-        agentWorkingTabId = null;
+        // Scope teardown to the originating tab so parallel runs are
+        // not collateral-cleared. Two callers:
+        //   - content script's "Stop" overlay button: `sender.tab.id`
+        //     identifies the working tab.
+        //   - renderer viewer surface (sidepanel/home/newtab) clicking
+        //     Stop: `sender.tab.id` is undefined for sidepanel. These
+        //     callers can pass `message.tabId` explicitly when they
+        //     know which tab to clear; if neither is available we
+        //     no-op rather than blanket-clear (the prior `clear()`
+        //     killed every parallel run's indicator).
+        const scopedTabId =
+          sender.tab?.id ?? (message as { tabId?: number }).tabId;
+        if (typeof scopedTabId === "number") {
+          agentWorkingByTab.delete(scopedTabId);
+        }
         sendResponse({ ok: true });
         return false;
       }
@@ -2489,9 +2515,19 @@ export default defineBackground({
           });
         }
       }
-      if (changeInfo.status === "complete" && tab.id != null && tab.id === agentWorkingTabId) {
+      if (
+        changeInfo.status === "complete" &&
+        tab.id != null &&
+        agentWorkingByTab.has(tab.id)
+      ) {
+        const entry = agentWorkingByTab.get(tab.id)!;
         import("@/lib/agent/agent-transport").then(({ notifyAgentStatus }) => {
-          notifyAgentStatus(true, agentWorkingColor, tab.id!);
+          // No conversationId here: this is the SW's tab-listener re-tint
+          // hook, not a run-driven call. The per-tab indicator state will
+          // preserve whatever ownership was last set on this tab — the
+          // re-tint just re-injects the overlay with the same color after
+          // navigation reloaded the page (and wiped the content script).
+          notifyAgentStatus(true, { tabId: tab.id!, color: entry.color });
         }).catch(() => {});
       }
     });
@@ -2526,11 +2562,16 @@ export default defineBackground({
         for (const [windowId, ctid] of activeTabByWindow) {
           if (ctid === oldCtid) activeTabByWindow.set(windowId, newCtid);
         }
-        if (agentWorkingTabId === oldCtid) {
-          agentWorkingTabId = newCtid;
+        // Per-tab agent-working state: swap the key so the prerender-
+        // activated tab keeps its overlay. Each parallel working tab swaps
+        // independently — peer tabs are unaffected.
+        if (agentWorkingByTab.has(oldCtid)) {
+          const entry = agentWorkingByTab.get(oldCtid)!;
+          agentWorkingByTab.delete(oldCtid);
+          agentWorkingByTab.set(newCtid, entry);
           import("@/lib/agent/agent-transport")
             .then(({ notifyAgentStatus }) => {
-              notifyAgentStatus(true, agentWorkingColor, newCtid);
+              notifyAgentStatus(true, { tabId: newCtid, color: entry.color });
             })
             .catch(() => {});
         }

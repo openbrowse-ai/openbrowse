@@ -197,16 +197,152 @@ When the same title exists in both \`user\` and \`space\` scope, \`updateMemory\
 - A memory is clearly outdated based on conversation context
 `;
 
-import { getTargetTabId } from "./active-tab";
-import {
-  notifyAgentStatus,
-  setAgentSpaceColor,
-  getAgentSpaceColor,
-} from "./agent-indicator";
+import { getTargetTabId, registerCidResolver } from "./active-tab";
+import { notifyAgentStatus } from "./agent-indicator";
 import { startCapture } from "./cdp-capture";
 import { releaseAll as releaseAllSessions } from "./cdp-session";
 
-export { notifyAgentStatus, setAgentSpaceColor };
+export { notifyAgentStatus };
+
+/**
+ * Per-conversation glow tint cache for the working-overlay. Replaces the
+ * pre-refactor module-scope `currentSpaceColor` singleton, which clobbered
+ * across parallel runs (different spaces / different conversations / parent+
+ * subagent peers). Populated eagerly when known (renderer or SW resolves the
+ * conversation's space and stashes the color via `setAgentColor`), or lazily
+ * resolved on first tool call via `ensureAgentColor`. Cleared on cid context
+ * change is intentionally NOT done — the cache is small and a stale entry is
+ * harmless (it just paints last-known color until the next resolve).
+ */
+const agentColorByCid = new Map<string, string | null>();
+
+export function setAgentColor(
+  conversationId: string,
+  color: string | null,
+): void {
+  agentColorByCid.set(conversationId, color);
+}
+
+export function getAgentColor(conversationId: string | null): string | null {
+  if (conversationId == null) return null;
+  return agentColorByCid.get(conversationId) ?? null;
+}
+
+/**
+ * Per-conversation Chrome window cache for the agent's tab queries.
+ *
+ * The SW realm builds one `ToolContext` per agent run via
+ * `buildExtensionToolContext`. `session.targetWindowId` on that context
+ * is read by every window-aware path (system-prompt awareness block,
+ * `listTabs`, `bindTabByHandle`, navigate's no-handle path). Resolving
+ * it via async `chrome.windows.getCurrent()` from the SW realm would
+ * return the focused window — wrong for any parallel-window scenario.
+ *
+ * Cache: populated eagerly at `AGENT_RUN_START` (see
+ * `agent-host/bootstrap.ts`) and at renderer-side `useAgentChat`
+ * mount (renderer realm convenience); resolved lazily via
+ * `ensureAgentWindow` on first tool call if unset. The session getter
+ * reads from this map.
+ */
+const agentWindowByCid = new Map<string, number | null>();
+
+/**
+ * Cache a window id for `conversationId`. We deliberately accept the
+ * `windowId: number | null` API shape (callers like
+ * `agent-host/bootstrap.ts` pass `resolveConversationWindowId(cid) ?? null`)
+ * but DO NOT store null/undefined — `ensureAgentWindow` would otherwise
+ * treat the cached null as a terminal miss and never re-run the resolver
+ * after a transient lookup failure (e.g. the conversation's window
+ * binding isn't ready at SW boot but becomes available a moment later).
+ *
+ * Null/undefined writes are equivalent to "leave the cache untouched",
+ * preserving any prior value. If a real id has never been cached, future
+ * reads will fall back to the lazy resolver.
+ */
+export function setAgentWindow(
+  conversationId: string,
+  windowId: number | null,
+): void {
+  if (windowId == null) return;
+  agentWindowByCid.set(conversationId, windowId);
+}
+
+export function getAgentWindow(
+  conversationId: string | null,
+): number | undefined {
+  if (conversationId == null) return undefined;
+  const v = agentWindowByCid.get(conversationId);
+  return v == null ? undefined : v;
+}
+
+/**
+ * Lazy resolver for the conversation's working window. Returns the
+ * cached value if known; otherwise delegates to
+ * `resolveConversationWindowId` (owned tab → originWindowId → space
+ * window → undefined) and caches the result. Undefined results are
+ * NOT cached so a transient lookup failure recovers on the next call.
+ */
+async function ensureAgentWindow(
+  conversationId: string | null,
+): Promise<number | undefined> {
+  if (conversationId == null) return undefined;
+  const cached = agentWindowByCid.get(conversationId);
+  if (cached !== undefined) return cached ?? undefined;
+  try {
+    // Variable-indirection import — opaque to tsc's static module-graph
+    // walk so `packages/bench` doesn't transitively typecheck
+    // `conversation-window` (which uses `@/*` aliases + chrome globals
+    // that bench's tsconfig doesn't provide). Bundler resolution at
+    // runtime is unaffected. See the matching comment in
+    // `active-tab.ts`.
+    const modulePath: string = "./conversation-window";
+    const mod = (await import(modulePath)) as {
+      resolveConversationWindowId: (
+        cid: string,
+      ) => Promise<number | undefined>;
+    };
+    const resolved = await mod.resolveConversationWindowId(conversationId);
+    if (resolved !== undefined) {
+      agentWindowByCid.set(conversationId, resolved);
+    }
+    return resolved;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Lazy resolver: looks up the conversation's space color from storage, caches
+ * it, and returns it. Cheap on cache hit. Async + storage-bound on miss; the
+ * tool wrapper awaits this so the very first tool call gets the right tint.
+ */
+async function ensureAgentColor(
+  conversationId: string | null,
+): Promise<string | null> {
+  if (conversationId == null) return null;
+  const cached = agentColorByCid.get(conversationId);
+  if (cached !== undefined) return cached;
+  try {
+    const { chatDb } = await import("@/lib/chat-db");
+    const conv = await chatDb.getConversation(conversationId);
+    const spaceId = conv?.spaceId ?? null;
+    if (spaceId == null) {
+      agentColorByCid.set(conversationId, null);
+      return null;
+    }
+    const { storage } = await import("@/lib/storage");
+    const spaces = await storage.getSpaces();
+    const color = spaces.find((s) => s.id === spaceId)?.colors?.[0] ?? null;
+    agentColorByCid.set(conversationId, color);
+    return color;
+  } catch {
+    // Lookup failed — cache null so we don't hammer storage on every tool
+    // call. The next eager `setAgentColor` (e.g. on a fresh AGENT_RUN_START)
+    // will overwrite this.
+    agentColorByCid.set(conversationId, null);
+    return null;
+  }
+}
 
 const TAB_INTERACTING_TOOLS = new Set([
   "readPage",
@@ -273,6 +409,12 @@ export async function isInPlanCore(
 let agentActive = false;
 
 let agentConversationId: string | null = null;
+
+// Register a cid lookup with active-tab.ts so its sync getters (e.g.
+// `getTargetTabId()` with no arg, called by the driver) read the
+// current run's cid. Avoids a static import cycle (active-tab.ts has
+// no static import of this module).
+registerCidResolver(() => agentConversationId);
 
 /**
  * Per-conversation policy for HEADLESS runs (scheduled tasks). When a policy
@@ -531,7 +673,17 @@ const extensionDriver = new ExtensionDriver();
  * this function takes no conversation argument and the wrappers stay valid
  * across a null→id transition (e.g. a brand-new chat) and for subagents.
  */
-export function createBrowserToolSet(): Record<string, ToolSet[string]> {
+export function createBrowserToolSet(
+  /**
+   * Pinned conversation id for every tool's runtime closure. Threaded
+   * into `toSDKTool` so each tool wrapper reads a stable cid rather than
+   * the module-scope `agentConversationId` global, which the SW agent
+   * host clobbers on every concurrent `setAgentContext` call.
+   *
+   * `null` for the curator's replay-only toolset and legacy callers.
+   */
+  pinnedConversationId: string | null = null,
+): Record<string, ToolSet[string]> {
   const fsTools = createFsTools();
   const pythonTool = createPythonTool();
   // Foreground self-heal guard: the main agent authors nothing from scratch
@@ -557,59 +709,67 @@ export function createBrowserToolSet(): Record<string, ToolSet[string]> {
       return patchSiteSkillTool.execute(input, ctx);
     },
   };
+  const cid = pinnedConversationId;
   return {
-    snapshot: toSDKTool(snapshotTool, "snapshot"),
-    readPage: toSDKTool(readPageTool, "readPage"),
-    screenshot: toSDKTool(screenshotTool, "screenshot"),
-    listTabs: toSDKTool(listTabsTool, "listTabs"),
-    navigate: toSDKTool(navigateTool, "navigate"),
-    clickElement: toSDKTool(clickElementTool, "clickElement"),
-    typeInElement: toSDKTool(typeInElementTool, "typeInElement"),
-    pressKey: toSDKTool(pressKeyTool, "pressKey"),
-    scrollPage: toSDKTool(scrollPageTool, "scrollPage"),
-    selectTab: toSDKTool(selectTabTool, "selectTab"),
-    closeTabs: toSDKTool(closeTabsTool, "closeTabs"),
-    saveMemory: toSDKTool(saveMemoryTool, "saveMemory"),
-    updateMemory: toSDKTool(updateMemoryTool, "updateMemory"),
-    recallMemory: toSDKTool(recallMemoryTool, "recallMemory"),
-    deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory"),
-    executeCode: toSDKTool(executeCodeTool, "executeCode"),
-    executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage"),
-    read_network_requests: toSDKTool(readNetworkRequestsTool, "read_network_requests"),
-    read_console_messages: toSDKTool(readConsoleMessagesTool, "read_console_messages"),
-    patch_site_skill: toSDKTool(guardedPatchSiteSkill, "patch_site_skill"),
-    delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill"),
-    executePython: toSDKTool(pythonTool, "executePython"),
-    extract: toSDKTool(extractTool, "extract"),
-    todoWrite: toSDKTool(todoWriteTool, "todoWrite"),
-    proposePlan: toSDKTool(proposePlanTool, "proposePlan"),
-    skill: toSDKTool(skillTool, "skill"),
-    install_skill: toSDKTool(installSkillTool, "install_skill"),
-    create_skill: toSDKTool(createSkillTool, "create_skill"),
+    snapshot: toSDKTool(snapshotTool, "snapshot", cid),
+    readPage: toSDKTool(readPageTool, "readPage", cid),
+    screenshot: toSDKTool(screenshotTool, "screenshot", cid),
+    listTabs: toSDKTool(listTabsTool, "listTabs", cid),
+    navigate: toSDKTool(navigateTool, "navigate", cid),
+    clickElement: toSDKTool(clickElementTool, "clickElement", cid),
+    typeInElement: toSDKTool(typeInElementTool, "typeInElement", cid),
+    pressKey: toSDKTool(pressKeyTool, "pressKey", cid),
+    scrollPage: toSDKTool(scrollPageTool, "scrollPage", cid),
+    selectTab: toSDKTool(selectTabTool, "selectTab", cid),
+    closeTabs: toSDKTool(closeTabsTool, "closeTabs", cid),
+    saveMemory: toSDKTool(saveMemoryTool, "saveMemory", cid),
+    updateMemory: toSDKTool(updateMemoryTool, "updateMemory", cid),
+    recallMemory: toSDKTool(recallMemoryTool, "recallMemory", cid),
+    deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory", cid),
+    executeCode: toSDKTool(executeCodeTool, "executeCode", cid),
+    executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage", cid),
+    read_network_requests: toSDKTool(readNetworkRequestsTool, "read_network_requests", cid),
+    read_console_messages: toSDKTool(readConsoleMessagesTool, "read_console_messages", cid),
+    patch_site_skill: toSDKTool(guardedPatchSiteSkill, "patch_site_skill", cid),
+    delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill", cid),
+    executePython: toSDKTool(pythonTool, "executePython", cid),
+    extract: toSDKTool(extractTool, "extract", cid),
+    todoWrite: toSDKTool(todoWriteTool, "todoWrite", cid),
+    proposePlan: toSDKTool(proposePlanTool, "proposePlan", cid),
+    skill: toSDKTool(skillTool, "skill", cid),
+    install_skill: toSDKTool(installSkillTool, "install_skill", cid),
+    create_skill: toSDKTool(createSkillTool, "create_skill", cid),
     create_scheduled_task: toSDKTool(
       createScheduledTaskTool,
       "create_scheduled_task",
+      cid,
     ),
     list_scheduled_tasks: toSDKTool(
       listScheduledTasksTool,
       "list_scheduled_tasks",
+      cid,
     ),
     update_scheduled_task: toSDKTool(
       updateScheduledTaskTool,
       "update_scheduled_task",
+      cid,
     ),
-    Read: toSDKTool(fsTools.readTool, "Read"),
-    Write: toSDKTool(fsTools.writeTool, "Write"),
-    Edit: toSDKTool(fsTools.editTool, "Edit"),
-    Glob: toSDKTool(fsTools.globTool, "Glob"),
-    Grep: toSDKTool(fsTools.grepTool, "Grep"),
-    LS: toSDKTool(fsTools.lsTool, "LS"),
-    Delete: toSDKTool(fsTools.deleteTool, "Delete"),
-    create_artifact: toSDKTool(createArtifactTool, "create_artifact"),
-    update_artifact: toSDKTool(updateArtifactTool, "update_artifact"),
-    delete_artifact: toSDKTool(deleteArtifactTool, "delete_artifact"),
-    list_artifacts:  toSDKTool(listArtifactsTool,  "list_artifacts"),
-    read_artifact_diagnostics: toSDKTool(readArtifactDiagnosticsTool, "read_artifact_diagnostics"),
+    Read: toSDKTool(fsTools.readTool, "Read", cid),
+    Write: toSDKTool(fsTools.writeTool, "Write", cid),
+    Edit: toSDKTool(fsTools.editTool, "Edit", cid),
+    Glob: toSDKTool(fsTools.globTool, "Glob", cid),
+    Grep: toSDKTool(fsTools.grepTool, "Grep", cid),
+    LS: toSDKTool(fsTools.lsTool, "LS", cid),
+    Delete: toSDKTool(fsTools.deleteTool, "Delete", cid),
+    create_artifact: toSDKTool(createArtifactTool, "create_artifact", cid),
+    update_artifact: toSDKTool(updateArtifactTool, "update_artifact", cid),
+    delete_artifact: toSDKTool(deleteArtifactTool, "delete_artifact", cid),
+    list_artifacts: toSDKTool(listArtifactsTool, "list_artifacts", cid),
+    read_artifact_diagnostics: toSDKTool(
+      readArtifactDiagnosticsTool,
+      "read_artifact_diagnostics",
+      cid,
+    ),
   };
 }
 
@@ -617,34 +777,34 @@ export function buildExtensionToolContext(
   pinnedConversationId: string | null,
   pinnedSpaceId: string | null = null,
 ): ToolContext {
+  // Stamp the conversation's resolved working window onto the session
+  // so synchronous reads (system-prompt awareness, listTabs tool,
+  // bindTabByHandle, navigate's no-handle path) all agree on which
+  // window to query without re-resolving. `getAgentWindow` reads the
+  // module-scope cache populated by the SW agent-host bootstrap at
+  // RUN_START. When unset (cache miss in tests, or pre-resolve race),
+  // we leave `targetWindowId` undefined and callers fall back to
+  // `resolveNewTabWindowId` (which itself does the lazy resolve).
+  const pinnedWindowId = getAgentWindow(pinnedConversationId);
+
   return {
     driver: extensionDriver,
     session: {
       conversationId: pinnedConversationId,
       spaceId: pinnedSpaceId,
+      ...(pinnedWindowId !== undefined && { targetWindowId: pinnedWindowId }),
       bindTabsToConversation: async (tabIds) => {
         if (!pinnedConversationId) return;
-        try {
-          await chrome.runtime.sendMessage({
-            type: "BIND_TABS_TO_CONVERSATION",
-            conversationId: pinnedConversationId,
-            tabIds: tabIds.map((t) => Number(t)),
-          });
-        } catch {
-          // Background asleep; rebuilds on next startup.
-        }
+        const { bindTabsRPC } = await import("./tab-binding-rpc");
+        await bindTabsRPC(
+          pinnedConversationId,
+          tabIds.map((t) => Number(t)),
+        );
       },
       bindActiveTabToConversation: async (tabId) => {
         if (!pinnedConversationId) return;
-        try {
-          await chrome.runtime.sendMessage({
-            type: "BIND_ACTIVE_TAB_TO_CONVERSATION",
-            conversationId: pinnedConversationId,
-            tabId: Number(tabId),
-          });
-        } catch {
-          // Background asleep; rebuilds on next startup.
-        }
+        const { bindActiveTabRPC } = await import("./tab-binding-rpc");
+        await bindActiveTabRPC(pinnedConversationId, Number(tabId));
       },
       getOrCreateHandle: (tabId) => {
         // The session API surface accepts a `TabId` (string|number) for
@@ -722,41 +882,21 @@ export function buildExtensionToolContext(
         return conv?.mode ?? "ask";
       },
       resolveNewTabWindowId: async () => {
+        // Delegates to the shared resolver so the awareness-block,
+        // listTabs, bindTabByHandle, and navigate paths all agree on
+        // "which window is this conversation in". See
+        // `./conversation-window.ts` for the resolution chain (owned
+        // tab → originWindowId → space window → undefined).
         if (!pinnedConversationId) return undefined;
-        const conv = await chatDb.getConversation(pinnedConversationId);
-        if (!conv) return undefined;
-        // 1) Prefer the window of an existing owned tab so new tabs join
-        //    the conversation's tab group rather than splitting across
-        //    windows. Probe in order and take the first live tab. Each
-        //    `ownedLtids` entry is a LogicalTabId (string); resolve to a
-        //    chrome ctid via the registry before calling chrome.tabs.get.
-        for (const ltid of conv.ownedLtids ?? []) {
-          const ctid = tabRegistry.toChromeTabId(ltid);
-          if (ctid == null) continue;
-          try {
-            const tab = await chrome.tabs.get(ctid);
-            if (typeof tab.windowId === "number") return tab.windowId;
-          } catch {
-            // Tab gone; try the next owned id.
-          }
-        }
-        // 2) Otherwise fall back to the conversation's space window (the
-        //    window the chat is bound to), as long as it still exists.
-        if (conv.spaceId) {
-          const spaces = await storage.getSpaces();
-          const space = spaces.find((s) => s.id === conv.spaceId);
-          const windowId = space?.windowId;
-          if (typeof windowId === "number") {
-            try {
-              await chrome.windows.get(windowId);
-              return windowId;
-            } catch {
-              // Space's window was closed; fall through.
-            }
-          }
-        }
-        // 3) No resolvable window — caller omits windowId (focused window).
-        return undefined;
+        // Variable-indirection import — see `ensureAgentWindow` above
+        // for the rationale (hides this module from bench's tsc walk).
+        const modulePath: string = "./conversation-window";
+        const mod = (await import(modulePath)) as {
+          resolveConversationWindowId: (
+            cid: string,
+          ) => Promise<number | undefined>;
+        };
+        return mod.resolveConversationWindowId(pinnedConversationId);
       },
     },
   };
@@ -775,11 +915,38 @@ export function buildExtensionToolContext(
 export function toSDKTool<TInput, TOutput>(
   t: BrowserTool<TInput, TOutput>,
   toolKey: string,
+  /**
+   * Pinned conversation id for this tool's runtime closures. Pre-SW-host
+   * this was always read from the module-scope `agentConversationId`
+   * global, which the renderer's `setAgentContext` mutated on conversation
+   * switch. Under SW-host the same global is now shared across every
+   * concurrent run hosted in the worker, so any read of it inside a tool
+   * wrapper attributes work to whichever conversation started most
+   * recently — wrong for all but the last. Pinning here, at transport
+   * construction time, gives every tool wrapper a stable cid that survives
+   * other concurrent runs starting in the same SW.
+   *
+   * `null` is allowed for legacy callers (e.g. tests, the curator's
+   * replay-only toolset) that have no conversation context; the wrapper
+   * tolerates a null cid at every read site, same as before.
+   */
+  pinnedConversationId: string | null = null,
 ): ToolSet[string] {
   const isTabTool = TAB_INTERACTING_TOOLS.has(toolKey);
   const isImageTool = IMAGE_TOOLS.has(toolKey);
 
   const approvalRequired = t.approval?.required ?? false;
+
+  /**
+   * Returns the conversation id to attribute this tool wrapper's
+   * runtime work to. Prefers the pinned id captured at transport-
+   * construction time. Falls back to the legacy module-scope
+   * `agentConversationId` global for callers (tests, ad-hoc usage)
+   * that did not pin one. Production SW always pins, so the fallback
+   * branch never fires there.
+   */
+  const getCid = (): string | null =>
+    pinnedConversationId ?? agentConversationId;
 
   /**
    * Resolve the `tab` arg from a tool's input to a real chrome tab id +
@@ -832,7 +999,7 @@ export function toSDKTool<TInput, TOutput>(
    * once at entry — see resolveTabFromInput's contract.
    */
   const tabToolNeedsApproval = async (input: unknown): Promise<boolean> => {
-    const cid = agentConversationId;
+    const cid = getCid();
     const resolved = await resolveTabFromInput(cid, input);
     if (resolved?.tab.url) {
       try {
@@ -944,7 +1111,7 @@ export function toSDKTool<TInput, TOutput>(
         }
       : approvalRequired && toolKey === "closeTabs"
       ? async (input: unknown) => {
-          const cid = agentConversationId;
+          const cid = getCid();
           if (!cid) return true;
           const typed = input as
             | { target: "group" }
@@ -1048,7 +1215,7 @@ export function toSDKTool<TInput, TOutput>(
         // switch could resolve `mode`/`plan` against conversation A and
         // then resolve the tab handle against conversation B's tab map
         // — silently mixing plan A's site list with B's tabs.
-        const cid = agentConversationId;
+        const cid = getCid();
         const { mode, plan } = await resolveModeAndPlan(cid);
 
         if (mode === "act") {
@@ -1114,7 +1281,7 @@ export function toSDKTool<TInput, TOutput>(
   const needsApprovalWithHeadless =
     approvalRequired && typeof needsApproval !== "boolean"
       ? async (input: unknown, opts: unknown) => {
-          const cid = agentConversationId;
+          const cid = getCid();
           const policy = cid ? headlessRunPolicies.get(cid) : undefined;
           if (policy?.autoApprove) return false;
           return (
@@ -1123,7 +1290,7 @@ export function toSDKTool<TInput, TOutput>(
         }
       : approvalRequired
         ? async () => {
-            const cid = agentConversationId;
+            const cid = getCid();
             const policy = cid ? headlessRunPolicies.get(cid) : undefined;
             if (policy?.autoApprove) return false;
             return true;
@@ -1173,7 +1340,7 @@ export function toSDKTool<TInput, TOutput>(
     // to this snapshot. So if the user switches conversations
     // mid-tool-await, the in-flight call still reads, decides, and
     // writes against the conversation that originated it.
-    const cid = agentConversationId;
+    const cid = getCid();
     capturedToolOrigins.delete(options.toolCallId);
 
     // Runs BEFORE the tool's body so the extension is durable even if
@@ -1255,7 +1422,11 @@ export function toSDKTool<TInput, TOutput>(
           favIconUrl: resolved.tab.favIconUrl,
         });
       }
-      notifyAgentStatus(true, getAgentSpaceColor(), resolved?.tabId ?? null);
+      notifyAgentStatus(true, {
+        tabId: resolved?.tabId ?? null,
+        color: await ensureAgentColor(cid),
+        conversationId: cid,
+      });
       // Eagerly arm CDP capture for the worked tab BEFORE the tool runs,
       // so any network/console events the tool itself triggers (or the
       // page issues during the tool's wait) land in the buffer.
@@ -1388,7 +1559,7 @@ export function toSDKTool<TInput, TOutput>(
           // the SDK transitions to `approval-requested`, so the UI sees the
           // origin on first render. Capture cid once at entry — see
           // resolveTabFromInput's contract.
-          const cid = agentConversationId;
+          const cid = getCid();
           const resolved = await resolveTabFromInput(cid, opts.input);
           if (!resolved) return;
           if (resolved.tab.id != null) {
@@ -1475,10 +1646,33 @@ export function toSDKTool<TInput, TOutput>(
 
 export const activeToolAbortControllers = new Set<AbortController>();
 
-export function resetAgentIndicator() {
+/**
+ * Tear down per-run state at terminal status (success / error / abort).
+ *
+ * @param conversationId  The cid whose overlays to clear. When provided,
+ *   ONLY tabs owned by this cid have their overlays cleared — peer parallel
+ *   runs (other top-level conversations OR sibling subagents under the same
+ *   parent) keep their overlays. When omitted (legacy callers / broad sweep),
+ *   every overlay is cleared, equivalent to the pre-refactor behavior.
+ *
+ * Tool aborts and CDP session detach are global (per-realm singletons) and
+ * always run regardless of `conversationId` — the abort controllers and
+ * debugger attachments live in module scope and are shared by all parallel
+ * runs in this realm, so we can't scope them per-cid without a deeper
+ * refactor. In practice the only impact is that a finishing run aborts any
+ * mid-flight tool calls of peer runs in the same realm; the peer run's
+ * abort-aware tool wrapper handles the resulting AbortError cleanly.
+ */
+export function resetAgentIndicator(
+  conversationId?: string | null,
+): void {
   if (agentActive) {
     agentActive = false;
-    notifyAgentStatus(false);
+    void resetAgentIndicatorImpl(conversationId ?? null);
+  } else {
+    // Even if `agentActive` is already false, the per-tab map may still hold
+    // entries from this cid's prior tool calls. Clear them.
+    void resetAgentIndicatorImpl(conversationId ?? null);
   }
   for (const ac of activeToolAbortControllers) {
     ac.abort();
@@ -1491,6 +1685,17 @@ export function resetAgentIndicator() {
   // (cdp-session's sendCommand has its own self-healing retry on detach
   // mid-flight, so even a race here is recoverable.)
   releaseAllSessions();
+}
+
+async function resetAgentIndicatorImpl(
+  conversationId: string | null,
+): Promise<void> {
+  try {
+    const { resetAgentIndicator: resetPerTab } = await import("./agent-indicator");
+    await resetPerTab(conversationId);
+  } catch {
+    // Best-effort.
+  }
 }
 
 
@@ -1722,6 +1927,17 @@ export async function createAgentTransport(
 ): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
 
+  // Pin the conversation id for this transport's lifetime in a local
+  // constant. Every downstream closure (step callbacks, completion-check
+  // wiring, system-prompt builder, usage recorders) reads from this
+  // constant instead of the module-scope `agentConversationId` global,
+  // which the SW agent host clobbers on every concurrent `setAgentContext`
+  // call. The fallback to the global keeps legacy renderer callers that
+  // never passed a conversationId working unchanged; production SW always
+  // passes one through `agent-host/bootstrap.ts`.
+  const transportCid = (): string | null =>
+    conversationId ?? agentConversationId;
+
   // Parse compound "<providerId>:<modelId>" emitted by the chat UI; fall
   // back to a flat lookup for legacy stored values that pre-date the
   // compound format.
@@ -1865,13 +2081,20 @@ export async function createAgentTransport(
     return model;
   }
 
-  const browserTools = createBrowserToolSet();
+  const browserTools = createBrowserToolSet(conversationId);
 
   // The completion-check evaluator runs WITHOUT tools — single-shot
   // `generateObject` against the conversation context and the captured
   // tool-call trace. The earlier with-tools mode was removed (it
   // dominated end-of-turn latency, and the dimensions that benefited
   // from it have since been retired). See `completion-check/evaluator.ts`.
+
+  // Under SW-host the MCP registry singleton lazily resolves a direct
+  // reference to `backgroundMcpRegistry` on construction (so reads
+  // bypass chrome.runtime.sendMessage, which the SW can't deliver to
+  // itself). Await that resolution before reading tools so the agent
+  // doesn't start a turn with an empty tools array.
+  await getMcpRegistry().ready();
 
   const mcpTools = getMcpRegistry().toSDKTools();
 
@@ -1939,9 +2162,8 @@ Concerns are tagged by dimension:
 To minimize wasted rejection rounds: before producing a final response, re-read the original request and confirm your todo list is fully closed out (or that every still-open todo has an explicit reason to remain open).`;
 
   // Inject current todo plan into system prompt
-  const conv = agentConversationId
-    ? await chatDb.getConversation(agentConversationId)
-    : null;
+  const tcid = transportCid();
+  const conv = tcid ? await chatDb.getConversation(tcid) : null;
   if (conv?.todos && conv.todos.length > 0) {
     instructions += `\n\n### Current Plan (todoWrite)\n`;
     const inProgress = conv.todos.find((t) => t.status === "in_progress");
@@ -2239,6 +2461,21 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         : null;
       let persistChain: Promise<void> = Promise.resolve();
 
+      // Resolve the subagent's space color so its CUA loop's overlay
+      // glow inherits the parent space's color (an incognito-isolated
+      // subagent has spaceId=null and therefore no tint).
+      const childSpaceId = cfg.toolContext.session?.spaceId ?? null;
+      let childSpaceColor: string | null = null;
+      if (childSpaceId != null) {
+        try {
+          const spaces = await storage.getSpaces();
+          childSpaceColor =
+            spaces.find((s) => s.id === childSpaceId)?.colors?.[0] ?? null;
+        } catch {
+          // best-effort; fall back to null tint
+        }
+      }
+
       const result = await cuaProvider.runLoop({
         model: cuaModel,
         driver: extensionDriver,
@@ -2247,6 +2484,13 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         task: cfg.userMessage,
         systemPrompt: cfg.systemPrompt,
         maxSteps: cfg.agentDef.maxSteps ?? 40,
+        // Stamp the child's cid + color so the CUA loop's per-tab
+        // overlay state correctly attributes ownership. Without these,
+        // a peer subagent's terminal-state teardown could clear this
+        // subagent's overlay (and vice versa), because the per-tab
+        // map keys on tabId but stamps cid for the ownership check.
+        conversationId: cfg.childConversationId,
+        spaceColor: childSpaceColor,
         ...(cfg.abortSignal && { abortSignal: cfg.abortSignal }),
         onUiMessage: (m) => {
           if (!cuaPersister) return;
@@ -2327,7 +2571,15 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // The UI message stream — same shape `useAgentChat` consumes for
       // the parent — gives us per-step UIMessages (tool calls, text
       // deltas, step markers) we can serialize and persist.
-      const uiMessageStream = streamResult.toUIMessageStream();
+      const uiMessageStream = streamResult.toUIMessageStream({
+        // Without an explicit `generateMessageId`, the AI SDK leaves
+        // the start chunk's `messageId` undefined → readUIMessageStream
+        // initializes `state.message.id` to `""` → every persisted
+        // assistant chunk for this subagent run upserts to the same
+        // empty-id chat-db row, collapsing multi-step transcripts and
+        // colliding across runs.
+        generateMessageId: () => crypto.randomUUID(),
+      });
       const uiMessages = readUIMessageStream<AgentUIMessage>({
         stream: uiMessageStream,
       });
@@ -2384,7 +2636,14 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   const tools = (() => {
     const base = {
       ...parentTools,
-      delegate: toSDKTool(delegateTool, "delegate"),
+      // Pin the delegate wrapper to this transport's conversation id —
+      // omitting the cid arg would default to `null` and the wrapper
+      // would resolve via the mutable module-scope `agentConversationId`
+      // on every read, which is wrong under SW-host where N concurrent
+      // runs share the SW realm. Other tools in `parentTools` already
+      // pass `cid` through `createBrowserToolSet(conversationId)`; this
+      // closes the last gap.
+      delegate: toSDKTool(delegateTool, "delegate", conversationId),
     };
     if (!headless) return base;
     // Headless (scheduled) run: never spawn subagents. When not
@@ -2427,6 +2686,16 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   // step-boundary behavior). Cleared at the start of each `sendMessages`
   // by the wrapper transport so a previous turn's signal doesn't leak.
   let needsMidStreamCompaction = false;
+
+  // Per-transport token tracker. Holds the running total for THIS
+  // conversation's loop. Replaces the module-scope `lastTotalTokens`
+  // global, which races across concurrent SW transports (each run
+  // would overwrite the other's count and trigger compaction on the
+  // wrong conv's threshold). We still mirror to the module global on
+  // each step so legacy renderer-side readers (`getLastTotalTokens`)
+  // that pre-date SW-host parallelism keep returning a reasonable
+  // last-seen value, but the compaction trigger here uses the local.
+  let transportLastTotalTokens = 0;
 
   // Site-skill catalog snapshot, refreshed each turn in buildLegendBlock and
   // read by the curator-enqueue in onCompletionCheckApproved. `lastActiveUrl`
@@ -2479,7 +2748,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
    * tools — handles in the awareness block are read-only context.
    */
   async function buildLegendBlock(): Promise<string> {
-    const cid = agentConversationId;
+    const cid = transportCid();
     if (!cid) return "";
     const liveConv = await chatDb.getConversation(cid);
     const ownedLtids = liveConv?.ownedLtids ?? [];
@@ -2531,7 +2800,17 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     const openTabUrls: string[] = [];
     let activeOpenUrl: string | undefined;
     try {
-      const openTabs = await extensionDriver.listTabs();
+      // Scope the awareness block to the conversation's own window, not
+      // whichever window Chrome currently has focused. Without this,
+      // two parallel chats in two different windows would each see the
+      // OTHER chat's tabs in their awareness section — and would happily
+      // selectTab a foreign-window handle and navigate it. The lazy
+      // resolver covers the case where the SW host's eager pre-resolve
+      // at RUN_START hadn't completed yet (cache miss). Undefined falls
+      // back to the driver's `chrome.windows.getCurrent()` default
+      // (legacy behavior; correct for single-window or test setups).
+      const scopedWindowId = await ensureAgentWindow(cid);
+      const openTabs = await extensionDriver.listTabs(scopedWindowId);
       for (const t of openTabs) {
         if (t.url) openTabUrls.push(t.url);
         // Track the user's ACTIVE tab URL specifically — the curator attributes
@@ -2618,7 +2897,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // the original tool-result messages. Symmetric to the tab legend
       // and site-skill catalog blocks injected here. Empty for fresh
       // conversations (no agent-written files yet).
-      const cid = agentConversationId;
+      const cid = transportCid();
       const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
 
       // Fetch the conversation row ONCE per turn and reuse it for both the
@@ -2712,22 +2991,33 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
     onStepFinish: (stepResult) => {
       const usage = stepResult.usage;
       if (usage.inputTokens != null || usage.outputTokens != null) {
-        lastTotalTokens = (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+        transportLastTotalTokens =
+          (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+        // Mirror to the legacy module global for any reader that pre-
+        // dates the per-transport switch. Best-effort and stale across
+        // concurrent transports — never used by the compaction trigger
+        // below.
+        lastTotalTokens = transportLastTotalTokens;
       }
-      // Once needsCompaction() reports true, set the flag so stopWhen
+      // Once the compaction threshold trips, set the flag so stopWhen
       // breaks the loop at the next step boundary. We don't unset on a
       // false read — once we've decided to compact, see the decision
-      // through.
-      if (needsCompaction()) {
+      // through. `modelDef` is the transport's pinned `ModelDefinition`,
+      // also captured in this closure, so the threshold check is
+      // race-free against concurrent transports on different models.
+      if (
+        transportLastTotalTokens > 0 &&
+        shouldCompact(transportLastTotalTokens, modelDef)
+      ) {
         needsMidStreamCompaction = true;
       }
       // Record connectors/skills used this step onto the conversation row so
       // the Context card surfaces them live (mirrors how todoWrite persists
       // todos mid-turn, instead of waiting for end-of-turn message persistence).
-      void recordToolUsageForStep(agentConversationId, stepResult.toolCalls);
+      void recordToolUsageForStep(transportCid(), stepResult.toolCalls);
       // Persist the token/cost usage snapshot for the header Context popover.
       // Fire-and-forget; serialized per-conversation alongside tool usage.
-      void recordUsageForStep(agentConversationId, {
+      void recordUsageForStep(transportCid(), {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
       }, modelDef, qualifiedModelId);
@@ -2752,7 +3042,7 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
     // `sendMessages`. The transport pins it for the duration of the loop
     // and threads it to `buildCompletionCheckInput`, so a mid-stream
     // `setAgentContext(other)` cannot redirect the gate's chatDb reads.
-    getActiveConversationId: () => agentConversationId,
+    getActiveConversationId: () => transportCid(),
     // Wire the completion-check gate. Returns `undefined` when no
     // conversationId is bound, so the gate sits dormant for transient
     // (non-persisted) runs (e.g. the chat title generator).

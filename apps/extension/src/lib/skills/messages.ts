@@ -66,17 +66,20 @@ export function sendSkillMessage(message: {
 }): Promise<{ success: boolean }>;
 
 export async function sendSkillMessage(message: any): Promise<any> {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      if (response?.error) {
-        reject(new Error(response.error));
-        return;
-      }
-      resolve(response);
-    });
+  // Realm-aware dispatch: when called from the SW (e.g. by the SW-hosted
+  // agent loop calling skill tools), in-process call to the SW handler;
+  // when called from a renderer, plain chrome.runtime.sendMessage. See
+  // `@/lib/runtime/sw-rpc` for why.
+  const { swRpc } = await import("@/lib/runtime/sw-rpc");
+  const response = await swRpc(message, async () => {
+    const mod = await import("@/entrypoints/background/skill-messages");
+    return mod.handleSkillMessage as never;
   });
+  // Preserve legacy reject-on-error semantics so call sites that
+  // expected a thrown Error continue to work.
+  if (response && typeof response === "object") {
+    const r = response as { error?: string };
+    if (r.error) throw new Error(r.error);
+  }
+  return response;
 }

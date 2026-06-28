@@ -111,10 +111,23 @@ export const setTaskTitleTool: BrowserTool<Input, Output> = {
               },
             ),
           );
+        } else if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+          // SW realm (post-SW-host): no DOM. Forward via runtime
+          // messaging so the renderer's DelegateResult block still gets
+          // the live title update.
+          chrome.runtime
+            .sendMessage({
+              type: SUBAGENT_TITLE_UPDATED_EVENT,
+              detail: {
+                toolCallId: parent.toolCallId,
+                title,
+              },
+            })
+            ?.catch?.(() => {});
         }
       } catch {
-        // Non-DOM environment (service worker, tests). Persistence still
-        // works for peer / incognito; inline simply has no live update.
+        // Non-DOM, no runtime messaging (tests). Persistence still works
+        // for peer / incognito; inline simply has no live update.
       }
     }
 
