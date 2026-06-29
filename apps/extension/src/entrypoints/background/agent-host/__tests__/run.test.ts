@@ -171,6 +171,180 @@ describe("SW agent-host run.ts", () => {
     expect(snapshotDones).toBe(1);
   });
 
+  it("resume run merges chunks onto the existing assistant message id (no duplicate bubble)", async () => {
+    // Regression: post-approval resume used to mint a fresh assistant
+    // message id on every transport call, breaking the SDK's resume
+    // continuation contract (`Chat.makeRequest` only does
+    // `replaceLastMessage` when the new state.message.id matches
+    // `this.lastMessage.id`). The visible symptom in Plan mode was a
+    // second "I'll propose a plan first" bubble that contained the
+    // approved `proposePlan` tool output + the next tool's start,
+    // while the original bubble was stranded in `approval-responded`
+    // forever. The fix:
+    //
+    //   1. `compacting-transport.ts` passes `originalMessages` to
+    //      `toUIMessageStream` so the SDK's `getResponseUIMessageId`
+    //      reuses the last assistant message id.
+    //   2. `run.ts` (here) threads the input transcript's trailing
+    //      assistant message into `readUIMessageStream({ message })`
+    //      so the SW persister's `state.message` is seeded with the
+    //      EXISTING parts (proposePlan input + approval) — not an
+    //      empty array that would wipe them on first chat-db write.
+    //
+    // This test verifies (2): given an input transcript whose last
+    // message is an assistant with a `proposePlan` part in
+    // `approval-responded`, the chunks emitted by the resume stream
+    // are persisted to a message that keeps the SAME id as the input
+    // assistant message AND preserves its existing parts alongside
+    // the new tool-output chunk.
+    const resumeMessageId = "a-resume-target";
+    const inputAssistant: AgentUIMessage = {
+      id: resumeMessageId,
+      role: "assistant",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "proposePlan",
+          toolCallId: "tc-propose-1",
+          state: "approval-responded",
+          input: { goal: "g", sites: ["https://x.test"], todos: [], allowNetwork: false },
+          approval: { id: "ap-1", approved: true },
+        },
+      ] as unknown as AgentUIMessage["parts"],
+    };
+
+    // Stream the SDK would emit on resume: a start chunk reusing the
+    // existing assistant message id (which is what
+    // `toUIMessageStream({ originalMessages })` produces on the
+    // transport side), then the tool-output chunk for the approved
+    // tool call, then finish.
+    const chunks: UIMessageChunk[] = [
+      { type: "start", messageId: resumeMessageId } as unknown as UIMessageChunk,
+      {
+        type: "tool-output-available",
+        toolCallId: "tc-propose-1",
+        output: { approved: true },
+      } as unknown as UIMessageChunk,
+      { type: "finish" } as unknown as UIMessageChunk,
+    ];
+
+    const deps = makeDeps(chunkStream(chunks));
+    const run = startRun(
+      {
+        conversationId: "conv-resume",
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "go" }] } as AgentUIMessage,
+          inputAssistant,
+        ],
+        origin: "sidepanel",
+      },
+      deps,
+    );
+    await run.completion;
+
+    // The persister received messages with the SAME id as the input
+    // assistant message — not a fresh UUID minted by the transport.
+    expect(persistCalls.length).toBeGreaterThan(0);
+    const lastPersisted = persistCalls[persistCalls.length - 1];
+    expect(lastPersisted.id).toBe(resumeMessageId);
+
+    // The original `proposePlan` part is preserved on the persisted
+    // message (proves `readUIMessageStream({ message })` seeded
+    // `state.message` with the input assistant, not an empty
+    // placeholder that would have wiped the input + approval fields).
+    const proposePart = lastPersisted.parts.find(
+      (p) =>
+        p.type === "dynamic-tool" &&
+        (p as { toolName?: string }).toolName === "proposePlan",
+    ) as
+      | {
+          type: "dynamic-tool";
+          state: string;
+          input?: { goal?: string };
+          approval?: { id?: string; approved?: boolean };
+        }
+      | undefined;
+    expect(proposePart).toBeDefined();
+    expect(proposePart!.input).toMatchObject({ goal: "g" });
+    expect(proposePart!.approval).toMatchObject({ id: "ap-1", approved: true });
+    // After the resume's tool-output chunk lands, the SDK advances
+    // the part to `output-available` on the EXISTING message — not
+    // a duplicate part on a new message.
+    expect(proposePart!.state).toBe("output-available");
+
+    // Snapshot broadcaster emitted using the same id (so viewer
+    // surfaces apply the snapshot in place rather than appending a
+    // duplicate bubble).
+    expect(snapshotEmits.some((s) => s.messageId === resumeMessageId)).toBe(true);
+  });
+
+  it("fresh user turn with prior assistant history does NOT seed continuation against the historical assistant", async () => {
+    // Regression: the previous implementation walked `inputMessages`
+    // backward looking for ANY assistant message and used it as the
+    // resume seed. That mis-selected a historical assistant on every
+    // fresh user turn that had any prior assistant in the transcript
+    // (i.e. every turn after the first), seeding the SW persister's
+    // `state.message` with an unrelated message's id and parts.
+    //
+    // The SDK's own `getResponseUIMessageId` (ai/dist/index.mjs:5088)
+    // only checks `originalMessages.at(-1)`; the SW-side guard must
+    // mirror that exactly. This test pins that contract.
+    const historicalAssistantId = "a-prior-turn";
+    const newAssistantId = "a-fresh-turn";
+
+    const chunks: UIMessageChunk[] = [
+      // SDK mints a NEW id for the fresh turn (the input ends in a
+      // user message → `getResponseUIMessageId` falls through to
+      // `generateMessageId`).
+      { type: "start", messageId: newAssistantId } as unknown as UIMessageChunk,
+      { type: "text-start", id: "t-1" } as unknown as UIMessageChunk,
+      { type: "text-delta", id: "t-1", delta: "Hi." } as unknown as UIMessageChunk,
+      { type: "text-end", id: "t-1" } as unknown as UIMessageChunk,
+      { type: "finish" } as unknown as UIMessageChunk,
+    ];
+
+    const deps = makeDeps(chunkStream(chunks));
+    const run = startRun(
+      {
+        conversationId: "conv-fresh",
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "first" }] } as AgentUIMessage,
+          {
+            id: historicalAssistantId,
+            role: "assistant",
+            parts: [{ type: "text", text: "first reply" }],
+          } as AgentUIMessage,
+          { id: "u2", role: "user", parts: [{ type: "text", text: "second" }] } as AgentUIMessage,
+        ],
+        origin: "sidepanel",
+      },
+      deps,
+    );
+    await run.completion;
+
+    // Persister received the FRESH assistant message id from the
+    // stream, not the historical one. If the backward-scan bug were
+    // back, the SW would have seeded its `state.message` with
+    // `historicalAssistantId`'s parts ("first reply") and the start
+    // chunk's `messageId` override would still leave those stale
+    // parts merged in.
+    expect(persistCalls.length).toBeGreaterThan(0);
+    const persistedIds = persistCalls.map((m) => m.id);
+    expect(persistedIds).toContain(newAssistantId);
+    expect(persistedIds).not.toContain(historicalAssistantId);
+
+    // The persisted fresh assistant message does NOT carry the
+    // historical "first reply" text — proves the SDK didn't see the
+    // historical assistant as `state.message` (which would have made
+    // every chunk layer on top of "first reply").
+    const fresh = persistCalls.find((m) => m.id === newAssistantId);
+    expect(fresh).toBeDefined();
+    const freshTexts = fresh!.parts
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text);
+    expect(freshTexts.join("")).not.toContain("first reply");
+  });
+
   it("fans chunks out to multiple subscribers", async () => {
     const chunks: UIMessageChunk[] = [
       { type: "start", messageId: "a-1" } as unknown as UIMessageChunk,

@@ -208,8 +208,7 @@ async function persistHealedMessages(
   }
   if (updates.length > 0) {
     await chatDb.saveMessages(updates);
-  }
-  // Finalize any child conversations whose parent delegate tool call
+  }  // Finalize any child conversations whose parent delegate tool call
   // was just healed. Best-effort: failures are logged but don't block
   // the heal write — the SW startup reconciliation pass will catch any
   // stragglers on next restart.
@@ -221,6 +220,226 @@ async function persistHealedMessages(
       healedDelegateToolCallIds,
     });
   }
+}
+
+/**
+ * Persist the assistant message containing the just-approved (or
+ * denied) tool call to chat-db with its current in-memory part state.
+ *
+ * Used by `approveToolCall` after `addToolApprovalResponse` flips a
+ * tool part from `approval-requested` → `approval-responded`. Without
+ * this immediate save the chat-db row keeps the part in
+ * `approval-requested` until the SW persister overwrites the row with
+ * the resume run's first chunk — opening a reload-race window where
+ * `findPendingPlanApproval` resurfaces the approval card.
+ *
+ * Exported for unit testing. Returns the id of the persisted message
+ * (or `null` if no match was found in `messages` — e.g. the toolCallId
+ * is stale, or the user just navigated away mid-click).
+ */
+export async function persistApprovedAssistantMessage(
+  conversationId: string,
+  toolCallId: string,
+  messages: ReadonlyArray<AgentMessage>,
+): Promise<string | null> {
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const hit = m.parts.some(
+      (p) =>
+        (p.type === "dynamic-tool" ||
+          (typeof p.type === "string" && p.type.startsWith("tool-"))) &&
+        (p as { toolCallId?: string }).toolCallId === toolCallId,
+    );
+    if (!hit) continue;
+    const parts = serializeParts(m.parts);
+    // Preserve existing chat-db row metadata (`createdAt`, `summary`,
+    // and any future optional fields the schema picks up) by spreading
+    // the existing row and overriding only the fields the approval
+    // click actually changes. Mirrors `persistHealedMessages` so the
+    // two persist paths stay in sync as the row shape evolves.
+    //
+    // The new-row branch (no prior `existing`) is structurally narrow
+    // — it only fires on the rare race where the user clicks Approve
+    // before the SW persister has written the assistant#0 row at all
+    // (e.g. very fast click on a first turn). Build the row from
+    // scratch in that case.
+    const existing = await chatDb.getMessages(conversationId).then((rows) =>
+      rows.find((r) => r.id === m.id),
+    );
+    if (existing) {
+      await chatDb.saveMessage({
+        ...existing,
+        parts,
+        content: extractTextContent(parts),
+      });
+    } else {
+      await chatDb.saveMessage({
+        id: m.id,
+        conversationId,
+        role: "assistant",
+        content: extractTextContent(parts),
+        parts,
+        createdAt: Date.now(),
+      });
+    }
+    return m.id;
+  }
+  return null;
+}
+
+/**
+ * Pure transform that mirrors the AI SDK's `addToolApprovalResponse`
+ * mutation locally (`ai/dist/index.mjs` lines 13064-13068): on the
+ * LAST assistant message, find the part in `approval-requested` whose
+ * `approval.id` matches `opts.id` and replace it with an
+ * `approval-responded` part carrying the user's decision. Non-matching
+ * parts and earlier messages are returned by reference (no copy) so
+ * the result is structurally shareable with the input.
+ *
+ * Used by `handleApprovalClick` to compute the post-click messages
+ * snapshot synchronously, BEFORE handing the SDK its real mutation
+ * (which goes through `useSyncExternalStore` → re-render → ref
+ * assignment, not synchronous to the SDK call). Reading
+ * `messagesRef.current` AFTER calling `addToolApprovalResponse` would
+ * race React's commit cycle and could observe the pre-click state.
+ *
+ * Returns `{ messages, mutatedMessageId }`. When `mutatedMessageId`
+ * is `null` no matching part was found (stale toolCallId, or the
+ * trailing message is a user) and the caller should skip persistence.
+ *
+ * Mirrors the SDK's "only consider the last message" rule: even if an
+ * earlier assistant message holds a matching `approval.id` (defensive
+ * against stale ids in long transcripts), this function does NOT touch
+ * it. The SDK's `addToolApprovalResponse` operates on
+ * `messages[messages.length - 1]` exclusively; replicate that exactly.
+ */
+export function applyApprovalResponseToMessages(
+  messages: ReadonlyArray<AgentMessage>,
+  opts: { id: string; approved: boolean; reason?: string },
+): { messages: AgentMessage[]; mutatedMessageId: string | null } {
+  if (messages.length === 0) {
+    return { messages: [], mutatedMessageId: null };
+  }
+  const lastIdx = messages.length - 1;
+  const last = messages[lastIdx];
+  if (last.role !== "assistant") {
+    return {
+      messages: messages.slice(),
+      mutatedMessageId: null,
+    };
+  }
+  let matched = false;
+  const nextParts = last.parts.map((part) => {
+    const p = part as {
+      type?: string;
+      state?: string;
+      approval?: { id?: string };
+      toolCallId?: string;
+    };
+    const isTool =
+      p.type === "dynamic-tool" ||
+      (typeof p.type === "string" && p.type.startsWith("tool-"));
+    if (!isTool) return part;
+    if (p.state !== "approval-requested") return part;
+    if (p.approval?.id !== opts.id) return part;
+    matched = true;
+    return {
+      ...(part as object),
+      state: "approval-responded",
+      approval: {
+        id: opts.id,
+        approved: opts.approved,
+        ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+      },
+    } as AgentMessage["parts"][number];
+  });
+  if (!matched) {
+    return {
+      messages: messages.slice(),
+      mutatedMessageId: null,
+    };
+  }
+  const nextMessages = messages.slice();
+  nextMessages[lastIdx] = {
+    ...last,
+    parts: nextParts,
+  } as AgentMessage;
+  return { messages: nextMessages, mutatedMessageId: last.id };
+}
+
+/**
+ * Dependencies the orchestration of an approval click needs. Extracted
+ * so the click path can be unit-tested without rendering the hook —
+ * the production call site grabs each value from a ref or the SDK and
+ * forwards it through.
+ */
+export interface ApprovalClickDeps {
+  /** Live conversation id. `null` skips both persist and SDK notify. */
+  conversationId: string | null;
+  /** Pre-click in-memory messages snapshot (e.g. `messagesRef.current`). */
+  messages: ReadonlyArray<AgentMessage>;
+  /**
+   * Persist the assistant message containing the approved/denied
+   * tool part. Production wiring is `persistApprovedAssistantMessage`
+   * (declared above).
+   */
+  persist: (
+    conversationId: string,
+    toolCallId: string,
+    messages: ReadonlyArray<AgentMessage>,
+  ) => Promise<string | null>;
+  /**
+   * Hand the SDK its real mutation so the resume `sendMessage` carries
+   * the post-click parts. Production wiring is `addToolApprovalResponse`
+   * from `useChat`. Returns `PromiseLike<void>` because that matches the
+   * SDK's typing (its return is `jobExecutor.run(async () => ...)`).
+   */
+  notifySdk: (opts: { id: string; approved: boolean }) => PromiseLike<void> | void;
+}
+
+/**
+ * Apply an approval click end-to-end:
+ *
+ *   1. Compute the post-click messages snapshot LOCALLY via
+ *      `applyApprovalResponseToMessages`. Synchronous and
+ *      independent of React's commit cycle.
+ *   2. Persist that snapshot to chat-db so a reload before the resume
+ *      run produces any output won't resurface the approval card.
+ *   3. Hand the same mutation to the SDK via `notifySdk` — that's
+ *      what unblocks `sendAutomaticallyWhen` and starts the resume.
+ *
+ * Ordering note: persist FIRST, notify SDK SECOND. The resume run's
+ * persister will overwrite our row as soon as its first chunk lands,
+ * so we want our (older but already-resolved) write to land before
+ * the resume can race it. The user-visible reload-race window is
+ * approximately the time between us calling `chatDb.saveMessage` and
+ * it resolving — much smaller than the original "until the resume
+ * produces output" window.
+ *
+ * Errors in `persist` are caught and logged: the SDK-side mutation
+ * still runs (otherwise an approve click could appear to silently
+ * fail), and the renderer-side `healPendingTools` covers the residual
+ * race on the next user action.
+ */
+export async function handleApprovalClick(
+  opts: { id: string; approved: boolean; reason?: string },
+  deps: ApprovalClickDeps,
+): Promise<void> {
+  const { messages: postClick, mutatedMessageId } =
+    applyApprovalResponseToMessages(deps.messages, opts);
+
+  if (deps.conversationId && mutatedMessageId) {
+    try {
+      await deps.persist(deps.conversationId, opts.id, postClick);
+    } catch (err) {
+      console.warn(
+        "[approveToolCall] persist approval-responded failed:",
+        err,
+      );
+    }
+  }
+
+  await deps.notifySdk({ id: opts.id, approved: opts.approved });
 }
 
 /**
@@ -2713,8 +2932,19 @@ export function useAgentChat({
   // tab owns the live run), the local `addToolApprovalResponse` would
   // operate on a stale, non-driving chat. Instead forward the decision
   // to the host via AGENT_APPROVE, which applies it to the live part.
+  //
+  // For initiator clicks, delegates to `handleApprovalClick` so the
+  // post-click messages snapshot is computed locally via
+  // `applyApprovalResponseToMessages` (mirroring the SDK's own
+  // mutation) BEFORE the persist call. Reading `messagesRef.current`
+  // AFTER `addToolApprovalResponse` would race React's commit cycle —
+  // `useChat` propagates state via `useSyncExternalStore` callbacks,
+  // which schedule a re-render but don't synchronously update the
+  // `messagesRef.current = messages` assignment. The result could be
+  // persisting the PRE-click `approval-requested` state, making the
+  // Layer-1 reload-race fix a no-op.
   const approveToolCall = useCallback(
-    (opts: { id: string; approved: boolean }) => {
+    async (opts: { id: string; approved: boolean }) => {
       if (isViewerRef.current && conversationIdRef.current) {
         try {
           chrome.runtime
@@ -2730,7 +2960,12 @@ export function useAgentChat({
         }
         return;
       }
-      return addToolApprovalResponse(opts);
+      await handleApprovalClick(opts, {
+        conversationId: conversationIdRef.current,
+        messages: messagesRef.current,
+        persist: persistApprovedAssistantMessage,
+        notifySdk: addToolApprovalResponse,
+      });
     },
     [addToolApprovalResponse],
   );

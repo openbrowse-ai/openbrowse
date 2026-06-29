@@ -240,6 +240,25 @@ export class CompactingChatTransport<TOOLS extends ToolSet = ToolSet>
           abortSignal,
         });
         return result.toUIMessageStream({
+          // Pass the validated input messages so the SDK's
+          // `getResponseUIMessageId` (ai/dist/index.mjs:5081-5090) can
+          // reuse the LAST assistant message's id when present —
+          // converting an approval resume into a continuation of the
+          // existing assistant turn instead of a new bubble. Without
+          // this, our `generateMessageId` callback below was minting a
+          // fresh UUID on every transport call, including resumes,
+          // which broke the SDK's built-in continuation contract:
+          // `Chat.makeRequest` does `replaceLastMessage` only when
+          // `state.message.id === this.lastMessage.id` — with a fresh
+          // UUID that comparison is always false and the SDK
+          // `pushMessage`s a duplicate assistant bubble for the
+          // post-approval continuation.
+          //
+          // The SDK gates the override on the LAST message's role being
+          // "assistant", so fresh turns (last is user) still fall
+          // through to the `generateMessageId` callback below for a
+          // brand-new id.
+          originalMessages: validatedMessages,
           // Mint a stable id for this assistant response. Without this,
           // the SDK's `processUIMessageStream` leaves `state.message.id`
           // at its `""` default (the `start` chunk omits `messageId`
@@ -1033,6 +1052,14 @@ export interface RejectionLoopAgent {
   }): Promise<{
     toUIMessageStream(options?: {
       generateMessageId?: () => string;
+      /**
+       * Passed through to the SDK so its built-in resume continuation
+       * (`getResponseUIMessageId` in ai/dist/index.mjs) can reuse the
+       * LAST assistant message's id when the input ends in one. Required
+       * for the approval-resume path; see the call site in
+       * `runWithRejectionLoop`.
+       */
+      originalMessages?: AgentUIMessage[];
     }): ReadableStream<UIMessageChunk>;
   }>;
 }
@@ -1136,6 +1163,12 @@ export function runWithRejectionLoop(args: {
 
           const observed = await pipeAndObserve(
             result.toUIMessageStream({
+              // Pass the current loop's `messages` (which mutates as
+              // synthetic user turns are appended per rejection round)
+              // so the SDK reuses the LAST assistant message's id when
+              // the loop is resuming an approval. See the matching call
+              // in the fast path above for the full rationale.
+              originalMessages: messages,
               // See the fast-path call site above for why this matters
               // (id:"" → all chunks coalesce into one chat-db row).
               generateMessageId: () => crypto.randomUUID(),
