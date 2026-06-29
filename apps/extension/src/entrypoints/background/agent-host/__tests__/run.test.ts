@@ -278,6 +278,73 @@ describe("SW agent-host run.ts", () => {
     expect(snapshotEmits.some((s) => s.messageId === resumeMessageId)).toBe(true);
   });
 
+  it("fresh user turn with prior assistant history does NOT seed continuation against the historical assistant", async () => {
+    // Regression: the previous implementation walked `inputMessages`
+    // backward looking for ANY assistant message and used it as the
+    // resume seed. That mis-selected a historical assistant on every
+    // fresh user turn that had any prior assistant in the transcript
+    // (i.e. every turn after the first), seeding the SW persister's
+    // `state.message` with an unrelated message's id and parts.
+    //
+    // The SDK's own `getResponseUIMessageId` (ai/dist/index.mjs:5088)
+    // only checks `originalMessages.at(-1)`; the SW-side guard must
+    // mirror that exactly. This test pins that contract.
+    const historicalAssistantId = "a-prior-turn";
+    const newAssistantId = "a-fresh-turn";
+
+    const chunks: UIMessageChunk[] = [
+      // SDK mints a NEW id for the fresh turn (the input ends in a
+      // user message → `getResponseUIMessageId` falls through to
+      // `generateMessageId`).
+      { type: "start", messageId: newAssistantId } as unknown as UIMessageChunk,
+      { type: "text-start", id: "t-1" } as unknown as UIMessageChunk,
+      { type: "text-delta", id: "t-1", delta: "Hi." } as unknown as UIMessageChunk,
+      { type: "text-end", id: "t-1" } as unknown as UIMessageChunk,
+      { type: "finish" } as unknown as UIMessageChunk,
+    ];
+
+    const deps = makeDeps(chunkStream(chunks));
+    const run = startRun(
+      {
+        conversationId: "conv-fresh",
+        messages: [
+          { id: "u1", role: "user", parts: [{ type: "text", text: "first" }] } as AgentUIMessage,
+          {
+            id: historicalAssistantId,
+            role: "assistant",
+            parts: [{ type: "text", text: "first reply" }],
+          } as AgentUIMessage,
+          { id: "u2", role: "user", parts: [{ type: "text", text: "second" }] } as AgentUIMessage,
+        ],
+        origin: "sidepanel",
+      },
+      deps,
+    );
+    await run.completion;
+
+    // Persister received the FRESH assistant message id from the
+    // stream, not the historical one. If the backward-scan bug were
+    // back, the SW would have seeded its `state.message` with
+    // `historicalAssistantId`'s parts ("first reply") and the start
+    // chunk's `messageId` override would still leave those stale
+    // parts merged in.
+    expect(persistCalls.length).toBeGreaterThan(0);
+    const persistedIds = persistCalls.map((m) => m.id);
+    expect(persistedIds).toContain(newAssistantId);
+    expect(persistedIds).not.toContain(historicalAssistantId);
+
+    // The persisted fresh assistant message does NOT carry the
+    // historical "first reply" text — proves the SDK didn't see the
+    // historical assistant as `state.message` (which would have made
+    // every chunk layer on top of "first reply").
+    const fresh = persistCalls.find((m) => m.id === newAssistantId);
+    expect(fresh).toBeDefined();
+    const freshTexts = fresh!.parts
+      .filter((p): p is { type: "text"; text: string } => p.type === "text")
+      .map((p) => p.text);
+    expect(freshTexts.join("")).not.toContain("first reply");
+  });
+
   it("fans chunks out to multiple subscribers", async () => {
     const chunks: UIMessageChunk[] = [
       { type: "start", messageId: "a-1" } as unknown as UIMessageChunk,

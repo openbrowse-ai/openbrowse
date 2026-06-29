@@ -274,4 +274,55 @@ describe("persistApprovedAssistantMessage", () => {
     const tool = after[0].parts[0] as { state: string };
     expect(tool.state).toBe("approval-responded");
   });
+
+  it("preserves arbitrary unknown fields on the existing chat-db row (spread-existing contract)", async () => {
+    // The implementation should `...existing` the prior chat-db row
+    // and override only `parts` + `content`, matching
+    // `persistHealedMessages`. That keeps any forward-compat or
+    // optional fields the schema picks up later (or that other write
+    // paths set ahead of us) from being silently dropped.
+    //
+    // The chat-db schema's currently-declared optional field is
+    // `summary`; we use it as the test marker. The contract under
+    // test isn't summary-specific — it's "the persist path doesn't
+    // enumerate the row".
+    await seedConversation("c1");
+    await chatDb.saveMessage({
+      id: "a1",
+      conversationId: "c1",
+      role: "assistant",
+      content: "compaction summary",
+      parts: [{ type: "text", text: "compaction summary" }],
+      createdAt: 100,
+      summary: true,
+    });
+
+    const inMemory: AgentUIMessage[] = [
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [
+          {
+            type: "dynamic-tool",
+            toolName: "proposePlan",
+            toolCallId: "tc-1",
+            state: "approval-responded",
+            input: { goal: "g", sites: [], todos: [], allowNetwork: false },
+            approval: { id: "ap-1", approved: true },
+          },
+        ] as unknown as AgentUIMessage["parts"],
+      } as AgentUIMessage,
+    ];
+
+    await persistApprovedAssistantMessage("c1", "tc-1", inMemory);
+    const after = await chatDb.getMessages("c1");
+    // The `summary: true` flag survives the spread.
+    expect(after[0].summary).toBe(true);
+    // `createdAt` is preserved (no regeneration to Date.now()).
+    expect(after[0].createdAt).toBe(100);
+    // `parts` reflects the new approval-responded state.
+    expect((after[0].parts[0] as { state: string }).state).toBe(
+      "approval-responded",
+    );
+  });
 });

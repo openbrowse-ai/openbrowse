@@ -404,13 +404,15 @@ async function pumpMessages(
   //     with the resume target.
   //
   // Falls back to `undefined` for fresh turns (last message is user),
-  // matching the SDK's "no continuation" path.
-  const lastAssistant = (() => {
-    for (let i = inputMessages.length - 1; i >= 0; i--) {
-      if (inputMessages[i].role === "assistant") return inputMessages[i];
-    }
-    return undefined;
-  })();
+  // matching the SDK's "no continuation" path. The check is gated on
+  // the TRAILING message's role — not a backward scan for any earlier
+  // assistant — because the SDK's own continuation logic in
+  // `getResponseUIMessageId` only considers `originalMessages.at(-1)`.
+  // A backward scan would pick a historical assistant on every fresh
+  // user turn that has any prior assistant in the transcript, seeding
+  // the SW persister with an unrelated message's id and parts.
+  const tail = inputMessages.at(-1);
+  const lastAssistant = tail?.role === "assistant" ? tail : undefined;
 
   const uiStream = readUIMessageStream<AgentUIMessage>({
     stream: cancellable,
