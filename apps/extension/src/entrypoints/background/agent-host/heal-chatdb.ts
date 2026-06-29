@@ -5,30 +5,41 @@
  *
  *   1. Natural completion — the for-await loop drains, persister wrote
  *      the final assistant message with terminal tool states.
- *   2. Explicit stop — `chat.stop()` / Esc Esc / Stop button → abort
+ *   2. Natural pause for approval — the AI SDK closes its stream when
+ *      the model called a tool with `approval: { required: true }`. The
+ *      LAST persisted assistant message has a tool in `approval-requested`
+ *      state, waiting on the renderer to call `addToolApprovalResponse`.
+ *      This is NOT a stranded state — see the docstring on
+ *      `healSerializedParts` for why we leave it alone.
+ *   3. Explicit stop — `chat.stop()` / Esc Esc / Stop button → abort
  *      signal → `for await` body's `if (signal.aborted) break;` exits.
  *      The LAST persisted message can have a tool in `input-streaming`
  *      or `input-available` (model was mid-arguments-emit, hadn't
  *      reached output yet).
- *   3. Provider error mid-stream — the `Promise.all([fanout, message])`
+ *   4. Provider error mid-stream — the `Promise.all([fanout, message])`
  *      catch branch fires; the persister's last write may be partial.
- *   4. SW crash / port disconnect — persister may not have flushed the
+ *   5. SW crash / port disconnect — persister may not have flushed the
  *      latest chunk.
  *
  * Renderer-side `healPendingTools` runs on the NEXT user action
  * (submit / queued drain / continue / retry). It heals the in-memory
- * `messages` and writes the changed messages back to chat-db. But:
+ * `messages` and writes the changed messages back to chat-db, including
+ * the `approval-requested → output-denied` transition this SW heal
+ * deliberately skips (by then the user has implicitly abandoned the
+ * approval prompt). But:
  *
  *   - If the user never acts again (closes tab, reload, dropped session)
  *     the chat-db row stays stranded.
  *   - The UI considers a chat with a non-terminal tool part as "loading"
  *     forever (spinner + stop button stuck enabled).
  *
- * This SW-side heal closes that gap: at run termination we read the
- * last persisted assistant message, apply the same heal semantics
- * (mirrored from `heal-pending-tools.ts`), and write back if anything
- * changed. Symmetric to renderer heal; needed because the renderer's
- * heal is gated on a user action that may never come.
+ * This SW-side heal closes that gap for the cases where the SDK can no
+ * longer resume (input-streaming, input-available, approval-responded):
+ * at run termination we read the last persisted assistant message,
+ * apply heal semantics for those states, and write back if anything
+ * changed. Symmetric to renderer heal for those states; deliberately
+ * narrower than renderer heal for `approval-requested`, which the SDK
+ * CAN still resume so long as the renderer surfaces the prompt.
  *
  * Operates directly on `SerializedUIPart[]` (the chat-db encoding) to
  * avoid the deserialize-then-serialize round-trip. ALL tool parts in
@@ -56,16 +67,36 @@ export interface HealResult {
  * `{changed: false, parts: <same ref>}` when nothing needed healing so
  * callers can skip the chat-db write.
  *
- * Heal targets (mirroring `healPendingTools`):
+ * Heal targets:
  *
- *   - `approval-requested` → `output-denied` (approval.approved = false)
  *   - `approval-responded`:
  *       - approved=false → `output-denied`
  *       - approved=true OR missing → `output-error` (SDK can no longer
  *         resume; emit a paired result so the next user message doesn't
  *         trip "tool_use without tool_result").
- *   - Any other non-terminal state → `output-error` with
- *     `TOOL_HEAL_INTERRUPT_TEXT`.
+ *   - Any other non-terminal state (`input-streaming`, `input-available`,
+ *     unknown states) → `output-error` with `TOOL_HEAL_INTERRUPT_TEXT`.
+ *
+ * NOT a heal target — `approval-requested` is INTENTIONALLY preserved:
+ *
+ *   `approval-requested` is the AI SDK's resting state when a tool with
+ *   `approval: { required: true }` is called. The SDK closes its
+ *   ReadableStream there and waits for the renderer to call
+ *   `addToolApprovalResponse` (Approve/Deny). The SW agent host's
+ *   `pumpMessages` loop sees the stream end and falls through to this
+ *   heal — but the state is *intentional*, not stranded. Rewriting it
+ *   to `output-denied` (the pre-fix behavior) caused `PlanApprovalCard`
+ *   to never mount in Plan mode and Ask-mode tool prompts to render as
+ *   denied before the user could act. The renderer-side
+ *   `healPendingTools` still collapses `approval-requested` →
+ *   `output-denied` on the next user action (edit/retry/regenerate),
+ *   which IS the correct point — by then the user has implicitly
+ *   abandoned the approval prompt.
+ *
+ *   Trade-off: if the SW dies AND no renderer ever reopens the
+ *   conversation, the chat-db row stays in `approval-requested`. That's
+ *   acceptable: the only consumer is the renderer, and the renderer
+ *   heals it on first interaction.
  *
  * Inputs on healed parts are PRESERVED (a real input is kept on the
  * heal output). Missing input is left undefined — never synthesized to
@@ -86,20 +117,15 @@ export function healSerializedParts(parts: SerializedUIPart[]): HealResult {
       continue;
     }
 
-    changed = true;
-
-    // approval-requested → output-denied
+    // approval-requested is intentionally preserved — see the docstring
+    // above for the full rationale. The SDK is parked here waiting for
+    // the renderer's approval response; this is not a stranded state.
     if (state === "approval-requested") {
-      const approval = (part as { approval?: { id: string } }).approval;
-      out.push({
-        ...part,
-        state: "output-denied",
-        approval: approval
-          ? { id: approval.id, approved: false }
-          : undefined,
-      } as SerializedUIPart);
+      out.push(part);
       continue;
     }
+
+    changed = true;
 
     // approval-responded — depends on the user's choice
     if (state === "approval-responded") {

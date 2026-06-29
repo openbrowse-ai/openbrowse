@@ -215,6 +215,7 @@ export function startRun(args: StartRunArgs, deps: StartRunDeps): RunControl {
       persister,
       snapshot,
       handle,
+      args.messages,
     );
 
     let errMessage: string | null = null;
@@ -229,6 +230,12 @@ export function startRun(args: StartRunArgs, deps: StartRunDeps): RunControl {
     // error, disconnect) because the persister writes the in-flight
     // assistant message incrementally and may leave non-terminal tool
     // states (e.g. `input-streaming`) when the run terminates mid-tool.
+    //
+    // `approval-requested` is intentionally NOT a heal target — the
+    // SDK closes its stream there waiting for the renderer's approval
+    // response, so the natural end-of-run path lands here with a
+    // legitimately pending approval. See `heal-chatdb.ts`'s
+    // `healSerializedParts` docstring for the full rationale.
     //
     // CRITICAL TIMING: This MUST run BEFORE `emitDone` / `emitError`
     // (which flip `handle.status` and notify subscribers). If we notify
@@ -349,6 +356,7 @@ async function pumpMessages(
   persister: AssistantStreamPersister,
   snapshot: SnapshotBroadcaster,
   handle: RunHandle,
+  inputMessages: AgentUIMessage[],
 ): Promise<void> {
   // Mirror pumpFanout's abort-cancels-reader behavior. `readUIMessageStream`
   // consumes the source stream internally, so cancelling that source
@@ -376,7 +384,38 @@ async function pumpMessages(
     });
   })();
 
-  const uiStream = readUIMessageStream<AgentUIMessage>({ stream: cancellable });
+  // Seed the SDK's stream consumer with the last assistant message
+  // from the input transcript when present. This is what makes resume
+  // (approval → continuation) work end-to-end on the SW side:
+  //
+  //   - `createStreamingUIMessageState` (ai/dist/index.mjs:5298-5313)
+  //     uses `state.message = lastMessage` when `lastMessage.role`
+  //     is "assistant", so existing parts on the resumed message are
+  //     preserved as new chunks layer on top.
+  //   - Without this, `state.message` starts with `parts: []`, and the
+  //     SW's persister upserts the chat-db row with ONLY the chunks
+  //     emitted on the resume stream (e.g. the proposePlan
+  //     output-available + a `navigate` input-streaming) — losing the
+  //     original `proposePlan` input + approval metadata that the
+  //     UI needs to render the post-approval state correctly.
+  //   - The matching `originalMessages` is passed at the transport
+  //     side (`compacting-transport.ts`) so the SDK's own
+  //     `getResponseUIMessageId` aligns the start chunk's messageId
+  //     with the resume target.
+  //
+  // Falls back to `undefined` for fresh turns (last message is user),
+  // matching the SDK's "no continuation" path.
+  const lastAssistant = (() => {
+    for (let i = inputMessages.length - 1; i >= 0; i--) {
+      if (inputMessages[i].role === "assistant") return inputMessages[i];
+    }
+    return undefined;
+  })();
+
+  const uiStream = readUIMessageStream<AgentUIMessage>({
+    stream: cancellable,
+    ...(lastAssistant ? { message: lastAssistant } : {}),
+  });
   for await (const message of uiStream) {
     if (handle.abort.signal.aborted) break;
     if (message.role !== "assistant") continue;

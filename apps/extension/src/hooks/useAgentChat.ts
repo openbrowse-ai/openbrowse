@@ -208,8 +208,7 @@ async function persistHealedMessages(
   }
   if (updates.length > 0) {
     await chatDb.saveMessages(updates);
-  }
-  // Finalize any child conversations whose parent delegate tool call
+  }  // Finalize any child conversations whose parent delegate tool call
   // was just healed. Best-effort: failures are logged but don't block
   // the heal write — the SW startup reconciliation pass will catch any
   // stragglers on next restart.
@@ -221,6 +220,57 @@ async function persistHealedMessages(
       healedDelegateToolCallIds,
     });
   }
+}
+
+/**
+ * Persist the assistant message containing the just-approved (or
+ * denied) tool call to chat-db with its current in-memory part state.
+ *
+ * Used by `approveToolCall` after `addToolApprovalResponse` flips a
+ * tool part from `approval-requested` → `approval-responded`. Without
+ * this immediate save the chat-db row keeps the part in
+ * `approval-requested` until the SW persister overwrites the row with
+ * the resume run's first chunk — opening a reload-race window where
+ * `findPendingPlanApproval` resurfaces the approval card.
+ *
+ * Exported for unit testing. Returns the id of the persisted message
+ * (or `null` if no match was found in `messages` — e.g. the toolCallId
+ * is stale, or the user just navigated away mid-click).
+ */
+export async function persistApprovedAssistantMessage(
+  conversationId: string,
+  toolCallId: string,
+  messages: ReadonlyArray<AgentMessage>,
+): Promise<string | null> {
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const hit = m.parts.some(
+      (p) =>
+        (p.type === "dynamic-tool" ||
+          (typeof p.type === "string" && p.type.startsWith("tool-"))) &&
+        (p as { toolCallId?: string }).toolCallId === toolCallId,
+    );
+    if (!hit) continue;
+    const parts = serializeParts(m.parts);
+    // Preserve existing chat-db metadata (`createdAt`, `summary`, etc.)
+    // by reading the row first when present. New conversations might
+    // not have this row yet (e.g. brand-new chat where the SW persister
+    // hasn't written assistant#0 yet) — saveMessage will create it.
+    const existing = await chatDb.getMessages(conversationId).then((rows) =>
+      rows.find((r) => r.id === m.id),
+    );
+    await chatDb.saveMessage({
+      id: m.id,
+      conversationId,
+      role: "assistant",
+      content: existing?.content ?? extractTextContent(parts),
+      parts,
+      createdAt: existing?.createdAt ?? Date.now(),
+      ...(existing?.summary != null ? { summary: existing.summary } : {}),
+    });
+    return m.id;
+  }
+  return null;
 }
 
 /**
@@ -2714,7 +2764,7 @@ export function useAgentChat({
   // operate on a stale, non-driving chat. Instead forward the decision
   // to the host via AGENT_APPROVE, which applies it to the live part.
   const approveToolCall = useCallback(
-    (opts: { id: string; approved: boolean }) => {
+    async (opts: { id: string; approved: boolean }) => {
       if (isViewerRef.current && conversationIdRef.current) {
         try {
           chrome.runtime
@@ -2730,7 +2780,57 @@ export function useAgentChat({
         }
         return;
       }
-      return addToolApprovalResponse(opts);
+      // Flip the in-memory part state (approval-requested →
+      // approval-responded). This is what unblocks the SDK's
+      // `sendAutomaticallyWhen` to fire a resume `sendMessage`.
+      const ret = addToolApprovalResponse(opts);
+
+      // Persist the mutated assistant message to chat-db immediately.
+      // Why this is needed under SW-host:
+      //
+      //   - `addToolApprovalResponse` only mutates local Chat state.
+      //   - The SW persister writes assistant messages produced by
+      //     the model stream — it does NOT re-write the input message
+      //     list. So without this call, chat-db keeps the part in
+      //     `approval-requested` until the resume run produces enough
+      //     output for the persister to overwrite the row.
+      //   - There's a window between click and the resume run's first
+      //     persisted chunk where chat-db is stale. If the user reloads
+      //     in that window, `findPendingPlanApproval` re-surfaces the
+      //     approval card because chat-db's latest assistant message
+      //     still has the part in `approval-requested` state.
+      //   - This save closes that window: chat-db reflects the user's
+      //     decision the moment they click, so a reload won't resurrect
+      //     the prompt.
+      //
+      // Best-effort: a thrown error here would still leave the SDK
+      // resume kicking off — the renderer's in-memory state is already
+      // mutated. Log + drop so the approval action itself never
+      // appears to fail to the user.
+      //
+      // A microtask boundary is enough for `addToolApprovalResponse`'s
+      // setMessages call to flush into `messagesRef.current` (the
+      // SDK's mutation is synchronous, but the ref is updated by an
+      // assignment that runs on the same tick after Chat's
+      // setMessages).
+      const cid = conversationIdRef.current;
+      if (cid) {
+        await Promise.resolve();
+        try {
+          await persistApprovedAssistantMessage(
+            cid,
+            opts.id,
+            messagesRef.current,
+          );
+        } catch (err) {
+          console.warn(
+            "[approveToolCall] persist approval-responded failed:",
+            err,
+          );
+        }
+      }
+
+      return ret;
     },
     [addToolApprovalResponse],
   );
