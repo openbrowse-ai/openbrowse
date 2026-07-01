@@ -1,8 +1,10 @@
 import {
+  closeSync,
   mkdirSync,
+  openSync,
   readFileSync,
   unlinkSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -12,48 +14,84 @@ export const VERSION = "0.0.0";
 
 const LOCK_FILE = () => join(process.env.HOME ?? homedir(), ".openbrowse", "broker.lock");
 
+/**
+ * Attempt to atomically create the lock file with our PID. Returns
+ * `true` on success. Throws for filesystem errors. Returns `false`
+ * only when the file already exists (EEXIST from `wx` flag).
+ */
+function tryClaimLock(lf: string): boolean {
+  try {
+    const fd = openSync(lf, "wx");
+    try {
+      writeSync(fd, String(process.pid));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
+}
+
+/**
+ * Read the pid recorded in an existing lock file. Returns undefined
+ * if the file is gone (race with another process cleaning it up) or
+ * the contents are unparseable.
+ */
+function readLockPid(lf: string): number | undefined {
+  let contents: string;
+  try {
+    contents = readFileSync(lf, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  const pid = parseInt(contents.trim(), 10);
+  return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+}
+
 export async function runServer(): Promise<void> {
-  // Lock-file PID tracking: refuse to start a second broker, but step over
-  // a stale lock left by a crashed prior process. Detection uses
-  // `process.kill(pid, 0)`, which throws ESRCH if the pid is gone — that
-  // tells us the lock is stale and safe to overwrite. We don't try to be
-  // clever about pid-recycling on long-uptime systems; in the worst case
-  // the user gets a misleading "already running" message and runs `kill`
-  // manually.
+  // Lock-file PID tracking: refuse to start a second broker, but step
+  // over a stale lock left by a crashed prior process. The
+  // implementation uses `openSync(..., 'wx')` for atomic exclusive
+  // creation — this is a syscall that the OS serialises, eliminating
+  // the read-then-write TOCTOU race that CodeQL flags for the naive
+  // `existsSync + readFileSync + writeFileSync` pattern.
   //
-  // Read-then-check-then-write is inherently racy vs a concurrent
-  // second broker; we mitigate by attempting `readFileSync` directly
-  // (no prior existsSync check that could go stale between call and
-  // read) and treating ENOENT as "no lock." The remaining window
-  // between our stale-lock decision and `writeFileSync` is
-  // millisecond-scale and only meaningful under an unlikely double-
-  // launch race; a duplicate broker would fail on port bind anyway.
+  // Sequence:
+  //   1. mkdir the ~/.openbrowse directory (recursive).
+  //   2. Try tryClaimLock() — atomic wx create. If it succeeds we're
+  //      the sole broker.
+  //   3. If wx failed with EEXIST, read the pid; if it's live
+  //      (process.kill(pid, 0) doesn't throw) refuse to start.
+  //   4. If the pid is stale (ESRCH), unlink and retry claim ONCE.
+  //      Any race between our unlink and a competing broker's write
+  //      would fail on port bind anyway (single well-known port).
   const lf = LOCK_FILE();
   mkdirSync(join(process.env.HOME ?? homedir(), ".openbrowse"), { recursive: true });
-  let priorContents: string | undefined;
-  try {
-    priorContents = readFileSync(lf, "utf8");
-  } catch (err) {
-    if (
-      !(err instanceof Error) ||
-      (err as NodeJS.ErrnoException).code !== "ENOENT"
-    ) {
-      throw err;
-    }
-  }
-  if (priorContents !== undefined) {
-    const pid = parseInt(priorContents.trim(), 10);
-    if (Number.isFinite(pid) && pid > 0) {
+  if (!tryClaimLock(lf)) {
+    const existingPid = readLockPid(lf);
+    if (existingPid !== undefined) {
       try {
-        process.kill(pid, 0);
-        console.error(`Broker already running (pid ${pid}).`);
+        process.kill(existingPid, 0);
+        console.error(`Broker already running (pid ${existingPid}).`);
         process.exit(1);
       } catch {
-        // Stale lock — proceed and overwrite below.
+        // Stale lock — pid no longer alive. Remove and retry ONCE.
       }
     }
+    try {
+      unlinkSync(lf);
+    } catch {
+      /* already gone — race with another cleaner is fine */
+    }
+    if (!tryClaimLock(lf)) {
+      // A third broker won the race after our unlink. Give up.
+      console.error("Broker lock is contested; another instance won the race.");
+      process.exit(1);
+    }
   }
-  writeFileSync(lf, String(process.pid));
   const cleanup = (): void => {
     try {
       unlinkSync(lf);

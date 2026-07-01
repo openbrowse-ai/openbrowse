@@ -133,6 +133,10 @@ export async function handleTaskWait(
       // now (typically still `running`).
       const current = tasksStore.getOwnedBy(params.taskId!, ctx.authContext.sub);
       finish(current ? shapeForResult(current) : shapeForResult(initial));
-    }, timeoutMs);
+      // Re-clamp inline with a constant literal ceiling so static
+      // analysis (js/resource-exhaustion) sees a syntactic
+      // sanitisation right here at the call site, in addition to
+      // the clampTimeoutMs helper above. Belt-and-braces.
+    }, timeoutMs > MAX_WAIT_MS ? MAX_WAIT_MS : timeoutMs < 0 ? 0 : timeoutMs);
   });
 }
