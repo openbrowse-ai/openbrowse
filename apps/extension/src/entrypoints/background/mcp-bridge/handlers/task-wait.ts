@@ -21,6 +21,24 @@ export const MAX_WAIT_MS = 900_000; // 15 minutes
 const TERMINAL_STATUSES = new Set(["completed", "errored", "cancelled"]);
 
 /**
+ * Clamp a host-supplied timeout to a safe bounded range. Returns
+ * `DEFAULT_TIMEOUT_MS` for anything non-numeric or NaN. Never
+ * returns a value greater than `MAX_WAIT_MS` or less than 0 — this
+ * is a security property (host-controlled timers must not exhaust
+ * SW resources), enforced with explicit comparisons rather than
+ * `Math.min/max` so static analysis (CodeQL js/resource-exhaustion)
+ * recognises the bound.
+ */
+function clampTimeoutMs(input: unknown): number {
+  if (typeof input !== "number" || !Number.isFinite(input)) {
+    return DEFAULT_TIMEOUT_MS;
+  }
+  if (input < 0) return 0;
+  if (input > MAX_WAIT_MS) return MAX_WAIT_MS;
+  return input;
+}
+
+/**
  * Block until the given task reaches a terminal status or
  * `timeoutMs` elapses, then return the same shape as
  * `task_status`.
@@ -53,22 +71,11 @@ export async function handleTaskWait(
     throw new RpcError("missing required parameter: taskId", "invalid_params");
   }
 
-  // Resolve the timeout: negative values clamp to 0 (immediate
-  // snapshot return); values above the cap clamp down. NaN /
-  // non-numeric become the default — defensive against hosts that
-  // forget to JSON-stringify the number.
-  //
-  // The clamp is a security property (bounds the timer duration to
-  // prevent host-controlled resource exhaustion), so we express it
-  // with explicit if-guards rather than `Math.min/max` — static
-  // analysis tools recognise the bound more reliably that way.
-  const requestedMs = params.timeoutMs;
-  let timeoutMs =
-    typeof requestedMs === "number" && Number.isFinite(requestedMs)
-      ? requestedMs
-      : DEFAULT_TIMEOUT_MS;
-  if (timeoutMs < 0) timeoutMs = 0;
-  if (timeoutMs > MAX_WAIT_MS) timeoutMs = MAX_WAIT_MS;
+  // Resolve the timeout via the pure clampTimeoutMs helper: negative
+  // values → 0 (immediate snapshot); values above MAX_WAIT_MS → clamp
+  // down; non-numeric → default. Extracting the clamp to a dedicated
+  // function makes the security bound explicit (see clampTimeoutMs).
+  const timeoutMs = clampTimeoutMs(params.timeoutMs);
 
   const initial = tasksStore.getOwnedBy(params.taskId, ctx.authContext.sub);
   if (!initial) {

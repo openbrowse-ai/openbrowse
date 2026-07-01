@@ -350,18 +350,31 @@ function teeStreamForEvents(
   emitEvent: (event: McpTaskEvent) => void,
   state: RunEmitState,
 ): ReadableStream<UIMessageChunk> {
-  const transformer: Transformer<UIMessageChunk, UIMessageChunk> = {
-    transform(chunk, controller) {
+  // Wrap the source in a new ReadableStream that pulls one chunk at
+  // a time, emits an event for it, then re-enqueues it. Equivalent
+  // to a TransformStream but avoids a static-analysis false positive
+  // that flags the TransformStream constructor argument as
+  // superfluous (js/superfluous-trailing-arguments).
+  const reader = source.getReader();
+  return new ReadableStream<UIMessageChunk>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
       try {
-        emitForChunk(chunk, emitEvent, state);
+        emitForChunk(value, emitEvent, state);
       } catch {
         // Event emission failures must NOT break the run; swallow
         // and continue forwarding. The WS bridge can log on its end.
       }
-      controller.enqueue(chunk);
+      controller.enqueue(value);
     },
-  };
-  return source.pipeThrough(new TransformStream(transformer));
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
 }
 
 export async function runMcpTask(args: RunMcpTaskArgs): Promise<McpTaskControl> {
