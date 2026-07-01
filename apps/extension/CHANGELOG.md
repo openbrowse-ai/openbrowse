@@ -1,5 +1,30 @@
 # openbrowse
 
+## 0.13.1
+
+### Patch Changes
+
+- 63e166a: **Fix Plan-mode approval flow under SW-host: the plan approval card now mounts, approving a plan updates the same assistant bubble in place, and reloads no longer resurface the approval prompt.**
+
+  Three regressions introduced by the service-worker-hosted agent migration, all surfacing on the post-`proposePlan`-approval path. The user-visible symptoms:
+
+  1. **Plan approval card never appeared.** In Plan mode the agent's first action is `proposePlan`, which pauses the stream for user approval. The SW agent host's `healLastAssistantInChatDb` ran on every run-termination path — including the natural pause-for-approval path — and rewrote `approval-requested` parts to `output-denied` in chat-db. The renderer's STREAM_DONE handler then re-hydrated the in-memory message list from chat-db, replacing the `approval-requested` part with the healed `output-denied` one, so `findPendingPlanApproval` returned null and `PlanApprovalCard` was never mounted. Same regression hit every approval-gated tool in Ask mode (navigate to a fresh origin, executePython, closeTabs, etc.).
+
+  2. **Approving a plan spawned a duplicate assistant bubble.** When the user clicked Approve, the SDK's `sendAutomaticallyWhen` triggered a resume `sendMessage`. The renderer's `CompactingChatTransport` minted a fresh `crypto.randomUUID()` as the assistant message id on every call — including resumes — overriding the AI SDK's built-in `getResponseUIMessageId` continuation logic (which reuses `originalMessages.at(-1).id` when the last input is an assistant). The post-approval `proposePlan` `output-available` chunk plus the next tool's start landed in a NEW assistant message instead of updating the existing one, leaving the original bubble stranded in `approval-responded` ("Drafting plan…") forever and showing a duplicate "I'll propose a plan first" bubble below it.
+
+  3. **Reload during the brief post-approval window resurfaced the approval card.** `addToolApprovalResponse` only mutates local Chat state; nothing wrote the renderer's `approval-requested → approval-responded` flip back to chat-db. Until the SW resume run produced enough output for the persister to overwrite the row, chat-db still had the part in `approval-requested`. A reload in that window made `findPendingPlanApproval` re-surface the card against a decision the user had already made.
+
+  Fixes:
+
+  - `entrypoints/background/agent-host/heal-chatdb.ts` — `healSerializedParts` now leaves `approval-requested` parts untouched. The SDK pauses there intentionally; healing them treats a legitimate resting state as an interruption. Renderer-side `healPendingTools` still collapses `approval-requested → output-denied` on the next user action (edit / retry / regenerate), which IS the correct point — by then the user has implicitly abandoned the prompt. `approval-responded`, `input-streaming`, and `input-available` heals are unchanged.
+  - `lib/agent/compacting-transport.ts` — both the fast path and the rejection-loop path now pass `originalMessages` to `result.toUIMessageStream({ ... })`. The SDK's `getResponseUIMessageId` then reuses the last assistant message's id for the resume's start chunk, so `Chat.makeRequest`'s `replaceLastMessage` invariant (`state.message.id === this.lastMessage.id`) holds and the SDK extends the existing assistant message instead of pushing a duplicate. Fresh turns (last input is a user message) still fall through to `generateMessageId` for a brand-new UUID.
+  - `entrypoints/background/agent-host/run.ts` — `pumpMessages` threads the input transcript's trailing assistant message into `readUIMessageStream({ message })` so the SW persister's `state.message` is seeded with the existing parts (proposePlan input + approval metadata) before resume chunks layer on top. Without this, the SW would write a chat-db row containing only the resume stream's chunks, wiping the input + approval fields that the UI needs to render the post-approval state correctly.
+  - `hooks/useAgentChat.ts` — `approveToolCall` now persists the flipped assistant message to chat-db immediately after calling `addToolApprovalResponse`. This closes the reload-race window. Extracted as `persistApprovedAssistantMessage` for direct testability; preserves existing `createdAt` and `summary` metadata when the row already exists, creates the row otherwise.
+
+  **Out of scope.** Viewer-surface approvals (the case where a non-initiator tab clicks Approve and the decision is forwarded to the SW via `AGENT_APPROVE`) still have the brief reload-race window — that path needs the equivalent persist on the SW side, deferred to a follow-up. The initiator path (the common case) is fully covered.
+
+  **Test surface.** +9 tests, all 2,173 pass: `compacting-transport-resume-id.test.ts` (3 tests covering `originalMessages` plumbing in fast path + rejection-loop), `hooks/__tests__/persistApprovedAssistantMessage.test.ts` (5 tests covering approve/deny persistence, unknown toolCallId, createdAt preservation, and no-prior-row race), an in-place regression test in `agent-host/__tests__/run.test.ts` for `readUIMessageStream({ message })` resume seeding, plus updated `heal-chatdb.test.ts` regression guards that pin the approval-requested-is-not-a-heal-target contract.
+
 ## 0.13.0
 
 ### Minor Changes
