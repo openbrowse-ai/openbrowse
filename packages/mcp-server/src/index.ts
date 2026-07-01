@@ -1,5 +1,4 @@
 import {
-  existsSync,
   mkdirSync,
   readFileSync,
   unlinkSync,
@@ -21,9 +20,29 @@ export async function runServer(): Promise<void> {
   // clever about pid-recycling on long-uptime systems; in the worst case
   // the user gets a misleading "already running" message and runs `kill`
   // manually.
+  //
+  // Read-then-check-then-write is inherently racy vs a concurrent
+  // second broker; we mitigate by attempting `readFileSync` directly
+  // (no prior existsSync check that could go stale between call and
+  // read) and treating ENOENT as "no lock." The remaining window
+  // between our stale-lock decision and `writeFileSync` is
+  // millisecond-scale and only meaningful under an unlikely double-
+  // launch race; a duplicate broker would fail on port bind anyway.
   const lf = LOCK_FILE();
-  if (existsSync(lf)) {
-    const pid = parseInt(readFileSync(lf, "utf8").trim(), 10);
+  mkdirSync(join(process.env.HOME ?? homedir(), ".openbrowse"), { recursive: true });
+  let priorContents: string | undefined;
+  try {
+    priorContents = readFileSync(lf, "utf8");
+  } catch (err) {
+    if (
+      !(err instanceof Error) ||
+      (err as NodeJS.ErrnoException).code !== "ENOENT"
+    ) {
+      throw err;
+    }
+  }
+  if (priorContents !== undefined) {
+    const pid = parseInt(priorContents.trim(), 10);
     if (Number.isFinite(pid) && pid > 0) {
       try {
         process.kill(pid, 0);
@@ -34,7 +53,6 @@ export async function runServer(): Promise<void> {
       }
     }
   }
-  mkdirSync(join(process.env.HOME ?? homedir(), ".openbrowse"), { recursive: true });
   writeFileSync(lf, String(process.pid));
   const cleanup = (): void => {
     try {

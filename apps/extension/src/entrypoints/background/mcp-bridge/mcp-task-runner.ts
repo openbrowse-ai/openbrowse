@@ -350,19 +350,18 @@ function teeStreamForEvents(
   emitEvent: (event: McpTaskEvent) => void,
   state: RunEmitState,
 ): ReadableStream<UIMessageChunk> {
-  return source.pipeThrough(
-    new TransformStream<UIMessageChunk, UIMessageChunk>({
-      transform(chunk, controller) {
-        try {
-          emitForChunk(chunk, emitEvent, state);
-        } catch {
-          // Event emission failures must NOT break the run; swallow
-          // and continue forwarding. The WS bridge can log on its end.
-        }
-        controller.enqueue(chunk);
-      },
-    }),
-  );
+  const transformer: Transformer<UIMessageChunk, UIMessageChunk> = {
+    transform(chunk, controller) {
+      try {
+        emitForChunk(chunk, emitEvent, state);
+      } catch {
+        // Event emission failures must NOT break the run; swallow
+        // and continue forwarding. The WS bridge can log on its end.
+      }
+      controller.enqueue(chunk);
+    },
+  };
+  return source.pipeThrough(new TransformStream(transformer));
 }
 
 export async function runMcpTask(args: RunMcpTaskArgs): Promise<McpTaskControl> {

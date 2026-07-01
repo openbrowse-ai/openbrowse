@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupTaskTabs,
   collectRowsToClean,
-  sweepOrphanedMcpTasks,
   type CleanupTaskTabsDeps,
   type TabCleanupPolicy,
 } from "../cleanup-runtime";
+// `sweepOrphanedMcpTasks` is imported dynamically inside each test
+// via `await import("../cleanup-runtime")` so that fake-indexeddb
+// setup can complete before the module reads chatDb — a static
+// import here would resolve before those hooks run.
 
 /**
  * Orchestrator + runtime helpers. Dependency-injected so the tests

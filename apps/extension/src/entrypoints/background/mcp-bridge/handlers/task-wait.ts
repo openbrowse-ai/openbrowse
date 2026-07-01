@@ -57,12 +57,18 @@ export async function handleTaskWait(
   // snapshot return); values above the cap clamp down. NaN /
   // non-numeric become the default — defensive against hosts that
   // forget to JSON-stringify the number.
+  //
+  // The clamp is a security property (bounds the timer duration to
+  // prevent host-controlled resource exhaustion), so we express it
+  // with explicit if-guards rather than `Math.min/max` — static
+  // analysis tools recognise the bound more reliably that way.
   const requestedMs = params.timeoutMs;
-  const rawMs =
+  let timeoutMs =
     typeof requestedMs === "number" && Number.isFinite(requestedMs)
       ? requestedMs
       : DEFAULT_TIMEOUT_MS;
-  const timeoutMs = Math.min(Math.max(rawMs, 0), MAX_WAIT_MS);
+  if (timeoutMs < 0) timeoutMs = 0;
+  if (timeoutMs > MAX_WAIT_MS) timeoutMs = MAX_WAIT_MS;
 
   const initial = tasksStore.getOwnedBy(params.taskId, ctx.authContext.sub);
   if (!initial) {
