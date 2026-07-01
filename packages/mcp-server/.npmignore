@@ -1,0 +1,23 @@
+# npm publishes files under `files` in package.json — this file is a
+# defense-in-depth guard against accidentally shipping dev artefacts if
+# the `files` allow-list is ever removed/misconfigured.
+
+# TypeScript sources — dist/ is what ships.
+src/
+
+# Tests + test config
+**/__tests__/
+**/*.test.ts
+vitest.config.ts
+
+# Type-checker configs — dist/ has emitted .d.ts already.
+tsconfig.json
+tsconfig.build.json
+
+# Build tooling
+scripts/build.mjs
+
+# Node hygiene
+node_modules/
+.DS_Store
+*.log

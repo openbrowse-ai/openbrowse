@@ -14,43 +14,37 @@ Pick one. They install the same binary to different locations.
 ### 1.1 Homebrew (macOS)
 
 ```sh
-brew install openbrowse/tap/openbrowse-mcp
+brew install openbrowse-ai/tap/openbrowse-mcp
 ```
 
 Installs to `/opt/homebrew/bin/openbrowse-mcp` (Apple Silicon) or
-`/usr/local/bin/openbrowse-mcp` (Intel).
+`/usr/local/bin/openbrowse-mcp` (Intel). Requires Homebrew's `node`
+formula as a runtime dependency.
 
 ### 1.2 winget (Windows)
 
-```powershell
-winget install OpenBrowse.McpBridge
-```
-
-Installs to `%LOCALAPPDATA%\Programs\OpenBrowse\openbrowse-mcp.exe`.
+Not yet available. Windows users should use the npm / npx path below.
 
 ### 1.3 npm / npx (cross-platform)
 
 ```sh
-npx -y openbrowse-mcp
+npx -y @openbrowse/mcp-server
 ```
 
 Runs without installing globally. To make it persistent:
 
 ```sh
-npm install -g openbrowse-mcp
+npm install -g @openbrowse/mcp-server
 ```
 
 Useful for trying it out, or for Node-heavy dev environments where you
-already have a global `node`/`npm`.
+already have a global `node`/`npm`. Both invocations expose the same
+`openbrowse-mcp` command.
 
 ### 1.4 GitHub Releases binary
 
-Download the appropriate archive from the
-[Releases page](https://github.com/openbrowse/openbrowse/releases),
-extract the `openbrowse-mcp` (or `.exe`) binary, and place it on your
-`PATH`.
-
-Use this if you're on Linux and don't want the npm-based install.
+Precompiled standalone binaries are not yet published. Use Homebrew or
+npm above.
 
 ## 2. First-run setup
 
@@ -181,11 +175,9 @@ registered host with controls to:
 openbrowse-mcp uninstall
 
 # Remove the binary
-brew uninstall openbrowse-mcp        # macOS Homebrew
+brew uninstall openbrowse-mcp                # macOS Homebrew
 # or
-winget uninstall OpenBrowse.McpBridge  # Windows winget
-# or
-npm uninstall -g openbrowse-mcp      # npm
+npm uninstall -g @openbrowse/mcp-server      # npm
 
 # Wipe local state (keys, tokens, audit log)
 rm -rf ~/.openbrowse/                # macOS / Linux
@@ -295,8 +287,7 @@ read `threat-model.md` § 4 and understand what you're exposing.
 ```sh
 brew upgrade openbrowse-mcp
 # or
-npm update -g openbrowse-mcp
-# or download a newer binary from Releases and replace the existing one
+npm update -g @openbrowse/mcp-server
 ```
 
 After upgrade, the extension may surface a "binary drift" advisory the
