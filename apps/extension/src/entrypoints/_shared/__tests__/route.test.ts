@@ -42,6 +42,22 @@ describe("parseHomeRoute", () => {
     expect(parseHomeRoute("#spaces")).toEqual({ view: "spaces" });
   });
 
+  it("parses #library", () => {
+    expect(parseHomeRoute("#library")).toEqual({ view: "library" });
+  });
+
+  it("collapses removed #background-tasks deep-link to the chat view", () => {
+    // The Background Tasks page moved into Settings → MCP Server →
+    // Activity in 2026-06-29 and the route key was removed. Any
+    // pre-removal URL still floating around must resolve to *some*
+    // usable view; we collapse to empty chat (the default) rather
+    // than crashing.
+    expect(parseHomeRoute("#background-tasks")).toEqual({
+      view: "chat",
+      conversationId: "background-tasks",
+    });
+  });
+
   it("collapses legacy #spaces/<id> deep-link to the bare list", () => {
     // The per-space detail view was removed; configuration now lives in
     // the chat LandingPage. Any in-flight pre-removal URL must still
@@ -66,6 +82,7 @@ describe("parseHomeRoute", () => {
     // matched as the route, it must not be interpreted as a chat id.
     expect(parseHomeRoute("scheduled")).toEqual({ view: "scheduled" });
     expect(parseHomeRoute("spaces")).toEqual({ view: "spaces" });
+    expect(parseHomeRoute("library")).toEqual({ view: "library" });
   });
 });
 
@@ -87,6 +104,10 @@ describe("formatHomeRoute", () => {
   it("formats spaces list", () => {
     expect(formatHomeRoute({ view: "spaces" })).toBe("#spaces");
   });
+
+  it("formats library", () => {
+    expect(formatHomeRoute({ view: "library" })).toBe("#library");
+  });
 });
 
 describe("round-trip parse/format", () => {
@@ -96,6 +117,7 @@ describe("round-trip parse/format", () => {
     { view: "chat", conversationId: "11111111-2222-3333-4444-555555555555" },
     { view: "scheduled" },
     { view: "spaces" },
+    { view: "library" },
   ];
 
   for (const route of cases) {

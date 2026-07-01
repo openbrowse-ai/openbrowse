@@ -287,6 +287,67 @@ export default defineBackground({
       await bootstrapBundledSkills();
     });
 
+    // Boot MCP bridge connection attempt (background). If the broker isn't
+    // running, the WS will fail and the retry loop in boot.ts schedules a
+    // 5s reconnect — fail-open behavior for Phase 1.
+    (async () => {
+      try {
+        const { bootMcpBridge } = await import("./mcp-bridge/boot");
+        await bootMcpBridge();
+      } catch (err) {
+        console.warn("MCP bridge boot failed:", err);
+      }
+      // Attach status surfaces AFTER boot has fired the first
+      // `setStatus("connecting")` — these handlers all subscribe via
+      // `onStatusChange`, so any transitions before the subscription is
+      // installed are missed by design. The order here means the badge
+      // and first-run handlers will start observing from the very next
+      // transition (typically `awaiting_tofu` or `connected`).
+      try {
+        const { attachStatusPort } = await import("./mcp-bridge-status-port");
+        attachStatusPort();
+        const { attachPromptsPort } = await import("./mcp-bridge-prompts-port");
+        attachPromptsPort();
+        const { attachTasksPort } = await import("./mcp-bridge-tasks-port");
+        attachTasksPort();
+        const { attachBadgeWatcher } = await import("./mcp-bridge/badge");
+        attachBadgeWatcher();
+        const { attachFirstRunHandler } = await import("./mcp-bridge/first-run-tofu");
+        attachFirstRunHandler();
+      } catch (err) {
+        console.warn("MCP bridge status surfaces failed to attach:", err);
+      }
+
+      // SW-restart orphan sweep (A6): walk chat-db for MCP root
+      // conversations whose runners are no longer alive (tasksStore
+      // has no live entry — typical after a SW respawn mid-task) and
+      // route them through the standard `cleanupTaskTabs` policy.
+      // Without this, tabs opened by an MCP run that didn't reach its
+      // own terminal cleanup leak forever: chat-db retains
+      // `ownedLtids` and no other code path scans for orphans.
+      //
+      // Deferred behind a small delay so the SW's other boot work
+      // (status ports, tasks port, etc.) finishes first — the sweep
+      // is a best-effort cleanup, not on the critical path.
+      setTimeout(() => {
+        void (async () => {
+          try {
+            const { sweepOrphanedMcpTasks } = await import(
+              "./mcp-bridge/cleanup-runtime"
+            );
+            const result = await sweepOrphanedMcpTasks();
+            if (result.swept.length > 0 || result.skipped.length > 0) {
+              console.log(
+                `[mcp-bridge] orphan sweep: swept=${result.swept.length} skipped=${result.skipped.length}`,
+              );
+            }
+          } catch (err) {
+            console.warn("[mcp-bridge] orphan sweep failed:", err);
+          }
+        })();
+      }, 2000);
+    })();
+
     import("./tab-scoping").then(({ initTabScoping, onFocusConversation }) => {
       initTabScoping();
       onFocusConversation((windowId, conversationId) => {
@@ -573,6 +634,19 @@ export default defineBackground({
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log("[BG] onMessage:", message.type);
+      if (message.type?.startsWith("MCP_BRIDGE_")) {
+        (async () => {
+          try {
+            const { handleMcpBridgeMessage } = await import("./mcp-bridge-messages");
+            await handleMcpBridgeMessage(message, sendResponse);
+          } catch (err) {
+            console.error("[MCP_BRIDGE bg] Error:", err);
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
       if (message.type?.startsWith("MCP_")) {
         (async () => {
           try {

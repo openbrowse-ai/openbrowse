@@ -14,7 +14,7 @@ import type { UIMessageChunk } from "ai";
 import type { AgentUIMessage } from "@/lib/agent/message-types";
 
 /** Surface that initiated the run; used for diagnostics and notify-routing. */
-export type RunOrigin = "sidepanel" | "home" | "newtab" | "popup";
+export type RunOrigin = "sidepanel" | "home" | "newtab" | "popup" | "mcp";
 
 export const AGENT_RUN = {
   /** renderer → SW: start a new run for `conversationId` */

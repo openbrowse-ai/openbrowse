@@ -42,6 +42,20 @@ describe("agent-host messages", () => {
       expect(isAgentRunStartPayload(payload)).toBe(true);
     });
 
+    it("accepts origin='mcp' (MCP bridge phase 2)", () => {
+      // The MCP task runner stamps `origin: "mcp"` on every run it
+      // initiates so diagnostics can tell server-driven runs from
+      // user-driven ones. The guard accepts any string under `origin`;
+      // this case is purely to lock in the type-level union.
+      const payload: AgentRunStartPayload = {
+        type: AGENT_RUN.START,
+        conversationId: "conv-mcp-1",
+        messages: [],
+        origin: "mcp",
+      };
+      expect(isAgentRunStartPayload(payload)).toBe(true);
+    });
+
     it("rejects messages of a different type", () => {
       expect(
         isAgentRunStartPayload({

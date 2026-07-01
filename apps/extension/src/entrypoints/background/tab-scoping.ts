@@ -277,30 +277,38 @@ export async function bindTabsToConversation(
     return { groupId: null, boundTabIds: [] };
   }
 
-  // For brand-new groups, set an immediate placeholder title so the group is
-  // never nameless while the async LLM-based labeler runs. The labeler will
-  // overwrite this with a better 2-4 word label when it succeeds; on failure
-  // the placeholder remains. The "OB | " prefix tags the group as an
-  // OpenBrowse-owned agent group.
-  //
-  // Subagent runs (rows with `parentConversationId`) get a richer label
-  // that surfaces both the parent's title and the subagent slug, so the
-  // user can tell which child run a tab group belongs to at a glance.
+  // For brand-new groups, set an immediate placeholder title so the
+  // group is never nameless while the async LLM-based labeler runs.
+  // The labeler later overwrites this with a 2-4 word label via
+  // `maybeGenerateGroupLabel`; both call sites format through
+  // `buildGroupTitle` so MCP / subagent / user prefixes are
+  // consistent across placeholder and post-label states.
   if (existingGroupId == null) {
+    const { buildGroupTitle } = await import("./group-title");
     let placeholder: string;
-    if (conv.parentConversationId) {
+    if (conv.source === "mcp") {
+      // MCP runs show a "MCP · " tag so the user can tell at a glance
+      // which groups were created by an external host.
+      placeholder = buildGroupTitle({
+        source: "mcp",
+        title: conv.title ?? "",
+        labelLength: 14,
+      });
+    } else if (conv.parentConversationId) {
       const parent = await chatDb.getConversation(conv.parentConversationId);
-      const parentBase = (parent?.title ?? "").trim().slice(0, 16) || "Chat";
-      const slug = (conv.subagentSlug ?? "").trim().slice(0, 16);
-      // Only append the slug suffix when it's a real, non-empty value.
-      // Defensive against rows where `subagentSlug` is set but blank
-      // (would otherwise produce a trailing " · ").
-      placeholder = slug
-        ? `OB | ${parentBase} · ${slug}`
-        : `OB | ${parentBase}`;
+      placeholder = buildGroupTitle({
+        source: "subagent",
+        title: conv.title ?? "",
+        parentTitle: parent?.title ?? "",
+        subagentSlug: conv.subagentSlug ?? "",
+        labelLength: 20,
+      });
     } else {
-      const base = (conv.title ?? "").trim().slice(0, 20) || "Chat";
-      placeholder = `OB | ${base}`;
+      placeholder = buildGroupTitle({
+        source: "user",
+        title: conv.title ?? "",
+        labelLength: 20,
+      });
     }
     chrome.tabGroups
       .update(groupId, { title: placeholder, color: "grey" })

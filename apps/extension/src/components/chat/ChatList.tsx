@@ -39,7 +39,7 @@ export function ChatList({
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const convs = await chatDb.listRootConversations(spaceId);
+    const convs = await chatDb.listUserConversations(spaceId);
     // When `spaceId === null` (global view) the underlying list returns
     // rows from every space. Filter so the global view shows only
     // globally-scoped conversations and never bleeds a space's chats in.
