@@ -173,21 +173,33 @@ export async function ensureHomeTab(windowId: number, spaceId: string): Promise<
   }
 }
 
-export async function focusOrCreateWindow(space: Space): Promise<void> {
+/**
+ * Ensure the space's window exists. Returns the resulting windowId.
+ *
+ * - If `space.windowId` is set and the window is live, returns it
+ *   immediately (no focus side-effect).
+ * - Otherwise, creates a new Chrome window with the space's home anchor
+ *   tab plus its pinned tabs, persists the new `windowId`, and returns it.
+ *
+ * Does NOT focus the resulting window. Use `focusSpace(space)` after
+ * `ensureWindowForSpace` if you want to also raise it. This separation
+ * lets MCP-initiated tooling materialize a space's window without
+ * yanking the user's focus.
+ */
+export async function ensureWindowForSpace(space: Space): Promise<number> {
   if (space.windowId !== null) {
-    let windowExists = true
+    let exists = true
     try {
-      await chrome.windows.update(space.windowId, { focused: true })
+      // Verify the window is still alive WITHOUT focusing it.
+      await chrome.windows.get(space.windowId)
     } catch {
-      // Window no longer exists — fall through to recreate. Only a
-      // windows.update failure gates recreation.
-      windowExists = false
+      exists = false
     }
-    if (windowExists) {
-      // Window is live; ensure its home anchor best-effort. A tab-level
-      // error here must NOT trigger recreation / storage.updateSpace.
+    if (exists) {
+      // Best-effort home-tab repair; a tab-level error here must NOT
+      // trigger recreation / storage.updateSpace.
       await ensureHomeTab(space.windowId, space.id).catch(() => {})
-      return
+      return space.windowId
     }
   }
 
@@ -195,16 +207,20 @@ export async function focusOrCreateWindow(space: Space): Promise<void> {
   // intentionally do NOT reopen favorites — favorites are saved bookmarks
   // opened on demand, not auto-opened tabs. Pinned tabs, by contrast, are
   // always-present and are what defines the window on restore.
+  //
+  // `focused: false` because this function is the side-effect-free
+  // materialization step. Callers that want to raise the window go
+  // through `focusSpace`.
   const homeUrl = homeUrlForSpace(space.id)
   const pinnedUrls = space.pinnedTabs ?? []
   const windowUrls = [homeUrl, ...pinnedUrls]
 
   const newWindow = await chrome.windows.create({
-    focused: true,
+    focused: false,
     url: windowUrls,
   })
 
-  if (!newWindow?.id) return
+  if (!newWindow?.id) throw new Error('chrome.windows.create returned no id')
 
   // We just provided an anchored home tab among the initial URLs; tell the
   // global `chrome.windows.onCreated` listener not to inject an un-anchored
@@ -229,6 +245,29 @@ export async function focusOrCreateWindow(space: Space): Promise<void> {
   if (homeTab?.id) {
     await chrome.tabs.update(homeTab.id, { active: true })
   }
+
+  return newWindow.id
+}
+
+/**
+ * Focus the space's window. Calls `ensureWindowForSpace` first so this
+ * is safe to call whether or not the window currently exists.
+ *
+ * This is the "raise the space" operation that the user explicitly
+ * requested (keyboard shortcut, overlay click, etc.).
+ */
+export async function focusSpace(space: Space): Promise<void> {
+  const windowId = await ensureWindowForSpace(space)
+  await chrome.windows.update(windowId, { focused: true }).catch(() => {})
+}
+
+/**
+ * Back-compat wrapper preserving the original `focusOrCreateWindow`
+ * signature. Existing user-initiated call sites (SWITCH_SPACE, etc.) use
+ * this to ensure-then-focus in one step.
+ */
+export async function focusOrCreateWindow(space: Space): Promise<void> {
+  await focusSpace(space)
 }
 
 export async function switchToSpace(position: number): Promise<void> {

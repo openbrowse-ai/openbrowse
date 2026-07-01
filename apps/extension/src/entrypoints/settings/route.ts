@@ -20,6 +20,7 @@ export const SETTINGS_TAB_IDS = [
   "connectors",
   "skills",
   "memory",
+  "mcp-bridge",
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];

@@ -12,6 +12,7 @@ import { MemoryTab } from "./MemoryTab";
 import { ModelsTab } from "./ModelsTab";
 import { SkillsTab } from "./SkillsTab";
 import { ConnectorsTab } from "./ConnectorsTab";
+import { McpBridgeTab } from "./mcp-bridge";
 import {
   formatSettingsSearch,
   parseSettingsTab,
@@ -24,6 +25,7 @@ const TABS: ReadonlyArray<{ id: SettingsTabId; label: string }> = [
   { id: "connectors", label: "Connectors" },
   { id: "skills", label: "Skills" },
   { id: "memory", label: "Memory" },
+  { id: "mcp-bridge", label: "MCP Server" },
 ] as const;
 
 type TabId = SettingsTabId;
@@ -241,6 +243,11 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           {activeTab === "memory" && (
             <div className="p-4">
               <MemoryTab />
+            </div>
+          )}
+          {activeTab === "mcp-bridge" && (
+            <div className="p-4">
+              <McpBridgeTab />
             </div>
           )}
         </div>

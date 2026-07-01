@@ -100,12 +100,13 @@ export function HomeSidebar({
 
   const refresh = useCallback(async () => {
     // Normal chats: scope-filtered roots (subagent children excluded
-    // upstream). When `activeSpaceId === null` the underlying
-    // `listConversations(null)` returns rows from every space; we filter
-    // here so the global ("no space") view shows only globally-scoped
-    // conversations and never bleeds a space's chats into the global
-    // sidebar.
-    const allRoots = await chatDb.listRootConversations(activeSpaceId);
+    // upstream, and `source === "mcp"` background tasks excluded —
+    // those surface in the Background Tasks panel instead). When
+    // `activeSpaceId === null` the underlying `listConversations(null)`
+    // returns rows from every space; we filter here so the global
+    // ("no space") view shows only globally-scoped conversations and
+    // never bleeds a space's chats into the global sidebar.
+    const allRoots = await chatDb.listUserConversations(activeSpaceId);
     const roots =
       activeSpaceId === null
         ? allRoots.filter((c) => c.spaceId == null)

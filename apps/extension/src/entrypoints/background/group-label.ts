@@ -72,10 +72,20 @@ export async function maybeGenerateGroupLabel(
       return;
     }
 
-    // Prefix with "OB | " to mark this group as OpenBrowse-owned. Trim the
-    // LLM output to leave room within Chrome's tab-group title display.
-    const labelBody = result.title.trim().slice(0, 19);
-    const prefixedTitle = `OB | ${labelBody}`;
+    // Prefix the LLM-generated label via `buildGroupTitle` so MCP /
+    // subagent / user prefixes stay consistent with the placeholder.
+    // MCP rows get a narrower body budget (14 vs 19) to leave room
+    // for the "MCP · " tag.
+    const { buildGroupTitle } = await import("./group-title");
+    const isMcp = conv.source === "mcp";
+    const prefixedTitle = buildGroupTitle({
+      source: isMcp ? "mcp" : "user",
+      // For MCP rows pass the LLM body as the title — `buildGroupTitle`
+      // prepends "MCP · " for us. For non-MCP rows pass the LLM body as
+      // the title.
+      title: result.title.trim(),
+      labelLength: isMcp ? 14 : 19,
+    });
 
     try {
       await chrome.tabGroups.update(groupId, {

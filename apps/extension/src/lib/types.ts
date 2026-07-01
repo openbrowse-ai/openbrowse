@@ -92,6 +92,66 @@ export interface Settings {
   // Connectors
   mcpServers: McpServerConfig[];
 
+  /**
+   * @deprecated Replaced by `mcpAfterTaskTabPolicy`. Kept on the
+   * type so previously-stored settings still type-check after the
+   * rename; `cleanup.ts:resolveTabCleanupPolicy` does the migration:
+   * `true` → `"keep"`, `false`/unset → `"always-close"`.
+   *
+   * Pre-2026-06-30 semantics: when true, MCP-opened tabs were kept
+   * open after a host-initiated cancel; otherwise closed. The new
+   * `mcpAfterTaskTabPolicy` is a tristate that also covers the
+   * successful-completion and errored-completion paths (which the
+   * old boolean didn't touch — those leaked tabs by default).
+   */
+  mcpKeepTabsAfterCancel?: boolean;
+
+  /**
+   * What OpenBrowse does with MCP-opened tabs when a task ends.
+   *
+   *   - `"always-close"` (default when unset): close tabs on any
+   *     terminal outcome (completed / errored / cancelled). The
+   *     mental model is "MCP is a remote API — clean up after every
+   *     call." The full chat transcript persists in chat-db so users
+   *     can review what the agent did even after tabs are gone.
+   *   - `"close-on-cancel-only"`: preserves pre-2026-06-30 behavior
+   *     for users who want completed/errored task tabs to stick
+   *     around for review.
+   *   - `"keep"`: never auto-close. Escape hatch for debugging or
+   *     for users who want every task's tabs around indefinitely.
+   *
+   * Migration: if undefined, `cleanup.ts:resolveTabCleanupPolicy`
+   * falls back to `mcpKeepTabsAfterCancel === true ? "keep" :
+   * "always-close"`.
+   *
+   * Surfaced in Settings → MCP Server → Preferences.
+   */
+  mcpAfterTaskTabPolicy?: "always-close" | "close-on-cancel-only" | "keep";
+
+  /**
+   * Force every MCP `task` call to prompt for user confirmation,
+   * regardless of the per-host policy. When this is on the user is the
+   * authoritative gate for every multi-step agent task even if they
+   * previously set a host to `auto-allow`. Acts as a global override.
+   *
+   * Surfaced in Settings → MCP Server → Advanced.
+   *
+   * Optional/undefined = the same as `false` (honor per-host policy).
+   */
+  mcpAlwaysConfirmTasks?: boolean;
+
+  /**
+   * Milliseconds before a pending confirmation prompt auto-denies
+   * itself. Surfaced in Settings → MCP Server → Advanced as a
+   * dropdown (30s / 1m / 2m / 5m / Never). `0` or negative values
+   * mean "never auto-deny" (the prompt waits indefinitely for the
+   * user).
+   *
+   * Optional/undefined = `60_000` (1 minute), the original default
+   * from `confirmation.ts`'s `AUTO_DENY_MS` constant.
+   */
+  mcpAutoDenyMs?: number;
+
   // Completion check (verify-gated completion). The check is always on
   // by default; the only user-facing knob is the evaluator model.
   // Optional for backward compatibility with persisted Settings records
@@ -228,6 +288,27 @@ export interface Conversation {
    * breadcrumb. Falls back to the delegation `task` string when unset.
    */
   subagentTraceTitle?: string | null;
+  /**
+   * Provenance of this conversation:
+   * - "user": started by the human via side panel / new chat
+   * - "subagent": spawned by a parent agent's `delegate` tool
+   * - "mcp": started by an external MCP host via the bridge (Phase 2+)
+   *
+   * Added in chat-db v18. Migration backfills based on existing fields:
+   * `subagentSlug` set → "subagent", otherwise "user". MCP rows are only
+   * created post-migration so no backfill case for "mcp".
+   *
+   * Conversations with `source === "mcp"` are filtered out of the user's
+   * main chat list and surfaced only in the Background Tasks panel.
+   */
+  source?: "user" | "subagent" | "mcp";
+
+  /**
+   * Display name of the MCP host that spawned this run (e.g. "Claude
+   * Desktop", "Cursor"). Captured at task-create time from the OAuth
+   * client's DCR `client_name`. Null for non-MCP conversations.
+   */
+  mcpHostName?: string | null;
   /** How this conversation is isolated from its parent. */
   isolationProfile?: IsolationProfile | null;
   /** windowId of a incognito window owned by this run, so we can clean up on cancellation. */

@@ -210,6 +210,17 @@ export default function HomeApp({ surface }: HomeAppProps) {
   const [conversationTitle, setConversationTitle] = useState<string | null>(
     null,
   );
+  /**
+   * Set when the active conversation has `source === "mcp"`. We
+   * surface a small banner above the chat so the user understands
+   * this conversation was started by an external MCP host (it
+   * doesn't appear in the sidebar list — sidebar filters MCP rows —
+   * so without a banner the user has no context for why this
+   * conversation exists or who initiated it).
+   */
+  const [activeMcpHostName, setActiveMcpHostName] = useState<string | null>(
+    null,
+  );
   const [isCoworkPanelOpen, setIsCoworkPanelOpen] = useState(true);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [selectedSpaceFile, setSelectedSpaceFile] = useState<string | null>(
@@ -377,7 +388,8 @@ export default function HomeApp({ surface }: HomeAppProps) {
           next.view === "chat" &&
           prev.conversationId === next.conversationId) ||
           prev.view === "spaces" ||
-          prev.view === "scheduled")
+          prev.view === "scheduled" ||
+          prev.view === "library")
       ) {
         return;
       }
@@ -394,6 +406,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
   useEffect(() => {
     if (!activeConversationId) {
       setConversationTitle(null);
+      setActiveMcpHostName(null);
       setSelectedFile(null);
       setSelectedSpaceFile(null);
       setSelectedArtifact(null);
@@ -403,6 +416,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
     setSelectedFile(null);
     setSelectedSpaceFile(null);
     setSelectedArtifact(null);
+    // Clear MCP banner synchronously before the async fetch resolves.
+    // Otherwise, switching from an MCP conv to a non-MCP conv briefly
+    // renders the previous MCP host's banner above the new chat until
+    // getConversation returns.
+    setActiveMcpHostName(null);
     // Guard against stale resolutions: if `activeConversationId` flips
     // again before this getConversation resolves (rapid sidebar clicks),
     // discard the late response so it can't overwrite the title we've
@@ -411,6 +429,9 @@ export default function HomeApp({ surface }: HomeAppProps) {
     chatDb.getConversation(activeConversationId).then((conv) => {
       if (cancelled) return;
       setConversationTitle(conv?.title ?? null);
+      setActiveMcpHostName(
+        conv?.source === "mcp" ? conv.mcpHostName ?? "MCP host" : null,
+      );
     });
     return () => {
       cancelled = true;
@@ -685,7 +706,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
         spaces={spaces}
         activeSpaceId={activeSpaceId}
         activeConversationId={
-          view === "scheduled" || view === "spaces" || view === "library" ? null : activeConversationId
+          view === "scheduled" ||
+          view === "spaces" ||
+          view === "library"
+            ? null
+            : activeConversationId
         }
         scheduledActive={view === "scheduled"}
         spacesActive={view === "spaces"}
@@ -816,6 +841,19 @@ export default function HomeApp({ surface }: HomeAppProps) {
                   )}
                 </div>
               </div>
+              {activeMcpHostName && (
+                <div className="mx-4 mt-1 flex items-center gap-2 rounded border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+                  <span aria-hidden="true">⚡</span>
+                  <span>
+                    Started by{" "}
+                    <span className="font-medium text-foreground">
+                      {activeMcpHostName}
+                    </span>{" "}
+                    via MCP. This conversation isn't in your sidebar — it
+                    lives in Settings → MCP Server → Activity.
+                  </span>
+                </div>
+              )}
               <ChatView
                 key={activeConversationId}
                 conversationId={activeConversationId}

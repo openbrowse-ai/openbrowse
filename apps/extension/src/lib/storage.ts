@@ -32,6 +32,18 @@ function lockSettings<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+let spacesWriteChain: Promise<void> = Promise.resolve();
+
+function lockSpaces<T>(fn: () => Promise<T>): Promise<T> {
+  const run = spacesWriteChain.then(fn, fn);
+  // Keep the chain alive even if a caller's promise rejects.
+  spacesWriteChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export const storage = {
   async getSpaces(): Promise<Space[]> {
     const raw = (await get<any[]>(STORAGE_KEYS.SPACES)) ?? [];
@@ -61,7 +73,9 @@ export const storage = {
   },
 
   async setSpaces(spaces: Space[]): Promise<void> {
-    await set(STORAGE_KEYS.SPACES, spaces);
+    return lockSpaces(async () => {
+      await set(STORAGE_KEYS.SPACES, spaces);
+    });
   },
 
   async getSpaceByWindowId(windowId: number): Promise<Space | undefined> {
@@ -75,32 +89,35 @@ export const storage = {
   },
 
   async updateSpace(id: string, updates: Partial<Space>): Promise<void> {
-    const spaces = await this.getSpaces();
-    const idx = spaces.findIndex((s) => s.id === id);
-    if (idx !== -1) {
-      // Bump `updatedAt` when the user changed something user-visible
-      // (name, icon, instructions, colors, favorites). System-level
-      // updates (windowId, pinnedTabs, position) don't count — they
-      // happen during window reconciliation and shouldn't move the card
-      // to the top of the "Last updated" sort.
-      const userFacing: ReadonlyArray<keyof Space> = [
-        "name",
-        "icon",
-        "instructions",
-        "description",
-        "colors",
-        "colorMode",
-        "favorites",
-      ];
-      const userTouched = userFacing.some((k) =>
-        Object.prototype.hasOwnProperty.call(updates, k),
-      );
-      const touched = userTouched
-        ? { ...updates, updatedAt: Date.now() }
-        : updates;
-      spaces[idx] = { ...spaces[idx], ...touched };
-      await this.setSpaces(spaces);
-    }
+    return lockSpaces(async () => {
+      const spaces = await this.getSpaces();
+      const idx = spaces.findIndex((s) => s.id === id);
+      if (idx !== -1) {
+        // Bump `updatedAt` when the user changed something user-visible
+        // (name, icon, instructions, colors, favorites). System-level
+        // updates (windowId, pinnedTabs, position) don't count — they
+        // happen during window reconciliation and shouldn't move the card
+        // to the top of the "Last updated" sort.
+        const userFacing: ReadonlyArray<keyof Space> = [
+          "name",
+          "icon",
+          "instructions",
+          "description",
+          "colors",
+          "colorMode",
+          "favorites",
+        ];
+        const userTouched = userFacing.some((k) =>
+          Object.prototype.hasOwnProperty.call(updates, k),
+        );
+        const touched = userTouched
+          ? { ...updates, updatedAt: Date.now() }
+          : updates;
+        spaces[idx] = { ...spaces[idx], ...touched };
+        // Inlined: avoid re-acquiring lockSpaces inside an already-locked block
+        await chrome.storage.local.set({ [STORAGE_KEYS.SPACES]: spaces });
+      }
+    });
   },
 
   async getSettings(): Promise<Settings> {

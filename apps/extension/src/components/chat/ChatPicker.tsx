@@ -70,8 +70,11 @@ export function ChatPicker({
     // Hide subagent child conversations from the top-level picker — they
     // are reachable via "Open child →" inside the parent's tool block,
     // and as a back-link from the child view itself. Listing them at the
-    // top would clutter the picker with auto-spawned rows.
-    const convs = await chatDb.listRootConversations(spaceId);
+    // top would clutter the picker with auto-spawned rows. Also hide
+    // `source === "mcp"` background tasks; those live in the Background
+    // Tasks panel and would otherwise dominate the picker for users
+    // with active MCP host connections.
+    const convs = await chatDb.listUserConversations(spaceId);
     // When `spaceId === null` (global view) the underlying list returns
     // rows from every space. Filter so the global picker shows only
     // globally-scoped conversations and never surfaces a space's chats.

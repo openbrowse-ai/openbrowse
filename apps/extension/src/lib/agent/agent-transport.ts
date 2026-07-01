@@ -424,18 +424,83 @@ registerCidResolver(() => agentConversationId);
  */
 interface HeadlessRunPolicy {
   autoApprove: boolean;
+  /**
+   * When true, the `delegate` tool is kept in the tool set even
+   * though this is a headless run. Default behavior for headless
+   * runs is to drop `delegate` because scheduled tasks are simple
+   * "do one thing" runs that shouldn't fan out to expensive subagent
+   * trees. MCP-dispatched runs override this — they are full agent
+   * runs with the same capability surface as in-extension chats.
+   *
+   * Subagents spawned via `delegate` from a headless run inherit the
+   * parent's approval semantics naturally: `needsApprovalWithHeadless`
+   * reads the headless policy keyed by the PARENT conversation id,
+   * and subagent tool calls run inside that same approval context.
+   *
+   * Required on the internal policy (always set via
+   * `setHeadlessRunPolicy`); optional on the public
+   * `createAgentTransport` arg (callers may omit, in which case the
+   * setter defaults it to `false`).
+   */
+  allowDelegate: boolean;
 }
 const headlessRunPolicies = new Map<string, HeadlessRunPolicy>();
 
 export function setHeadlessRunPolicy(
   conversationId: string,
-  policy: HeadlessRunPolicy,
+  policy: { autoApprove: boolean; allowDelegate?: boolean },
 ): void {
-  headlessRunPolicies.set(conversationId, policy);
+  headlessRunPolicies.set(conversationId, {
+    autoApprove: policy.autoApprove,
+    allowDelegate: policy.allowDelegate ?? false,
+  });
 }
 
 export function clearHeadlessRunPolicy(conversationId: string): void {
   headlessRunPolicies.delete(conversationId);
+}
+
+/**
+ * Headless-run system-prompt prefix. Establishes the operational
+ * posture for runs with no human in the loop (MCP-dispatched runs;
+ * scheduled tasks that opt into autoApprove).
+ *
+ * Exported for unit testing. Composed at the head of `SYSTEM_PROMPT`
+ * during `createAgentTransport` ONLY when `headless?.autoApprove ===
+ * true`. Without this prefix the model sees the base SYSTEM_PROMPT's
+ * "Requires user approval" tool docs and may emit narration like "I
+ * will wait for your approval" — which is false (the tool already
+ * executed) and lands in the user's transcript as a misleading
+ * artefact.
+ *
+ * The prefix is intentionally short and informational. The model
+ * does not need a long primer on what consent was given — the
+ * concrete behavioural cues ("execute immediately", "do NOT emit
+ * narration about approval", "destructive tools carry real
+ * consequences") are sufficient.
+ */
+export const HEADLESS_SYSTEM_PROMPT_PREFIX = `### Headless run context
+
+You are running unattended as part of an automated invocation (e.g. a remote MCP host). There is NO human present to approve individual tool calls. The user granted consent for this entire run UPFRONT via the host's authorization flow.
+
+Concretely:
+- Approval-gated tools (closeTabs, Write, Edit, Delete, executePython, executeOnPage, install_skill, create_skill, updateMemory, deleteArtifact, proposePlan) execute immediately on call. There is NO per-tool prompt.
+- Do NOT emit narration suggesting you are waiting for approval, pausing for confirmation, or asking the user before acting. No such interaction exists in this run.
+- If you decide an action is unsafe or out of scope, simply do not call the tool. Explain your reasoning in your final response.
+- Destructive tools (Delete, install_skill, create_skill, executePython with allow_network) carry real consequences — call them deliberately, not casually.
+
+---
+
+`;
+
+/**
+ * Pure helper, exported for unit testing: prepend the headless
+ * prefix to a base system-prompt string. The prefix has a trailing
+ * `\n\n---\n\n` separator so the original prompt's structure is
+ * preserved.
+ */
+export function applyHeadlessPrefix(basePrompt: string): string {
+  return HEADLESS_SYSTEM_PROMPT_PREFIX + basePrompt;
 }
 
 let lastTotalTokens = 0;
@@ -1923,6 +1988,13 @@ export async function createAgentTransport(
   headless?: {
     /** Auto-approve approval-gated tools (no human present). */
     autoApprove: boolean;
+    /**
+     * Keep `delegate` available in the tool set even though this is
+     * a headless run. Default false (drops `delegate`) — appropriate
+     * for scheduled runs. MCP runs override to true so the agent can
+     * still spawn subagents.
+     */
+    allowDelegate?: boolean;
   },
 ): Promise<ChatTransport<AgentUIMessage> | null> {
   if (!agentModel) return null;
@@ -1983,6 +2055,7 @@ export async function createAgentTransport(
   if (headless && conversationId) {
     setHeadlessRunPolicy(conversationId, {
       autoApprove: headless.autoApprove,
+      allowDelegate: headless.allowDelegate ?? false,
     });
   }
 
@@ -2102,6 +2175,32 @@ export async function createAgentTransport(
   const mcpStates = getMcpRegistry().getStates();
   let instructions = SYSTEM_PROMPT;
 
+  // Headless-run prefix (A9, A10): when this run is configured to
+  // auto-approve approval-gated tools, the model needs to know it
+  // operates without a human in the loop. Without this prefix the
+  // base SYSTEM_PROMPT instructs the model that tools like closeTabs
+  // and Delete require user approval — which is true for attended
+  // runs but false here. The model then emits narration like "I'll
+  // wait for your approval before closing the tab" that lands
+  // verbatim in the user's transcript and the MCP host's response,
+  // misleading both. The prefix establishes the actual posture:
+  //   1. The run is unattended; no per-tool approval UI exists.
+  //   2. Consent was given UPFRONT by the user (OAuth + per-host
+  //      policy + optional per-task confirmation).
+  //   3. The model should NOT emit text suggesting it's waiting for
+  //      approval or pausing for confirmation.
+  //   4. Caution still applies to destructive tools — the model
+  //      should think before invoking Delete / install_skill /
+  //      executePython(allow_network: true) just because they're
+  //      reachable.
+  //
+  // Only injected when `headless?.autoApprove === true`. Headless
+  // runs with autoApprove=false (current scheduled-task default)
+  // drop approval-gated tools from the tool set entirely, so the
+  // model never sees them — no prefix needed.
+  if (headless?.autoApprove === true) {
+    instructions = applyHeadlessPrefix(instructions);
+  }
   // Resolve once whether the Computer Use (cua) subagent is enabled — i.e. a
   // computer-use model is configured (explicit setting, or the main model is
   // itself a configured Claude CUA model). This gates three things in lockstep:
@@ -2646,8 +2745,11 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       delegate: toSDKTool(delegateTool, "delegate", conversationId),
     };
     if (!headless) return base;
-    // Headless (scheduled) run: never spawn subagents. When not
-    // auto-approving, also drop approval-gated tools (no human to approve).
+    // Headless (scheduled) run: never spawn subagents UNLESS the
+    // caller explicitly opts in via `allowDelegate: true` (MCP runs
+    // do this — they are full agent runs and need the same fan-out
+    // capability as in-extension chats). When not auto-approving,
+    // also drop approval-gated tools (no human to approve).
     //
     // `executePython` is intentionally NOT in this drop list: its approval
     // is network-conditional (see the `needsApproval` branch above), so a
@@ -2655,7 +2757,10 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     // instead force `allow_network: false` for it in the execute wrapper
     // during non-auto-approve headless runs, so the model can't reach the
     // network without a human in the loop.
-    const HEADLESS_DROP = new Set<string>(["delegate"]);
+    const HEADLESS_DROP = new Set<string>();
+    if (!headless.allowDelegate) {
+      HEADLESS_DROP.add("delegate");
+    }
     if (!headless.autoApprove) {
       for (const k of [
         "closeTabs",

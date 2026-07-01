@@ -17,6 +17,13 @@
  *   "<conversationId>"  -> chat on that conversation (UUID)
  *   "scheduled"         -> Scheduled view
  *   "spaces"            -> Spaces list
+ *   "library"           -> Library (artifacts) view
+ *
+ * The MCP "Background tasks" route (`#background-tasks`) was removed
+ * in 2026-06-29 — the surface moved into Settings → MCP Server →
+ * Activity. The route key is intentionally not back-compat'd: any old
+ * `#background-tasks` URL falls through to the chat view, which is a
+ * harmless degradation.
  *
  * The legacy `spaces/<spaceId>` form is parsed back-compat (in case any
  * pre-rebase URL is still floating around) but normalises to the
@@ -34,7 +41,11 @@ export type HomeRoute =
   | { view: "spaces" }
   | { view: "library" };
 
-const RESERVED_VIEW_TOKENS = new Set(["scheduled", "spaces", "library"]);
+const RESERVED_VIEW_TOKENS = new Set([
+  "scheduled",
+  "spaces",
+  "library",
+]);
 
 /**
  * Parse the hash portion of `window.location.hash` (with or without a

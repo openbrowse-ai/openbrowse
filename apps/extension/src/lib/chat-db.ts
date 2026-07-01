@@ -105,6 +105,13 @@ interface ChatDB extends DBSchema {
       // `Conversation` in lib/types.ts.
       mode?: ConversationMode;
       plan?: ApprovedPlan;
+      // v18 — provenance + MCP host name. `source` distinguishes
+      // user-initiated chats, subagent runs, and MCP-spawned tasks.
+      // The migration backfills `source` from `subagentSlug`
+      // (non-empty → "subagent", otherwise "user") and defaults
+      // `mcpHostName` to null. Mirrors `Conversation` in lib/types.ts.
+      source?: "user" | "subagent" | "mcp";
+      mcpHostName?: string | null;
       // Chrome window the conversation was opened in. Additive (no
       // schema bump): pre-existing rows hydrate as undefined and the
       // window-resolution chain (`conversation-window.ts`) degrades
@@ -267,7 +274,13 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
     //      undefined, plan: undefined }, which the agent-transport's
     //      `needsApproval` chain interprets as the default ("ask"
     //      mode, no plan).
-    dbPromise = openDB<ChatDB>("openbrowse-chat", 17, {
+    // v18: Conversation rows gain optional `source` and `mcpHostName`
+    //      fields. Migration backfills `source` from `subagentSlug`
+    //      (non-empty → "subagent", otherwise "user") and defaults
+    //      `mcpHostName` to null. MCP-spawned conversations (Phase 2)
+    //      write `source: "mcp"` directly. Drives the chat-list filter
+    //      that hides MCP tasks from the main side panel.
+    dbPromise = openDB<ChatDB>("openbrowse-chat", 18, {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const convStore = db.createObjectStore("conversations", {
@@ -506,6 +519,41 @@ function getDb(): Promise<IDBPDatabase<ChatDB>> {
           // setting these new fields go through cleanly on subsequent
           // openDB calls. The store keyPath is unchanged; whole-object
           // values automatically tolerate the new optional fields.
+        }
+
+        if (oldVersion < 18) {
+          // v18: backfill `source` from `subagentSlug` and default
+          // `mcpHostName` to null on every conversation row. Pre-v18
+          // rows came from one of two writers — the side panel
+          // (subagentSlug always null → "user") or the subagent
+          // runner (subagentSlug set → "subagent") — so a static
+          // backfill is enough; no MCP rows exist yet.
+          //
+          // Follows the same fire-and-forget cursor-iteration shape
+          // used by earlier hops (v2 migrateMessages, v5
+          // migrateConversationsTodos, etc.); `idb` resolves the
+          // upgrade transaction's `.done` promise after the cursor's
+          // async work completes.
+          const convStore = transaction.objectStore("conversations");
+          const migrateConversationsSource = async () => {
+            let cursor = await convStore.openCursor();
+            while (cursor) {
+              const record = cursor.value as Record<string, unknown>;
+              if (record.source === undefined) {
+                record.source =
+                  typeof record.subagentSlug === "string" &&
+                  record.subagentSlug !== ""
+                    ? "subagent"
+                    : "user";
+              }
+              if (record.mcpHostName === undefined) {
+                record.mcpHostName = null;
+              }
+              cursor.update(record as ChatDB["conversations"]["value"]);
+              cursor = await cursor.continue();
+            }
+          };
+          migrateConversationsSource();
         }
       },
     });
@@ -795,6 +843,59 @@ export const chatDb = {
   },
 
   /**
+   * Like `listRootConversations`, but additionally excludes rows whose
+   * `source === "mcp"` — i.e. background tasks spawned via the MCP
+   * bridge. Those runs have their own dedicated surface (the home
+   * "Background Tasks" panel) and should not clutter the main chat
+   * list / picker / sidebar.
+   *
+   * Subagent rows (`source === "subagent"`) and pre-v18 rows with
+   * `source === undefined` pass through unchanged.
+   *
+   * IMPORTANT: this is the user-facing list. Internal cleanup paths
+   * (tab-scoping sweeps, orphan-child healing, background reconciliation)
+   * still use `listConversations` / `listRootConversations` directly so
+   * they continue to operate on every conversation in the DB.
+   */
+  async listUserConversations(
+    spaceId?: string | null,
+  ): Promise<ChatDB["conversations"]["value"][]> {
+    const rows = await chatDb.listRootConversations(spaceId);
+    return rows.filter((c) => c.source !== "mcp");
+  },
+
+  /**
+   * Return MCP-spawned conversations (Phase 3 / Task 10). Filters the
+   * full conversations table to rows with `source === "mcp"`, sorts
+   * newest-updated first, and bounds the result with an optional
+   * `sinceDays` cutoff and a `limit`. Used by the Background Tasks
+   * panel's Recent section.
+   *
+   *  - `sinceDays`: if provided, only rows with `updatedAt` within that
+   *     many days from now are returned. Omit (or pass undefined) to
+   *     scan the full history.
+   *  - `limit`: defaults to 100.
+   *
+   * Implemented as an in-memory filter over `listRootConversations`
+   * rather than a dedicated index because we currently expect a
+   * handful of MCP runs at most. If usage grows, this is a natural
+   * place to add a `by-source` index in a future schema bump.
+   */
+  async listMcpConversations(
+    opts: { limit?: number; sinceDays?: number } = {},
+  ): Promise<ChatDB["conversations"]["value"][]> {
+    const all = await chatDb.listRootConversations();
+    const cutoff =
+      opts.sinceDays != null
+        ? Date.now() - opts.sinceDays * 24 * 60 * 60 * 1000
+        : 0;
+    return all
+      .filter((c) => c.source === "mcp" && c.updatedAt >= cutoff)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, opts.limit ?? 100);
+  },
+
+  /**
    * Return the immediate children of a parent conversation, ordered by
    * creation time ascending (oldest subagent run first). Used by the
    * side panel to render nested subagent runs under the parent.
@@ -858,6 +959,10 @@ export const chatDb = {
       ownedGroupId: null,
       ownedLtids: [],
       todos: [],
+      // v18 defaults — provenance + MCP host name. Caller-supplied
+      // values on `conv` win over these defaults via the spread.
+      source: "user",
+      mcpHostName: null,
       ...conv,
     });
     emitConversationChange(conv.id);
