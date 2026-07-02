@@ -82,6 +82,16 @@ describe("oauth/clients", () => {
     expect(statSync(join(tmpHome, ".openbrowse")).mode & 0o777).toBe(0o700);
   });
 
+  it("tightens a pre-existing ~/.openbrowse dir with loose permissions to 0700", async () => {
+    // Simulates a dir created by an older install (or default umask 022).
+    mkdirSync(join(tmpHome, ".openbrowse"), { recursive: true, mode: 0o755 });
+    expect(statSync(join(tmpHome, ".openbrowse")).mode & 0o777).toBe(0o755);
+    const { createClientRegistry } = await import("../clients");
+    const reg = createClientRegistry();
+    reg.register({ redirect_uris: ["http://127.0.0.1:1/cb"] });
+    expect(statSync(join(tmpHome, ".openbrowse")).mode & 0o777).toBe(0o700);
+  });
+
   it("evicts least-recently-used clients beyond the cap", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-01T00:00:00Z"));

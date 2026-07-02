@@ -105,7 +105,9 @@ describe("routes/authorize", () => {
 
     const result = handleAuthorize({
       params: {
-        client_id: "nonexistent",
+        // XSS-shaped client_id: the recovery page interpolates the id into
+        // HTML, so this doubles as escaping coverage for that code path.
+        client_id: "<script>alert('xss')</script>",
         redirect_uri: "https://evil.example.com/cb",
         response_type: "code",
         scope: "task",
@@ -122,8 +124,10 @@ describe("routes/authorize", () => {
     expect(result.kind).toBe("error_page");
     if (result.kind === "error_page") {
       expect(result.status).toBe(400);
-      expect(result.body).toContain("nonexistent");
       expect(result.body).toContain("re-authenticate");
+      // client_id is rendered escaped, never as live markup.
+      expect(result.body).not.toContain("<script>alert");
+      expect(result.body).toContain("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;");
     }
   });
 
@@ -155,6 +159,8 @@ describe("routes/authorize", () => {
       expect(loc.origin).toBe("http://127.0.0.1:33418");
       expect(loc.pathname).toBe("/callback");
       expect(loc.searchParams.get("error")).toBe("invalid_client");
+      // The description is the host-facing recovery hint — assert it survives.
+      expect(loc.searchParams.get("error_description")).toMatch(/re-register/i);
       expect(loc.searchParams.get("state")).toBe("xyz");
     }
   });

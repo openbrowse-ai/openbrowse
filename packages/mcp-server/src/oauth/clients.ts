@@ -74,10 +74,13 @@ function load(): PersistedFile {
 
 function persist(state: PersistedFile): void {
   mkdirSync(DIR(), { recursive: true, mode: 0o700 });
+  // `mode` on mkdirSync only applies at creation (and is masked by umask);
+  // enforce on every write so a pre-existing ~/.openbrowse with looser
+  // permissions gets tightened.
+  chmodSync(DIR(), 0o700);
   const path = FILE();
   writeFileSync(path, JSON.stringify(state, null, 2), { mode: 0o600 });
-  // `mode` on writeFileSync only applies at creation; enforce on every write
-  // so a pre-existing file with looser permissions gets tightened.
+  // Same reasoning: `mode` on writeFileSync only applies at creation.
   chmodSync(path, 0o600);
 }
 
