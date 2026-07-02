@@ -180,6 +180,32 @@ jobs:
           name: "@openbrowse/mcp-server v${{ steps.tag.outputs.version }}"
           generate_release_notes: true
 
+      - name: Trust the openbrowse-ai/tap tap
+        # Homebrew 6.0+ (June 2026) requires third-party taps to be
+        # explicitly trusted before their formulae can be loaded. The
+        # dawidd6/action-homebrew-bump-formula action calls
+        # `Formula[...]` internally, which triggers
+        # Homebrew::Trust.require_trusted_formula! and raises
+        # UntrustedTapError for taps not in ~/.homebrew/trust.json.
+        # The action itself makes no provision for trust — it doesn't
+        # accept a `trust` input, doesn't call `brew trust`, and
+        # doesn't set HOMEBREW_NO_REQUIRE_TAP_TRUST.
+        #
+        # `brew trust <tap>` is the Homebrew-intended mechanism for
+        # opting in to a third-party tap. Whole-tap scope: we own
+        # openbrowse-ai/homebrew-tap and every formula in it is ours,
+        # so trusting the tap as a unit auto-covers any future
+        # formulae we add. The trust write is synchronous and
+        # persistent across steps within the same runner instance,
+        # so the next step's `brew ruby main.rb` finds it via the
+        # normal trusted_taps lookup.
+        #
+        # Runners are ephemeral (fresh trust.json every run), so
+        # re-running this step on every release is intentional and
+        # cheap.
+        if: env.HAS_TAP_TOKEN == 'true'
+        run: brew trust openbrowse-ai/tap
+
       - name: Bump Homebrew formula
         # Skipped when HOMEBREW_TAP_TOKEN is not present (e.g. first-run
         # test dispatch before secrets are set up). npm publish still
