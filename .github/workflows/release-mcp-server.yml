@@ -187,7 +187,7 @@ jobs:
         # `HAS_TAP_TOKEN` is defined at job level so this if: sees a
         # stable value regardless of step-level env eval order.
         if: env.HAS_TAP_TOKEN == 'true'
-        uses: dawidd6/action-homebrew-bump-formula@d09b568334bfea0f4586b25c9d9e5c98b1ff8916 # v6.0.0
+        uses: dawidd6/action-homebrew-bump-formula@1446dca236b0440c6f02723a3f14f13be2c04ab0 # v7
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           # Tap slug: `<owner>/<repo>` without the `homebrew-` prefix.
