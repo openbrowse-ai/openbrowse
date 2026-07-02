@@ -203,8 +203,26 @@ jobs:
         # Runners are ephemeral (fresh trust.json every run), so
         # re-running this step on every release is intentional and
         # cheap.
+        #
+        # PATH: ubuntu-latest ships linuxbrew at
+        # /home/linuxbrew/.linuxbrew but does NOT put it on PATH —
+        # the dawidd6 action sets up its own brew environment
+        # internally, which is why the bump step finds brew while a
+        # bare `brew` in this step gets "command not found" (exit
+        # 127). `brew shellenv` is the canonical fix. The trust
+        # write lands in ~/.homebrew/trust.json (keyed on $HOME,
+        # which is the same runner user for both steps), so the
+        # action's internal brew sees it regardless of which brew
+        # setup path each step used.
+        #
+        # `brew trust <tap>` does not require the tap to be
+        # installed first — verified in cmd/trust.rb: it validates
+        # the name and writes it to trust.json without touching the
+        # tap itself.
         if: env.HAS_TAP_TOKEN == 'true'
-        run: brew trust openbrowse-ai/tap
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew trust openbrowse-ai/tap
 
       - name: Bump Homebrew formula
         # Skipped when HOMEBREW_TAP_TOKEN is not present (e.g. first-run
