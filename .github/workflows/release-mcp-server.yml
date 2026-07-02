@@ -64,11 +64,18 @@ jobs:
         run: |
           set -euo pipefail
           TAG="$INPUT_TAG"
-          # Validate format: must be exactly `@openbrowse/mcp-server@X.Y.Z`
-          # with optional semver pre-release / build metadata. Anything
-          # else fails fast rather than passing bogus values to
-          # actions/checkout or npm.
-          if ! printf '%s' "$TAG" | grep -Eq '^@openbrowse/mcp-server@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$'; then
+          # Validate against the WHOLE tag string using bash `[[ =~ ]]`,
+          # not `grep -E` line-matching. `grep -q` returns success on
+          # the first matching line, which means a multiline INPUT_TAG
+          # like $'@openbrowse/mcp-server@0.1.0\nmalicious=payload'
+          # would pass validation while smuggling extra output records
+          # into the echo lines below — classic GITHUB_OUTPUT injection.
+          # `[[ =~ ]]` matches the full string against the anchors, and
+          # since the pattern's character classes don't include newlines,
+          # any embedded newline causes the match to fail.
+          # Default shell on ubuntu-latest is bash --noprofile --norc
+          # -eo pipefail {0}, so `[[ =~ ]]` is available.
+          if ! [[ "$TAG" =~ ^@openbrowse/mcp-server@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
             echo "::error::Invalid tag format: '$TAG' (expected @openbrowse/mcp-server@X.Y.Z)"
             exit 1
           fi
@@ -78,7 +85,14 @@ jobs:
 
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          # Fully-qualify as a tag ref. A bare `${{ steps.tag.outputs.tag }}`
+          # value would be resolved by git's usual short-name lookup
+          # (refs/tags/ then refs/heads/ then refs/remotes/); a same-
+          # named branch could shadow a deleted tag, or the workflow
+          # could silently fall back to a branch of that name. Prefixing
+          # with `refs/tags/` locks resolution to the tag namespace and
+          # fails cleanly if the tag isn't present.
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
           # Do NOT persist the write-scoped GITHUB_TOKEN in .git/config.
           # This is a privileged publish workflow that does not push to
           # git; leaving the token in the on-disk config would let any
