@@ -47,7 +47,7 @@ openbrowse-mcp
 
 Output:
 
-```
+```text
 OpenBrowse MCP broker ready on http://127.0.0.1:47821
 Key fingerprint: 0123456789abcdef
 ```

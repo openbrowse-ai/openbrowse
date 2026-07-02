@@ -10,6 +10,5 @@
     "noEmit": false,
     "skipLibCheck": true
   },
-  "include": ["src/index.ts"],
-  "exclude": ["src/**/__tests__/**", "src/**/*.test.ts"]
+  "include": ["src/index.ts"]
 }

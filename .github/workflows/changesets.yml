@@ -149,4 +149,10 @@ jobs:
       # emits the tag with the leading `@` intact (e.g.
       # `@openbrowse/mcp-server@0.1.0`).
       tag: "@openbrowse/mcp-server@${{ needs.release.outputs.mcp_server_version }}"
-    secrets: inherit
+    secrets:
+      # Forward ONLY the secrets release-mcp-server.yml declares. Using
+      # `secrets: inherit` would forward every repo secret to the
+      # reusable workflow — over-privileged and would silently give
+      # future unrelated secrets to the publish step.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

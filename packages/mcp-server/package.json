@@ -56,7 +56,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.0",

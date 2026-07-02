@@ -15,8 +15,16 @@
 
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+
+// Wipe the output directory before rebuilding so renamed/deleted
+// sources can't leave orphaned `.js` / `.d.ts` / `.map` files behind
+// from a prior run. Downstream `tsc -p tsconfig.build.json` also
+// emits into dist/ and could otherwise miss stale files it no longer
+// generates.
+await rm(new URL("../dist", import.meta.url), { recursive: true, force: true });
 
 await build({
   entryPoints: ["src/index.ts"],

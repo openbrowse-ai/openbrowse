@@ -44,6 +44,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # required to create the GitHub Release
+    env:
+      # Precomputed at job start so the step-level `if:` on the
+      # Homebrew bump step reads a stable value. `secrets` context
+      # isn't available in `if:` directly — hoisting the presence
+      # check to job-level env is the standard workaround, and being
+      # at job scope avoids any doubt about step-level env evaluation
+      # order relative to the step's own `if:`.
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
       - name: Resolve tag + version
         id: tag
@@ -71,6 +79,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ steps.tag.outputs.tag }}
+          # Do NOT persist the write-scoped GITHUB_TOKEN in .git/config.
+          # This is a privileged publish workflow that does not push to
+          # git; leaving the token in the on-disk config would let any
+          # subprocess (install lifecycle scripts, build tools,
+          # transitive deps) read it. The post-step removes it anyway,
+          # but "removes at end of job" isn't the same as "never wrote it."
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -82,7 +97,10 @@ jobs:
           # `registry-url` writes an .npmrc pointing at npm and enables
           # NODE_AUTH_TOKEN auth for `npm publish` further down.
           registry-url: "https://registry.npmjs.org"
-          cache: pnpm
+          # Intentionally no `cache: pnpm` here. This is the privileged
+          # publish path — restoring a shared pnpm-store cache that could
+          # have been poisoned by a prior compromised run isn't worth the
+          # marginal speed win. Install fresh every time.
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -109,11 +127,33 @@ jobs:
       - name: Build (esbuild bundle + tsc .d.ts)
         run: pnpm -F @openbrowse/mcp-server build
 
-      - name: Publish to npm
-        # `--no-git-checks` because we're running against a detached HEAD
-        # at the tagged commit; pnpm otherwise refuses to publish from
-        # anything that isn't a clean tracking branch.
-        run: pnpm -F @openbrowse/mcp-server publish --access public --no-git-checks
+      - name: Publish to npm (tolerate already-published for reruns)
+        # If npm publish succeeded on a prior run but the Homebrew bump
+        # failed, we need to be able to re-run this workflow and drive
+        # through to the Homebrew step without npm's 409 "version already
+        # exists" blocking recovery. This step treats that specific
+        # failure mode as non-fatal — any other npm error still fails.
+        #
+        # `--no-git-checks` because we're on a detached HEAD at the
+        # tagged commit; pnpm otherwise refuses to publish from anything
+        # that isn't a clean tracking branch.
+        run: |
+          set -o pipefail
+          if pnpm -F @openbrowse/mcp-server publish --access public --no-git-checks 2>&1 | tee /tmp/npm-publish.log; then
+            echo "npm publish: success."
+            exit 0
+          fi
+          # Publish failed. Only 'version already published' is
+          # recoverable — everything else is a real error we must
+          # surface. Matching npm/pnpm's known error strings for this
+          # condition (npm uses "cannot publish over" and E403 with
+          # "already published"; pnpm proxies these through).
+          if grep -qiE '(cannot publish over|previously published|EPUBLISHCONFLICT|version already|already exists in the registry)' /tmp/npm-publish.log; then
+            echo "::warning::npm reports this version is already published; continuing so downstream Homebrew bump can complete."
+            exit 0
+          fi
+          echo "::error::npm publish failed for a reason other than version-already-exists. See log above."
+          exit 1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -130,9 +170,9 @@ jobs:
         # Skipped when HOMEBREW_TAP_TOKEN is not present (e.g. first-run
         # test dispatch before secrets are set up). npm publish still
         # succeeded; Homebrew users can manually update the tap later.
+        # `HAS_TAP_TOKEN` is defined at job level so this if: sees a
+        # stable value regardless of step-level env eval order.
         if: env.HAS_TAP_TOKEN == 'true'
-        env:
-          HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         uses: dawidd6/action-homebrew-bump-formula@d09b568334bfea0f4586b25c9d9e5c98b1ff8916 # v6.0.0
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
