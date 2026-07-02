@@ -1,6 +1,6 @@
 {
   "name": "@openbrowse/mcp-server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenBrowse MCP broker — an OAuth 2.1 + WebSocket bridge that lets external MCP hosts (Cursor, Claude Desktop, OpenCode, etc.) drive the OpenBrowse browser extension. Runs locally on 127.0.0.1.",
   "keywords": [
     "mcp",
