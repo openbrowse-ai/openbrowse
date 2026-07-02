@@ -230,6 +230,12 @@ export async function startHttpServer(
           autoApprove: params.get("autoapprove") === "1",
         });
         if (r.kind === "html") return sendText(res, 200, r.body, "text/html; charset=utf-8");
+        if (r.kind === "error_page")
+          return sendText(res, r.status, r.body, "text/html; charset=utf-8");
+        if (r.kind === "redirect") {
+          res.writeHead(r.status, { Location: r.location, "Cache-Control": "no-store" });
+          return res.end();
+        }
         return sendText(res, r.status, r.message);
       }
       if (path === "/token" && req.method === "POST") {

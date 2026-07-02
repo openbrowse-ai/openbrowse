@@ -51,6 +51,10 @@ export async function loadOrCreateKeyPair(): Promise<BrokerKeyPair> {
   const fingerprint = createHash("sha256").update(publicKeyDer).digest("hex").slice(0, 16);
 
   mkdirSync(KEY_DIR(), { recursive: true, mode: 0o700 });
+  // `mode` on mkdirSync only applies at creation (and is masked by umask);
+  // enforce on every write so a pre-existing dir with looser permissions
+  // gets tightened.
+  chmodSync(KEY_DIR(), 0o700);
   const persisted: PersistedKey = {
     algorithm: "Ed25519",
     publicKeyPemSpki,
