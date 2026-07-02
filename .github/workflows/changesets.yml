@@ -4,19 +4,25 @@ name: Changesets
 #   - If there are pending changesets in .changeset/, open or update a
 #     "Version Packages" PR that bumps versions and updates CHANGELOG.
 #   - When that PR is merged, this workflow creates the matching git
-#     tag (e.g. openbrowse@0.2.3 — Changesets' workspace tag format
-#     for private packages, enabled via `privatePackages.tag` in
-#     .changeset/config.json), then invokes `release.yml` directly via
-#     `workflow_call` to build the extension zip and attach it to the
-#     GitHub Release Changesets created.
+#     tag(s) (Changesets' workspace tag format), then invokes the
+#     appropriate downstream release workflow via `workflow_call`.
+#
+# Multi-package release fan-out:
+#   The workspace ships two independently-versioned packages managed by
+#   Changesets: `openbrowse` (the Chrome extension) and
+#   `@openbrowse/mcp-server` (the broker). Each has its own release
+#   workflow — release.yml builds the extension zip, release-mcp-server.yml
+#   publishes to npm and bumps the Homebrew formula. This job splits the
+#   `publishedPackages` output by name so each downstream workflow only
+#   fires when its package was actually released.
 #
 # Why workflow_call instead of relying on the tag-push trigger:
-# the tag is created here using GITHUB_TOKEN, and tags pushed by
+# the tags are created here using GITHUB_TOKEN, and tags pushed by
 # GITHUB_TOKEN do NOT fire downstream `on: push: tags:` workflows
 # (GitHub's anti-recursion safeguard). Using workflow_call lets us
-# stay on GITHUB_TOKEN without needing a PAT. release.yml's
-# `workflow_dispatch` trigger remains as a manual escape hatch for
-# re-running the build against an already-tagged release.
+# stay on GITHUB_TOKEN without needing a PAT. release*.yml's
+# `workflow_dispatch` triggers remain as manual escape hatches for
+# re-running builds against already-tagged releases.
 #
 # Contributors who change user-facing behavior should run
 # `pnpm changeset` and commit the generated `.changeset/*.md` file.
@@ -41,12 +47,15 @@ jobs:
       contents: write # commit version bumps + create tags
       pull-requests: write # open the Version Packages PR
     outputs:
-      # Surfaced so the build-release job below can decide whether a
-      # release zip needs building, and which tag to target.
+      # `published` is true iff Changesets tagged at least one package.
+      # The per-package version outputs below are empty strings when
+      # that package was not among those tagged. Downstream `if:`
+      # conditions treat empty string as "skip."
       published: ${{ steps.changesets.outputs.published }}
-      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
+      extension_version: ${{ steps.split.outputs.extension_version }}
+      mcp_server_version: ${{ steps.split.outputs.mcp_server_version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           # Required so changesets can detect history when computing
           # version bumps and changelog entries.
@@ -78,37 +87,72 @@ jobs:
           # commands through a shell, so chaining commands directly
           # here would pass them as args to the first binary.
           version: pnpm run version
-          # No npm publish — we do not publish to npm. The git tag
-          # created here used to trigger release.yml via the tag-push
-          # event, but GITHUB_TOKEN-authored tag pushes don't fire
-          # downstream workflows. The `build-release` job below
-          # invokes release.yml directly via workflow_call instead.
+          # `changeset tag` creates a git tag per released package.
+          # Actual npm publish for `@openbrowse/mcp-server` happens in
+          # release-mcp-server.yml which is invoked below; the
+          # extension is not published to npm.
           publish: pnpm exec changeset tag
           commit: "chore(release): version packages"
           title: "chore(release): version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Split publishedPackages by name
+        id: split
+        # `publishedPackages` is a JSON array of `{ name, version }`.
+        # We use jq to find the entry for each package we manage and
+        # expose its version as a per-package output. Missing entries
+        # become empty strings — downstream `if:` conditions gate on
+        # non-empty.
+        #
+        # Using an env var (not string interpolation) to feed the JSON
+        # into jq prevents shell-quoting issues when the JSON contains
+        # single quotes or shell metacharacters.
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          PUBLISHED: ${{ steps.changesets.outputs.publishedPackages }}
+        run: |
+          set -euo pipefail
+          EXT_VERSION=$(printf '%s' "$PUBLISHED" | jq -r '[.[] | select(.name == "openbrowse")][0].version // ""')
+          MCP_VERSION=$(printf '%s' "$PUBLISHED" | jq -r '[.[] | select(.name == "@openbrowse/mcp-server")][0].version // ""')
+          echo "extension_version=$EXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "mcp_server_version=$MCP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Extension version:    ${EXT_VERSION:-<none>}"
+          echo "MCP server version:   ${MCP_VERSION:-<none>}"
+
   # Build the Chrome extension zip and attach it to the GitHub Release
-  # that the Changesets action just created. Runs only when the publish
-  # step actually emitted a tag (i.e. the Version Packages PR was just
-  # merged). Skipped on every other main push, including the push that
-  # opens/updates the Version Packages PR itself.
-  #
-  # See release.yml for the build/test/zip/upload steps. We invoke it
-  # via workflow_call rather than relying on the tag push because tags
-  # created with GITHUB_TOKEN don't trigger `on: push: tags:` workflows.
-  build-release:
-    name: Build + publish release zip
+  # that the Changesets action just created. Runs only when the extension
+  # package was among those published. Skipped for broker-only releases.
+  build-release-extension:
+    name: Build + publish extension release zip
     needs: release
-    if: needs.release.outputs.published == 'true'
+    if: needs.release.outputs.extension_version != ''
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
     with:
-      # publishedPackages is a JSON array of `{ name, version }` for
-      # each package the action just tagged. We tag exactly one
-      # package (`openbrowse`), so [0] is safe. The tag format
-      # (`openbrowse@X.Y.Z`) matches what `changeset tag` emits for
-      # private workspace packages.
-      tag: openbrowse@${{ fromJson(needs.release.outputs.publishedPackages)[0].version }}
+      # Extension tag format is `openbrowse@X.Y.Z` (Changesets emits this
+      # for the private-scope package named `openbrowse`).
+      tag: openbrowse@${{ needs.release.outputs.extension_version }}
+
+  # Publish the broker to npm + GitHub Releases + bump the Homebrew tap.
+  # Runs only when the mcp-server package was among those published.
+  build-release-mcp-server:
+    name: Publish @openbrowse/mcp-server to npm + Homebrew
+    needs: release
+    if: needs.release.outputs.mcp_server_version != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-mcp-server.yml
+    with:
+      # Scoped-package tag format is `<name>@<version>` — Changesets
+      # emits the tag with the leading `@` intact (e.g.
+      # `@openbrowse/mcp-server@0.1.0`).
+      tag: "@openbrowse/mcp-server@${{ needs.release.outputs.mcp_server_version }}"
+    secrets:
+      # Forward ONLY the secrets release-mcp-server.yml declares. Using
+      # `secrets: inherit` would forward every repo secret to the
+      # reusable workflow — over-privileged and would silently give
+      # future unrelated secrets to the publish step.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

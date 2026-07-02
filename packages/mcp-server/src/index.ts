@@ -7,10 +7,28 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startHttpServer } from "./server";
 
-export const VERSION = "0.0.0";
+/**
+ * Resolved at module load from `package.json`. Kept as an export so
+ * `--version` (bin wrapper) and any consumer that imports this module
+ * can read the shipping version without duplicating the string across
+ * source and package metadata.
+ */
+export const VERSION: string = (() => {
+  try {
+    const pkgPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "package.json",
+    );
+    return JSON.parse(readFileSync(pkgPath, "utf8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 const LOCK_FILE = () => join(process.env.HOME ?? homedir(), ".openbrowse", "broker.lock");
 
@@ -118,7 +136,16 @@ export async function runServer(): Promise<void> {
   );
 }
 
-async function main(): Promise<void> {
+/**
+ * Subcommand dispatcher. Called from:
+ *   - `tsx src/index.ts <cmd>` (dev, `pnpm start`)
+ *   - `openbrowse-mcp <cmd>` (installed, bin/openbrowse-mcp.mjs loads
+ *     dist/index.js and invokes this)
+ *
+ * argv semantics are read directly from `process.argv` so both paths
+ * behave identically.
+ */
+export async function main(): Promise<void> {
   const cmd = process.argv[2];
   switch (cmd) {
     case undefined:
@@ -145,6 +172,11 @@ async function main(): Promise<void> {
       process.exit(1);
   }
 }
+
+// Also expose `main` as the default export so the bin wrapper's
+// `mod.default ?? mod.main` fallback finds it regardless of bundler
+// output shape.
+export default main;
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {

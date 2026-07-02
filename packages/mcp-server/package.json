@@ -1,29 +1,65 @@
 {
   "name": "@openbrowse/mcp-server",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "OpenBrowse MCP broker — an OAuth 2.1 + WebSocket bridge that lets external MCP hosts (Cursor, Claude Desktop, OpenCode, etc.) drive the OpenBrowse browser extension. Runs locally on 127.0.0.1.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openbrowse",
+    "browser-automation",
+    "oauth",
+    "broker",
+    "ai-agent"
+  ],
+  "homepage": "https://github.com/openbrowse-ai/openbrowse#readme",
+  "bugs": "https://github.com/openbrowse-ai/openbrowse/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openbrowse-ai/openbrowse.git",
+    "directory": "packages/mcp-server"
+  },
+  "license": "MIT",
+  "author": "OpenBrowse Contributors",
   "type": "module",
-  "description": "OpenBrowse MCP server (HTTP+OAuth broker)",
   "bin": {
     "openbrowse-mcp": "./bin/openbrowse-mcp.mjs"
   },
   "exports": {
-    ".": { "types": "./src/index.ts", "default": "./src/index.ts" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "engines": { "node": ">=22.6" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
     "compile": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "start": "tsx src/index.ts serve"
+    "start": "tsx src/index.ts serve",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "tsx": "^4.19.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.7"
   }

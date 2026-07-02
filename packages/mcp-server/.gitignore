@@ -1,0 +1,8 @@
+# Emitted by `pnpm build` (esbuild bundle + tsc .d.ts). Regenerated on
+# each publish, so we do not commit it. The npm tarball ships this
+# directory (see `files` in package.json).
+dist/
+
+# Local dev artefacts
+node_modules/
+*.log

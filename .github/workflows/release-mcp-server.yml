@@ -1,0 +1,202 @@
+name: Release @openbrowse/mcp-server
+
+# Publishes the broker to npm, creates a GitHub Release, and bumps the
+# Homebrew formula in openbrowse-ai/homebrew-tap. Invoked by
+# changesets.yml when a "Version Packages" merge tagged the package.
+#
+# Manual re-run path: `workflow_dispatch` for the case where the
+# automated run failed mid-way and left an unfinished release (e.g. npm
+# publish succeeded but Homebrew bump failed).
+#
+# Secrets required:
+#   NPM_TOKEN            — automation-tier npm access token with publish
+#                          rights on the @openbrowse scope.
+#   HOMEBREW_TAP_TOKEN   — fine-grained GitHub PAT with contents:write
+#                          on openbrowse-ai/homebrew-tap.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. @openbrowse/mcp-server@0.1.0)"
+        required: true
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build"
+        required: true
+        type: string
+    secrets:
+      NPM_TOKEN:
+        required: true
+      HOMEBREW_TAP_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mcp-server-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create the GitHub Release
+    env:
+      # Precomputed at job start so the step-level `if:` on the
+      # Homebrew bump step reads a stable value. `secrets` context
+      # isn't available in `if:` directly — hoisting the presence
+      # check to job-level env is the standard workaround, and being
+      # at job scope avoids any doubt about step-level env evaluation
+      # order relative to the step's own `if:`.
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - name: Resolve tag + version
+        id: tag
+        # Pass inputs through env rather than `${{ ... }}` interpolation
+        # in the shell body to avoid command injection via a
+        # maliciously-crafted `tag` input (workflow_dispatch inputs are
+        # operator-controlled).
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="$INPUT_TAG"
+          # Validate against the WHOLE tag string using bash `[[ =~ ]]`,
+          # not `grep -E` line-matching. `grep -q` returns success on
+          # the first matching line, which means a multiline INPUT_TAG
+          # like $'@openbrowse/mcp-server@0.1.0\nmalicious=payload'
+          # would pass validation while smuggling extra output records
+          # into the echo lines below — classic GITHUB_OUTPUT injection.
+          # `[[ =~ ]]` matches the full string against the anchors, and
+          # since the pattern's character classes don't include newlines,
+          # any embedded newline causes the match to fail.
+          # Default shell on ubuntu-latest is bash --noprofile --norc
+          # -eo pipefail {0}, so `[[ =~ ]]` is available.
+          if ! [[ "$TAG" =~ ^@openbrowse/mcp-server@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)*$ ]]; then
+            echo "::error::Invalid tag format: '$TAG' (expected @openbrowse/mcp-server@X.Y.Z)"
+            exit 1
+          fi
+          VERSION="${TAG#@openbrowse/mcp-server@}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # Fully-qualify as a tag ref. A bare `${{ steps.tag.outputs.tag }}`
+          # value would be resolved by git's usual short-name lookup
+          # (refs/tags/ then refs/heads/ then refs/remotes/); a same-
+          # named branch could shadow a deleted tag, or the workflow
+          # could silently fall back to a branch of that name. Prefixing
+          # with `refs/tags/` locks resolution to the tag namespace and
+          # fails cleanly if the tag isn't present.
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          # Do NOT persist the write-scoped GITHUB_TOKEN in .git/config.
+          # This is a privileged publish workflow that does not push to
+          # git; leaving the token in the on-disk config would let any
+          # subprocess (install lifecycle scripts, build tools,
+          # transitive deps) read it. The post-step removes it anyway,
+          # but "removes at end of job" isn't the same as "never wrote it."
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          # `registry-url` writes an .npmrc pointing at npm and enables
+          # NODE_AUTH_TOKEN auth for `npm publish` further down.
+          registry-url: "https://registry.npmjs.org"
+          # Intentionally no `cache: pnpm` here. This is the privileged
+          # publish path — restoring a shared pnpm-store cache that could
+          # have been poisoned by a prior compromised run isn't worth the
+          # marginal speed win. Install fresh every time.
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches manifest version
+        env:
+          TAG_VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(node -p "require('./packages/mcp-server/package.json').version")
+          echo "Tag version:      $TAG_VERSION"
+          echo "Manifest version: $PKG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $TAG_VERSION does not match packages/mcp-server/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: pnpm -F @openbrowse/mcp-server compile
+
+      - name: Test
+        run: pnpm -F @openbrowse/mcp-server test
+
+      - name: Build (esbuild bundle + tsc .d.ts)
+        run: pnpm -F @openbrowse/mcp-server build
+
+      - name: Publish to npm (tolerate already-published for reruns)
+        # If npm publish succeeded on a prior run but the Homebrew bump
+        # failed, we need to be able to re-run this workflow and drive
+        # through to the Homebrew step without npm's 409 "version already
+        # exists" blocking recovery. This step treats that specific
+        # failure mode as non-fatal — any other npm error still fails.
+        #
+        # `--no-git-checks` because we're on a detached HEAD at the
+        # tagged commit; pnpm otherwise refuses to publish from anything
+        # that isn't a clean tracking branch.
+        run: |
+          set -o pipefail
+          if pnpm -F @openbrowse/mcp-server publish --access public --no-git-checks 2>&1 | tee /tmp/npm-publish.log; then
+            echo "npm publish: success."
+            exit 0
+          fi
+          # Publish failed. Only 'version already published' is
+          # recoverable — everything else is a real error we must
+          # surface. Matching npm/pnpm's known error strings for this
+          # condition (npm uses "cannot publish over" and E403 with
+          # "already published"; pnpm proxies these through).
+          if grep -qiE '(cannot publish over|previously published|EPUBLISHCONFLICT|version already|already exists in the registry)' /tmp/npm-publish.log; then
+            echo "::warning::npm reports this version is already published; continuing so downstream Homebrew bump can complete."
+            exit 0
+          fi
+          echo "::error::npm publish failed for a reason other than version-already-exists. See log above."
+          exit 1
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          # Display the release on the Releases page with a readable
+          # name; the underlying tag keeps the Changesets format.
+          name: "@openbrowse/mcp-server v${{ steps.tag.outputs.version }}"
+          generate_release_notes: true
+
+      - name: Bump Homebrew formula
+        # Skipped when HOMEBREW_TAP_TOKEN is not present (e.g. first-run
+        # test dispatch before secrets are set up). npm publish still
+        # succeeded; Homebrew users can manually update the tap later.
+        # `HAS_TAP_TOKEN` is defined at job level so this if: sees a
+        # stable value regardless of step-level env eval order.
+        if: env.HAS_TAP_TOKEN == 'true'
+        uses: dawidd6/action-homebrew-bump-formula@d09b568334bfea0f4586b25c9d9e5c98b1ff8916 # v6.0.0
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Tap slug: `<owner>/<repo>` without the `homebrew-` prefix.
+          # Homebrew's convention is `openbrowse-ai/homebrew-tap` on
+          # GitHub, referenced as `openbrowse-ai/tap` by the action.
+          tap: openbrowse-ai/tap
+          # Formula filename (without the .rb extension).
+          formula: openbrowse-mcp
+          # The action computes the sha256 of the npm tarball and
+          # rewrites the formula's `url` + `sha256` fields to match
+          # the just-published version.
+          tag: ${{ steps.tag.outputs.tag }}
