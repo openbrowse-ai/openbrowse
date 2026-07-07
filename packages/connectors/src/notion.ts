@@ -11,7 +11,7 @@ export const definition: ConnectorDefinition = {
   icon: { light: "notion.svg", dark: "notion-dark.svg" },
   description: "Pages, databases, and workspace content",
   category: "productivity",
-  url: "https://mcp.notion.so/mcp",
+  url: "https://mcp.notion.com/mcp",
   auth: { type: "oauth" },
   docsUrl: "https://developers.notion.com",
   formatLabel(toolName, result): ToolResultLabel | null {

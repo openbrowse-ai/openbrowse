@@ -180,6 +180,50 @@ jobs:
           name: "@openbrowse/mcp-server v${{ steps.tag.outputs.version }}"
           generate_release_notes: true
 
+      - name: Trust the openbrowse-ai/tap tap
+        # Homebrew 6.0+ (June 2026) requires third-party taps to be
+        # explicitly trusted before their formulae can be loaded. The
+        # dawidd6/action-homebrew-bump-formula action calls
+        # `Formula[...]` internally, which triggers
+        # Homebrew::Trust.require_trusted_formula! and raises
+        # UntrustedTapError for taps not in ~/.homebrew/trust.json.
+        # The action itself makes no provision for trust — it doesn't
+        # accept a `trust` input, doesn't call `brew trust`, and
+        # doesn't set HOMEBREW_NO_REQUIRE_TAP_TRUST.
+        #
+        # `brew trust <tap>` is the Homebrew-intended mechanism for
+        # opting in to a third-party tap. Whole-tap scope: we own
+        # openbrowse-ai/homebrew-tap and every formula in it is ours,
+        # so trusting the tap as a unit auto-covers any future
+        # formulae we add. The trust write is synchronous and
+        # persistent across steps within the same runner instance,
+        # so the next step's `brew ruby main.rb` finds it via the
+        # normal trusted_taps lookup.
+        #
+        # Runners are ephemeral (fresh trust.json every run), so
+        # re-running this step on every release is intentional and
+        # cheap.
+        #
+        # PATH: ubuntu-latest ships linuxbrew at
+        # /home/linuxbrew/.linuxbrew but does NOT put it on PATH —
+        # the dawidd6 action sets up its own brew environment
+        # internally, which is why the bump step finds brew while a
+        # bare `brew` in this step gets "command not found" (exit
+        # 127). `brew shellenv` is the canonical fix. The trust
+        # write lands in ~/.homebrew/trust.json (keyed on $HOME,
+        # which is the same runner user for both steps), so the
+        # action's internal brew sees it regardless of which brew
+        # setup path each step used.
+        #
+        # `brew trust <tap>` does not require the tap to be
+        # installed first — verified in cmd/trust.rb: it validates
+        # the name and writes it to trust.json without touching the
+        # tap itself.
+        if: env.HAS_TAP_TOKEN == 'true'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew trust openbrowse-ai/tap
+
       - name: Bump Homebrew formula
         # Skipped when HOMEBREW_TAP_TOKEN is not present (e.g. first-run
         # test dispatch before secrets are set up). npm publish still
@@ -187,7 +231,7 @@ jobs:
         # `HAS_TAP_TOKEN` is defined at job level so this if: sees a
         # stable value regardless of step-level env eval order.
         if: env.HAS_TAP_TOKEN == 'true'
-        uses: dawidd6/action-homebrew-bump-formula@d09b568334bfea0f4586b25c9d9e5c98b1ff8916 # v6.0.0
+        uses: dawidd6/action-homebrew-bump-formula@1446dca236b0440c6f02723a3f14f13be2c04ab0 # v7
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           # Tap slug: `<owner>/<repo>` without the `homebrew-` prefix.

@@ -37,7 +37,12 @@ async function load(): Promise<PersistedFile> {
 
 function persist(state: PersistedFile): void {
   const path = FILE();
-  mkdirSync(join(process.env.HOME ?? homedir(), ".openbrowse"), { recursive: true, mode: 0o700 });
+  const dir = join(process.env.HOME ?? homedir(), ".openbrowse");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // `mode` on mkdirSync/writeFileSync only applies at creation (and mkdir's
+  // is masked by umask); enforce on every write so pre-existing paths with
+  // looser permissions get tightened.
+  chmodSync(dir, 0o700);
   writeFileSync(path, JSON.stringify(state, null, 2), { mode: 0o600 });
   chmodSync(path, 0o600);
 }

@@ -2,7 +2,7 @@
   "name": "openbrowse",
   "description": "The open source browser agent. A model-agnostic alternative to Claude for Chrome. Connect any local or cloud AI.",
   "private": true,
-  "version": "0.13.1",
+  "version": "0.13.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
