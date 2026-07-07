@@ -179,6 +179,7 @@ export async function clearTrustAndReconnect(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function ensureKeepaliveAlarm(): void {
+  if (typeof chrome === "undefined" || !chrome.alarms) return;
   chrome.alarms.get(KEEPALIVE_ALARM, (existing) => {
     if (!existing) {
       chrome.alarms.create(KEEPALIVE_ALARM, {
