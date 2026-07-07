@@ -1,6 +1,5 @@
 ---
 "@openbrowse/mcp-server": patch
-"@openbrowse/extension": patch
 ---
 
 Fix recurring `extension_not_connected` errors caused by Chrome's MV3
