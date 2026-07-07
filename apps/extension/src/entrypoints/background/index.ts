@@ -292,8 +292,9 @@ export default defineBackground({
     // 5s reconnect — fail-open behavior for Phase 1.
     (async () => {
       try {
-        const { bootMcpBridge } = await import("./mcp-bridge/boot");
+        const { bootMcpBridge, handleKeepaliveAlarm } = await import("./mcp-bridge/boot");
         await bootMcpBridge();
+        chrome.alarms.onAlarm.addListener(handleKeepaliveAlarm);
       } catch (err) {
         console.warn("MCP bridge boot failed:", err);
       }
