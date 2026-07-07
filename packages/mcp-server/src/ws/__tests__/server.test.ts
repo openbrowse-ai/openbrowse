@@ -27,6 +27,7 @@ function bufferedReader(ws: WebSocket) {
   const waiters: Array<(v: unknown) => void> = [];
   ws.on("message", (data) => {
     const parsed = JSON.parse(data.toString("utf8"));
+    if ((parsed as { type?: string }).type === "ping") return;
     const w = waiters.shift();
     if (w) w(parsed);
     else queue.push(parsed);
@@ -209,6 +210,41 @@ describe("ws/server", () => {
       await server.close();
     }
   });
+
+  it("sends heartbeat pings after session is established", async () => {
+    const server = await startTestServer();
+    try {
+      const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
+      const allMessages: unknown[] = [];
+      ws.on("message", (data) => {
+        allMessages.push(JSON.parse(data.toString("utf8")));
+      });
+      await new Promise((r) => ws.once("open", r));
+
+      // Complete handshake
+      await new Promise((r) => setTimeout(r, 50));
+      ws.send(
+        JSON.stringify({
+          type: "hello-response",
+          protocolVersion: 1,
+          extensionVersion: "0.0.0",
+          capabilities: { tools: [], profile: "Default" },
+        }),
+      );
+
+      // Wait just over 20s for the first heartbeat ping
+      await new Promise((r) => setTimeout(r, 21_000));
+      const pings = allMessages.filter(
+        (m) => (m as { type: string }).type === "ping",
+      );
+      expect(pings.length).toBeGreaterThanOrEqual(1);
+      expect((pings[0] as { ts: number }).ts).toBeGreaterThan(0);
+
+      ws.close();
+    } finally {
+      await server.close();
+    }
+  }, 25_000);
 
   it("ignores revoke-host messages with unparseable JSON or wrong type", async () => {
     const { startHttpServer } = await import("../../server");

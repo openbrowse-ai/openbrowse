@@ -96,6 +96,12 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
       return;
     }
 
+    // Broker heartbeat — no action needed; the incoming WS data event
+    // already reset the MV3 idle timer.
+    if (typeof msg === "object" && msg !== null && (msg as { type: unknown }).type === "ping") {
+      return;
+    }
+
     if (isHelloChallenge(msg)) {
       lastBrokerVersion = msg.brokerVersion;
       const trusted = await getTrustedFingerprint();

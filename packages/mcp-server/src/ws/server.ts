@@ -142,6 +142,16 @@ export function attachWsServer(opts: AttachOpts): WebSocketServer {
       };
       registry.setSession(session);
 
+      // Heartbeat: send periodic pings to keep the extension's MV3
+      // service worker alive. Incoming WS data counts as an event that
+      // resets Chrome's idle timer, preventing the SW from being killed.
+      const HEARTBEAT_INTERVAL_MS = 20_000;
+      const heartbeat = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+
       // Phase 3 / Task 11: handle post-handshake server-bound messages.
       // The RPC forwarder (ws/rpc.ts) attaches its own listener for
       // `rpc-result`/`rpc-error`; we attach an additional non-`once`
@@ -172,6 +182,7 @@ export function attachWsServer(opts: AttachOpts): WebSocketServer {
       });
 
       ws.on("close", () => {
+        clearInterval(heartbeat);
         if (registry.getSession()?.sessionId === sessionId) {
           registry.clearSession();
         }

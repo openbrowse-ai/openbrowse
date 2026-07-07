@@ -136,6 +136,16 @@ export interface RevokeHostMessage {
   clientId: string;
 }
 
+/**
+ * Periodic heartbeat from broker → extension. Keeps the MV3 service
+ * worker alive by generating an incoming WebSocket message event every
+ * ~20s. The extension does not need to respond.
+ */
+export interface PingMessage {
+  type: "ping";
+  ts: number;
+}
+
 export type WsMessage =
   | HelloChallengeMessage
   | HelloResponseMessage
@@ -148,7 +158,8 @@ export type WsMessage =
   | AuditEventMessage
   | ConsentGrantedMessage
   | ConsentDeniedMessage
-  | RevokeHostMessage;
+  | RevokeHostMessage
+  | PingMessage;
 
 function hasType(x: unknown, t: string): x is { type: string } {
   return typeof x === "object" && x !== null && (x as { type: unknown }).type === t;

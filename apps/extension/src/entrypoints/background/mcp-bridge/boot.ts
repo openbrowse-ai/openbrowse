@@ -4,6 +4,8 @@ import type { BridgeStatus } from "./status";
 
 const DEFAULT_BROKER_URL = "ws://localhost:47821/ws";
 const RECONNECT_BACKOFF_MS = 5_000;
+const KEEPALIVE_ALARM = "mcp-bridge:keepalive";
+const KEEPALIVE_PERIOD_MINUTES = 1; // Fallback safety net; broker heartbeat is the primary keepalive
 
 /**
  * Module-private mutable state.
@@ -79,6 +81,8 @@ export async function bootMcpBridge(url: string = DEFAULT_BROKER_URL): Promise<v
   bootUrl = url;
   attemptCount += 1;
   setStatus({ kind: "connecting", attempt: attemptCount });
+
+  ensureKeepaliveAlarm();
 
   connection = connectToBroker({
     url,
@@ -168,4 +172,31 @@ export async function forceReconnectNow(): Promise<void> {
 export async function clearTrustAndReconnect(): Promise<void> {
   await clearTrust();
   await forceReconnectNow();
+}
+
+// ---------------------------------------------------------------------------
+// MV3 keepalive: chrome.alarms survive SW death and wake it on fire.
+// ---------------------------------------------------------------------------
+
+function ensureKeepaliveAlarm(): void {
+  chrome.alarms.get(KEEPALIVE_ALARM, (existing) => {
+    if (!existing) {
+      chrome.alarms.create(KEEPALIVE_ALARM, {
+        periodInMinutes: KEEPALIVE_PERIOD_MINUTES,
+      });
+    }
+  });
+}
+
+/**
+ * Alarm handler — wakes the SW periodically to verify the WS is alive.
+ * If the connection was lost (module state reset by SW restart), boots
+ * a fresh connection.
+ */
+export function handleKeepaliveAlarm(alarm: chrome.alarms.Alarm): void {
+  if (alarm.name !== KEEPALIVE_ALARM) return;
+  if (!connection || current.kind === "disconnected") {
+    connection = null;
+    void bootMcpBridge(bootUrl);
+  }
 }
