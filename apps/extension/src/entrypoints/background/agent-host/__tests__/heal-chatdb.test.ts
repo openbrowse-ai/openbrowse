@@ -98,22 +98,25 @@ describe("healSerializedParts — heals non-terminal tool parts to output-error"
     ).toEqual({ url: "https://example.com" });
   });
 
-  it("heals approval-requested to output-denied", () => {
-    // Symmetric to renderer healPendingTools: a request-state approval
-    // with no human response becomes a denial.
+  it("leaves approval-requested untouched (intentional resting state, not stranded)", () => {
+    // `approval-requested` is the AI SDK's resting state when a tool with
+    // `approval: { required: true }` is called — the SDK is parked there
+    // waiting for the renderer's Approve/Deny. It is INTENTIONAL, not
+    // stranded. Rewriting it to output-denied (the pre-fix behavior)
+    // caused PlanApprovalCard to never mount and Ask-mode prompts to
+    // render as denied before the user could act. The renderer-side
+    // healPendingTools still collapses approval-requested → output-denied
+    // on the next user action, which IS the correct point.
     const parts: SerializedUIPart[] = [
       toolPart("approval-requested", {
         approval: { id: "ap_1" },
       }),
     ];
     const result = healSerializedParts(parts);
-    expect(result.changed).toBe(true);
-    const tp = result.parts[0] as {
-      state: string;
-      approval?: { approved?: boolean };
-    };
-    expect(tp.state).toBe("output-denied");
-    expect(tp.approval?.approved).toBe(false);
+    expect(result.changed).toBe(false);
+    expect(result.parts[0]).toBe(parts[0]); // same reference, untouched
+    const tp = result.parts[0] as { state: string };
+    expect(tp.state).toBe("approval-requested");
   });
 
   it("heals approval-responded to output-error regardless of approval.approved", () => {
@@ -167,7 +170,11 @@ describe("healSerializedParts — heals non-terminal tool parts to output-error"
     expect(result.parts[2]).toBe(step); // same reference
   });
 
-  it("heals multiple stranded tools in one message", () => {
+  it("heals stranded tools but preserves approval-requested in a mixed message", () => {
+    // A message can carry both a genuinely stranded tool (input-streaming)
+    // and an intentional approval-requested tool (the SDK paused for user
+    // approval). The stranded one heals to output-error; the pending
+    // approval is preserved verbatim so the renderer can still surface it.
     const parts: SerializedUIPart[] = [
       toolPart("input-streaming", { toolCallId: "t1" }),
       { type: "text", text: "and another" },
@@ -179,7 +186,11 @@ describe("healSerializedParts — heals non-terminal tool parts to output-error"
     const result = healSerializedParts(parts);
     expect(result.changed).toBe(true);
     expect((result.parts[0] as { state: string }).state).toBe("output-error");
-    expect((result.parts[2] as { state: string }).state).toBe("output-denied");
+    // Pending approval preserved verbatim — same reference, same state.
+    expect(result.parts[2]).toBe(parts[2]);
+    expect((result.parts[2] as { state: string }).state).toBe(
+      "approval-requested",
+    );
   });
 });
 
@@ -315,6 +326,60 @@ describe("healLastAssistantInChatDb — integration with chat-db", () => {
     // a2 got healed.
     const a2Tool = (after[3].parts[0] as { state: string }).state;
     expect(a2Tool).toBe("output-error");
+  });
+
+  it("returns {healed: false} when the last assistant message has a pending proposePlan approval", async () => {
+    // End-to-end regression for the Plan-mode bug: the SW host calls
+    // this helper from its `finally` block on every run termination,
+    // including the natural pause-for-approval path. Before the fix it
+    // wrote `output-denied` to chat-db, which the renderer's STREAM_DONE
+    // handler then rehydrated into the in-memory message list — making
+    // `findPendingPlanApproval` return null and the `PlanApprovalCard`
+    // never mount. Lock in that the chat-db row is left exactly as the
+    // persister wrote it.
+    await seedConversation("c1");
+    const proposePart: SerializedUIPart = {
+      type: "dynamic-tool",
+      toolName: "proposePlan",
+      toolCallId: "toolu_propose_1",
+      state: "approval-requested",
+      input: {
+        goal: "Research three mechanical keyboards on Amazon.",
+        sites: ["https://www.amazon.com"],
+        todos: [{ content: "Search for top 3 mechanical keyboards" }],
+        allowNetwork: false,
+      },
+      approval: { id: "ap_propose_1" },
+    } as SerializedUIPart;
+    await seedMessages("c1", [
+      {
+        id: "u1",
+        role: "user",
+        parts: [{ type: "text", text: "research keyboards" }],
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        parts: [proposePart],
+      },
+    ]);
+
+    const result = await healLastAssistantInChatDb("c1");
+    expect(result.healed).toBe(false);
+
+    // chat-db is untouched: the proposePlan part is still in
+    // `approval-requested`, ready for the renderer's PlanApprovalCard
+    // to surface for the user.
+    const after = await chatDb.getMessages("c1");
+    const tp = after[1].parts[0] as {
+      state: string;
+      toolName?: string;
+      approval?: { id?: string; approved?: boolean };
+    };
+    expect(tp.state).toBe("approval-requested");
+    expect(tp.toolName).toBe("proposePlan");
+    expect(tp.approval?.id).toBe("ap_propose_1");
+    expect(tp.approval?.approved).toBeUndefined();
   });
 
   it("is idempotent — second call after a successful heal is a no-op", async () => {
