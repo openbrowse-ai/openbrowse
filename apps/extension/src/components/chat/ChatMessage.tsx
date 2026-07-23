@@ -25,6 +25,8 @@ interface ChatMessageProps {
   canRetry?: boolean;
   onToolApproval?: (opts: { id: string; approved: boolean }) => void;
   dimmed?: boolean;
+  /** Mention context resolving for this message (drives the chip shimmer). */
+  resolving?: boolean;
 }
 
 function ChatMessageImpl({
@@ -36,6 +38,7 @@ function ChatMessageImpl({
   canRetry,
   onToolApproval,
   dimmed,
+  resolving,
 }: ChatMessageProps) {
   const handleEdit = useCallback(() => {
     onEdit?.(message.id);
@@ -53,6 +56,7 @@ function ChatMessageImpl({
         onEdit={canEdit && onEdit ? handleEdit : undefined}
         onRetry={canRetry && onRetryFromUser ? handleRetryFromUser : undefined}
         dimmed={dimmed}
+        resolving={resolving}
       />
     );
   }

@@ -1,3 +1,4 @@
+import { ChatMention } from "@/components/tiptap/chat-mention-extension";
 import { NoAutoLink } from "@/components/tiptap/link-extension";
 import { SkillSlash } from "@/components/tiptap/skill-slash-extension";
 import {
@@ -35,6 +36,12 @@ import {
 } from "@/lib/chat/attachment-meta";
 import type { Attachment } from "@/lib/chat/types";
 import { validateFiles } from "@/lib/chat/validate-files";
+import {
+  estimateMessageTokens,
+  type PrunableMessage,
+} from "@/lib/agent/compaction";
+import { summarizeMessages } from "@/lib/agent/summarize-messages";
+import { chatDb } from "@/lib/chat-db";
 import { openSettingsTab } from "@/lib/open-settings";
 import type { ThinkingConfig, ConversationMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -83,7 +90,7 @@ type ImagePreview = Extract<Attachment, { kind: "image" }>;
  * reset it to a stale string, dropping the "/ for skills & commands" hint).
  */
 const COMPOSER_PLACEHOLDER =
-  "Ask anything... Type @ to mention a tab, / for skills & commands";
+  "Ask anything... @ to mention a tab or past chat, / for skills & commands";
 
 interface ChatInputProps {
   value: string;
@@ -168,6 +175,11 @@ export interface TabMentionAttrs {
   favicon: string;
 }
 
+export interface ChatMentionAttrs {
+  title: string;
+  conversationId: string;
+}
+
 export type { Attachment, ImagePreview };
 
 export function extractTabMentions(json: JSONContent): TabMentionAttrs[] {
@@ -232,6 +244,222 @@ export async function formatMentionContext(
   }
 
   return `\n\n-----\n\n<Mentioned tabs>\n${blocks.join("\n\n---\n\n")}\n</Mentioned tabs>`;
+}
+
+/**
+ * Matches the markdown serialisation of a chat mention node —
+ * `#[Title](chat:<conversationId>)` — emitted by the ChatMention tiptap
+ * extension. Kept in sync with that extension's `markdownTokenizer`.
+ */
+const CHAT_MENTION_RE = /#\[([^\]]+)\]\(chat:([^)]+)\)/g;
+
+/**
+ * Extract chat mentions from already-serialised message text. Unlike tab
+ * mentions (extracted from editor JSON and threaded through `onSubmit`),
+ * chat mentions leave a self-describing `#[Title](chat:id)` token in the
+ * sent text, so the referenced conversations can be recovered downstream
+ * without changing the submit signature. De-duplicates by conversation id.
+ */
+export function extractChatMentionsFromText(text: string): ChatMentionAttrs[] {
+  const mentions: ChatMentionAttrs[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(CHAT_MENTION_RE)) {
+    const conversationId = match[2];
+    if (seen.has(conversationId)) continue;
+    seen.add(conversationId);
+    mentions.push({ title: match[1], conversationId });
+  }
+  return mentions;
+}
+
+/**
+ * Matches the markdown serialisation of a tab mention node — `@[Title](url)`.
+ * Kept in sync with the TabMention extension's `renderMarkdown`.
+ */
+const TAB_MENTION_RE = /@\[([^\]]+)\]\(([^)]+)\)/g;
+
+/**
+ * Extract tab mentions from already-serialised message text. Parallel to
+ * `extractChatMentionsFromText`; used when a send defers its mention
+ * resolution (e.g. LandingPage → first-turn dispatch) and only the message
+ * text is available. De-duplicates by url. Favicon is unused downstream
+ * (`formatMentionContext` fetches by url), so it's left blank.
+ */
+export function extractTabMentionsFromText(text: string): TabMentionAttrs[] {
+  const mentions: TabMentionAttrs[] = [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(TAB_MENTION_RE)) {
+    const url = match[2];
+    if (seen.has(url)) continue;
+    seen.add(url);
+    mentions.push({ title: match[1], url, favicon: "" });
+  }
+  return mentions;
+}
+
+/** Plain-text of a persisted message: prefer `content`, else join text parts. */
+function messageToPlainText(msg: {
+  content?: string;
+  parts?: { type: string; text?: string }[];
+}): string {
+  if (msg.content?.trim()) return msg.content.trim();
+  const fromParts = (msg.parts ?? [])
+    .filter((p) => p.type === "text" && p.text)
+    .map((p) => p.text as string)
+    .join("\n")
+    .trim();
+  return fromParts;
+}
+
+/**
+ * Token budget for a mentioned chat's verbatim transcript. At or below this
+ * we inline the transcript as-is; above it we summarize the conversation
+ * (once, cached) rather than blindly truncating, so the model gets the gist
+ * of a long chat instead of an arbitrary head slice.
+ */
+const CHAT_MENTION_MAX_TOKENS = 2000;
+
+/** Hard char cap for the fallback path when summarization is unavailable. */
+const CHAT_MENTION_FALLBACK_CHAR_CAP = 8000;
+
+/**
+ * Session cache of per-chat summaries. Mentioning the same chat repeatedly
+ * (or across several sends) shouldn't re-run the summary model. Keyed by
+ * conversation id and invalidated by a fingerprint of the chat's message
+ * count + last message id, so a chat that gained messages re-summarizes.
+ * In-memory only — a cache miss after reload just re-summarizes once.
+ */
+const chatMentionSummaryCache = new Map<
+  string,
+  { fingerprint: string; summary: string }
+>();
+
+/** Human-readable transcript of a chat's user/assistant turns. */
+function buildChatTranscript(
+  messages: {
+    role: string;
+    content?: string;
+    parts?: { type: string; text?: string }[];
+    summary?: boolean;
+  }[],
+): string {
+  const lines: string[] = [];
+  for (const m of messages) {
+    // Skip auto-compaction summaries — noise when the point is to reference
+    // what was actually discussed. (System rows are filtered by the caller.)
+    if (m.summary) continue;
+    const body = messageToPlainText(m);
+    if (!body) continue;
+    lines.push(`${m.role === "user" ? "User" : "Assistant"}: ${body}`);
+  }
+  return lines.join("\n\n");
+}
+
+export interface FormatChatMentionOptions {
+  /**
+   * Injectable summarizer (used by tests). Defaults to the real compaction
+   * model via `summarizeMessages`.
+   */
+  summarize?: (
+    messages: PrunableMessage[],
+    opts?: { signal?: AbortSignal },
+  ) => Promise<string | null>;
+  /** Token threshold override (used by tests). */
+  maxTokens?: number;
+  /** Aborts the in-flight chat summary (e.g. Stop pressed during resolution). */
+  signal?: AbortSignal;
+}
+
+/**
+ * Build the model-only context block for any chat mentions in the sent text.
+ * Loads each referenced conversation from chat-db and, per chat:
+ *   - short chats (<= `CHAT_MENTION_MAX_TOKENS`): inline the verbatim
+ *     transcript;
+ *   - long chats: attach a compaction-style summary instead (generated once
+ *     and cached), falling back to a truncated transcript if summarization
+ *     is unavailable.
+ * Everything is wrapped in a `<Mentioned chats>` block, mirroring
+ * `formatMentionContext`'s treatment of tabs. Returns "" when there are no
+ * chat mentions.
+ */
+export async function formatChatMentionContext(
+  text: string,
+  opts: FormatChatMentionOptions = {},
+): Promise<string> {
+  const mentions = extractChatMentionsFromText(text);
+  if (mentions.length === 0) return "";
+
+  const summarize = opts.summarize ?? summarizeMessages;
+  const maxTokens = opts.maxTokens ?? CHAT_MENTION_MAX_TOKENS;
+
+  const blocks: string[] = [];
+  for (const mention of mentions) {
+    const header = `[Chat: ${mention.title}]`;
+
+    let messages: Awaited<ReturnType<typeof chatDb.getMessages>>;
+    try {
+      messages = await chatDb.getMessages(mention.conversationId);
+    } catch {
+      blocks.push(`${header}\n(Unavailable)`);
+      continue;
+    }
+
+    // Only user/assistant turns are relevant as reference context.
+    const relevant = messages.filter((m) => m.role !== "system");
+    if (relevant.length === 0) {
+      blocks.push(`${header}\n(No messages)`);
+      continue;
+    }
+
+    const tokens = relevant.reduce(
+      (n, m) => n + estimateMessageTokens(m.parts),
+      0,
+    );
+
+    if (tokens <= maxTokens) {
+      const transcript = buildChatTranscript(relevant);
+      blocks.push(
+        transcript ? `${header}\n${transcript}` : `${header}\n(No messages)`,
+      );
+      continue;
+    }
+
+    // Long chat: summarize once (cached) instead of truncating.
+    const last = relevant[relevant.length - 1];
+    const fingerprint = `${relevant.length}:${last.id}`;
+    const cached = chatMentionSummaryCache.get(mention.conversationId);
+    let summary =
+      cached && cached.fingerprint === fingerprint ? cached.summary : null;
+    if (!summary) {
+      summary = await summarize(relevant as PrunableMessage[], {
+        signal: opts.signal,
+      });
+      if (summary) {
+        chatMentionSummaryCache.set(mention.conversationId, {
+          fingerprint,
+          summary,
+        });
+      }
+    }
+
+    if (summary) {
+      blocks.push(
+        `${header} (summarized from ${relevant.length} messages)\n${summary}`,
+      );
+      continue;
+    }
+
+    // Summarization unavailable — fall back to a truncated transcript.
+    let transcript = buildChatTranscript(relevant);
+    if (transcript.length > CHAT_MENTION_FALLBACK_CHAR_CAP) {
+      transcript = `${transcript.slice(0, CHAT_MENTION_FALLBACK_CHAR_CAP)}\n…[truncated]`;
+    }
+    blocks.push(
+      transcript ? `${header}\n${transcript}` : `${header}\n(No messages)`,
+    );
+  }
+
+  return `\n\n-----\n\n<Mentioned chats>\n${blocks.join("\n\n---\n\n")}\n</Mentioned chats>`;
 }
 
 function formatTokenCount(n: number): string {
@@ -684,6 +912,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
         },
       }),
       TabMention,
+      ChatMention,
       SkillSlash,
     ],
     editable: true,

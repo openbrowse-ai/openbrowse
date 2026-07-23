@@ -30,6 +30,7 @@ export type SerializedUIPart =
   | CompactionPart
   | CompletionCheckRejectionPart
   | PlanExtensionPart
+  | MentionContextPart
   | SerializedToolPart;
 
 /**
@@ -84,6 +85,26 @@ export type PlanExtensionData =
 export interface PlanExtensionPart {
   type: "data-plan-extension";
   data: PlanExtensionData;
+}
+
+/**
+ * Resolved mention context for a user message: the mentioned tabs' page
+ * content and/or the mentioned chats' transcripts, captured at send time
+ * so the snapshot reflects what the user saw. UI-invisible by design —
+ * nothing renders it (UserMessage only renders text parts); the transport
+ * substitutes it into a text part for the model (see
+ * substituteMentionContextPart in compacting-transport.ts). Persisted so
+ * the model's view stays consistent across reloads. The chip tokens
+ * themselves (@[title](url), #[title](chat:id)) live in the message's text
+ * part and render as chips; only the expanded context lives here.
+ */
+export interface MentionContextData {
+  text: string;
+}
+
+export interface MentionContextPart {
+  type: "data-mention-context";
+  data: MentionContextData;
 }
 
 /**
@@ -224,6 +245,7 @@ export type AgentDataParts = {
   "completion-check-rejection": CompletionCheckRejectionData;
   "completion-check-running": CompletionCheckRunningData;
   "plan-extension": PlanExtensionData;
+  "mention-context": MentionContextData;
 };
 
 /**

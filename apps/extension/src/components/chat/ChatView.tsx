@@ -4,6 +4,7 @@ import {
   type Attachment,
 } from "./ChatInput";
 import { MessageList } from "./MessageList";
+import { PendingMentionBubble } from "./PendingMentionBubble";
 import { computeShowThinking } from "./compute-show-thinking";
 import { PlanApprovalCard } from "./PlanApprovalCard";
 import { findPendingPlanApproval } from "./find-pending-plan-approval";
@@ -209,6 +210,9 @@ export function ChatView({
     isLoading: hookIsLoading,
     isStreaming: hookIsStreaming,
     isCompacting,
+    pendingMention,
+    enqueuingMention,
+    resolvingMessageId,
     isConfigured,
     settings,
     updateSettings,
@@ -592,8 +596,7 @@ export function ChatView({
       const text = msg.parts
         .filter((p) => p.type === "text")
         .map((p) => (p as { text: string }).text)
-        .join("")
-        .split("\n\n-----\n\n<Mentioned tabs>")[0];
+        .join("");
       setPreEditInput(inputRef.current);
       setEditing({ kind: "sent", id: messageId });
       setInput(text);
@@ -735,7 +738,7 @@ export function ChatView({
                 </button>
               </div>
             )}
-            {isConfigured && messages.length === 0 && editingArtifactId && (
+            {isConfigured && messages.length === 0 && !pendingMention && editingArtifactId && (
               <div className="flex flex-col items-center justify-center gap-4 text-center px-4 min-h-[calc(100vh-180px)]">
                 <Logo className="size-10" />
                 <div className="space-y-1">
@@ -764,7 +767,7 @@ export function ChatView({
                 </div>
               </div>
             )}
-            {isConfigured && messages.length === 0 && !editingArtifactId && (
+            {isConfigured && messages.length === 0 && !pendingMention && !editingArtifactId && (
               <div className="flex flex-col items-center justify-center gap-4 text-center px-4 min-h-[calc(100vh-180px)]">
                 <Logo className="size-10" />
                 <div className="space-y-1">
@@ -798,6 +801,7 @@ export function ChatView({
             {(messages.length > 0 || showThinking || error) && (
               <MessageList
                 messages={messages}
+                resolvingMessageId={resolvingMessageId}
                 isStreaming={isStreaming}
                 isLoading={isLoading}
                 isEditing={isEditing}
@@ -810,6 +814,9 @@ export function ChatView({
                 onRetry={handleRetry}
                 onDismissError={clearError}
               />
+            )}
+            {pendingMention && (
+              <PendingMentionBubble text={pendingMention.text} />
             )}
           </div>
         </ConversationContent>
@@ -868,13 +875,13 @@ export function ChatView({
             </button>
           </div>
         )}
-        {queue.length > 0 && (
+        {(queue.length > 0 || enqueuingMention) && (
           <Queue className="mb-1.5">
             <QueueSection defaultOpen>
               <QueueSectionTrigger>
                 <QueueSectionLabel
-                  count={queue.length}
-                  label={queue.length === 1 ? "Queued" : "Queued"}
+                  count={queue.length + (enqueuingMention ? 1 : 0)}
+                  label="Queued"
                 />
                 {/* Clear-queue affordance: only meaningful when there are
                     actually multiple items, but render unconditionally so the
@@ -983,6 +990,18 @@ export function ChatView({
                       </QueueItem>
                     );
                   })}
+                  {/* Optimistic placeholder while a queued chat mention's
+                      context resolves (see useAgentChat.queueMessage). Renders
+                      like a settled row but pulses to read as "working"; the
+                      real item replaces it once the snapshot is captured. */}
+                  {enqueuingMention && (
+                    <QueueItem className="animate-pulse" aria-hidden>
+                      <QueueItemIndicator />
+                      <QueueItemContent>
+                        {enqueuingMention.text}
+                      </QueueItemContent>
+                    </QueueItem>
+                  )}
                 </QueueList>
               </QueueSectionContent>
             </QueueSection>

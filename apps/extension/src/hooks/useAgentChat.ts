@@ -52,7 +52,10 @@ import {
 import {
   type TabMentionAttrs,
   type Attachment,
+  extractChatMentionsFromText,
+  extractTabMentionsFromText,
   formatMentionContext,
+  formatChatMentionContext,
 } from "@/components/chat/ChatInput";
 import { listAgents } from "@/lib/agent/subagents/registry";
 import { finalizeOrphanedChildrenForHeals } from "@/lib/agent/subagents/heal-orphan-children";
@@ -61,6 +64,7 @@ import {
   parseAgentMentions,
 } from "@/lib/chat/format-agent-mention";
 import {
+  buildMentionContextParts,
   extractTextContent,
   hasMeaningfulContent,
   serializeParts,
@@ -301,6 +305,13 @@ export function deserializePart(
       // `data-${string}` types to `unknown`-data variants).
       return {
         type: "data-completion-check-rejection",
+        data: p.data,
+      } as never;
+    case "data-mention-context":
+      // Round-trip resolved mention context so the model sees the same
+      // snapshot after a reload. No UI surface renders this part.
+      return {
+        type: "data-mention-context",
         data: p.data,
       } as never;
     case "dynamic-tool":
@@ -617,6 +628,25 @@ export function useAgentChat({
   initialModeRef.current = initialMode;
 
   const [isCompacting, setIsCompacting] = useState(false);
+  // Optimistic user bubble shown while a chat mention's context (possibly
+  // a summary) resolves at send time. Purely visual; see handleSubmit.
+  const [pendingMention, setPendingMention] = useState<{ text: string } | null>(
+    null,
+  );
+  // Optimistic queue row shown while a queued message's chat-mention context
+  // (possibly a summary) resolves at enqueue time. Purely visual; see
+  // queueMessage. The real queued item replaces it once the snapshot lands.
+  const [enqueuingMention, setEnqueuingMention] = useState<{
+    text: string;
+  } | null>(null);
+  // Id of a rendered message whose mention context is being resolved
+  // (summarized) in place before its first-turn dispatch — drives the chip
+  // shimmer on the real bubble. Used by the deferred-resolution path (e.g.
+  // sends started from the landing hero, which persist clean text and let
+  // this effect summarize once the chat view is on screen).
+  const [resolvingMessageId, setResolvingMessageId] = useState<string | null>(
+    null,
+  );
   // AbortController for the in-flight compaction summary call. The chat's
   // `stop()` cancels the agent stream; this cancels the summarization
   // LLM call separately.
@@ -979,8 +1009,12 @@ export function useAgentChat({
   // aborts only the local AI SDK stream — which for a viewer is a
   // no-op against an already-idle local Chat — and would leave the SW
   // run executing tools in the background.
+  // Aborts the deferred mention-context resolution (summary) running in the
+  // first-turn dispatch, so Stop cancels it just like a live compaction.
+  const mentionResolveAbortRef = useRef<AbortController | null>(null);
   const stop = useCallback(() => {
     compactionAbortRef.current?.abort();
+    mentionResolveAbortRef.current?.abort();
     forceRehydrateOnNextDoneRef.current = true;
     chatStop();
     const cid = conversationIdRef.current;
@@ -1001,7 +1035,7 @@ export function useAgentChat({
   // `isViewer` arm here the side panel would show the Send button as
   // if the chat were idle while the SW is busy executing tools, and
   // the auto-flush watcher would happily race the active SW run.
-  const isLoading = isInitiator || isViewer;
+  const isLoading = isInitiator || isViewer || resolvingMessageId !== null;
   
   // `isStreaming` is used by the MessageList to decide if the *entire
   // conversation* is active, which controls whether the latest tool
@@ -1880,6 +1914,7 @@ export function useAgentChat({
         }
 
         const persistedText = claimed.text + claimed.attachmentBlock;
+        const mentionParts = buildMentionContextParts(claimed.mentionContext);
         const fileParts: SerializedUIPart[] = claimed.visionFiles.map((vf) => ({
           type: "file" as const,
           mediaType: vf.mediaType,
@@ -1901,6 +1936,7 @@ export function useAgentChat({
               ? [{ type: "text" as const, text: persistedText }]
               : []),
             ...fileParts,
+            ...mentionParts,
           ],
           createdAt: Date.now(),
         });
@@ -1915,7 +1951,7 @@ export function useAgentChat({
           new Set(listAgents().map((a) => a.slug)),
         );
         const text =
-          agentPrefix + claimed.text + claimed.mentionContext + claimed.attachmentBlock;
+          agentPrefix + claimed.text + claimed.attachmentBlock;
         const files = claimed.visionFiles.map((vf) => ({
           type: "file" as const,
           mediaType: vf.mediaType,
@@ -1924,6 +1960,7 @@ export function useAgentChat({
         const sendParts: AgentMessage["parts"] = [
           ...(text ? [{ type: "text" as const, text }] : []),
           ...files,
+          ...mentionParts,
         ];
         sendMessage({
           id: userMessageId,
@@ -2058,7 +2095,80 @@ export function useAgentChat({
           const pending = await hasPendingFirstTurn(cid);
           if (pending && conversationIdRef.current === cid) {
             await clearPendingFirstTurn(cid);
+
+            // Resolve deferred mention context in place. Sends that defer
+            // resolution (LandingPage, so the hero navigates instantly)
+            // persist clean text with no data-mention-context part; we
+            // resolve tabs + summarize referenced chats here — with the
+            // message already on screen and its chip shimmering — then attach
+            // the model-only data part before dispatching. Messages that were
+            // resolved at send time (side panel) already carry the part and
+            // skip this entirely.
+            const alreadyResolved = lastMsg.parts.some(
+              (pt) => pt.type === "data-mention-context",
+            );
+            const msgText = lastMsg.parts
+              .filter((pt) => pt.type === "text")
+              .map((pt) => (pt as { text: string }).text)
+              .join("");
+            const tabMentions = extractTabMentionsFromText(msgText);
+            const needsResolve =
+              !alreadyResolved &&
+              (tabMentions.length > 0 ||
+                extractChatMentionsFromText(msgText).length > 0);
+
+            if (needsResolve) {
+              const ac = new AbortController();
+              mentionResolveAbortRef.current = ac;
+              setResolvingMessageId(lastMsg.id);
+              try {
+                const mentionContext =
+                  (await formatMentionContext(tabMentions)) +
+                  (await formatChatMentionContext(msgText, {
+                    signal: ac.signal,
+                  }));
+                if (!ac.signal.aborted) {
+                  const mentionParts = buildMentionContextParts(mentionContext);
+                  if (mentionParts.length > 0) {
+                    setMessages(
+                      uiMsgs.map((m) =>
+                        m.id === lastMsg.id
+                          ? { ...m, parts: [...m.parts, ...mentionParts] }
+                          : m,
+                      ),
+                    );
+                    const row = (await chatDb.getMessages(cid)).find(
+                      (r) => r.id === lastMsg.id,
+                    );
+                    if (row) {
+                      await chatDb.saveMessage({
+                        ...row,
+                        parts: [...row.parts, ...mentionParts],
+                      });
+                    }
+                  }
+                }
+              } catch {
+                // Resolution failed — fall through and dispatch without the
+                // extra context (the message itself still sends).
+              } finally {
+                mentionResolveAbortRef.current = null;
+              }
+              // Stop pressed during resolution: cancel the turn entirely.
+              if (ac.signal.aborted) {
+                setResolvingMessageId(null);
+                return;
+              }
+            }
+
+            if (conversationIdRef.current !== cid) {
+              setResolvingMessageId(null);
+              return;
+            }
+            // Dispatch BEFORE clearing the shimmer so `isLoading` stays true
+            // across the handoff (no idle flicker between resolve and stream).
             sendMessage();
+            setResolvingMessageId(null);
           }
         }
       }
@@ -2234,7 +2344,20 @@ export function useAgentChat({
       }
 
       const baseText = input.trim();
-      const mentionContext = await formatMentionContext(mentions);
+      // Optimistic echo while mention context resolves. When the message
+      // references a past chat, resolving it may run a (possibly slow)
+      // summarization (see formatChatMentionContext). Render a temporary user
+      // bubble with the mention chip shimmering so the send doesn't look
+      // frozen during that wait. Purely visual — the real turn still
+      // dispatches below, unchanged.
+      const hasChatMention = extractChatMentionsFromText(baseText).length > 0;
+      if (hasChatMention) {
+        setPendingMention({ text: baseText });
+        setInput("");
+      }
+      const mentionContext =
+        (await formatMentionContext(mentions)) +
+        (await formatChatMentionContext(baseText));
 
       let attachmentBlock: string;
       let visionFiles: { mediaType: string; url: string }[];
@@ -2250,22 +2373,33 @@ export function useAgentChat({
         toast.error(
           `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
         );
+        if (hasChatMention) {
+          setPendingMention(null);
+          setInput(baseText);
+        }
         return;
       }
 
       // `text` is what the model sees; `persistedText` is what we store in
-      // chat-db. Mention context is intentionally model-only (keeps the
-      // user's question clean in history); the attachment block, in
-      // contrast, must persist so `UserMessage` can re-render filename
-      // chips after a reload.
-      // The agent-mention prefix is model-only too (`@agent:<slug>` instructs
-      // the parent's first tool call), so we keep it out of `persistedText`.
+      // chat-db. The attachment block must persist so `UserMessage` can
+      // re-render filename chips after a reload. Mention context (mentioned
+      // tabs/chats) is NOT concatenated into `text` — it rides as a persisted
+      // `data-mention-context` part that the transport substitutes into model
+      // text, so the bubble stays clean with no UI-side stripping.
+      // The agent-mention prefix is model-only (`@agent:<slug>` instructs the
+      // parent's first tool call), so we keep it out of `persistedText`.
       const agentPrefix = formatAgentMentionPrefix(
         parseAgentMentions(baseText),
         new Set(listAgents().map((a) => a.slug)),
       );
-      const text = agentPrefix + baseText + mentionContext + attachmentBlock;
+      const text = agentPrefix + baseText + attachmentBlock;
       const persistedText = baseText + attachmentBlock;
+      // Mention context (mentioned tabs/chats) rides as a persisted
+      // data-mention-context part, not inline text: it stays out of the
+      // rendered bubble and is substituted into model text by the transport
+      // (see substituteMentionContextPart). Resolved above so the snapshot
+      // reflects what the user saw at send time.
+      const mentionParts = buildMentionContextParts(mentionContext);
 
       const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
@@ -2292,6 +2426,7 @@ export function useAgentChat({
         parts: [
           ...(persistedText ? [{ type: "text" as const, text: persistedText }] : []),
           ...fileParts,
+          ...mentionParts,
         ],
         createdAt: Date.now(),
       });
@@ -2335,23 +2470,26 @@ export function useAgentChat({
         // NOT). Cross-tab double-dispatch is prevented by the ownership
         // claim, not this marker.
         await markPendingFirstTurn(convId);
+        setPendingMention(null);
         onNewConversation(convId);
       } else {
         // Construct a full `UIMessage` (id + role + parts) instead of
         // the `{ text, files }` shorthand so the SDK adopts our
-        // `userMessageId` instead of generating its own. Note: `text`
-        // (with mention context) goes to the model; chatDb stores
-        // `persistedText` (without mention context) — same split as
-        // `confirmEdit`.
+        // `userMessageId` instead of generating its own. Mention context
+        // rides as a `data-mention-context` part (model-only, injected by
+        // the transport), so both stored and sent text stay clean — same
+        // split as `confirmEdit`.
         const sendParts: AgentMessage["parts"] = [
           ...(text ? [{ type: "text" as const, text }] : []),
           ...files,
+          ...mentionParts,
         ];
         sendMessage({
           id: userMessageId,
           role: "user",
           parts: sendParts,
         });
+        setPendingMention(null);
       }
     },
     [input, isConfigured, spaceId, onNewConversation, sendMessage, agentSettings.agentModel, settings.providerConfigs, messages, setMessages, getSharedTabId, editingArtifactId],
@@ -2409,7 +2547,18 @@ export function useAgentChat({
       }
 
       const baseText = input.trim();
-      const mentionContext = await formatMentionContext(mentions);
+      // Resolving a chat mention's context can run a slow summary. Clear the
+      // composer and show an optimistic placeholder row in the queue right
+      // away so enqueue doesn't look frozen while it resolves; the real
+      // queued item replaces it once the snapshot is captured below.
+      const hasChatMention = extractChatMentionsFromText(baseText).length > 0;
+      if (hasChatMention) {
+        setEnqueuingMention({ text: baseText });
+        setInput("");
+      }
+      const mentionContext =
+        (await formatMentionContext(mentions)) +
+        (await formatChatMentionContext(baseText));
 
       let attachmentBlock = "";
       let visionFiles: { mediaType: string; url: string }[] = [];
@@ -2423,6 +2572,10 @@ export function useAgentChat({
         toast.error(
           `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
         );
+        if (hasChatMention) {
+          setEnqueuingMention(null);
+          setInput(baseText);
+        }
         return;
       }
 
@@ -2436,6 +2589,7 @@ export function useAgentChat({
         createdAt: Date.now(),
       });
 
+      setEnqueuingMention(null);
       setInput("");
 
       if (isNew) {
@@ -2595,7 +2749,15 @@ export function useAgentChat({
       }
 
       const baseText = input.trim();
-      const mentionContext = await formatMentionContext(mentions);
+      // Optimistic echo while a chat mention's context resolves (possibly a
+      // slow summary). The edited turn's real bubble is dispatched below via
+      // sendMessage; until then, show the shimmering placeholder in its place
+      // so the edit doesn't look frozen. Mirrors handleSubmit.
+      const hasChatMention = extractChatMentionsFromText(baseText).length > 0;
+      if (hasChatMention) setPendingMention({ text: baseText });
+      const mentionContext =
+        (await formatMentionContext(mentions)) +
+        (await formatChatMentionContext(baseText));
 
       let attachmentBlock: string;
       let visionFiles: { mediaType: string; url: string }[];
@@ -2615,6 +2777,7 @@ export function useAgentChat({
         toast.error(
           `Failed to save attachments: ${(e as Error).message ?? String(e)}`,
         );
+        setPendingMention(null);
         return;
       }
 
@@ -2623,8 +2786,14 @@ export function useAgentChat({
         parseAgentMentions(baseText),
         new Set(listAgents().map((a) => a.slug)),
       );
-      const text = agentPrefix + baseText + mentionContext + attachmentBlock;
+      const text = agentPrefix + baseText + attachmentBlock;
       const persistedText = baseText + attachmentBlock;
+      // Mention context (mentioned tabs/chats) rides as a persisted
+      // data-mention-context part, not inline text: it stays out of the
+      // rendered bubble and is substituted into model text by the transport
+      // (see substituteMentionContextPart). Resolved above so the snapshot
+      // reflects what the user saw at send time.
+      const mentionParts = buildMentionContextParts(mentionContext);
 
       const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
@@ -2641,6 +2810,7 @@ export function useAgentChat({
         parts: [
           ...(persistedText ? [{ type: "text" as const, text: persistedText }] : []),
           ...fileParts,
+          ...mentionParts,
         ],
         createdAt: Date.now(),
       });
@@ -2663,6 +2833,7 @@ export function useAgentChat({
           mediaType: vf.mediaType,
           url: vf.url,
         })),
+        ...mentionParts,
       ];
 
       sendMessage({
@@ -2670,6 +2841,7 @@ export function useAgentChat({
         role: "user",
         parts: sendParts,
       });
+      setPendingMention(null);
     },
     [input, isConfigured, messages, setMessages, conversationId, sendMessage, agentSettings.agentModel],
   );
@@ -2743,6 +2915,9 @@ export function useAgentChat({
     isStreaming,
     isViewer,
     isCompacting,
+    pendingMention,
+    enqueuingMention,
+    resolvingMessageId,
     isConfigured,
     // True once the chat transport has finished building. The transport is
     // constructed synchronously (RemoteChatTransport), so on first render it

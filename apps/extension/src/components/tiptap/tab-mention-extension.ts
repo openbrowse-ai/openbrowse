@@ -1,6 +1,6 @@
 import Mention from "@tiptap/extension-mention";
 import type { JSONContent, MarkdownToken, MarkdownParseHelpers, MarkdownParseResult } from "@tiptap/core";
-import { tabMentionSuggestion } from "./tab-mention-suggestion";
+import { mentionSuggestion } from "./mention-suggestion";
 
 export const TabMention = Mention.extend({
   name: "tabMention",
@@ -70,7 +70,7 @@ export const TabMention = Mention.extend({
     },
   },
 }).configure({
-  suggestion: tabMentionSuggestion,
+  suggestion: mentionSuggestion,
   HTMLAttributes: { class: "tab-mention" },
 });
 

@@ -8,6 +8,8 @@ import { AlertCircle, RefreshCw, ShieldCheck } from "lucide-react";
 
 interface MessageListProps {
   messages: AgentUIMessage[];
+  /** Id of the message whose mention context is resolving (chip shimmer). */
+  resolvingMessageId?: string | null;
   isStreaming: boolean;
   isLoading: boolean;
   isEditing: boolean;
@@ -36,6 +38,7 @@ interface MessageListProps {
  */
 function MessageListImpl({
   messages,
+  resolvingMessageId,
   isStreaming,
   isLoading,
   isEditing,
@@ -128,6 +131,7 @@ function MessageListImpl({
             key={message.id}
             message={message}
             isStreaming={isLastAssistant}
+            resolving={message.id === resolvingMessageId}
             dimmed={isDimmed}
             onToolApproval={onToolApproval}
             onEdit={onEdit}

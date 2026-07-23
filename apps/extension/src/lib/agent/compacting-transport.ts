@@ -468,6 +468,7 @@ export function rewriteForLLM(
   const rewritten = working.map((m, i) => {
     let parts = m.parts;
     parts = substituteCompactionPart(parts);
+    parts = substituteMentionContextPart(parts);
     // Plan-extension markers are UI-only — strip before the LLM ever
     // sees them. The empty-parts filter below removes user messages
     // whose only content was a stripped marker.
@@ -894,6 +895,30 @@ function substituteCompactionPart(
       // TextUIPart is a member of `AgentUIMessage["parts"][number]`, so
       // pushing it widens to the union with no cast.
       out.push({ type: "text", text: COMPACTION_USER_PROMPT });
+      changed = true;
+    } else {
+      out.push(p);
+    }
+  }
+  return changed ? out : parts;
+}
+
+/**
+ * Replaces any `data-mention-context` part with a synthetic text part so
+ * the resolved mention context (mentioned tabs/chats, captured at send
+ * time) reaches the model. It is deliberately kept out of the message's
+ * own text part (see `MentionContextPart`) so the chat bubble renders
+ * clean without any UI-side stripping; this is the single injection
+ * point. Returns the same reference when nothing changed.
+ */
+function substituteMentionContextPart(
+  parts: AgentUIMessage["parts"],
+): AgentUIMessage["parts"] {
+  let changed = false;
+  const out: AgentUIMessage["parts"] = [];
+  for (const p of parts) {
+    if (p.type === "data-mention-context") {
+      out.push({ type: "text", text: p.data.text });
       changed = true;
     } else {
       out.push(p);
