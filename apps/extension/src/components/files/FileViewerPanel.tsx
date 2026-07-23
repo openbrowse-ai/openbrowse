@@ -354,11 +354,15 @@ export function FileViewerPanel({
   };
 
   const handleOpenInNewTab = () => {
-    chrome.tabs.create({
-      url: chrome.runtime.getURL(
-        `file.html?path=${encodeURIComponent(filePath)}&name=${encodeURIComponent(fileName)}`,
-      ),
-    });
+    chrome.tabs
+      .create({
+        url: chrome.runtime.getURL(
+          `file.html?path=${encodeURIComponent(filePath)}&name=${encodeURIComponent(fileName)}`,
+        ),
+      })
+      .catch(() => {
+        toast.error(`Couldn't open "${fileName}" in a new tab`);
+      });
   };
 
   const handleSaveToSpace = async () => {
