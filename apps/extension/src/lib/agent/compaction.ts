@@ -107,6 +107,8 @@ export function estimateMessageTokens(parts: SerializedUIPart[]): number {
       }
     } else if (part.type === "file") {
       total += estimateTokens(part.url);
+    } else if (part.type === "data-mention-context") {
+      total += estimateTokens(part.data.text);
     } else {
       // Default for other types
       total += 10;

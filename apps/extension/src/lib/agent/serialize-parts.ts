@@ -25,7 +25,11 @@
  */
 
 import type { UIMessage } from "ai";
-import type { AgentDataParts, SerializedUIPart } from "./message-types";
+import type {
+  AgentDataParts,
+  MentionContextPart,
+  SerializedUIPart,
+} from "./message-types";
 import { normalizeToolInputForPersistence } from "./tool-input-normalize";
 
 type AgentMessageParts = UIMessage<unknown, AgentDataParts>["parts"];
@@ -107,6 +111,12 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
         // a synthetic user-role marker that's stripped before reaching
         // the LLM (see `rewriteForLLM`).
         return [{ type: "data-plan-extension", data: part.data }];
+      case "data-mention-context":
+        // Round-trip resolved mention context (mentioned tabs/chats) so
+        // the model's view stays consistent across reloads. No UI surface
+        // renders it; the transport substitutes it into model text (see
+        // substituteMentionContextPart in compacting-transport.ts).
+        return [{ type: "data-mention-context", data: part.data }];
       case "data-completion-check-running":
         // Strip running indicators at serialize time. They're a live-
         // stream concern only:
@@ -225,6 +235,22 @@ export function serializeParts(parts: AgentMessageParts): SerializedUIPart[] {
       }
     }
   });
+}
+
+/**
+ * Wrap resolved mention context (mentioned tabs/chats) as a
+ * `data-mention-context` part, or an empty array when there is none. The
+ * part is persisted alongside the user message and substituted into model
+ * text by the transport (`substituteMentionContextPart`); it never renders
+ * in the chat bubble. Shared by every send path (side panel + landing) so
+ * the encoding stays in one place.
+ */
+export function buildMentionContextParts(
+  context: string,
+): MentionContextPart[] {
+  return context
+    ? [{ type: "data-mention-context", data: { text: context } }]
+    : [];
 }
 
 /** Concatenate the text portions of `parts` into a single string. */

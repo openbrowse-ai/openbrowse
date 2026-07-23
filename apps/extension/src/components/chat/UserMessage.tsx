@@ -33,9 +33,20 @@ interface UserMessageProps {
    */
   onRetry?: () => void;
   dimmed?: boolean;
+  /**
+   * True while this message's mention context is being resolved/summarized
+   * before dispatch. Shimmers the message's mention chips.
+   */
+  resolving?: boolean;
 }
 
-function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps) {
+function UserMessageImpl({
+  message,
+  onEdit,
+  onRetry,
+  dimmed,
+  resolving,
+}: UserMessageProps) {
   const [copied, setCopied] = useState(false);
   const [confirmRetryOpen, setConfirmRetryOpen] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -47,19 +58,11 @@ function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps)
     .join("");
 
   const { displayText, attachedPaths } = useMemo(() => {
-    // Parse the trailing <Attached files> block FIRST (it uses
-    // lastIndexOf and finds the block whether or not a <Mentioned tabs>
-    // block precedes it). LandingPage persists mentions BEFORE
-    // attachments, so a "split mentions then parse attachments" order
-    // would discard the attachment block on those messages. After
-    // parsing, strip any preceding <Mentioned tabs> block from the
-    // remaining displayText.
-    const { displayText: afterAttachments, attachedPaths } =
-      parseAttachedFiles(rawText);
-    const displayText = afterAttachments.split(
-      "\n\n-----\n\n<Mentioned tabs>",
-    )[0];
-    return { displayText, attachedPaths };
+    // Parse the trailing <Attached files> block. Mention context (mentioned
+    // tabs/chats) is no longer part of the message text — it rides as a
+    // separate data-mention-context part that the transport injects into the
+    // model prompt — so there is nothing to strip from the displayed bubble.
+    return parseAttachedFiles(rawText);
   }, [rawText]);
 
   const text = displayText;
@@ -144,10 +147,14 @@ function UserMessageImpl({ message, onEdit, onRetry, dimmed }: UserMessageProps)
         </div>
       )}
       {text && (
-        <div className="max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words">
+        <div
+          className={`max-w-[85%] rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground break-words ${
+            resolving ? "chat-mention-resolving" : ""
+          }`}
+        >
           <ReadOnlyEditor
             content={text}
-            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
+            className="text-secondary-foreground [&_*]:text-secondary-foreground [&>p]:!my-0 [&_p]:!my-0 [&_.tab-mention]:bg-foreground/10 [&_.chat-mention]:bg-foreground/10 [&_.skill-slash]:bg-foreground/10"
           />
         </div>
       )}

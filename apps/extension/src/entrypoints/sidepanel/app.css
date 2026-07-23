@@ -167,6 +167,37 @@ body {
   @apply inline-flex items-center rounded-sm bg-accent text-accent-foreground px-1 py-0.5 text-xs font-medium;
 }
 
+/* Shimmer on a mentioned-chat chip while its context resolves/summarizes
+   (PendingMentionBubble). A light sweep reads as "working" on either
+   theme without touching the chip's base color. */
+.chat-mention-resolving .chat-mention {
+  position: relative;
+  overflow: hidden;
+}
+.chat-mention-resolving .chat-mention::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-foreground, currentColor) 22%, transparent) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: chat-mention-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes chat-mention-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Tiptap chat mention chip */
+.chat-mention {
+  @apply inline-flex items-center rounded-sm bg-accent text-accent-foreground px-1 py-0.5 text-xs font-medium;
+}
+
 /* Tiptap skill slash chip */
 .skill-slash {
   @apply inline-flex items-center rounded-sm bg-primary/10 text-primary px-1 py-0.5 text-xs font-mono font-medium;

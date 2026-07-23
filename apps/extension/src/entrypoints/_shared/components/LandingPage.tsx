@@ -3,7 +3,6 @@ import {
   type Attachment,
   ChatInput,
   type ChatInputHandle,
-  formatMentionContext,
   type TabMentionAttrs,
 } from "@/components/chat/ChatInput";
 import { ChatInputHalo } from "@/components/chat/ChatInputHalo";
@@ -373,7 +372,7 @@ export function LandingPage({
   }, [providerModels, agentSettings, settings.favoriteModels]);
 
   const handleSubmit = useCallback(
-    async (mentions: TabMentionAttrs[], attachments: Attachment[]) => {
+    async (_mentions: TabMentionAttrs[], attachments: Attachment[]) => {
       if (!input.trim() && attachments.length === 0) return;
 
       const convId = crypto.randomUUID();
@@ -403,7 +402,6 @@ export function LandingPage({
       });
 
       const baseText = input.trim();
-      const mentionContext = await formatMentionContext(mentions);
 
       let attachmentBlock: string;
       let visionFiles: { mediaType: string; url: string }[];
@@ -421,11 +419,13 @@ export function LandingPage({
       }
 
       // Unlike useAgentChat.handleSubmit, LandingPage doesn't sendMessage
-      // directly — the side panel mounts on onNewConversation, reloads from
-      // chatDb, and replays via bare sendMessage(). The persisted record IS
-      // the model's first view, so mentionContext must survive into chatDb.
-      // The attachment block is appended after so chip rendering also survives.
-      const persistedFull = baseText + mentionContext + attachmentBlock;
+      // directly — the side panel / chat view mounts on onNewConversation,
+      // reloads from chatDb, and dispatches the first turn. We persist clean
+      // text and DEFER mention resolution to that first-turn dispatch (see
+      // useAgentChat's message-load effect), so the hero navigates instantly
+      // and any chat-mention summary is computed in the chat view with the
+      // message's chip shimmering in place.
+      const persistedText = baseText + attachmentBlock;
 
       const fileParts: SerializedUIPart[] = visionFiles.map((vf) => ({
         type: "file" as const,
@@ -437,10 +437,10 @@ export function LandingPage({
         id: crypto.randomUUID(),
         conversationId: convId,
         role: "user",
-        content: persistedFull,
+        content: persistedText,
         parts: [
-          ...(persistedFull
-            ? [{ type: "text" as const, text: persistedFull }]
+          ...(persistedText
+            ? [{ type: "text" as const, text: persistedText }]
             : []),
           ...fileParts,
         ],

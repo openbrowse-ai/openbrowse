@@ -1,6 +1,7 @@
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { ChatMentionReadonly } from "./chat-mention-extension";
 import { SkillSlashReadonly } from "./skill-slash-extension";
 import { TabMentionReadonly } from "./tab-mention-extension";
 
@@ -15,7 +16,13 @@ export function ReadOnlyEditor({ content, className }: ReadOnlyEditorProps) {
     editable: false,
     content,
     contentType: "markdown",
-    extensions: [StarterKit, Markdown, TabMentionReadonly, SkillSlashReadonly],
+    extensions: [
+      StarterKit,
+      Markdown,
+      TabMentionReadonly,
+      ChatMentionReadonly,
+      SkillSlashReadonly,
+    ],
     editorProps: {
       attributes: {
         class: className ?? "",
