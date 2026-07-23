@@ -21,6 +21,7 @@ import {
   X,
   Download,
   RefreshCw,
+  ExternalLink,
   FileIcon,
   FileCheck,
   FileClock,
@@ -65,6 +66,14 @@ interface FileViewerPanelProps {
    * with an explanatory tooltip (matching the Working Folder card).
    */
   spaceId?: string | null;
+  /**
+   * When true, renders an "Open in new tab" action that opens this same file
+   * in the standalone `file.html` viewer tab. Off by default; enabled by
+   * surfaces (e.g. the Space file rail) where popping the file out to its own
+   * tab is useful. The standalone tab itself omits this so it doesn't offer
+   * to re-open a copy of itself.
+   */
+  openInNewTab?: boolean;
   onClose: () => void;
   className?: string;
 }
@@ -145,6 +154,7 @@ export function FileViewerPanel({
   fileName,
   conversationId,
   spaceId,
+  openInNewTab = false,
   onClose,
   className,
 }: FileViewerPanelProps) {
@@ -343,6 +353,18 @@ export function FileViewerPanel({
     setRefreshKey((k) => k + 1);
   };
 
+  const handleOpenInNewTab = () => {
+    chrome.tabs
+      .create({
+        url: chrome.runtime.getURL(
+          `file.html?path=${encodeURIComponent(filePath)}&name=${encodeURIComponent(fileName)}`,
+        ),
+      })
+      .catch(() => {
+        toast.error(`Couldn't open "${fileName}" in a new tab`);
+      });
+  };
+
   const handleSaveToSpace = async () => {
     if (
       !conversationId ||
@@ -451,6 +473,11 @@ export function FileViewerPanel({
               disabled={loaded === null}
               onClick={handleSaveToSpace}
             />
+          )}
+          {openInNewTab && (
+            <IconButton onClick={handleOpenInNewTab} tooltip="Open in new tab">
+              <ExternalLink className="size-3.5" />
+            </IconButton>
           )}
           <IconButton
             onClick={handleDownload}

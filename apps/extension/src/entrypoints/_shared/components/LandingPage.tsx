@@ -746,6 +746,7 @@ export function LandingPage({
               filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
               fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
               spaceId={space.id}
+              openInNewTab
               onClose={() => setSelectedSpaceFile(null)}
             />
           </motion.div>
@@ -821,6 +822,7 @@ export function LandingPage({
                 filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
                 fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
                 spaceId={space.id}
+                openInNewTab
                 onClose={() => setSelectedSpaceFile(null)}
               />
             ) : (
