@@ -296,6 +296,7 @@ export function RightRail({
                   }
                   conversationId={conversationId}
                   spaceId={spaceId}
+                  openInNewTab
                   onClose={() => onSelectSpaceFile(null)}
                 />
               </motion.div>
