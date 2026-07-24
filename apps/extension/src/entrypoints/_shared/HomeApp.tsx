@@ -1,58 +1,58 @@
-import { formatMessageAsMarkdown } from "@/lib/format-markdown";
 import { ChatView } from "@/components/chat/ChatView";
 import { ContextUsage } from "@/components/chat/ContextUsage";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
 } from "@/components/ui/dialog";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuPortal,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
+    DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useActiveTabs } from "@/hooks/useActiveTabs";
-import { useTheme } from "@/hooks/useTheme";
 import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
-import { FileSelectionContext } from "@/lib/file-selection-context";
+import { useTheme } from "@/hooks/useTheme";
 import { artifactsEvents, type ArtifactCreatedDetail } from "@/lib/artifacts/events";
 import { chatDb } from "@/lib/chat-db";
+import { FileSelectionContext } from "@/lib/file-selection-context";
+import { formatMessageAsMarkdown } from "@/lib/format-markdown";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
 import {
-  Clock,
-  CopyIcon,
-  Download,
-  Ellipsis,
-  FileDown,
-  PanelRight,
-  Pencil,
-  Trash2,
+    Clock,
+    CopyIcon,
+    Download,
+    Ellipsis,
+    FileDown,
+    PanelRight,
+    Pencil,
+    Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -60,20 +60,20 @@ import { HomeSidebar } from "./components/HomeSidebar";
 import { LandingPage } from "./components/LandingPage";
 import { LibraryView } from "./components/LibraryView";
 import { RightRail } from "./components/RightRail";
-import { ScheduledView } from "./components/ScheduledView";
 import { ScheduledRunHost } from "./components/ScheduledRunHost";
+import { ScheduledView } from "./components/ScheduledView";
 import { SpacesPage } from "./components/SpacesPage";
 import {
-  formatHomeRoute,
-  parseHomeRoute,
-  sameView,
-  type HomeRoute,
+    formatHomeRoute,
+    parseHomeRoute,
+    sameView,
+    type HomeRoute,
 } from "./route";
 import {
-  type Surface,
-  shouldHostScheduledRuns,
-  resolveInitialSpaceId,
-  formatDocumentTitle,
+    formatDocumentTitle,
+    resolveInitialSpaceId,
+    shouldHostScheduledRuns,
+    type Surface,
 } from "./surface";
 
 interface HomeAppProps {
@@ -265,9 +265,35 @@ export default function HomeApp({ surface }: HomeAppProps) {
     return () => chrome.storage.onChanged.removeListener(listener);
   }, [surface]);
 
+  // This page's own window id, used to ignore TOGGLE_HOME_OVERLAY messages
+  // targeted at a different window (so ⌥K only toggles the focused window's
+  // home/newtab, not every open instance). Null until resolved / when unknown.
+  const ownWindowIdRef = useRef<number | null>(null);
   useEffect(() => {
-    const listener = (message: { type: string; action?: string }) => {
+    chrome.windows
+      .getCurrent()
+      .then((w) => {
+        ownWindowIdRef.current = w.id ?? null;
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const listener = (message: {
+      type: string;
+      action?: string;
+      windowId?: number;
+    }) => {
       if (message.type === "TOGGLE_HOME_OVERLAY") {
+        // Ignore toggles aimed at another window. Messages without a windowId
+        // (e.g. OPEN_OVERLAY_ACTION) are treated as broadcast and always apply.
+        if (
+          message.windowId != null &&
+          ownWindowIdRef.current != null &&
+          message.windowId !== ownWindowIdRef.current
+        ) {
+          return;
+        }
         if (message.action) {
           setOverlayAction(message.action);
           setShowOverlay(true);

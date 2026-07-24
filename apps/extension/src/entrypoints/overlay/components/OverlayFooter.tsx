@@ -1,17 +1,18 @@
 import { Kbd } from "@/components/ui/kbd";
-import type { OverlayTab } from "../OverlayApp";
 import type { Space } from "@/lib/types";
-import { ActionsPopover } from "./ActionsPopover";
-import { LogoMenu } from "./LogoMenu";
 import { Check, Sparkles } from "lucide-react";
 import { useState } from "react";
+import type { OverlayTab } from "../OverlayApp";
+import { ActionsPopover } from "./ActionsPopover";
+import { LogoMenu } from "./LogoMenu";
 
 interface OverlayFooterProps {
   actionsOpen: boolean;
   onActionsOpenChange: (open: boolean) => void;
   focusedTab: OverlayTab | null;
   isFavorited: boolean;
-  isActionMode: boolean;
+  showTabActions: boolean;
+  enterLabel: string;
   creatingSpace: boolean;
   tidyProgress: string;
   otherSpaces: Space[];
@@ -25,7 +26,8 @@ export function OverlayFooter({
   onActionsOpenChange,
   focusedTab,
   isFavorited,
-  isActionMode,
+  showTabActions,
+  enterLabel,
   creatingSpace,
   tidyProgress,
   otherSpaces,
@@ -72,10 +74,10 @@ export function OverlayFooter({
               onClick={() => focusedTab && onAction("open")}
               className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted transition-colors"
             >
-              {isActionMode ? "Run command" : "Open tab"}
+              {enterLabel}
               <Kbd>⏎</Kbd>
             </button>
-            {!isActionMode && (
+            {showTabActions && (
               <ActionsPopover
                 open={actionsOpen}
                 onOpenChange={onActionsOpenChange}

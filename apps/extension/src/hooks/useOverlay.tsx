@@ -4,10 +4,32 @@ export function useOverlay() {
   const [showOverlay, setShowOverlay] = useState(false);
   const [overlayAction, setOverlayAction] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // This context's own window id, so TOGGLE_HOME_OVERLAY aimed at another
+  // window is ignored (see HomeApp for the same guard).
+  const ownWindowIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    chrome.windows
+      .getCurrent()
+      .then((w) => {
+        ownWindowIdRef.current = w.id ?? null;
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
-    const listener = (message: { type: string; action?: string }) => {
+    const listener = (message: {
+      type: string;
+      action?: string;
+      windowId?: number;
+    }) => {
       if (message.type === "TOGGLE_HOME_OVERLAY") {
+        if (
+          message.windowId != null &&
+          ownWindowIdRef.current != null &&
+          message.windowId !== ownWindowIdRef.current
+        ) {
+          return;
+        }
         if (message.action) {
           setOverlayAction(message.action);
           setShowOverlay(true);

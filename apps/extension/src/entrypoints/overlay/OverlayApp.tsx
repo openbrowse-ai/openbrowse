@@ -1,20 +1,36 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useTidyProgress } from "./hooks/useTidyProgress";
-import type { AutoTidyNotification, FavoriteTabAssociation, Space, TidyState } from "@/lib/types";
-import { storage } from "@/lib/storage";
-import { openSettingsTab } from "@/lib/open-settings";
 import { useTheme } from "@/hooks/useTheme";
-import { OverlayHeader } from "./components/OverlayHeader";
-import { OverlayTabList, type ReorderEvent } from "./components/OverlayTabList";
-import { OverlayActionList, useFilteredActions } from "./components/OverlayActionList";
-import { OverlayFooter } from "./components/OverlayFooter";
-import { CreateSpaceForm } from "./components/CreateSpaceForm";
-import { ConfigureSpaceView } from "./components/ConfigureSpaceView";
-import { SpaceColorPicker } from "./components/SpaceColorPicker";
-import { AutoTidyBanner } from "./components/AutoTidyBanner";
 import { adjustColorsForMode, buildGradientBorder } from "@/lib/color-utils";
+import { openSettingsTab } from "@/lib/open-settings";
+import { storage } from "@/lib/storage";
+import type { AutoTidyNotification, FavoriteTabAssociation, Space, TidyState } from "@/lib/types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useFilteredActions } from "./components/actions";
+import { AutoTidyBanner } from "./components/AutoTidyBanner";
+import { ConfigureSpaceView } from "./components/ConfigureSpaceView";
+import { CreateSpaceForm } from "./components/CreateSpaceForm";
 import { MatchList } from "./components/match/MatchList";
+import { OverlayFooter } from "./components/OverlayFooter";
+import { OverlayHeader } from "./components/OverlayHeader";
+import { OverlayResultList } from "./components/OverlayResultList";
+import { OverlayTabList, type ReorderEvent } from "./components/OverlayTabList";
+import { SpaceColorPicker } from "./components/SpaceColorPicker";
+import { useTidyProgress } from "./hooks/useTidyProgress";
 import { buildMatches, MAX_RESULTS, type Match } from "./search/matches";
+import {
+    buildArtifactMatches,
+    buildChatMatches,
+    buildSpaceMatches,
+    commandToPaletteResult,
+    flattenGroups,
+    groupResults,
+    parseScope,
+    type ArtifactLite,
+    type ChatLite,
+    type PaletteGroup,
+    type PaletteKind,
+    type PaletteResult,
+    type SpaceLite,
+} from "./search/palette";
 import { loadShortcuts, recordShortcutSelection } from "./search/shortcuts";
 
 export interface OverlayTab {
@@ -93,14 +109,16 @@ export function OverlayApp() {
   const [allTabs, setAllTabs] = useState<OverlayTab[]>([]);
   const [query, setQuery] = useState("");
   const [focusIndex, setFocusIndex] = useState(0);
-  const [isActionMode, setIsActionMode] = useState(false);
+  // Active group scope (null = all groups). `"command"` replaces the old
+  // action-mode: commands are a first-class group reached via the `/` token,
+  // header click, or Tab — not a separate mode.
+  const [scope, setScope] = useState<PaletteKind | null>(null);
   const [creatingSpace, setCreatingSpace] = useState(false);
   const [renamingTabId, setRenamingTabId] = useState<number | null>(null);
   const [generatingTitles, setGeneratingTitles] = useState<Set<number>>(new Set());
   const [actionsOpen, setActionsOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const tidyProgress = useTidyProgress();
-  const isTidying = tidyProgress !== "";
   const inputRef = useRef<HTMLInputElement>(null);
   const createSpaceSubmitRef = useRef<(() => void) | null>(null);
   const [recentlyClosed, setRecentlyClosed] = useState<OverlayTab[]>([]);
@@ -114,6 +132,32 @@ export function OverlayApp() {
   const [previewColors, setPreviewColors] = useState<string[] | null>(null);
   const [previewColorMode, setPreviewColorMode] = useState<"auto" | "light" | "dark" | null>(null);
   const [autoTidyNotification, setAutoTidyNotification] = useState<AutoTidyNotification | null>(null);
+  // Universal search: chat + artifact metadata (fetched from the background on
+  // open) and the group a user has expanded past its cap via "show more".
+  const [chats, setChats] = useState<ChatLite[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactLite[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<PaletteKind>>(
+    () => new Set(),
+  );
+
+  // Chats live in the extension's IndexedDB and artifacts in OPFS — both are
+  // only reliably reachable from an extension context (the content-injected
+  // overlay iframe may be storage-partitioned), so fetch via the background.
+  // Each source fails independently: a rejected fetch just omits its group.
+  useEffect(() => {
+    chrome.runtime
+      .sendMessage({ type: "OVERLAY_LIST_CHATS" })
+      .then((res) => {
+        if (res?.ok && Array.isArray(res.chats)) setChats(res.chats);
+      })
+      .catch(() => {});
+    chrome.runtime
+      .sendMessage({ type: "OVERLAY_LIST_ARTIFACTS" })
+      .then((res) => {
+        if (res?.ok && Array.isArray(res.artifacts)) setArtifacts(res.artifacts);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     chrome.runtime.sendMessage({ type: "OVERLAY_READY" }).then((res) => {
@@ -225,8 +269,6 @@ export function OverlayApp() {
     return () => observer.disconnect();
   }, []);
 
-  const actionItems = useFilteredActions(query, spaces);
-
   const [systemDark, setSystemDark] = useState(
     () => window.matchMedia("(prefers-color-scheme: dark)").matches,
   );
@@ -287,15 +329,24 @@ export function OverlayApp() {
     [favoriteAssociationsList],
   );
 
-  const handleQueryChange = useCallback((value: string) => {
-    if (!isActionMode && value.startsWith("/")) {
-      setIsActionMode(true);
-      setQuery(value.slice(1));
-      setFocusIndex(0);
-      return;
-    }
-    setQuery(value);
-  }, [isActionMode]);
+  const handleQueryChange = useCallback(
+    (value: string) => {
+      // A leading scope token (chat: / art: / space: / "/") sets the group
+      // scope and is stripped from the visible query. History mode reads the
+      // query literally (no scoping).
+      if (!historyMode) {
+        const p = parseScope(value);
+        if (p.scope) {
+          setScope(p.scope);
+          setQuery(p.rest);
+          setFocusIndex(0);
+          return;
+        }
+      }
+      setQuery(value);
+    },
+    [historyMode],
+  );
 
   const sectionById = useMemo(() => {
     const map = new Map<string, string>();
@@ -353,12 +404,12 @@ export function OverlayApp() {
   const isFlatMode = hasQuery || historyMode;
 
   /**
-   * Unified ranked match list — used whenever the user is searching or in
-   * history mode. Empty state (no query, not in history mode) falls back to
-   * the legacy sectioned `OverlayTabList`.
+   * Unified ranked URL match list — shown whenever the user is searching (with
+   * no scope) or in history mode. A scope narrows away the URL group entirely;
+   * the empty state (no query, no scope) falls back to `OverlayTabList`.
    */
   const matches = useMemo<Match[]>(() => {
-    if (isActionMode || !isFlatMode) return [];
+    if (scope || !isFlatMode) return [];
     // Reference shortcutsLoaded to recompute when personalization arrives.
     void shortcutsLoaded;
 
@@ -382,8 +433,8 @@ export function OverlayApp() {
     });
     return all.slice(0, MAX_RESULTS);
   }, [
-    isActionMode,
     isFlatMode,
+    scope,
     query,
     enrichedTabs,
     closedFavorites,
@@ -398,13 +449,83 @@ export function OverlayApp() {
     shortcutsLoaded,
   ]);
 
+  // Space metadata for the Spaces group.
+  const spaceLites = useMemo<SpaceLite[]>(
+    () =>
+      spaces.map((s) => ({
+        id: s.id,
+        name: s.name,
+        icon: s.icon,
+        position: s.position,
+      })),
+    [spaces],
+  );
+
+  // Command results derived from the same action set as the old action-mode
+  // (spaces excluded here — they have their own group). Filtered by the query.
+  const commandItems = useFilteredActions(query.trim(), []);
+
+  // Entity/command groups. When a scope is active they are the whole view
+  // (single group); in unscoped flat search they sit below the URL results.
+  // History mode keeps its own dedicated list.
+  const paletteExtras = useMemo<{ groups: PaletteGroup[]; flat: PaletteResult[] }>(() => {
+    if (historyMode) return { groups: [], flat: [] };
+    if (!scope && !isFlatMode) return { groups: [], flat: [] };
+    const eq = query.trim();
+    const commandResults = commandItems
+      .filter((i) => i.type === "action")
+      .map((i, idx) => commandToPaletteResult(i, idx));
+    const groups = groupResults(
+      {
+        url: [],
+        chat: buildChatMatches(eq, chats),
+        artifact: buildArtifactMatches(eq, artifacts),
+        space: buildSpaceMatches(eq, spaceLites),
+        command: commandResults,
+      },
+      { scope, expanded: expandedGroups },
+    );
+    return { groups, flat: flattenGroups(groups) };
+  }, [
+    scope,
+    isFlatMode,
+    historyMode,
+    query,
+    commandItems,
+    chats,
+    artifacts,
+    spaceLites,
+    expandedGroups,
+  ]);
+
+  // Zero-state extras (no query): Recent chats, Recent artifacts, and a curated
+  // command shortlist — rendered below the tab list for discoverability.
+  const zeroExtras = useMemo<{ groups: PaletteGroup[]; flat: PaletteResult[] }>(() => {
+    if (scope || isFlatMode) return { groups: [], flat: [] };
+    const recentChats = buildChatMatches("", chats).slice(0, 3);
+    const recentArtifacts = buildArtifactMatches("", artifacts).slice(0, 3);
+    // Show the full command set in the zero state (same as the Commands scope),
+    // in their declared order.
+    const commands = commandItems
+      .filter((i) => i.type === "action")
+      .map((i, idx) => commandToPaletteResult(i, idx));
+    const groups: PaletteGroup[] = [];
+    if (recentChats.length)
+      groups.push({ kind: "chat", label: "Recent chats", results: recentChats, total: recentChats.length, hasMore: false });
+    if (recentArtifacts.length)
+      groups.push({ kind: "artifact", label: "Recent artifacts", results: recentArtifacts, total: recentArtifacts.length, hasMore: false });
+    if (commands.length)
+      groups.push({ kind: "command", label: "Commands", results: commands, total: commands.length, hasMore: false });
+    return { groups, flat: groups.flatMap((g) => g.results) };
+  }, [scope, isFlatMode, chats, artifacts, commandItems]);
+
   /**
    * Legacy sectioned list — used only for the empty (no-query, no-history-mode)
    * default view. Includes pinned, favorites, tidy sections, ungrouped, and
    * recently-closed bottom block.
    */
   const orderedTabs = useMemo(() => {
-    if (isActionMode) return enrichedTabs;
+    if (scope) return [];
     if (isFlatMode) {
       // When in flat mode, return matches converted to OverlayTab for footer/keyboard ops.
       return matches.map((m) => matchToOverlayTab(m, windowId));
@@ -430,22 +551,28 @@ export function OverlayApp() {
     for (const sectionTabs of sectionMap.values()) {
       result.push(...sectionTabs);
     }
-    const closedToShow = recentlyClosed
-      .filter((t) => !enrichedTabs.some((e) => e.url === t.url) && !favoriteUrls.has(t.url))
-      .slice(0, 8);
-    result.push(...ungrouped, ...closedToShow);
+    // Recently-closed tabs are intentionally omitted from the empty-query
+    // default view; they still surface when the user actually searches (via
+    // the `closed` source in the URL match pipeline).
+    result.push(...ungrouped);
     return result;
   }, [
-    isActionMode,
+    scope,
     isFlatMode,
     matches,
     windowId,
     enrichedTabs,
     associatedTabIds,
     closedFavorites,
-    recentlyClosed,
-    favoriteUrls,
   ]);
+
+  // Unified focus model: the shared `focusIndex` spans the primary list
+  // (URL matches in flat mode, tab list in zero state) followed by the extra
+  // grouped results below it. When a scope is active there is no primary list.
+  const showZeroExtras = !scope && !isFlatMode;
+  const extraGroups = showZeroExtras ? zeroExtras.groups : paletteExtras.groups;
+  const extrasFlat = showZeroExtras ? zeroExtras.flat : paletteExtras.flat;
+  const primaryCount = orderedTabs.length;
 
   const initialFocusSet = useRef(false);
   useEffect(() => {
@@ -462,10 +589,10 @@ export function OverlayApp() {
     if (initialFocusSet.current) setFocusIndex(0);
   }, [query]);
 
-  // Reset focus when entering/exiting flat-mode.
+  // Reset focus when entering/exiting flat-mode or changing scope.
   useEffect(() => {
     setFocusIndex(0);
-  }, [isFlatMode]);
+  }, [isFlatMode, scope]);
 
   /**
    * Inline autocomplete: if the top match is a personalized Shortcut and its
@@ -475,7 +602,7 @@ export function OverlayApp() {
    */
   const inlineCompletion = useMemo(() => {
     const q = query.trim();
-    if (!q || isActionMode || !matches.length) return "";
+    if (!q || scope || !matches.length) return "";
     const top = matches[0];
     if (!top.isShortcut) return "";
     const candidates: string[] = [];
@@ -495,7 +622,7 @@ export function OverlayApp() {
       }
     }
     return "";
-  }, [matches, query, isActionMode]);
+  }, [matches, query, scope]);
 
   useEffect(() => {
     const q = query.trim();
@@ -692,14 +819,14 @@ export function OverlayApp() {
       }
       if (actionId === "new-space") {
         setCreatingSpace(true);
-        setIsActionMode(false);
+        setScope(null);
         setQuery("");
         setFocusIndex(0);
         return;
       }
       if (actionId === "history") {
         setHistoryMode(true);
-        setIsActionMode(false);
+        setScope(null);
         setQuery("");
         setFocusIndex(0);
         return;
@@ -707,6 +834,10 @@ export function OverlayApp() {
       const res = await chrome.runtime.sendMessage({
         type: "OVERLAY_GLOBAL_ACTION",
         action: actionId,
+        // The overlay iframe's `sender.tab.windowId` isn't reliably populated in
+        // the background, so pass our known window id explicitly. Actions like
+        // `tidy`/`clean` require it and otherwise silently no-op.
+        windowId: windowId ?? undefined,
       });
       if (actionId === "clean" && res?.closedCount) {
         showToast(
@@ -721,9 +852,9 @@ export function OverlayApp() {
       }
     },
     // NOTE: relies on `handleOpenConfigureSpace` being a stable callback (its
-    // own deps are []). Adding it to deps would cause a TDZ error since it's
-    // declared further down in this component.
-    [],
+    // own deps are []); adding it to deps would cause a TDZ error since it's
+    // declared further down. `windowId` is declared above, so it's safe in deps.
+    [windowId],
   );
 
   const createSpaceAndOpen = useCallback(
@@ -871,14 +1002,6 @@ export function OverlayApp() {
     [fetchTabs, activeSpaceId, favoriteAssociationsList],
   );
 
-  const handleReorderSpaces = useCallback(
-    async (updated: Space[]) => {
-      setSpaces(updated);
-      await storage.setSpaces(updated);
-    },
-    [],
-  );
-
   const dismissAutoTidyNotification = useCallback(() => {
     setAutoTidyNotification(null);
     chrome.runtime.sendMessage({ type: "DISMISS_AUTO_TIDY_NOTIFICATION" });
@@ -886,7 +1009,7 @@ export function OverlayApp() {
 
   const handleOpenConfigureSpace = useCallback(() => {
     setConfiguringSpace(true);
-    setIsActionMode(false);
+    setScope(null);
     setQuery("");
     setFocusIndex(0);
   }, []);
@@ -968,6 +1091,58 @@ export function OverlayApp() {
     [],
   );
 
+  // Dispatch Enter/click on a non-URL result to its typed action.
+  const dispatchResultAction = useCallback(
+    (result: PaletteResult) => {
+      const action = result.action;
+      switch (action.type) {
+        case "openChat":
+          chrome.runtime.sendMessage({
+            type: "OVERLAY_OPEN_CHAT",
+            conversationId: action.conversationId,
+          });
+          closeOverlay();
+          break;
+        case "openArtifact":
+          chrome.runtime.sendMessage({
+            type: "OVERLAY_OPEN_ARTIFACT",
+            artifactId: action.artifactId,
+          });
+          closeOverlay();
+          break;
+        case "switchSpace":
+          handleSwitchSpace(action.spaceId);
+          break;
+        case "command":
+          execGlobalAction(action.commandId);
+          break;
+        case "url":
+          break;
+      }
+    },
+    [handleSwitchSpace, execGlobalAction],
+  );
+
+  const handleScope = useCallback((kind: PaletteKind) => {
+    setScope(kind);
+    setFocusIndex(0);
+    inputRef.current?.focus();
+  }, []);
+
+  const clearScope = useCallback(() => {
+    setScope(null);
+    setFocusIndex(0);
+    inputRef.current?.focus();
+  }, []);
+
+  const handleExpandGroup = useCallback((kind: PaletteKind) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      next.add(kind);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
@@ -997,9 +1172,7 @@ export function OverlayApp() {
 
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        if (!isActionMode) {
-          setActionsOpen((prev) => !prev);
-        }
+        setActionsOpen((prev) => !prev);
         return;
       }
 
@@ -1015,12 +1188,10 @@ export function OverlayApp() {
           setConfiguringSpace(false);
         } else if (creatingSpace) {
           setCreatingSpace(false);
-          setIsActionMode(true);
           setQuery("");
           setFocusIndex(0);
-        } else if (isActionMode) {
-          setIsActionMode(false);
-          setQuery("");
+        } else if (scope) {
+          setScope(null);
           setFocusIndex(0);
         } else if (historyMode && !query) {
           setHistoryMode(false);
@@ -1033,9 +1204,9 @@ export function OverlayApp() {
         return;
       }
 
-      if (e.key === "Backspace" && isActionMode && !query) {
+      if (e.key === "Backspace" && scope && !query) {
         e.preventDefault();
-        setIsActionMode(false);
+        setScope(null);
         setFocusIndex(0);
         return;
       }
@@ -1048,7 +1219,18 @@ export function OverlayApp() {
 
       if (creatingSpace || renamingTabId !== null) return;
 
-      const listLength = isActionMode ? actionItems.length : orderedTabs.length;
+      const listLength = primaryCount + extrasFlat.length;
+
+      // Tab scopes to the group of the currently focused extra result (S2).
+      if (e.key === "Tab") {
+        const localIdx = focusIndex - primaryCount;
+        const focused = localIdx >= 0 ? extrasFlat[localIdx] : undefined;
+        if (focused) {
+          e.preventDefault();
+          handleScope(focused.kind);
+          return;
+        }
+      }
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -1063,15 +1245,9 @@ export function OverlayApp() {
 
       if (e.key === "Enter" && !actionsOpen) {
         e.preventDefault();
-        if (isActionMode) {
-          const item = actionItems[focusIndex];
-          if (item) {
-            if (item.type === "space") {
-              handleSwitchSpace(item.id.replace("space-", ""));
-            } else {
-              execGlobalAction(item.id);
-            }
-          }
+        if (focusIndex >= primaryCount) {
+          const result = extrasFlat[focusIndex - primaryCount];
+          if (result) dispatchResultAction(result);
         } else {
           execAction("open");
         }
@@ -1081,9 +1257,23 @@ export function OverlayApp() {
 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [orderedTabs.length, actionItems, actionsOpen, query, execAction, execGlobalAction, handleSwitchSpace, isActionMode, creatingSpace, renamingTabId, focusIndex, historyMode, editingColor, configuringSpace, handleExitColorPicker]);
+  }, [orderedTabs.length, actionsOpen, query, execAction, execGlobalAction, handleSwitchSpace, scope, creatingSpace, renamingTabId, focusIndex, historyMode, editingColor, configuringSpace, handleExitColorPicker, primaryCount, extrasFlat, dispatchResultAction, handleScope]);
 
   const isFavorited = focusedTab ? favoriteUrls.has(focusedTab.url) : false;
+
+  // Footer state: what Enter does + whether the tab ActionsPopover applies.
+  const focusedResult =
+    focusIndex >= primaryCount ? extrasFlat[focusIndex - primaryCount] ?? null : null;
+  const enterLabel = focusedResult
+    ? focusedResult.kind === "chat"
+      ? "Open chat"
+      : focusedResult.kind === "artifact"
+        ? "Open artifact"
+        : focusedResult.kind === "space"
+          ? "Switch space"
+          : "Run command"
+    : "Open tab";
+  const showTabActions = !scope && !focusedResult && !!focusedTab;
 
   if (!ready) return null;
 
@@ -1108,7 +1298,7 @@ export function OverlayApp() {
           query={query}
           onQueryChange={handleQueryChange}
           inputRef={inputRef}
-          isActionMode={isActionMode}
+          scope={scope}
           creatingSpace={creatingSpace}
           configuringSpace={configuringSpace}
           editingColor={editingColor}
@@ -1128,18 +1318,39 @@ export function OverlayApp() {
               setConfiguringSpace(false);
             } else {
               setCreatingSpace(false);
-              setIsActionMode(true);
               setQuery("");
               setFocusIndex(0);
             }
           }}
           onConfigureSpace={handleOpenConfigureSpace}
         />
-        {autoTidyNotification && !isActionMode && !creatingSpace && !configuringSpace && !editingColor && (
+        {autoTidyNotification && !scope && !creatingSpace && !configuringSpace && !editingColor && (
           <AutoTidyBanner
             notification={autoTidyNotification}
             onDismiss={dismissAutoTidyNotification}
           />
+        )}
+        {scope && (
+          <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+            <span className="text-xs text-muted-foreground">Filtering</span>
+            <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
+              {scope === "artifact"
+                ? "Artifacts"
+                : scope === "chat"
+                  ? "Chats"
+                  : scope === "space"
+                    ? "Spaces"
+                    : "Commands"}
+            </span>
+            <button
+              type="button"
+              onClick={clearScope}
+              className="ml-auto flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="Clear filter"
+            >
+              ✕
+            </button>
+          </div>
         )}
         {editingColor ? (
           <SpaceColorPicker
@@ -1163,61 +1374,96 @@ export function OverlayApp() {
           />
         ) : creatingSpace ? (
           <CreateSpaceForm onSubmit={createSpaceAndOpen} submitRef={createSpaceSubmitRef} />
-        ) : isActionMode ? (
-          <OverlayActionList
-            actionQuery={query}
-            spaces={spaces}
-            activeSpaceId={activeSpaceId}
-            focusIndex={focusIndex}
-            isTidying={isTidying}
-            tidyProgress={tidyProgress}
-            onFocusIndex={setFocusIndex}
-            onAction={execGlobalAction}
-            onSwitchSpace={handleSwitchSpace}
-            onReorderSpaces={handleReorderSpaces}
-          />
+        ) : scope ? (
+          <div className="max-h-80 overflow-y-auto overflow-x-hidden">
+            <OverlayResultList
+              groups={paletteExtras.groups}
+              focusOffset={0}
+              focusIndex={focusIndex}
+              onFocusIndex={handleFocusIndex}
+              onActivate={dispatchResultAction}
+              onScope={handleScope}
+              onExpand={handleExpandGroup}
+            />
+            {paletteExtras.groups.length === 0 && (
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                No matching results.
+              </div>
+            )}
+          </div>
         ) : isFlatMode ? (
-          <MatchList
-            matches={matches}
-            focusIndex={focusIndex}
-            onFocusIndex={handleFocusIndex}
-            onAccept={(m) => execAction("open", matchToOverlayTab(m, windowId))}
-            onClose={(m) => execAction("close", matchToOverlayTab(m, windowId))}
-            onTogglePin={(m) =>
-              execAction(m.pinned ? "unpin" : "pin", matchToOverlayTab(m, windowId))
-            }
-            onToggleFavorite={(m) => {
-              const isFav =
-                m.source === "favorite-open" ||
-                m.source === "favorite-closed" ||
-                favoriteUrls.has(m.url);
-              execAction(isFav ? "unfavorite" : "favorite", matchToOverlayTab(m, windowId));
-            }}
-            emptyMessage={
-              historyMode && !query.trim() ? "No history yet." : "No matching results."
-            }
-          />
+          <>
+            {(matches.length > 0 || extrasFlat.length === 0) && (
+              <MatchList
+                matches={matches}
+                focusIndex={focusIndex}
+                onFocusIndex={handleFocusIndex}
+                onAccept={(m) => execAction("open", matchToOverlayTab(m, windowId))}
+                onClose={(m) => execAction("close", matchToOverlayTab(m, windowId))}
+                onTogglePin={(m) =>
+                  execAction(m.pinned ? "unpin" : "pin", matchToOverlayTab(m, windowId))
+                }
+                onToggleFavorite={(m) => {
+                  const isFav =
+                    m.source === "favorite-open" ||
+                    m.source === "favorite-closed" ||
+                    favoriteUrls.has(m.url);
+                  execAction(isFav ? "unfavorite" : "favorite", matchToOverlayTab(m, windowId));
+                }}
+                emptyMessage={
+                  historyMode && !query.trim() ? "No history yet." : "No matching results."
+                }
+              />
+            )}
+            {!historyMode && extraGroups.length > 0 && (
+              <div className="max-h-72 overflow-y-auto overflow-x-hidden">
+                <OverlayResultList
+                  groups={extraGroups}
+                  focusOffset={matches.length}
+                  focusIndex={focusIndex}
+                  onFocusIndex={handleFocusIndex}
+                  onActivate={dispatchResultAction}
+                  onScope={handleScope}
+                  onExpand={handleExpandGroup}
+                  topDivider={matches.length > 0}
+                />
+              </div>
+            )}
+          </>
         ) : (
-          <OverlayTabList
-            tabs={orderedTabs}
-            focusIndex={focusIndex}
-            onFocusIndex={handleFocusIndex}
-            onOpen={(tab) => execAction("open", tab)}
-            onAction={(action, tab) => execAction(action, tab)}
-            onReorder={handleReorder}
-            onRenameSection={handleRenameSection}
-            onArchiveSection={handleArchiveSection}
-            renamingTabId={renamingTabId}
-            onStartRename={(tab) => setRenamingTabId(tab.id)}
-            onSubmitRename={submitRename}
-            onCancelRename={() => setRenamingTabId(null)}
-            favoriteUrls={favoriteUrls}
-            associatedTabIds={associatedTabIds}
-            favoriteAssociations={favoriteAssociationsMap}
-            isSearching={false}
-            historyMode={false}
-            generatingTitles={generatingTitles}
-          />
+          <>
+            <OverlayTabList
+              tabs={orderedTabs}
+              focusIndex={focusIndex}
+              onFocusIndex={handleFocusIndex}
+              onOpen={(tab) => execAction("open", tab)}
+              onAction={(action, tab) => execAction(action, tab)}
+              onReorder={handleReorder}
+              onRenameSection={handleRenameSection}
+              onArchiveSection={handleArchiveSection}
+              renamingTabId={renamingTabId}
+              onStartRename={(tab) => setRenamingTabId(tab.id)}
+              onSubmitRename={submitRename}
+              onCancelRename={() => setRenamingTabId(null)}
+              favoriteUrls={favoriteUrls}
+              associatedTabIds={associatedTabIds}
+              favoriteAssociations={favoriteAssociationsMap}
+              isSearching={false}
+              historyMode={false}
+              generatingTitles={generatingTitles}
+            />
+            {zeroExtras.groups.length > 0 && (
+              <div className="max-h-60 overflow-y-auto overflow-x-hidden border-t border-border">
+                <OverlayResultList
+                  groups={zeroExtras.groups}
+                  focusOffset={orderedTabs.length}
+                  focusIndex={focusIndex}
+                  onFocusIndex={handleFocusIndex}
+                  onActivate={dispatchResultAction}
+                />
+              </div>
+            )}
+          </>
         )}
         {!configuringSpace && !editingColor && (
           <OverlayFooter
@@ -1225,7 +1471,8 @@ export function OverlayApp() {
             onActionsOpenChange={setActionsOpen}
             focusedTab={focusedTab}
             isFavorited={isFavorited}
-            isActionMode={isActionMode}
+            showTabActions={showTabActions}
+            enterLabel={enterLabel}
             creatingSpace={creatingSpace}
             tidyProgress={tidyProgress}
             otherSpaces={otherSpaces}
