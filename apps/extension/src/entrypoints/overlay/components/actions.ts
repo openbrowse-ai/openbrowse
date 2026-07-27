@@ -1,9 +1,7 @@
-import type { Space } from "@/lib/types";
 import {
     AppWindowMacIcon,
     BrushCleaningIcon,
     Clock,
-    Layers,
     Maximize2,
     MessageCircle,
     Palette,
@@ -36,25 +34,9 @@ function matchesQuery(label: string, query: string): boolean {
 }
 
 /**
- * Filter the overlay's command actions (and, optionally, spaces) by a query.
- * Actions feed the palette's Commands group; spaces feed the Spaces group.
+ * Filter the overlay's command actions by a query. Actions feed the palette's
+ * Commands group; spaces are matched separately via `buildSpaceMatches`.
  */
-export function useFilteredActions(
-  actionQuery: string,
-  spaces: Space[],
-): ActionItem[] {
-  const filteredActions = ACTIONS.filter((a) =>
-    matchesQuery(a.label, actionQuery),
-  );
-  const filteredSpaces = spaces
-    .filter((s) => matchesQuery(s.name, actionQuery))
-    .map(
-      (s): ActionItem => ({
-        id: `space-${s.id}`,
-        label: s.name,
-        icon: Layers,
-        type: "space",
-      }),
-    );
-  return [...filteredActions, ...filteredSpaces];
+export function useFilteredActions(actionQuery: string): ActionItem[] {
+  return ACTIONS.filter((a) => matchesQuery(a.label, actionQuery));
 }

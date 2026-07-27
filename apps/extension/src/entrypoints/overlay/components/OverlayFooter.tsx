@@ -17,6 +17,8 @@ interface OverlayFooterProps {
   tidyProgress: string;
   otherSpaces: Space[];
   onAction: (action: string) => void;
+  /** Activate the currently focused result (tab, chat, artifact, space, or command). */
+  onEnter: () => void;
   onCreateSpace: () => void;
   onClose: () => void;
 }
@@ -32,6 +34,7 @@ export function OverlayFooter({
   tidyProgress,
   otherSpaces,
   onAction,
+  onEnter,
   onCreateSpace,
   onClose,
 }: OverlayFooterProps) {
@@ -71,7 +74,7 @@ export function OverlayFooter({
         ) : (
           <>
             <button
-              onClick={() => focusedTab && onAction("open")}
+              onClick={onEnter}
               className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-muted transition-colors"
             >
               {enterLabel}

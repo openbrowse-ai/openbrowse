@@ -17,9 +17,13 @@ What changed:
 UI polish and fixes bundled in:
 
 - **Tab-row drag handle** no longer reserves a column — the grip now appears over the favicon on hover, tightening every row.
-- The Home sidebar button is relabeled **"Search"** (it's no longer tabs-only), and the palette placeholder reads "Search tabs, chats, artifacts…  / for commands".
+- The Home sidebar button is relabeled **"Search"** (it's no longer tabs-only), and the palette placeholder reads "Search tabs, chats, artifacts… / for commands".
 - **⌥K now works on the new-tab page.** The `open-search` command bailed on `chrome://newtab/` before checking for our own pages; it now routes the NTP (and any of our extension pages) to the in-page overlay toggle.
 - **`TOGGLE_HOME_OVERLAY` is window-scoped.** `HomeApp` and the settings-page `useOverlay` hook ignore toggles aimed at another window (messages without a `windowId` still broadcast), so ⌥K only toggles the focused window's palette instead of every open home/new-tab instance.
 - **`Tidy tabs` / `Clean` work from the palette again.** `execGlobalAction` now passes the overlay's known `windowId` in `OVERLAY_GLOBAL_ACTION`; previously the background couldn't resolve a window from the overlay iframe and these actions silently no-oped.
+- **Enter (⏎) activates any focused result.** The footer's ⏎ button and keyboard Enter now share one path, so it opens the focused chat/artifact/space/command — not just tabs.
+- **`space:` scope lists every space** (ordered by position) on an empty query, matching the other scopes' zero-state behavior.
+- **Opening an artifact reuses its existing tab** when one is already open, instead of stacking duplicates.
+- **Scoped `TOGGLE_HOME_OVERLAY` no longer races startup.** If a window-scoped toggle arrives before a home/new-tab instance has resolved its own window id, it resolves the id first and applies only on a match, so early ⌥K presses never leak to the wrong window.
 
 **Test surface.** +20 unit tests for the palette foundation (`overlay/search/palette.test.ts`: builders, scope-token parsing, grouping/caps/scope, and the `Match → PaletteResult` adapter). All 2,208 tests pass; `tsc --noEmit` clean.

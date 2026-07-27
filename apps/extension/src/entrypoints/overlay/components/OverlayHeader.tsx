@@ -2,7 +2,7 @@ import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Space } from "@/lib/types";
 import { ArrowLeft, Clock, Search, Sparkles } from "lucide-react";
-import type { PaletteKind } from "../search/palette";
+import { GROUP_LABELS, type PaletteKind } from "../search/palette";
 import { SpacePicker } from "./SpacePicker";
 
 function isCaretAtEnd(el: HTMLInputElement): boolean {
@@ -80,16 +80,7 @@ export function OverlayHeader({
     );
   }
 
-  const scopeLabel =
-    scope === "chat"
-      ? "chats"
-      : scope === "artifact"
-        ? "artifacts"
-        : scope === "space"
-          ? "spaces"
-          : scope === "command"
-            ? "commands"
-            : null;
+  const scopeLabel = scope ? GROUP_LABELS[scope] : null;
   const placeholder = scopeLabel
     ? `Search ${scopeLabel}...`
     : historyMode

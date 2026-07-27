@@ -279,28 +279,43 @@ export default function HomeApp({ surface }: HomeAppProps) {
   }, []);
 
   useEffect(() => {
+    const applyToggle = (message: { action?: string }) => {
+      if (message.action) {
+        setOverlayAction(message.action);
+        setShowOverlay(true);
+      } else {
+        setShowOverlay((prev) => !prev);
+      }
+    };
+
     const listener = (message: {
       type: string;
       action?: string;
       windowId?: number;
     }) => {
-      if (message.type === "TOGGLE_HOME_OVERLAY") {
-        // Ignore toggles aimed at another window. Messages without a windowId
-        // (e.g. OPEN_OVERLAY_ACTION) are treated as broadcast and always apply.
-        if (
-          message.windowId != null &&
-          ownWindowIdRef.current != null &&
-          message.windowId !== ownWindowIdRef.current
-        ) {
-          return;
-        }
-        if (message.action) {
-          setOverlayAction(message.action);
-          setShowOverlay(true);
-        } else {
-          setShowOverlay((prev) => !prev);
-        }
+      if (message.type !== "TOGGLE_HOME_OVERLAY") return;
+
+      // Messages without a windowId are broadcasts and always apply here.
+      if (message.windowId == null) {
+        applyToggle(message);
+        return;
       }
+
+      // Scoped message: only the targeted window should react. If our own
+      // window id isn't resolved yet, resolve it first rather than falling
+      // through — otherwise a scoped toggle arriving during startup would be
+      // mis-applied to the wrong window.
+      if (ownWindowIdRef.current != null) {
+        if (message.windowId === ownWindowIdRef.current) applyToggle(message);
+        return;
+      }
+      chrome.windows
+        .getCurrent()
+        .then((w) => {
+          ownWindowIdRef.current = w.id ?? null;
+          if (message.windowId === ownWindowIdRef.current) applyToggle(message);
+        })
+        .catch(() => {});
     };
     chrome.runtime.onMessage.addListener(listener);
 

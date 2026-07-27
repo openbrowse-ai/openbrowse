@@ -1191,11 +1191,30 @@ export default defineBackground({
               type: string;
               artifactId: string;
             };
-            await chrome.tabs.create({
-              url: chrome.runtime.getURL(
-                `artifact.html?id=${encodeURIComponent(artifactId)}`,
-              ),
+            const base = chrome.runtime.getURL("artifact.html");
+            // Reuse an already-open tab for this artifact instead of piling up
+            // duplicates; only create a new tab when none is open.
+            const candidates = await chrome.tabs.query({ url: base + "*" });
+            const existing = candidates.find((t) => {
+              if (!t.url) return false;
+              try {
+                return new URL(t.url).searchParams.get("id") === artifactId;
+              } catch {
+                return false;
+              }
             });
+            if (existing?.id != null) {
+              await chrome.tabs.update(existing.id, { active: true });
+              if (existing.windowId != null) {
+                chrome.windows
+                  .update(existing.windowId, { focused: true })
+                  .catch(() => {});
+              }
+            } else {
+              await chrome.tabs.create({
+                url: `${base}?id=${encodeURIComponent(artifactId)}`,
+              });
+            }
             sendResponse({ ok: true });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
@@ -1952,7 +1971,7 @@ export default defineBackground({
             if (!tab?.id) { sendResponse({ ok: false }); return; }
             const homeUrl = chrome.runtime.getURL("/home.html");
             if (tab.url?.startsWith(homeUrl)) {
-              chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", action });
+              chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", action, windowId });
             } else {
               await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_OVERLAY", action });
             }

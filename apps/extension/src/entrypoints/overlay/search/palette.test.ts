@@ -93,8 +93,15 @@ describe("buildArtifactMatches", () => {
 });
 
 describe("buildSpaceMatches", () => {
-  it("returns nothing on empty query (spaces are query-only)", () => {
-    expect(buildSpaceMatches("", [space({ id: "work" })])).toEqual([]);
+  it("returns all spaces sorted by position on empty query (space-scope zero state)", () => {
+    const out = buildSpaceMatches("", [
+      space({ id: "b", name: "Beta", position: 2 }),
+      space({ id: "a", name: "Alpha", position: 1 }),
+    ]);
+    expect(out.map((r) => r.action)).toEqual([
+      { type: "switchSpace", spaceId: "a" },
+      { type: "switchSpace", spaceId: "b" },
+    ]);
   });
   it("matches space names", () => {
     const out = buildSpaceMatches("work", [space({ id: "work", name: "Work" }), space({ id: "home", name: "Home" })]);

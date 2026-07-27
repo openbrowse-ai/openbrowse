@@ -163,19 +163,22 @@ export function buildArtifactMatches(
 }
 
 /**
- * Spaces. Query-only: spaces don't appear in the zero state (which is
- * Favorites → Recents → Commands), so an empty query yields nothing here.
+ * Spaces. Empty query → every space, ordered by position (feeds the space
+ * scope's zero state). With a query → name match, dropping non-matches, sorted
+ * by score then position. Spaces don't appear in the unscoped zero state.
  */
 export function buildSpaceMatches(query: string, spaces: SpaceLite[]): PaletteResult[] {
   const q = query.trim();
-  if (!q) return [];
+  const isQuery = q.length > 0;
 
   const rows = spaces.map((s) => {
-    const r = scoreQuery(q, s.name, false);
+    const r = isQuery
+      ? scoreQuery(q, s.name, false)
+      : { score: 0, ranges: [] as Range[] };
     return { s, score: r.score, ranges: r.ranges };
   });
 
-  const kept = rows.filter((r) => r.score > 0);
+  const kept = isQuery ? rows.filter((r) => r.score > 0) : rows;
   kept.sort((a, b) => b.score - a.score || a.s.position - b.s.position);
 
   return kept.map(({ s, score, ranges }) => ({
@@ -184,7 +187,7 @@ export function buildSpaceMatches(query: string, spaces: SpaceLite[]): PaletteRe
     title: s.name,
     icon: s.icon ? { type: "emoji", char: s.icon } : { type: "component", Comp: Layers },
     score,
-    titleRanges: ranges,
+    titleRanges: isQuery ? ranges : undefined,
     action: { type: "switchSpace", spaceId: s.id },
   }));
 }

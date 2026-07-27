@@ -463,7 +463,7 @@ export function OverlayApp() {
 
   // Command results derived from the same action set as the old action-mode
   // (spaces excluded here — they have their own group). Filtered by the query.
-  const commandItems = useFilteredActions(query.trim(), []);
+  const commandItems = useFilteredActions(query.trim());
 
   // Entity/command groups. When a scope is active they are the whole view
   // (single group); in unscoped flat search they sit below the URL results.
@@ -1129,6 +1129,18 @@ export function OverlayApp() {
     inputRef.current?.focus();
   }, []);
 
+  // Activate whatever is focused: extras (chat/artifact/space/command) route
+  // through dispatchResultAction; the primary tab list opens the focused tab.
+  // Shared by keyboard Enter and the footer's ⏎ button so they never diverge.
+  const activateFocused = useCallback(() => {
+    if (focusIndex >= primaryCount) {
+      const result = extrasFlat[focusIndex - primaryCount];
+      if (result) dispatchResultAction(result);
+    } else {
+      execAction("open");
+    }
+  }, [focusIndex, primaryCount, extrasFlat, dispatchResultAction, execAction]);
+
   const clearScope = useCallback(() => {
     setScope(null);
     setFocusIndex(0);
@@ -1245,19 +1257,14 @@ export function OverlayApp() {
 
       if (e.key === "Enter" && !actionsOpen) {
         e.preventDefault();
-        if (focusIndex >= primaryCount) {
-          const result = extrasFlat[focusIndex - primaryCount];
-          if (result) dispatchResultAction(result);
-        } else {
-          execAction("open");
-        }
+        activateFocused();
         return;
       }
     };
 
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [orderedTabs.length, actionsOpen, query, execAction, execGlobalAction, handleSwitchSpace, scope, creatingSpace, renamingTabId, focusIndex, historyMode, editingColor, configuringSpace, handleExitColorPicker, primaryCount, extrasFlat, dispatchResultAction, handleScope]);
+  }, [orderedTabs.length, actionsOpen, query, execAction, execGlobalAction, handleSwitchSpace, scope, creatingSpace, renamingTabId, focusIndex, historyMode, editingColor, configuringSpace, handleExitColorPicker, primaryCount, extrasFlat, dispatchResultAction, handleScope, activateFocused]);
 
   const isFavorited = focusedTab ? favoriteUrls.has(focusedTab.url) : false;
 
@@ -1477,6 +1484,7 @@ export function OverlayApp() {
             tidyProgress={tidyProgress}
             otherSpaces={otherSpaces}
             onAction={execAction}
+            onEnter={activateFocused}
             onCreateSpace={() => createSpaceSubmitRef.current?.()}
             onClose={closeOverlay}
           />
