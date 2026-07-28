@@ -165,15 +165,24 @@ export function HomeSidebar({
     function onDeleteFailed() {
       refresh();
     }
+    // A conversation was moved into/out of a space from another surface in
+    // this same window (the header "Add to space" menu). The cross-window
+    // CONVERSATION_UPDATED broadcast isn't delivered to the sender's own
+    // context, so re-scope the list from the source of truth here.
+    function onMoved() {
+      refresh();
+    }
     window.addEventListener("chat-title-generating", onGenerating);
     window.addEventListener("chat-title-updated", onUpdated);
     window.addEventListener("chat-deleted", onDeleted);
     window.addEventListener("chat-deleted-failed", onDeleteFailed);
+    window.addEventListener("chat-moved", onMoved);
     return () => {
       window.removeEventListener("chat-title-generating", onGenerating);
       window.removeEventListener("chat-title-updated", onUpdated);
       window.removeEventListener("chat-deleted", onDeleted);
       window.removeEventListener("chat-deleted-failed", onDeleteFailed);
+      window.removeEventListener("chat-moved", onMoved);
     };
   }, [refresh]);
 
