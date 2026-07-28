@@ -23,6 +23,7 @@ import {
     DropdownMenuContent,
     DropdownMenuItem,
     DropdownMenuPortal,
+    DropdownMenuSeparator,
     DropdownMenuSub,
     DropdownMenuSubContent,
     DropdownMenuSubTrigger,
@@ -50,6 +51,8 @@ import {
     Download,
     Ellipsis,
     FileDown,
+    FolderMinus,
+    FolderPlus,
     PanelRight,
     Pencil,
     Trash2,
@@ -208,6 +211,12 @@ export default function HomeApp({ surface }: HomeAppProps) {
   const scheduleModels = useScheduleModels();
 
   const [conversationTitle, setConversationTitle] = useState<string | null>(
+    null,
+  );
+  // Current space of the active conversation, mirrored so the header
+  // "Add to space" submenu can disable the row it already belongs to and
+  // show "Remove from space" only when it's in one.
+  const [conversationSpaceId, setConversationSpaceId] = useState<string | null>(
     null,
   );
   /**
@@ -447,6 +456,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
   useEffect(() => {
     if (!activeConversationId) {
       setConversationTitle(null);
+      setConversationSpaceId(null);
       setActiveMcpHostName(null);
       setSelectedFile(null);
       setSelectedSpaceFile(null);
@@ -457,6 +467,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
     setSelectedFile(null);
     setSelectedSpaceFile(null);
     setSelectedArtifact(null);
+    // Reset synchronously before the async fetch resolves so membership
+    // actions (the header "Add to space" submenu) can't act on the previous
+    // conversation's space during the loading window. Re-set below once this
+    // conversation's row resolves.
+    setConversationSpaceId(null);
     // Clear MCP banner synchronously before the async fetch resolves.
     // Otherwise, switching from an MCP conv to a non-MCP conv briefly
     // renders the previous MCP host's banner above the new chat until
@@ -470,6 +485,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
     chatDb.getConversation(activeConversationId).then((conv) => {
       if (cancelled) return;
       setConversationTitle(conv?.title ?? null);
+      setConversationSpaceId(conv?.spaceId ?? null);
       setActiveMcpHostName(
         conv?.source === "mcp" ? conv.mcpHostName ?? "MCP host" : null,
       );
@@ -624,6 +640,36 @@ export default function HomeApp({ surface }: HomeAppProps) {
       }
     }
   }, [deleteTarget, activeConversationId]);
+
+  // Move a conversation into a space (or, with `spaceId === null`, back out
+  // to the global/no-space scope). Persists the change, mirrors it into local
+  // header state when it targets the active conversation, and nudges the
+  // sidebar to re-scope. The cross-window CONVERSATION_UPDATED broadcast that
+  // updateConversation emits is not delivered to the sender's own context, so
+  // the same-window sidebar relies on the `chat-moved` event below.
+  const handleAddConversationToSpace = useCallback(
+    async (convId: string, spaceId: string | null) => {
+      const dest = spaceId
+        ? spaces.find((s) => s.id === spaceId)?.name ?? "space"
+        : null;
+      try {
+        await chatDb.updateConversation(convId, {
+          spaceId,
+          updatedAt: Date.now(),
+        });
+        if (convId === activeConversationIdRef.current) {
+          setConversationSpaceId(spaceId);
+        }
+        window.dispatchEvent(
+          new CustomEvent("chat-moved", { detail: { id: convId } }),
+        );
+        toast.success(dest ? `Added to ${dest}` : "Removed from space");
+      } catch {
+        toast.error("Couldn't move the conversation. Please try again.");
+      }
+    },
+    [spaces],
+  );
 
   const handleNewConversation = useCallback((id: string) => {
     setView("chat");
@@ -834,6 +880,60 @@ export default function HomeApp({ surface }: HomeAppProps) {
                         <Pencil className="size-3.5" />
                         Rename
                       </DropdownMenuItem>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                          <FolderPlus className="size-3.5" />
+                          Add to space
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuPortal>
+                          <DropdownMenuSubContent
+                            sideOffset={4}
+                            className="min-w-44"
+                          >
+                            {spaces.length === 0 ? (
+                              <DropdownMenuItem disabled>
+                                No spaces yet
+                              </DropdownMenuItem>
+                            ) : (
+                              spaces.map((s) => (
+                                <DropdownMenuItem
+                                  key={s.id}
+                                  disabled={s.id === conversationSpaceId}
+                                  onClick={() => {
+                                    if (!activeConversationId) return;
+                                    void handleAddConversationToSpace(
+                                      activeConversationId,
+                                      s.id,
+                                    );
+                                  }}
+                                >
+                                  <span className="text-sm leading-none">
+                                    {s.icon ?? "\uD83D\uDCC1"}
+                                  </span>
+                                  <span className="truncate">{s.name}</span>
+                                </DropdownMenuItem>
+                              ))
+                            )}
+                            {conversationSpaceId && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    if (!activeConversationId) return;
+                                    void handleAddConversationToSpace(
+                                      activeConversationId,
+                                      null,
+                                    );
+                                  }}
+                                >
+                                  <FolderMinus className="size-3.5" />
+                                  Remove from space
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuPortal>
+                      </DropdownMenuSub>
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger>
                           <Download className="size-3.5" />
