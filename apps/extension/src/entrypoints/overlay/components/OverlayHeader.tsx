@@ -1,7 +1,8 @@
-import type { Space } from "@/lib/types";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { Space } from "@/lib/types";
 import { ArrowLeft, Clock, Search, Sparkles } from "lucide-react";
+import { GROUP_LABELS, type PaletteKind } from "../search/palette";
 import { SpacePicker } from "./SpacePicker";
 
 function isCaretAtEnd(el: HTMLInputElement): boolean {
@@ -15,7 +16,8 @@ interface OverlayHeaderProps {
   onQueryChange: (q: string) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onSwitchSpace: (spaceId: string) => void;
-  isActionMode: boolean;
+  /** Active group scope (null = all). Drives the placeholder. */
+  scope: PaletteKind | null;
   creatingSpace?: boolean;
   configuringSpace?: boolean;
   editingColor?: boolean;
@@ -35,7 +37,7 @@ export function OverlayHeader({
   onQueryChange,
   inputRef,
   onSwitchSpace,
-  isActionMode,
+  scope,
   creatingSpace,
   configuringSpace,
   editingColor,
@@ -78,11 +80,12 @@ export function OverlayHeader({
     );
   }
 
-  const placeholder = isActionMode
-    ? "Search commands..."
+  const scopeLabel = scope ? GROUP_LABELS[scope] : null;
+  const placeholder = scopeLabel
+    ? `Search ${scopeLabel}...`
     : historyMode
       ? "Search history..."
-      : "Search tabs...  / for commands";
+      : "Search tabs, chats, artifacts...  / for commands";
 
   return (
     <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
@@ -107,9 +110,7 @@ export function OverlayHeader({
         />
       )}
       <div className="flex flex-1 items-center gap-1.5">
-        {isActionMode ? (
-          <p className="shrink-0 text-muted-foreground">/</p>
-        ) : historyMode ? (
+        {historyMode ? (
           <Clock className="size-3.5 shrink-0 text-muted-foreground" />
         ) : (
           <Search className="size-3.5 shrink-0 text-muted-foreground" />
@@ -159,7 +160,7 @@ export function OverlayHeader({
           >
             <Kbd className="cursor-pointer hover:bg-muted/80">esc</Kbd>
           </button>
-        ) : !isActionMode && !historyMode && (
+        ) : !scope && !historyMode && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button

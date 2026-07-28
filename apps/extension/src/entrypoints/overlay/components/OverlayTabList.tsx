@@ -1,24 +1,25 @@
-import type { FavoriteTabAssociation } from "@/lib/types";
-import type { OverlayTab } from "../OverlayApp";
-import { Kbd } from "@/components/ui/kbd";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { FavoriteTabAssociation } from "@/lib/types";
 import {
-  DndContext,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
+    DndContext,
+    PointerSensor,
+    closestCenter,
+    useSensor,
+    useSensors,
+    type DragEndEvent,
+    type DragStartEvent,
 } from "@dnd-kit/core";
 import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
+    SortableContext,
+    useSortable,
+    verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Archive, ArrowLeft, Bookmark, ChevronDown, ChevronRight, Clock, GripVertical, Heart, Pencil, Pin, RotateCcw, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { OverlayTab } from "../OverlayApp";
 
 function formatRelativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -31,7 +32,6 @@ function formatRelativeTime(timestamp: number): string {
   if (days < 7) return `${days}d ago`;
   return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-import { useEffect, useRef, useState } from "react";
 
 export type DragZone = "pinned" | "favorites" | "active" | "closed" | "bookmark";
 
@@ -329,19 +329,6 @@ function SortableTabRow({
       onClick={() => { if (!isRenaming) onFocusIndex(idx); }}
       onDoubleClick={() => { if (!isRenaming) onOpen(tab); }}
     >
-      {tab.kind !== "closed" && tab.kind !== "bookmark" ? (
-        <span
-          ref={setActivatorNodeRef}
-          {...attributes}
-          {...listeners}
-          className="flex size-5 shrink-0 cursor-grab items-center justify-center rounded-sm text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity hover:text-muted-foreground active:cursor-grabbing"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <GripVertical className="size-3" />
-        </span>
-      ) : (
-        <span className="size-5 shrink-0" />
-      )}
       {hasNavigatedAway ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -354,6 +341,26 @@ function SortableTabRow({
           </TooltipTrigger>
           <TooltipContent side="top">Back to {(() => { try { return new URL(association!.favoriteUrl).hostname; } catch { return association!.favoriteUrl; } })()}</TooltipContent>
         </Tooltip>
+      ) : tab.kind !== "closed" && tab.kind !== "bookmark" ? (
+        // Draggable rows: show the favicon, swapping in the drag handle on
+        // hover in the same slot (no reserved column for the grip).
+        <span className="relative size-4 shrink-0">
+          <img
+            src={faviconUrl(tab.url, tab.favicon)}
+            alt=""
+            className="size-4 rounded-sm transition-opacity group-hover:opacity-0"
+            onError={(e) => { (e.target as HTMLImageElement).style.visibility = "hidden"; }}
+          />
+          <span
+            ref={setActivatorNodeRef}
+            {...attributes}
+            {...listeners}
+            className="absolute inset-0 flex cursor-grab items-center justify-center rounded-sm text-muted-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground active:cursor-grabbing"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <GripVertical className="size-3" />
+          </span>
+        </span>
       ) : (
         <img
           src={faviconUrl(tab.url, tab.favicon)}

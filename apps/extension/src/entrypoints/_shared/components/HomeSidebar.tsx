@@ -1,34 +1,33 @@
-import { Logo } from "@/components/ui/logo";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
+    SpaceActionsMenu,
+    SpaceActionsTrigger,
+} from "@/components/spaces/SpaceActionsMenu";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  SpaceActionsMenu,
-  SpaceActionsTrigger,
-} from "@/components/spaces/SpaceActionsMenu";
+import { Logo } from "@/components/ui/logo";
+import { useActiveAgents } from "@/hooks/useActiveAgents";
 import { chatDb } from "@/lib/chat-db";
 import { openSettingsTab } from "@/lib/open-settings";
 import type { Space } from "@/lib/types";
 import {
-  EllipsisVertical,
-  FoldersIcon,
-  MessageSquarePlus,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Pencil,
-  Search,
-  Settings,
-  Trash2,
-  Clock,
-  Boxes,
+    Boxes,
+    Clock,
+    EllipsisVertical,
+    FoldersIcon,
+    MessageSquarePlus,
+    PanelLeftClose,
+    PanelLeftOpen,
+    Pencil,
+    Search,
+    Settings,
+    Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useActiveAgents } from "@/hooks/useActiveAgents";
 
 interface HomeSidebarProps {
   spaces: Space[];
@@ -350,7 +349,7 @@ export function HomeSidebar({
             className="flex h-7 items-center gap-2 rounded-md px-2 text-xs hover:bg-sidebar-accent transition-colors"
           >
             <Search className="size-3.5 shrink-0" />
-            <span className="flex-1 text-left">Search tabs</span>
+            <span className="flex-1 text-left">Search</span>
             <Kbd>⌥K</Kbd>
           </button>
           <button

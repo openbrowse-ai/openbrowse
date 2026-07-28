@@ -1,15 +1,15 @@
 console.log("Background service worker loaded up successfully!");
-import type { TidyState, SortResult, ModelStatus } from "@/lib/types";
-import { markUserOpenedSidePanel, markUserClosedSidePanel, isUserOpenedSidePanel } from "./tab-scoping";
-import { openHomePage } from "./messages";
+import { resetActiveAgentsAtStartup } from "@/lib/active-agents";
+import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
+import { isArtifactRpcMessage } from "@/lib/artifacts/rpc";
+import { chatDb } from "@/lib/chat-db";
+import type { ModelStatus, SortResult, TidyState } from "@/lib/types";
+import { installAgentHost } from "./agent-host/bootstrap";
 import { handleNewWindowAutoHome } from "./auto-home";
+import { openHomePage } from "./messages";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { registerScheduler } from "./scheduler";
-import { installAgentHost } from "./agent-host/bootstrap";
-import { chatDb } from "@/lib/chat-db";
-import { isArtifactRpcMessage } from "@/lib/artifacts/rpc";
-import { finalizeAllRunningChildrenAtStartup } from "@/lib/agent/subagents/heal-orphan-children";
-import { resetActiveAgentsAtStartup } from "@/lib/active-agents";
+import { isUserOpenedSidePanel, markUserClosedSidePanel, markUserOpenedSidePanel } from "./tab-scoping";
 
 /**
  * Undo ids already applied by the `OVERLAY_UNDO` `reopen` handler. Makes
@@ -282,7 +282,7 @@ export default defineBackground({
     // Initialize agent skills and bootstrap bundled skills
     import("./skill-registry").then(async ({ backgroundSkillRegistry }) => {
       await backgroundSkillRegistry.init();
-      
+
       const { bootstrapBundledSkills } = await import("@/lib/skills/bundled");
       await bootstrapBundledSkills();
     });
@@ -510,20 +510,23 @@ export default defineBackground({
           if (!windowId) return;
 
           const [tab] = await chrome.tabs.query({ active: true, windowId });
-          if (!tab?.id || tab.url?.startsWith("chrome://")) {
-            return;
-          }
-          const homeUrl = chrome.runtime.getURL("/home.html");
-          if (tab.url?.startsWith(homeUrl)) {
-            chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId });
-            return;
-          }
+          if (!tab?.id) return;
+
           const ownExtUrl = chrome.runtime.getURL("");
-          if (tab.url?.startsWith("chrome-extension://") && !tab.url.startsWith(ownExtUrl)) {
+          const url = tab.url ?? "";
+          // Our overridden new-tab page reports its active-tab URL as
+          // `chrome://newtab/` (not the extension file URL), but it renders the
+          // same HomeApp shell as home.html, which toggles the overlay in-page
+          // on TOGGLE_HOME_OVERLAY. Route it (and any of our own extension
+          // pages) there BEFORE the generic chrome:// bail below.
+          const isNewTab =
+            url.startsWith("chrome://newtab") || url.startsWith("chrome://new-tab-page");
+          if (isNewTab || url.startsWith(ownExtUrl)) {
+            chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId });
             return;
           }
-          if (tab.url?.startsWith(ownExtUrl)) {
-            chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId });
+          // Other chrome:// pages, or a different extension's page: can't inject.
+          if (url.startsWith("chrome://") || url.startsWith("chrome-extension://")) {
             return;
           }
           const { sendToContentScript } = await import("@/lib/agent/active-tab");
@@ -1148,6 +1151,153 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === "OVERLAY_LIST_CHATS") {
+        (async () => {
+          try {
+            const { chatDb } = await import("@/lib/chat-db");
+            const all = await chatDb.listRootConversations();
+            const chats = all
+              .map((c) => ({
+                id: c.id,
+                title: c.title ?? "",
+                spaceId: c.spaceId ?? null,
+                updatedAt: c.updatedAt ?? 0,
+              }))
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .slice(0, 200);
+            sendResponse({ ok: true, chats });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      if (message.type === "OVERLAY_LIST_ARTIFACTS") {
+        (async () => {
+          try {
+            const { listArtifacts } = await import("@/lib/artifacts/registry");
+            const saved = await listArtifacts();
+            const artifacts = saved
+              .map((a) => ({
+                id: a.manifest.id,
+                title: a.manifest.title ?? a.manifest.id,
+                description: a.manifest.description,
+                icon: a.manifest.icon,
+                // Sidecar stores updatedAt as an ISO string; normalise to ms.
+                updatedAt: Date.parse(a.sidecar.updatedAt) || 0,
+              }))
+              .sort((a, b) => b.updatedAt - a.updatedAt)
+              .slice(0, 200);
+            sendResponse({ ok: true, artifacts });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      if (message.type === "OVERLAY_OPEN_CHAT") {
+        (async () => {
+          try {
+            const { conversationId } = message as {
+              type: string;
+              conversationId: string;
+            };
+            const { chatDb } = await import("@/lib/chat-db");
+            const conv = await chatDb
+              .getConversation(conversationId)
+              .catch(() => null);
+            const spaceId = conv?.spaceId ?? null;
+            const homeBase = chrome.runtime.getURL("/home.html");
+            const { spaceIdFromUrl } = await import("./spaces");
+            const homeTabs = await chrome.tabs.query({ url: homeBase + "*" });
+            const senderWin = sender.tab?.windowId;
+
+            // Prefer the space's anchored home tab, then one in the sender's
+            // window, then any home tab. Reusing the home tab is the
+            // "dedicated chat tab" — no new window/tab churn.
+            const target =
+              (spaceId
+                ? homeTabs.find((t) => spaceIdFromUrl(t.url) === spaceId)
+                : undefined) ??
+              homeTabs.find((t) => t.windowId === senderWin) ??
+              homeTabs[0] ??
+              null;
+
+            if (target?.id != null) {
+              // Rewrite only the hash to the target conversation, preserving
+              // the existing query (e.g. ?space=<id>). The home tab listens
+              // for hashchange and switches conversations accordingly.
+              let nextUrl = homeBase + `#${conversationId}`;
+              if (target.url) {
+                try {
+                  const u = new URL(target.url);
+                  u.hash = `#${conversationId}`;
+                  nextUrl = u.toString();
+                } catch {}
+              }
+              await chrome.tabs.update(target.id, { active: true, url: nextUrl });
+              if (target.windowId != null) {
+                chrome.windows
+                  .update(target.windowId, { focused: true })
+                  .catch(() => {});
+              }
+            } else {
+              // No home tab anywhere — open one anchored to the space.
+              const url =
+                (spaceId
+                  ? `${homeBase}?space=${encodeURIComponent(spaceId)}`
+                  : homeBase) + `#${conversationId}`;
+              await chrome.tabs.create({ url });
+            }
+            sendResponse({ ok: true });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
+      if (message.type === "OVERLAY_OPEN_ARTIFACT") {
+        (async () => {
+          try {
+            const { artifactId } = message as {
+              type: string;
+              artifactId: string;
+            };
+            const base = chrome.runtime.getURL("artifact.html");
+            // Reuse an already-open tab for this artifact instead of piling up
+            // duplicates; only create a new tab when none is open.
+            const candidates = await chrome.tabs.query({ url: base + "*" });
+            const existing = candidates.find((t) => {
+              if (!t.url) return false;
+              try {
+                return new URL(t.url).searchParams.get("id") === artifactId;
+              } catch {
+                return false;
+              }
+            });
+            if (existing?.id != null) {
+              await chrome.tabs.update(existing.id, { active: true });
+              if (existing.windowId != null) {
+                chrome.windows
+                  .update(existing.windowId, { focused: true })
+                  .catch(() => {});
+              }
+            } else {
+              await chrome.tabs.create({
+                url: `${base}?id=${encodeURIComponent(artifactId)}`,
+              });
+            }
+            sendResponse({ ok: true });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err) });
+          }
+        })();
+        return true;
+      }
+
       if (message.type === "CLOSE_AGENT_TABS") {
         (async () => {
           const { handleCloseAgentTabs } = await import("./close-agent-tabs");
@@ -1748,6 +1898,12 @@ export default defineBackground({
               const { spaceName, spaceIcon } = message as { spaceName?: string; spaceIcon?: string | null };
               const space = await createSpace(spaceName || "New Space", spaceIcon ?? null);
               await focusOrCreateWindow(space);
+            } else if (action === "new-chat") {
+              // Open the chat landing page. A blank new tab resolves to our
+              // new-tab override (newtab.html); opening that page by its direct
+              // chrome-extension:// URL is blocked by Chrome, so create a blank
+              // tab and let the NTP override render it.
+              await chrome.tabs.create({ ...(windowId ? { windowId } : {}) });
             } else if (action === "full-view") {
               const homeUrl = chrome.runtime.getURL("/home.html");
               const hash = (message as { hash?: string }).hash || "";
@@ -1890,7 +2046,7 @@ export default defineBackground({
             if (!tab?.id) { sendResponse({ ok: false }); return; }
             const homeUrl = chrome.runtime.getURL("/home.html");
             if (tab.url?.startsWith(homeUrl)) {
-              chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", action });
+              chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", action, windowId });
             } else {
               await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_OVERLAY", action });
             }
