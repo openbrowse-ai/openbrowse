@@ -467,6 +467,11 @@ export default function HomeApp({ surface }: HomeAppProps) {
     setSelectedFile(null);
     setSelectedSpaceFile(null);
     setSelectedArtifact(null);
+    // Reset synchronously before the async fetch resolves so membership
+    // actions (the header "Add to space" submenu) can't act on the previous
+    // conversation's space during the loading window. Re-set below once this
+    // conversation's row resolves.
+    setConversationSpaceId(null);
     // Clear MCP banner synchronously before the async fetch resolves.
     // Otherwise, switching from an MCP conv to a non-MCP conv briefly
     // renders the previous MCP host's banner above the new chat until

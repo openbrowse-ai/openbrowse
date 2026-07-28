@@ -87,6 +87,12 @@ export function HomeSidebar({
   const [generatingTitles, setGeneratingTitles] = useState<Set<string>>(new Set());
   const leaveTimer = useRef<ReturnType<typeof setTimeout>>(null);
   const sidebarRef = useRef<HTMLElement>(null);
+  // Monotonic refresh token. `refresh` can be invoked concurrently from
+  // several triggers (active-conversation change, delete-failed, chat-moved,
+  // cross-window broadcasts); tagging each run lets a slower earlier refresh
+  // (e.g. one started before a move) be discarded so only the latest commits
+  // sidebar rows.
+  const refreshSeq = useRef(0);
 
   const activeSpace = activeSpaceId
     ? spaces.find((s) => s.id === activeSpaceId) ?? null
@@ -98,6 +104,7 @@ export function HomeSidebar({
   }, [pinned]);
 
   const refresh = useCallback(async () => {
+    const reqId = ++refreshSeq.current;
     // Normal chats: scope-filtered roots (subagent children excluded
     // upstream, and `source === "mcp"` background tasks excluded —
     // those surface in the Background Tasks panel instead). When
@@ -130,6 +137,9 @@ export function HomeSidebar({
       if (!seen.has(run.id)) merged.push(run);
     }
     merged.sort((a, b) => b.createdAt - a.createdAt);
+    // Ignore stale resolutions: a newer refresh has superseded this one
+    // (e.g. this run started before a chat-moved event fired its own).
+    if (reqId !== refreshSeq.current) return;
     setConversations(merged);
   }, [activeSpaceId]);
 
