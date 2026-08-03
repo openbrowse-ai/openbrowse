@@ -1,33 +1,39 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { createArtifactStore, type ArtifactStore } from "./artifacts/store";
 import { buildConfig, type Config } from "./config";
 import { loadOrCreateKeyPair, type BrokerKeyPair } from "./keys/store";
 import { createClientRegistry, type ClientRegistry } from "./oauth/clients";
 import { createCodeStore, type CodeStore } from "./oauth/codes";
 import { createPendingConsents, type PendingConsents } from "./oauth/pending-consents";
-import {
-  createRefreshTokenStore,
-  type RefreshTokenStore,
-} from "./oauth/refresh-tokens";
-import {
-  wellKnownProtectedResource,
-  wellKnownAuthorizationServer,
-} from "./routes/well-known";
-import { buildJwks } from "./routes/jwks";
-import { handleAuthorize } from "./routes/authorize";
-import { handleToken } from "./routes/token";
-import { handleRegister } from "./routes/register";
-import { handleMcp, type RpcForwarder } from "./routes/mcp";
-import { handleArtifact } from "./routes/artifact";
-import { createArtifactStore, type ArtifactStore } from "./artifacts/store";
 import { createRateLimiter, DEFAULT_RATE_LIMITS } from "./oauth/rate-limit";
+import {
+    createRefreshTokenStore,
+    type RefreshTokenStore,
+} from "./oauth/refresh-tokens";
+import { handleArtifact } from "./routes/artifact";
+import { handleAuthorize } from "./routes/authorize";
+import { buildJwks } from "./routes/jwks";
+import { handleMcp, type RpcForwarder } from "./routes/mcp";
+import { handleRegister } from "./routes/register";
+import { handleToken } from "./routes/token";
+import {
+    wellKnownAuthorizationServer,
+    wellKnownProtectedResource,
+} from "./routes/well-known";
+import { createRpcForwarder } from "./ws/rpc";
 import { attachWsServer } from "./ws/server";
 import { SessionRegistry } from "./ws/session";
-import { createRpcForwarder } from "./ws/rpc";
 
 export interface ServerOptions {
   port?: number;
   rpcForwarder?: RpcForwarder;
+  /**
+   * Interval (ms) for the extension session heartbeat/liveness ping.
+   * Forwarded to `attachWsServer`; mainly overridden by tests to drive
+   * dead-peer eviction quickly. Defaults to 20s.
+   */
+  heartbeatIntervalMs?: number;
 }
 
 export interface RunningServer {
@@ -156,6 +162,21 @@ export function corsHeadersForPath(
 export async function startHttpServer(
   opts: ServerOptions = {},
 ): Promise<RunningServer> {
+  // Validate the optional liveness interval up front. An invalid value
+  // (NaN, zero, negative, fractional, or above Node's max timer delay)
+  // would make the broker's heartbeat `setInterval` misbehave — busy-loop
+  // for <=0/NaN, or get clamped to 1ms with a warning above 2^31-1.
+  const { heartbeatIntervalMs } = opts;
+  if (
+    heartbeatIntervalMs !== undefined &&
+    (!Number.isInteger(heartbeatIntervalMs) ||
+      heartbeatIntervalMs <= 0 ||
+      heartbeatIntervalMs > 2_147_483_647)
+  ) {
+    throw new RangeError(
+      `heartbeatIntervalMs must be a positive integer <= 2147483647 ms, got ${heartbeatIntervalMs}`,
+    );
+  }
   const cfg = buildConfig({ port: opts.port });
   const keys = await loadOrCreateKeyPair();
   const clients = createClientRegistry();
@@ -348,13 +369,14 @@ export async function startHttpServer(
   });
 
   const baseUrl = `http://localhost:${port}`;
-  attachWsServer({
+  const wss = attachWsServer({
     httpServer: server,
     publicKeyFingerprint: keys.fingerprint,
     privateKey: keys.privateKey,
     brokerVersion: "0.0.0",
     registry: sessions,
     refreshTokens,
+    ...(heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs } : {}),
   });
   return {
     port,
@@ -370,7 +392,15 @@ export async function startHttpServer(
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(sweepInterval);
-        server.close(() => resolve());
+        // Terminate any live extension sockets first so `server.close()`
+        // isn't left waiting on upgraded WebSocket connections, then
+        // release the WS server before shutting the HTTP server down.
+        for (const client of wss.clients) {
+          client.terminate();
+        }
+        wss.close(() => {
+          server.close(() => resolve());
+        });
       }),
   };
 }

@@ -1,9 +1,10 @@
 import {
-  PROTOCOL_VERSION,
   isHelloChallenge,
   isHelloProof,
   isHelloReject,
   isRpcRequest,
+  PROTOCOL_VERSION,
+  type HelloDeferMessage,
   type HelloResponseMessage,
   type RpcRequestMessage,
 } from "./protocol";
@@ -28,8 +29,16 @@ export interface RpcHandlerContext {
 
 export interface ConnectOptions {
   url: string;
-  onTofuPrompt?: (info: { fingerprint: string; processInfo: TrustRecord["processInfo"]; nonce: string; binarySha256?: string }) => void;
-  onKeyMismatch?: (info: { storedFingerprint: string; presentedFingerprint: string }) => void;
+  onTofuPrompt?: (info: {
+    fingerprint: string;
+    processInfo: TrustRecord["processInfo"];
+    nonce: string;
+    binarySha256?: string;
+  }) => void;
+  onKeyMismatch?: (info: {
+    storedFingerprint: string;
+    presentedFingerprint: string;
+  }) => void;
   /**
    * Called when the broker's `binarySha256` differs from the value stored
    * at TOFU time. Advisory only — the connection is NOT blocked. Both
@@ -81,9 +90,33 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
       protocolVersion: PROTOCOL_VERSION,
       extensionVersion: manifest.version,
       capabilities: {
-        tools: ["get_context", "list_windows", "list_spaces", "read_page", "screenshot", "task", "cancel_task", "open_url"],
+        tools: [
+          "get_context",
+          "list_windows",
+          "list_spaces",
+          "read_page",
+          "screenshot",
+          "task",
+          "cancel_task",
+          "open_url",
+        ],
         profile: "Default",
       },
+    };
+    socket.send(JSON.stringify(msg));
+  }
+
+  /**
+   * Tell the broker we can't answer the challenge yet because a human
+   * must approve its identity (first-run TOFU or key-rotation mismatch).
+   * This cancels the broker's short hello-timeout so the socket stays
+   * open while the user decides — without it the connection is torn down
+   * every few seconds and the trust prompt flickers in a reconnect loop.
+   */
+  function sendHelloDefer(socket: WebSocket): void {
+    const msg: HelloDeferMessage = {
+      type: "hello-defer",
+      reason: "awaiting_user_trust",
     };
     socket.send(JSON.stringify(msg));
   }
@@ -98,7 +131,11 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
 
     // Broker heartbeat — no action needed; the incoming WS data event
     // already reset the MV3 idle timer.
-    if (typeof msg === "object" && msg !== null && (msg as { type: unknown }).type === "ping") {
+    if (
+      typeof msg === "object" &&
+      msg !== null &&
+      (msg as { type: unknown }).type === "ping"
+    ) {
       return;
     }
 
@@ -106,17 +143,22 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
       lastBrokerVersion = msg.brokerVersion;
       const trusted = await getTrustedFingerprint();
       if (trusted === null) {
-        // First-time TOFU prompt
+        // First-time TOFU prompt. Tell the broker to hold the socket
+        // open while we wait for the user's trust decision.
         pendingChallenge = {
           fingerprint: msg.publicKeyFingerprint,
           processInfo: msg.processInfo,
           nonce: msg.nonce,
           binarySha256: msg.binarySha256,
         };
+        sendHelloDefer(socket);
         opts.onTofuPrompt?.(pendingChallenge);
         return;
       }
       if (trusted !== msg.publicKeyFingerprint) {
+        // Key rotation / mismatch also needs a human decision, so defer
+        // to keep the socket alive rather than letting it time out.
+        sendHelloDefer(socket);
         opts.onKeyMismatch?.({
           storedFingerprint: trusted,
           presentedFingerprint: msg.publicKeyFingerprint,
@@ -168,17 +210,13 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
     }
 
     if (isRpcRequest(msg)) {
-      await dispatchRpc(
-        msg,
-        socket.send.bind(socket),
-        {
-          // Phase 1 has no OAuth flow yet, so we use the host's
-          // self-reported name as the subject (collisions across hosts
-          // are therefore possible — tightened in Phase 3).
-          sub: msg.hostInfo?.name ?? "unknown",
-          client_name: msg.hostInfo?.name,
-        },
-      );
+      await dispatchRpc(msg, socket.send.bind(socket), {
+        // Phase 1 has no OAuth flow yet, so we use the host's
+        // self-reported name as the subject (collisions across hosts
+        // are therefore possible — tightened in Phase 3).
+        sub: msg.hostInfo?.name ?? "unknown",
+        client_name: msg.hostInfo?.name,
+      });
       return;
     }
   }
@@ -186,7 +224,9 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
   return {
     async start() {
       ws = new WebSocket(opts.url);
-      ws.onopen = () => { /* awaiting hello-challenge */ };
+      ws.onopen = () => {
+        /* awaiting hello-challenge */
+      };
       ws.onmessage = (ev) => {
         void handleMessage(ws!, typeof ev.data === "string" ? ev.data : "");
       };
@@ -351,11 +391,16 @@ export async function dispatchRpc(
       default:
         // Unknown methods don't get an audit row — they never reached a
         // handler. The error envelope still surfaces to the host.
-        send(JSON.stringify({
-          type: "rpc-error",
-          id: msg.id,
-          error: { code: "method_not_found", message: `unknown method: ${(msg as { method: string }).method}` },
-        }));
+        send(
+          JSON.stringify({
+            type: "rpc-error",
+            id: msg.id,
+            error: {
+              code: "method_not_found",
+              message: `unknown method: ${(msg as { method: string }).method}`,
+            },
+          }),
+        );
         return;
     }
     await recordAudit({ outcome: "ok" });
@@ -363,10 +408,12 @@ export async function dispatchRpc(
   } catch (err) {
     const code = (err as { code?: string }).code ?? "internal_error";
     await recordAudit({ outcome: outcomeFromError(err), errorCode: code });
-    send(JSON.stringify({
-      type: "rpc-error",
-      id: msg.id,
-      error: { code, message: (err as Error).message },
-    }));
+    send(
+      JSON.stringify({
+        type: "rpc-error",
+        id: msg.id,
+        error: { code, message: (err as Error).message },
+      }),
+    );
   }
 }

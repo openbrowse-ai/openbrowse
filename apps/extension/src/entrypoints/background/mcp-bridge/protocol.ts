@@ -28,6 +28,22 @@ export interface HelloProofMessage {
   sessionId: string;
 }
 
+/**
+ * Sent by the extension immediately after a `hello-challenge` when it
+ * cannot answer straight away because it must ask a human to approve the
+ * broker's identity (first-run TOFU, or a key-rotation mismatch).
+ *
+ * The broker reacts by cancelling its short hello-timeout and arming a
+ * much longer "trust decision" window, keeping the socket open while the
+ * user decides. Without this, the broker would tear the socket down after
+ * a few seconds and the extension's trust prompt would flicker in an
+ * endless reconnect loop.
+ */
+export interface HelloDeferMessage {
+  type: "hello-defer";
+  reason: "awaiting_user_trust";
+}
+
 export interface HelloRejectMessage {
   type: "hello-reject";
   reason: "protocol_version_unsupported" | "session_already_active";
@@ -89,9 +105,17 @@ export interface TaskEventMessage {
   /** Compact event payload — tool name, args summary, brief result preview. */
   event:
     | { kind: "step-start"; toolName: string; argsPreview: string }
-    | { kind: "step-finish"; toolName: string; durationMs: number; resultPreview: string }
+    | {
+        kind: "step-finish";
+        toolName: string;
+        durationMs: number;
+        resultPreview: string;
+      }
     | { kind: "text"; text: string }
-    | { kind: "todo-updated"; todos: { id: string; text: string; done: boolean }[] }
+    | {
+        kind: "todo-updated";
+        todos: { id: string; text: string; done: boolean }[];
+      }
     | { kind: "user-confirmed"; outcome: "allow" | "deny" };
 }
 
@@ -151,6 +175,7 @@ export type WsMessage =
   | HelloResponseMessage
   | HelloProofMessage
   | HelloRejectMessage
+  | HelloDeferMessage
   | RpcRequestMessage
   | RpcResultMessage
   | RpcErrorMessage
@@ -162,7 +187,9 @@ export type WsMessage =
   | PingMessage;
 
 function hasType(x: unknown, t: string): x is { type: string } {
-  return typeof x === "object" && x !== null && (x as { type: unknown }).type === t;
+  return (
+    typeof x === "object" && x !== null && (x as { type: unknown }).type === t
+  );
 }
 
 export function isHelloChallenge(x: unknown): x is HelloChallengeMessage {
@@ -173,6 +200,9 @@ export function isHelloResponse(x: unknown): x is HelloResponseMessage {
 }
 export function isHelloProof(x: unknown): x is HelloProofMessage {
   return hasType(x, "hello-proof");
+}
+export function isHelloDefer(x: unknown): x is HelloDeferMessage {
+  return hasType(x, "hello-defer");
 }
 export function isHelloReject(x: unknown): x is HelloRejectMessage {
   return hasType(x, "hello-reject");
