@@ -162,6 +162,21 @@ export function corsHeadersForPath(
 export async function startHttpServer(
   opts: ServerOptions = {},
 ): Promise<RunningServer> {
+  // Validate the optional liveness interval up front. An invalid value
+  // (NaN, zero, negative, fractional, or above Node's max timer delay)
+  // would make the broker's heartbeat `setInterval` misbehave — busy-loop
+  // for <=0/NaN, or get clamped to 1ms with a warning above 2^31-1.
+  const { heartbeatIntervalMs } = opts;
+  if (
+    heartbeatIntervalMs !== undefined &&
+    (!Number.isInteger(heartbeatIntervalMs) ||
+      heartbeatIntervalMs <= 0 ||
+      heartbeatIntervalMs > 2_147_483_647)
+  ) {
+    throw new RangeError(
+      `heartbeatIntervalMs must be a positive integer <= 2147483647 ms, got ${heartbeatIntervalMs}`,
+    );
+  }
   const cfg = buildConfig({ port: opts.port });
   const keys = await loadOrCreateKeyPair();
   const clients = createClientRegistry();
@@ -354,16 +369,14 @@ export async function startHttpServer(
   });
 
   const baseUrl = `http://localhost:${port}`;
-  attachWsServer({
+  const wss = attachWsServer({
     httpServer: server,
     publicKeyFingerprint: keys.fingerprint,
     privateKey: keys.privateKey,
     brokerVersion: "0.0.0",
     registry: sessions,
     refreshTokens,
-    ...(opts.heartbeatIntervalMs !== undefined
-      ? { heartbeatIntervalMs: opts.heartbeatIntervalMs }
-      : {}),
+    ...(heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs } : {}),
   });
   return {
     port,
@@ -379,7 +392,15 @@ export async function startHttpServer(
     close: () =>
       new Promise<void>((resolve) => {
         clearInterval(sweepInterval);
-        server.close(() => resolve());
+        // Terminate any live extension sockets first so `server.close()`
+        // isn't left waiting on upgraded WebSocket connections, then
+        // release the WS server before shutting the HTTP server down.
+        for (const client of wss.clients) {
+          client.terminate();
+        }
+        wss.close(() => {
+          server.close(() => resolve());
+        });
       }),
   };
 }

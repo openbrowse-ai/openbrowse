@@ -4,6 +4,7 @@ import {
   isHelloReject,
   isRpcRequest,
   PROTOCOL_VERSION,
+  type HelloDeferMessage,
   type HelloResponseMessage,
   type RpcRequestMessage,
 } from "./protocol";
@@ -113,9 +114,11 @@ export function connectToBroker(opts: ConnectOptions): BrokerConnection {
    * every few seconds and the trust prompt flickers in a reconnect loop.
    */
   function sendHelloDefer(socket: WebSocket): void {
-    socket.send(
-      JSON.stringify({ type: "hello-defer", reason: "awaiting_user_trust" }),
-    );
+    const msg: HelloDeferMessage = {
+      type: "hello-defer",
+      reason: "awaiting_user_trust",
+    };
+    socket.send(JSON.stringify(msg));
   }
 
   async function handleMessage(socket: WebSocket, raw: string): Promise<void> {

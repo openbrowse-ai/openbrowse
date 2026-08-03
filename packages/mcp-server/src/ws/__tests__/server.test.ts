@@ -236,6 +236,15 @@ describe("ws/server", () => {
     }
   }, 10_000);
 
+  it("rejects an invalid heartbeatIntervalMs at startup", async () => {
+    const { startHttpServer } = await import("../../server");
+    for (const bad of [0, -1, 1.5, Number.NaN, 2_147_483_648]) {
+      await expect(
+        startHttpServer({ port: 0, heartbeatIntervalMs: bad }),
+      ).rejects.toThrow(/heartbeatIntervalMs/);
+    }
+  });
+
   it("rejects mismatched protocol version", async () => {
     const server = await startTestServer();
     try {
