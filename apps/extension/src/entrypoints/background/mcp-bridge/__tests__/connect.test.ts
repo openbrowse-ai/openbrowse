@@ -28,7 +28,8 @@ class FakeWebSocket {
 
   // Simulate broker messages
   receive(msg: unknown) {
-    if (this.onmessage) this.onmessage({ data: JSON.stringify(msg) } as MessageEvent);
+    if (this.onmessage)
+      this.onmessage({ data: JSON.stringify(msg) } as MessageEvent);
   }
 
   open() {
@@ -85,7 +86,11 @@ describe("mcp-bridge/connect", () => {
       protocolVersion: 1,
       brokerVersion: "0.0.0",
       publicKeyFingerprint: "fp123",
-      processInfo: { pid: 999, executablePath: "/x/openbrowse-mcp", startedAt: 0 },
+      processInfo: {
+        pid: 999,
+        executablePath: "/x/openbrowse-mcp",
+        startedAt: 0,
+      },
       nonce: "nonce123",
     });
 
@@ -99,8 +104,15 @@ describe("mcp-bridge/connect", () => {
         processInfo: expect.objectContaining({ pid: 999 }),
       }),
     );
-    // No hello-response sent yet
-    expect(ws.sent.length).toBe(0);
+    // No hello-response yet — but we DO send a hello-defer so the broker
+    // holds the socket open while the user decides (prevents the trust
+    // prompt from flickering in a reconnect loop).
+    expect(ws.sent.length).toBe(1);
+    const deferred = JSON.parse(ws.sent[0]);
+    expect(deferred).toEqual({
+      type: "hello-defer",
+      reason: "awaiting_user_trust",
+    });
 
     handler.stop();
   });
@@ -182,8 +194,13 @@ describe("mcp-bridge/connect", () => {
         presentedFingerprint: "new_fp_does_not_match",
       }),
     );
-    // hello-response NOT sent
-    expect(ws.sent.length).toBe(0);
+    // hello-response NOT sent — a hello-defer is sent instead so the
+    // broker keeps the socket open while the user resolves the mismatch.
+    expect(ws.sent.length).toBe(1);
+    expect(JSON.parse(ws.sent[0])).toEqual({
+      type: "hello-defer",
+      reason: "awaiting_user_trust",
+    });
     handler.stop();
   });
 });

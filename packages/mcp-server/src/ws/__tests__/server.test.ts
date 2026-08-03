@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
 interface RunningServer {
@@ -65,9 +65,10 @@ describe("ws/server", () => {
         protocolVersion: 1,
       });
       expect(typeof (challenge as { nonce: string }).nonce).toBe("string");
-      expect(typeof (challenge as { publicKeyFingerprint: string }).publicKeyFingerprint).toBe(
-        "string",
-      );
+      expect(
+        typeof (challenge as { publicKeyFingerprint: string })
+          .publicKeyFingerprint,
+      ).toBe("string");
 
       ws.send(
         JSON.stringify({
@@ -89,7 +90,48 @@ describe("ws/server", () => {
     }
   });
 
-  it("rejects second connection while one is already paired", async () => {
+  it("holds the socket open after hello-defer and completes on a later hello-response", async () => {
+    const server = await startTestServer();
+    try {
+      const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
+      const reader = bufferedReader(ws);
+      let closed = false;
+      ws.once("close", () => {
+        closed = true;
+      });
+      await new Promise((r) => ws.once("open", r));
+      await reader.next(); // challenge
+
+      // Extension signals it needs a human trust decision.
+      ws.send(
+        JSON.stringify({ type: "hello-defer", reason: "awaiting_user_trust" }),
+      );
+
+      // Wait well past the old 5s hello-timeout to prove the socket is
+      // no longer torn down while awaiting the user.
+      await new Promise((r) => setTimeout(r, 6_000));
+      expect(closed).toBe(false);
+
+      // User approves; the deferred handshake now completes.
+      ws.send(
+        JSON.stringify({
+          type: "hello-response",
+          protocolVersion: 1,
+          extensionVersion: "0.0.0-test",
+          capabilities: { tools: ["get_context"], profile: "Default" },
+        }),
+      );
+
+      const proof = await reader.next();
+      expect(proof).toMatchObject({ type: "hello-proof" });
+
+      ws.close();
+    } finally {
+      await server.close();
+    }
+  }, 10_000);
+
+  it("rejects a second connection while one is already paired", async () => {
     const server = await startTestServer();
     try {
       const ws1 = new WebSocket(`ws://localhost:${server.port}/ws`);
@@ -106,7 +148,9 @@ describe("ws/server", () => {
       );
       await r1.next(); // hello-proof
 
-      // Second connection should be rejected
+      // Second connection should be rejected — the broker enforces a
+      // single active session, so two live extensions can't ping-pong
+      // takeovers.
       const ws2 = new WebSocket(`ws://localhost:${server.port}/ws`);
       const r2 = bufferedReader(ws2);
       await new Promise((r) => ws2.once("open", r));
@@ -131,6 +175,66 @@ describe("ws/server", () => {
       await server.close();
     }
   });
+
+  it("evicts a paired session whose socket stops answering pings", async () => {
+    // A single extension whose socket dies uncleanly (no TCP FIN) must not
+    // wedge the broker: the liveness ping/pong should detect the dead peer,
+    // terminate the socket, clear the session, and let a fresh connection
+    // pair. We drive it fast with a short heartbeat interval and a client
+    // that never pongs (`autoPong: false`).
+    const { startHttpServer } = await import("../../server");
+    const server = await startHttpServer({ port: 0, heartbeatIntervalMs: 120 });
+    try {
+      const dead = new WebSocket(`ws://localhost:${server.port}/ws`, {
+        autoPong: false,
+      });
+      const rDead = bufferedReader(dead);
+      let deadClosed = false;
+      dead.once("close", () => {
+        deadClosed = true;
+      });
+      await new Promise((r) => dead.once("open", r));
+      await rDead.next(); // challenge
+      dead.send(
+        JSON.stringify({
+          type: "hello-response",
+          protocolVersion: 1,
+          extensionVersion: "0.0.0",
+          capabilities: { tools: [], profile: "Default" },
+        }),
+      );
+      await rDead.next(); // hello-proof — session established
+
+      // The broker pings each interval; with pongs suppressed it should
+      // terminate this socket within ~2 intervals.
+      const deadline = Date.now() + 2_000;
+      while (!deadClosed && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(deadClosed).toBe(true);
+
+      // Session was cleared, so a fresh client can now pair.
+      const live = new WebSocket(`ws://localhost:${server.port}/ws`);
+      const rLive = bufferedReader(live);
+      await new Promise((r) => live.once("open", r));
+      await rLive.next(); // challenge
+      live.send(
+        JSON.stringify({
+          type: "hello-response",
+          protocolVersion: 1,
+          extensionVersion: "0.0.0",
+          capabilities: { tools: [], profile: "Default" },
+        }),
+      );
+      const proof = await rLive.next();
+      expect(proof).toMatchObject({ type: "hello-proof" });
+
+      live.close();
+      dead.close();
+    } finally {
+      await server.close();
+    }
+  }, 10_000);
 
   it("rejects mismatched protocol version", async () => {
     const server = await startTestServer();
@@ -169,8 +273,14 @@ describe("ws/server", () => {
     const server = await startHttpServer({ port: 0 });
     try {
       // Seed a couple of tokens so we can observe deletion.
-      const t1 = server.refreshTokens.issue({ clientId: "c-revoke", scope: "openbrowse" });
-      const t2 = server.refreshTokens.issue({ clientId: "c-keep", scope: "openbrowse" });
+      const t1 = server.refreshTokens.issue({
+        clientId: "c-revoke",
+        scope: "openbrowse",
+      });
+      const t2 = server.refreshTokens.issue({
+        clientId: "c-keep",
+        scope: "openbrowse",
+      });
 
       const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
       const reader = bufferedReader(ws);
@@ -250,7 +360,10 @@ describe("ws/server", () => {
     const { startHttpServer } = await import("../../server");
     const server = await startHttpServer({ port: 0 });
     try {
-      const t = server.refreshTokens.issue({ clientId: "c-unaffected", scope: "openbrowse" });
+      const t = server.refreshTokens.issue({
+        clientId: "c-unaffected",
+        scope: "openbrowse",
+      });
 
       const ws = new WebSocket(`ws://localhost:${server.port}/ws`);
       const reader = bufferedReader(ws);
@@ -269,7 +382,9 @@ describe("ws/server", () => {
       // Garbage payload — should be silently dropped.
       ws.send("{ not json");
       // Wrong-type payload — should also be ignored.
-      ws.send(JSON.stringify({ type: "totally-unknown", clientId: "c-unaffected" }));
+      ws.send(
+        JSON.stringify({ type: "totally-unknown", clientId: "c-unaffected" }),
+      );
 
       // Give the server a moment to (not) react.
       await new Promise((r) => setTimeout(r, 50));

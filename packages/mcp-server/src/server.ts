@@ -1,33 +1,39 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
+import { createArtifactStore, type ArtifactStore } from "./artifacts/store";
 import { buildConfig, type Config } from "./config";
 import { loadOrCreateKeyPair, type BrokerKeyPair } from "./keys/store";
 import { createClientRegistry, type ClientRegistry } from "./oauth/clients";
 import { createCodeStore, type CodeStore } from "./oauth/codes";
 import { createPendingConsents, type PendingConsents } from "./oauth/pending-consents";
-import {
-  createRefreshTokenStore,
-  type RefreshTokenStore,
-} from "./oauth/refresh-tokens";
-import {
-  wellKnownProtectedResource,
-  wellKnownAuthorizationServer,
-} from "./routes/well-known";
-import { buildJwks } from "./routes/jwks";
-import { handleAuthorize } from "./routes/authorize";
-import { handleToken } from "./routes/token";
-import { handleRegister } from "./routes/register";
-import { handleMcp, type RpcForwarder } from "./routes/mcp";
-import { handleArtifact } from "./routes/artifact";
-import { createArtifactStore, type ArtifactStore } from "./artifacts/store";
 import { createRateLimiter, DEFAULT_RATE_LIMITS } from "./oauth/rate-limit";
+import {
+    createRefreshTokenStore,
+    type RefreshTokenStore,
+} from "./oauth/refresh-tokens";
+import { handleArtifact } from "./routes/artifact";
+import { handleAuthorize } from "./routes/authorize";
+import { buildJwks } from "./routes/jwks";
+import { handleMcp, type RpcForwarder } from "./routes/mcp";
+import { handleRegister } from "./routes/register";
+import { handleToken } from "./routes/token";
+import {
+    wellKnownAuthorizationServer,
+    wellKnownProtectedResource,
+} from "./routes/well-known";
+import { createRpcForwarder } from "./ws/rpc";
 import { attachWsServer } from "./ws/server";
 import { SessionRegistry } from "./ws/session";
-import { createRpcForwarder } from "./ws/rpc";
 
 export interface ServerOptions {
   port?: number;
   rpcForwarder?: RpcForwarder;
+  /**
+   * Interval (ms) for the extension session heartbeat/liveness ping.
+   * Forwarded to `attachWsServer`; mainly overridden by tests to drive
+   * dead-peer eviction quickly. Defaults to 20s.
+   */
+  heartbeatIntervalMs?: number;
 }
 
 export interface RunningServer {
@@ -355,6 +361,9 @@ export async function startHttpServer(
     brokerVersion: "0.0.0",
     registry: sessions,
     refreshTokens,
+    ...(opts.heartbeatIntervalMs !== undefined
+      ? { heartbeatIntervalMs: opts.heartbeatIntervalMs }
+      : {}),
   });
   return {
     port,
