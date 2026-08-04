@@ -28,6 +28,7 @@ import { SkillResult } from "./tool-results/skill";
 import { InstallSkillResult } from "./tool-results/install-skill";
 import { SnapshotResult } from "./tool-results/snapshot";
 import { WebFetchResult } from "./tool-results/web-fetch";
+import { WebSearchResult } from "./tool-results/web-search";
 import { MemoryResult } from "./tool-results/memory";
 import { SelectTabResult } from "./tool-results/select-tab";
 import {
@@ -100,6 +101,7 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     />
   ),
   webFetch: ({ args, result }) => <WebFetchResult args={args} result={result} />,
+  webSearch: ({ args, result }) => <WebSearchResult args={args} result={result} />,
   create_scheduled_task: ({ args, result }) => (
     <CreateScheduledTaskResult args={args} result={result} />
   ),
@@ -192,6 +194,7 @@ const TOOL_LABELS: Record<
   },
   extract: { pending: "Extracting data...", done: "Extracted data" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
+  webSearch: { pending: "Searching the web...", done: "Searched the web" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
   read_network_requests: { pending: "Reading network...", done: "Read network" },
   read_console_messages: { pending: "Reading console...", done: "Read console" },
@@ -307,6 +310,32 @@ function webFetchLabels(
     pending: `Fetching ${target}...`,
     done: `Fetched ${target}`,
   };
+}
+
+/**
+ * Build a webSearch-specific label from the query and (when done) the number
+ * of results, so the row reads e.g. `Searching “bio AI startups”...` →
+ * `Searched “bio AI startups” — 8 results` instead of a generic "Searched
+ * the web".
+ */
+function webSearchLabels(
+  args: Record<string, unknown>,
+  result: unknown,
+  fallback: { pending: string; done: string },
+): { pending: string; done: string } {
+  const raw = typeof args.query === "string" ? args.query.trim() : "";
+  if (!raw) return fallback;
+  const q = raw.length > 42 ? raw.slice(0, 41) + "…" : raw;
+  const out = (result ?? {}) as { results?: unknown[]; error?: unknown };
+  if (typeof out.error === "string") {
+    return { pending: `Searching “${q}”...`, done: `Search failed: “${q}”` };
+  }
+  const count = Array.isArray(out.results) ? out.results.length : 0;
+  const done =
+    count > 0
+      ? `Searched “${q}” — ${count} result${count === 1 ? "" : "s"}`
+      : `Searched “${q}”`;
+  return { pending: `Searching “${q}”...`, done };
 }
 
 /**
@@ -556,7 +585,9 @@ export function ToolCallBlock({
   // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
   // rather than a generic "Fetching URL...".
   const dynamicLabels =
-    toolName === "webFetch"
+    toolName === "webSearch"
+      ? webSearchLabels(args, resolvedResult, labels)
+      : toolName === "webFetch"
       ? webFetchLabels(args, labels)
       : toolName === "computer"
         ? computerLabels(args, labels)
