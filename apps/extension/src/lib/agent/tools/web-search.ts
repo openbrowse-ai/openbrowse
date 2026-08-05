@@ -37,10 +37,18 @@ const SEARCH_ENDPOINT: string =
     : "https://openbrowse.ai/api/search");
 
 const REQUEST_TIMEOUT_MS = 20_000;
+// Mirror of the server's authoritative MAX_QUERY_LENGTH
+// (apps/docs/app/api/search/route.ts). The two packages don't share a
+// module, so keep these in sync; the proxy re-validates regardless.
+const MAX_QUERY_LENGTH = 500;
 
 const parameters = z
   .object({
-    query: z.string().min(1).describe("The web search query."),
+    query: z
+      .string()
+      .min(1)
+      .max(MAX_QUERY_LENGTH)
+      .describe("The web search query."),
     numResults: z
       .number()
       .int()
@@ -78,7 +86,11 @@ export const webSearchTool: BrowserTool<Input, Output> = {
   execute: async ({ query, numResults }, ctx) => {
     // Bound the request and honor the agent loop's abort signal.
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT_MS);
     const onAbort = () => controller.abort();
     if (ctx.signal) {
       if (ctx.signal.aborted) controller.abort();
@@ -114,12 +126,17 @@ export const webSearchTool: BrowserTool<Input, Output> = {
       }
       return parsed.data;
     } catch (err) {
-      const message =
-        err instanceof Error && err.name === "AbortError"
-          ? "Search timed out."
-          : err instanceof Error
-            ? err.message
-            : "Search request failed.";
+      const aborted = err instanceof Error && err.name === "AbortError";
+      // Only OUR timeout maps to a graceful "timed out" result. An abort
+      // from ctx.signal (user pressed Stop / the turn was torn down) is a
+      // real cancellation — propagate it so the agent loop handles it
+      // instead of surfacing a misleading timeout.
+      if (aborted && !timedOut) throw err;
+      const message = aborted
+        ? "Search timed out."
+        : err instanceof Error
+          ? err.message
+          : "Search request failed.";
       return { results: [], error: message };
     } finally {
       clearTimeout(timeout);

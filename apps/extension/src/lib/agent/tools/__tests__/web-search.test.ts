@@ -18,6 +18,22 @@ function mockFetch(status: number, body: unknown) {
   return fetchMock as unknown as ReturnType<typeof vi.fn>;
 }
 
+// A fetch that never resolves on its own — it only rejects with an
+// AbortError when the signal it is given aborts. Lets us drive both the
+// timeout path and the caller-cancellation path deterministically.
+function abortableFetch() {
+  return vi.fn(
+    (_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init.signal as AbortSignal;
+        const fail = () =>
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        if (signal.aborted) return fail();
+        signal.addEventListener("abort", fail, { once: true });
+      }),
+  ) as unknown as typeof fetch;
+}
+
 describe("webSearch tool", () => {
   it("POSTs the query to the managed proxy (no api key in the request)", async () => {
     const fetchMock = mockFetch(200, { results: [] });
@@ -87,5 +103,26 @@ describe("webSearch tool", () => {
     const out = await webSearchTool.execute({ query: "q" }, ctx);
     expect(out.results).toEqual([]);
     expect(out.error).toBe("boom");
+  });
+
+  it("returns 'Search timed out.' when the request exceeds the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", abortableFetch());
+      const p = webSearchTool.execute({ query: "q" }, ctx);
+      await vi.advanceTimersByTimeAsync(20_000);
+      const out = await p;
+      expect(out).toEqual({ results: [], error: "Search timed out." });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates caller cancellation (ctx.signal) instead of reporting a timeout", async () => {
+    vi.stubGlobal("fetch", abortableFetch());
+    const ac = new AbortController();
+    const p = webSearchTool.execute({ query: "q" }, { ...ctx, signal: ac.signal });
+    ac.abort();
+    await expect(p).rejects.toThrow();
   });
 });

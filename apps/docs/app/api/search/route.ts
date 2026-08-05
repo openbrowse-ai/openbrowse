@@ -25,6 +25,12 @@ const EXA_SEARCH_URL = "https://api.exa.ai/search";
 const DEFAULT_NUM_RESULTS = 8;
 const MAX_NUM_RESULTS = 10;
 const TEXT_MAX_CHARACTERS = 3000;
+// Authoritative max query length. The extension mirrors this value for
+// early client-side validation (see the web-search tool). Keep in sync.
+const MAX_QUERY_LENGTH = 500;
+// Upstream request timeout. The proxy must never hang a caller — or hold
+// a serverless invocation open — waiting on Exa.
+const UPSTREAM_TIMEOUT_MS = 10_000;
 
 // Rate limit: per-IP sliding window.
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -119,6 +125,9 @@ export async function POST(req: Request) {
   if (!query) {
     return json({ error: "Missing `query`." }, 400);
   }
+  if (query.length > MAX_QUERY_LENGTH) {
+    return json({ error: "Query too long." }, 400);
+  }
 
   const rawNum = (body as { numResults?: unknown })?.numResults;
   const numResults =
@@ -143,6 +152,13 @@ export async function POST(req: Request) {
           highlights: { numSentences: 3, highlightsPerUrl: 3 },
         },
       }),
+      // Bound the upstream call: abort on our own timeout OR when the
+      // caller disconnects (req.signal). Prevents a hung Exa request from
+      // holding the invocation open indefinitely.
+      signal: AbortSignal.any([
+        req.signal,
+        AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      ]),
     });
   } catch {
     return json({ error: "Search upstream unreachable." }, 502);
