@@ -1,5 +1,100 @@
 # openbrowse
 
+## 0.14.0
+
+### Minor Changes
+
+- 46c9db6: **Mention past chats in the composer.** Type `@` in the chat composer to reference open tabs _and_ previous conversations from one unified popup. Selecting a chat inserts a chat chip, and on send the referenced conversation's transcript is injected as context for the model — so you can pick up a thread, cross-reference an earlier decision, or ask the agent to build on prior work without re-pasting anything.
+
+  `@` now surfaces two labelled groups (Tabs and Past chats) over a single keyboard cursor, mirroring how `/` lists commands and skills:
+
+  - The unified `@` suggestion queries open tabs and `chatDb.listRootConversations()` (recent-first, fuzzy-filtered by title, subagent child runs excluded) and inserts the right node per selection: tabs become `tabMention` nodes (`@[title](url)`), chats become `chatMention` nodes (`#[title](chat:id)`). Distinct node types and markdown tokens keep the two paths unambiguous, so existing tab behaviour is untouched.
+  - Chat chips render as `@Title` in the composer and in sent-message history (via a read-only node variant), styled with a `.chat-mention` chip class across the side panel and home surfaces.
+
+  **Context injection (both tabs and chats) is now carried as a message part, not inline text.** The resolved context — mentioned tabs' page content and mentioned chats' transcripts — is captured at send time (preserving the tab/chat snapshot the user saw) and attached to the user message as a persisted, UI-invisible `data-mention-context` part. The transport substitutes it into a text part immediately before the model request (`rewriteForLLM` → `substituteMentionContextPart`), so:
+
+  - the composer bubble renders only the user's text + chips, with **no display-side stripping** (removing a class of "context leaked into the bubble" bugs);
+  - the model's view stays **consistent across reloads** (the part round-trips through chat-db); and
+  - there's a **single injection point** in the transport rather than context smuggled through the text and re-hidden in every render/edit surface.
+
+  Transcripts skip system rows and auto-compaction summaries and de-duplicate by conversation id; the part's text is counted by `estimateMessageTokens` so compaction triggers accurately. Wired into all send paths: initial send, queue-while-streaming, message edit, and the landing/hero composer.
+
+  **Long chats are summarized, not truncated.** When a mentioned chat's transcript exceeds a token threshold, it's condensed with a compaction-style summary (via the user's configured compaction model) instead of pasting an arbitrary head slice. Summaries are generated once and cached for the session (keyed by message count + last message id, so a chat that grows re-summarizes); if summarization is unavailable the block falls back to a truncated transcript. The reusable summarizer (`summarizeMessages`) is factored out of the live compaction flow.
+
+  **Shimmer feedback while summarizing.** A long-chat summary resolves at send time, so every send path gives feedback with the mention chip shimmering (a `.chat-mention-resolving` CSS sweep) until the context is ready and the turn dispatches — the send/transport path itself is untouched:
+
+  - **Side panel** (in-conversation sends and message edits): an optimistic `PendingMentionBubble` echoes the message while `handleSubmit`/`confirmEdit` resolves the context, then the real turn dispatches.
+  - **Queue-while-streaming**: enqueuing a message that references a chat clears the composer immediately and shows an optimistic, pulsing placeholder row in the queue while the snapshot resolves, then the real queued item replaces it.
+  - **Home landing hero** (new-chat sends): the send navigates to the chat view _immediately_ (persisting clean text), and mention resolution is deferred to the first-turn dispatch — so the real message renders right away and its chip shimmers in place while its referenced chats are summarized, then the turn dispatches. No frozen hero, no message-bubble-on-hero hybrid.
+
+  **Test surface.** +16 tests: chat-mention token parsing, verbatim transcript formatting (injection, system/summary filtering, empty placeholder), long-chat summarization routing (threshold, cache hit, cache invalidation, fallback), and the transport contract (data part → model text substitution, untouched-when-absent, serialize/deserialize round-trip).
+
+- 4694029: **Universal palette search: the ⌥K palette now searches tabs, chats, artifacts, spaces, and commands from one input, with grouped results and scoping.**
+
+  The command palette was previously "Search tabs" — a single URL-centric list (open tabs, favorites, bookmarks, history, recently-closed) plus a separate `/`-gated action mode. It now fans a single query out across every kind of thing you've touched, keeps results grouped and scannable, and folds commands in as a first-class group instead of a mode.
+
+  What changed:
+
+  - **Five result groups from one query.** The tuned URL pipeline is untouched and becomes the "Open & visited" group; new isolated builders add **Chats**, **Artifacts**, **Spaces**, and **Commands**. Groups render in a fixed order (URL results always first), each capped (8/4/4/3/4) with "show more", and empty groups are omitted. Chat/artifact/space matching is metadata-only (title/description/name), scored with the existing `scoreQuery`, so the palette stays synchronous and instant.
+  - **Dual scoping.** Type a leading token (`chat:`, `art:`/`artifact:`, `space:`, or `/` for commands) or click/`Tab` a group header to narrow to one group; a removable "Filtering" chip reflects the active scope and `Esc`/`Backspace` clears it. `/` is now simply the command scope — the separate action mode is gone, and its now-dead `OverlayActionList`/`SortableSpaceItem` components were removed (the action data + `useFilteredActions` moved to `components/actions.ts`).
+  - **Commands are first-class.** They surface from any plain query (type "settings" and the command appears) and the full command set shows in the empty-query zero state. The zero state is now Favorites → Recents (recent chats + recent artifacts) → Commands; recently-closed tabs no longer clutter the default view (they still appear when you search).
+  - **New actions.** Enter opens a chat in a dedicated chat tab (reusing the current tab in extension context), opens an artifact's rendered view in a new tab, or switches to a space. The **"AI chat" command became "New chat"** and opens the chat landing page (new-tab) instead of the side panel; the side panel remains on ⌥I.
+  - **Data plumbing.** New background endpoints `OVERLAY_LIST_CHATS` / `OVERLAY_LIST_ARTIFACTS` (chat DB + OPFS live in the extension context, not the content-injected overlay), plus `OVERLAY_OPEN_CHAT` / `OVERLAY_OPEN_ARTIFACT`.
+
+  UI polish and fixes bundled in:
+
+  - **Tab-row drag handle** no longer reserves a column — the grip now appears over the favicon on hover, tightening every row.
+  - The Home sidebar button is relabeled **"Search"** (it's no longer tabs-only), and the palette placeholder reads "Search tabs, chats, artifacts… / for commands".
+  - **⌥K now works on the new-tab page.** The `open-search` command bailed on `chrome://newtab/` before checking for our own pages; it now routes the NTP (and any of our extension pages) to the in-page overlay toggle.
+  - **`TOGGLE_HOME_OVERLAY` is window-scoped.** `HomeApp` and the settings-page `useOverlay` hook ignore toggles aimed at another window (messages without a `windowId` still broadcast), so ⌥K only toggles the focused window's palette instead of every open home/new-tab instance.
+  - **`Tidy tabs` / `Clean` work from the palette again.** `execGlobalAction` now passes the overlay's known `windowId` in `OVERLAY_GLOBAL_ACTION`; previously the background couldn't resolve a window from the overlay iframe and these actions silently no-oped.
+  - **Enter (⏎) activates any focused result.** The footer's ⏎ button and keyboard Enter now share one path, so it opens the focused chat/artifact/space/command — not just tabs.
+  - **`space:` scope lists every space** (ordered by position) on an empty query, matching the other scopes' zero-state behavior.
+  - **Opening an artifact reuses its existing tab** when one is already open, instead of stacking duplicates.
+  - **Scoped `TOGGLE_HOME_OVERLAY` no longer races startup.** If a window-scoped toggle arrives before a home/new-tab instance has resolved its own window id, it resolves the id first and applies only on a match, so early ⌥K presses never leak to the wrong window.
+
+  **Test surface.** +20 unit tests for the palette foundation (`overlay/search/palette.test.ts`: builders, scope-token parsing, grouping/caps/scope, and the `Match → PaletteResult` adapter). All 2,208 tests pass; `tsc --noEmit` clean.
+
+- 44d7f43: **Add a `webSearch` agent tool backed by a managed, server-side Exa proxy.**
+
+  The agent can now search the web as a fast "find" layer — ranked results with a text excerpt and highlighted snippets — without an API key ever shipping in the (fully inspectable) extension bundle. The key lives only on the server.
+
+  - **Hosted proxy (`apps/docs/app/api/search`).** A `POST /api/search` route forwards the query to Exa using a server-side `EXA_API_KEY`, clamps `numResults`, requests text + highlights, normalizes results to only the fields we expose, and applies best-effort per-IP rate limiting. Requires `EXA_API_KEY` in the docs deployment.
+  - **Extension tool (`webSearch`).** Calls the proxy (localhost in `wxt dev`, hosted in production; override with `WXT_PUBLIC_SEARCH_ENDPOINT`), bounded by a 20s timeout and the agent loop's abort signal. Errors are returned to the model, never thrown. For deep reading or pages behind login, the agent still follows up with `navigate` + `readPage`/`extract`.
+  - **UI.** Dedicated result renderer plus dynamic status labels (e.g. `Searched "…" — 8 results`).
+
+  Registered in the browser tool set and the tool-input-schema test. +5 tool tests.
+
+### Patch Changes
+
+- c8ed694: **Add an "Add to space" action to the chat thread actions menu.**
+
+  The chat header's ⋯ menu now has an "Add to space" submenu listing your spaces.
+  Selecting one moves the conversation into that space; the space it already
+  belongs to is disabled, and a "Remove from space" item appears when the
+  conversation is currently in a space (moving it back to the global scope). The
+  sidebar re-scopes immediately in the same window via a `chat-moved` event, since
+  the cross-window `CONVERSATION_UPDATED` broadcast isn't delivered to the sender's
+  own context.
+
+- 804b852: **Add an "Open in new tab" action to the Space file viewer.**
+
+  The file viewer's header now offers an "Open in new tab" button (next to Download) when viewing a Space's workspace file. Clicking it pops the file out into a dedicated `file.html` tab that renders the same `FileViewerPanel` full-screen, so large files, PDFs, sheets, HTML previews, and code can be read without the constraints of the side rail.
+
+  - `components/files/FileViewerPanel.tsx` — new optional `openInNewTab` prop. When set, renders an `ExternalLink` icon button that calls `chrome.tabs.create` with `file.html?path=<opfs-path>&name=<file-name>`. Off by default, so conversation-file surfaces are unchanged. Because OPFS is scoped to the extension origin and shared across every extension page, the new tab reads the exact same file by path — no blob handoff across contexts is needed.
+  - `entrypoints/file/` — new standalone tab entrypoint (mirrors the artifact tab). `main.tsx` reads `path`/`name` from the query string, applies the app theme via `useTheme`, and mounts `FileViewerPanel` with `onClose={() => window.close()}`. It intentionally omits `openInNewTab` so the standalone tab doesn't offer to re-open a copy of itself.
+  - `entrypoints/_shared/components/LandingPage.tsx` and `RightRail.tsx` — pass `openInNewTab` at the three Space workspace-file viewer call sites (xl rail, stacked rail, and the sidebar rail).
+
+- 4fb8763: **Fix MCP bridge trust-prompt flicker loop and stale-session reconnect wedge.**
+
+  Two related reliability fixes in the extension↔broker WebSocket handshake:
+
+  - **`hello-defer` stops the trust-prompt flicker.** The broker armed a fixed 5s `hello-timeout` after sending `hello-challenge`, but first-run TOFU (and key-rotation) require a _human_ to approve the broker's identity in the extension UI — which can't happen in 5s. The broker would close the socket, the extension would reconnect and re-prompt, and the "verify this MCP helper" dialog flickered on/off every few seconds, making pairing nearly impossible. The extension now sends a `hello-defer` message the moment it needs a human decision; the broker cancels the short timeout and holds the socket open under a generous trust-decision window instead. The fast-fail path is preserved for genuinely dead/hung connections (the common already-trusted case still answers in milliseconds).
+
+  - **Pong-based liveness eviction unwedges reconnects.** The broker enforces a single active session and rejects a second connection with `session_already_active`. If the paired extension's socket died _uncleanly_ (MV3 service-worker suspend, sleep/wake, network blip — no TCP FIN), the broker kept the session registered and rejected every reconnect until the OS TCP stack timed the dead socket out (minutes), leaving the panel stuck on "Not connected." The broker now pings each established session and terminates a socket that misses a pong, so a dead session self-clears within ~1–2 heartbeat intervals and the extension can re-pair. The heartbeat interval is configurable via `heartbeatIntervalMs` (default 20s).
+
+  Tests: broker WS suite covers the deferred-then-completed handshake and dead-peer eviction; the extension connect suite covers sending `hello-defer` on both the TOFU and key-mismatch paths.
+
 ## 0.13.3
 
 ### Patch Changes
