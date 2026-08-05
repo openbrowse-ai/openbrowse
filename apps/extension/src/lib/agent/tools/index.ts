@@ -18,6 +18,7 @@ export { patchSiteSkillTool } from "./patch-site-skill";
 export { deleteSiteSkillTool } from "./delete-site-skill";
 export { createPythonTool, warmupPython } from "./execute-python";
 export { extractTool } from "./extract";
+export { webSearchTool } from "./web-search";
 export { todoWriteTool } from "./todowrite";
 export { proposePlanTool } from "./propose-plan";
 export { skillTool } from "./skill";

@@ -44,6 +44,7 @@ import { todoWriteTool } from "../todowrite";
 import { typeInElementTool } from "../type-in-element";
 import { updateMemoryTool } from "../update-memory";
 import { patchSiteSkillTool } from "../patch-site-skill";
+import { webSearchTool } from "../web-search";
 
 const fsTools = createFsTools();
 const pythonTool = createPythonTool();
@@ -73,6 +74,7 @@ const allTools = [
   ["delete_site_skill", deleteSiteSkillTool],
   ["executePython", pythonTool],
   ["extract", extractTool],
+  ["webSearch", webSearchTool],
   ["todoWrite", todoWriteTool],
   ["skill", skillTool],
   ["install_skill", installSkillTool],
