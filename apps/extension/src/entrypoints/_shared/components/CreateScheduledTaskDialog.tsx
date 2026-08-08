@@ -1,5 +1,6 @@
 // src/entrypoints/_shared/components/CreateScheduledTaskDialog.tsx
-import { useEffect, useRef, useState } from "react";
+import { ModelPicker } from "@/components/chat/ModelPicker";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -7,11 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Kbd } from "@/components/ui/kbd";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Select,
   SelectContent,
@@ -19,13 +17,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ModelPicker } from "@/components/chat/ModelPicker";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { useConfiguredModels } from "@/hooks/useConfiguredModels";
-import { storage } from "@/lib/storage";
 import { DEFAULT_SETTINGS } from "@/lib/constants";
-import type { Settings } from "@/lib/types";
 import { taskDb } from "@/lib/schedule/task-db";
-import type { Schedule, ScheduleKind, ScheduledTask } from "@/lib/schedule/types";
+import type {
+  Schedule,
+  ScheduleKind,
+  ScheduledTask,
+} from "@/lib/schedule/types";
+import { storage } from "@/lib/storage";
+import type { Settings } from "@/lib/types";
+import { agentModelGate } from "@/registry/agent-capability";
+import { useEffect, useRef, useState } from "react";
 
 interface Props {
   open: boolean;
@@ -230,6 +235,7 @@ export function CreateScheduledTaskDialog({
             providerModels={providerModels}
             value={agentModel || undefined}
             onValueChange={setAgentModel}
+            modelGate={agentModelGate}
             placeholder="Select a model"
             portalContainer={formRef}
           />
@@ -307,7 +313,9 @@ export function CreateScheduledTaskDialog({
 
           <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
             <div className="min-w-0">
-              <label className="text-sm font-medium">Auto-approve tool actions</label>
+              <label className="text-sm font-medium">
+                Auto-approve tool actions
+              </label>
               <p className="text-xs text-muted-foreground">
                 Lets the scheduled run use tools that normally ask for
                 confirmation (it runs with no one watching). Off by default.

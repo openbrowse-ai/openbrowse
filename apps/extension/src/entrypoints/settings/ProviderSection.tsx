@@ -1,9 +1,14 @@
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { ProviderDefinition, ModelDefinition } from "@/registry/providers/types";
-import type { Settings } from "@/lib/types";
-import { ProviderConfigDialog } from "./ProviderConfigDialog";
 import { RegistryIcon } from "@/components/ui/registry-icon";
+import type { Settings } from "@/lib/types";
+import type {
+  ModelDefinition,
+  ProviderDefinition,
+} from "@/registry/providers/types";
+import { useState } from "react";
+import { ProviderConfigDialog } from "./ProviderConfigDialog";
+import { LocalModelCatalog } from "./LocalModelCatalog";
+import { formatContextWindow } from "./local-model-catalog";
 
 export interface ModelState {
   modelKey: string; // "providerId:modelId"
@@ -17,6 +22,8 @@ interface ProviderSectionProps {
   settings: Settings;
   onChange: (patch: Partial<Settings>) => void;
   modelStates: Record<string, ModelState>;
+  /** True while any model download is in flight (see ModelsTab). */
+  downloadBusy?: boolean;
   onDownload: (providerId: string, modelId: string) => void;
   onDelete: (providerId: string, modelId: string) => void;
   query?: string;
@@ -27,6 +34,7 @@ export function ProviderSection({
   settings,
   onChange,
   modelStates,
+  downloadBusy = false,
   onDownload,
   onDelete,
   query,
@@ -35,7 +43,8 @@ export function ProviderSection({
   const [expanded, setExpanded] = useState(false);
 
   const providerConfig = settings.providerConfigs[provider.id] ?? {};
-  const isConfigured = provider.setup !== "byok" || Object.keys(providerConfig).length > 0;
+  const isConfigured =
+    provider.setup !== "byok" || Object.keys(providerConfig).length > 0;
 
   function isModelDownloaded(modelId: string) {
     return settings.downloadedModels.includes(modelId);
@@ -51,11 +60,15 @@ export function ProviderSection({
   }
 
   const q = (query || "").trim().toLowerCase();
-  const providerMatches = q ? (provider.name.toLowerCase().includes(q) || provider.id.toLowerCase().includes(q)) : false;
+  const providerMatches = q
+    ? provider.name.toLowerCase().includes(q) ||
+      provider.id.toLowerCase().includes(q)
+    : false;
 
   const filteredModels = provider.models.filter((m) => {
     if (!q) return true;
-    if (m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q)) return true;
+    if (m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
+      return true;
     return providerMatches;
   });
 
@@ -71,8 +84,12 @@ export function ProviderSection({
             <RegistryIcon id={provider.id} className="w-5 h-5" />
           </div>
           <div>
-            <h3 className="text-sm font-medium leading-none">{provider.name}</h3>
-            <p className="text-xs text-muted-foreground mt-0.5">{provider.description}</p>
+            <h3 className="text-sm font-medium leading-none">
+              {provider.name}
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {provider.description}
+            </p>
           </div>
         </div>
 
@@ -87,8 +104,22 @@ export function ProviderSection({
         )}
       </div>
 
-      {/* Models list (only for non-BYOK providers since BYOK models are all auto-available) */}
-      {provider.setup !== "byok" && (
+      {/* WebLLM has ~139 models (mostly quant variants); render the grouped,
+          collapsible catalog instead of a flat list. */}
+      {provider.setup !== "byok" && provider.id === "web-llm" && (
+        <LocalModelCatalog
+          provider={provider}
+          settings={settings}
+          modelStates={modelStates}
+          downloadBusy={downloadBusy}
+          onDownload={onDownload}
+          onDelete={onDelete}
+          query={query}
+        />
+      )}
+
+      {/* Other local providers (few models) keep the simple flat list. */}
+      {provider.setup !== "byok" && provider.id !== "web-llm" && (
         <div className="flex flex-col gap-1 mt-5">
           {visibleModels.map((model) => (
             <ModelRow
@@ -97,6 +128,7 @@ export function ProviderSection({
               provider={provider}
               downloaded={isModelDownloaded(model.id)}
               state={modelStates[`${provider.id}:${model.id}`]}
+              downloadBusy={downloadBusy}
               onDownload={() => onDownload(provider.id, model.id)}
               onDelete={() => onDelete(provider.id, model.id)}
             />
@@ -138,30 +170,39 @@ export function ProviderSection({
   );
 }
 
-function ModelRow({
+export function ModelRow({
   model,
   provider,
   downloaded,
   state,
+  downloadBusy = false,
   onDownload,
   onDelete,
+  displayName,
 }: {
   model: ModelDefinition;
   provider: ProviderDefinition;
   downloaded: boolean;
   state?: ModelState;
+  downloadBusy?: boolean;
   onDownload: () => void;
   onDelete: () => void;
+  /** Overrides the row label (e.g. base name without the quant tag). */
+  displayName?: string;
 }) {
-  const needsDownload = provider.setup === "web-llm" || provider.setup === "browser-ai";
+  const needsDownload =
+    provider.setup === "web-llm" || provider.setup === "browser-ai";
   const isDownloading = state?.downloading ?? false;
   const error = state?.error;
+  // Block starting a new download while another one is running; the offscreen
+  // engine loads models one at a time.
+  const blockedByOther = downloadBusy && !isDownloading;
 
   return (
     <div className="flex flex-col rounded-md px-2 py-1.5 hover:bg-muted/50">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm truncate">{model.name}</span>
+          <span className="text-sm truncate">{displayName ?? model.name}</span>
           {model.capabilities.length > 0 && (
             <div className="flex gap-1">
               {model.capabilities.map((cap) => (
@@ -174,8 +215,15 @@ function ModelRow({
               ))}
             </div>
           )}
+          {model.contextWindow ? (
+            <span className="text-[10px] text-muted-foreground">
+              {formatContextWindow(model.contextWindow)} ctx
+            </span>
+          ) : null}
           {needsDownload && !downloaded && model.downloadSize && (
-            <span className="text-[10px] text-muted-foreground">{model.downloadSize}</span>
+            <span className="text-[10px] text-muted-foreground">
+              {model.downloadSize}
+            </span>
           )}
         </div>
 
@@ -186,11 +234,9 @@ function ModelRow({
               size="sm"
               className="h-6 text-xs px-2"
               onClick={onDownload}
-              disabled={isDownloading}
+              disabled={isDownloading || blockedByOther}
             >
-              {isDownloading
-                ? `${state?.progress ?? 0}%`
-                : "Download"}
+              {isDownloading ? `${state?.progress ?? 0}%` : "Download"}
             </Button>
           )}
 
@@ -207,9 +253,7 @@ function ModelRow({
         </div>
       </div>
 
-      {error && (
-        <p className="text-xs text-destructive mt-1 ml-0.5">{error}</p>
-      )}
+      {error && <p className="text-xs text-destructive mt-1 ml-0.5">{error}</p>}
     </div>
   );
 }

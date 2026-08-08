@@ -9,6 +9,7 @@ import {
   testConnection,
   testConnectionFromRegistry,
 } from "./ai";
+import { registerLocalModelStreamListener } from "./lm-stream";
 import {
   clearPersistedPythonLog,
   getPersistedPythonLog,
@@ -16,6 +17,12 @@ import {
 } from "./python";
 import { handleSandboxExecute, isSandboxExecutePayload } from "./sandbox-host";
 import { sortTabs } from "./sort";
+
+// Local-model bridge: the SW-hosted agent loop opens `offscreen-lm:*` Ports
+// to drive WebLLM / Gemini Nano inference here (WebGPU + `chrome.ai` only
+// exist in this document). Registered once at load, alongside the
+// request/response `chrome.runtime.onMessage` handler below.
+registerLocalModelStreamListener();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.target !== "offscreen") return;
