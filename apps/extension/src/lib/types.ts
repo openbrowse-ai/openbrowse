@@ -477,6 +477,18 @@ export type MessageType =
       userMessage: string;
     }
   | { type: "DOWNLOAD_MODEL"; modelId: string }
+  | {
+      type: "LOCAL_MODEL_LOAD_PROGRESS";
+      modelId: string;
+      progress: number;
+      text: string;
+    }
+  | {
+      type: "LOCAL_MODEL_OUTPUT_GARBLED";
+      modelId: string;
+      /** Human-readable signals that tripped the coherence check. */
+      reasons: string[];
+    }
   | { type: "DOWNLOAD_BROWSER_AI" }
   | { type: "CHECK_MODEL_CACHE"; modelIds: string[] }
   | { type: "DELETE_MODEL"; modelId: string }

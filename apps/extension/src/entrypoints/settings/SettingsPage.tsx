@@ -199,6 +199,17 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           )}
           {activeTab === "models" && (
             <ModelsTab settings={settings} onChange={async (patch) => {
+              // Model download/delete persists `downloadedModels` immediately
+              // (the background writes storage via add/removeDownloadedModel).
+              // Reconcile it into BOTH working and saved state so it never
+              // registers as an unsaved change, without disturbing other
+              // in-flight field edits.
+              if (patch.downloadedModels) {
+                const next = patch.downloadedModels;
+                setSettings((prev) => ({ ...prev, downloadedModels: next }));
+                setSavedSettings((prev) => ({ ...prev, downloadedModels: next }));
+                return;
+              }
               const updated = { ...settings, ...patch };
               setSettings(updated);
               if (patch.providerConfigs) {

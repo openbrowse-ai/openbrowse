@@ -1,11 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { fromModelsDevProvider } from "../from-models-dev";
 import { QUIRKS } from "../quirks";
+import type { ModelsDevProvider } from "../types";
 import {
   ANTHROPIC_FIXTURE,
+  MULTIPLEX_FIXTURE,
   OPENAI_COMPATIBLE_FIXTURE,
   UNSUPPORTED_FIXTURE,
-  MULTIPLEX_FIXTURE,
 } from "./fixtures";
 
 describe("fromModelsDevProvider", () => {
@@ -55,7 +56,9 @@ describe("fromModelsDevProvider", () => {
     const result = fromModelsDevProvider(ANTHROPIC_FIXTURE, QUIRKS.anthropic);
     const ids = result.models.map((m) => m.id);
     expect(ids).toContain("claude-experimental-alpha");
-    const alpha = result.models.find((m) => m.id === "claude-experimental-alpha");
+    const alpha = result.models.find(
+      (m) => m.id === "claude-experimental-alpha",
+    );
     expect(alpha!.status).toBe("alpha");
   });
 
@@ -68,6 +71,51 @@ describe("fromModelsDevProvider", () => {
     const result = fromModelsDevProvider(OPENAI_COMPATIBLE_FIXTURE, undefined);
     const llama = result.models.find((m) => m.id === "llama-3.3-70b-versatile");
     expect(llama!.capabilities.sort()).toEqual(["chat", "tools"].sort());
+  });
+
+  it("excludes non-text-output models (image/video generators)", () => {
+    const provider = {
+      id: "gateway",
+      name: "AI Gateway",
+      models: {
+        "text-llm": {
+          id: "text-llm",
+          name: "A Real LLM",
+          modalities: { input: ["text"], output: ["text"] },
+          limit: { context: 128000, output: 8192 },
+        },
+        "seedance-video": {
+          id: "seedance-video",
+          name: "Seedance v1.0 Pro",
+          modalities: { input: ["text", "image"], output: ["video"] },
+          limit: { context: 0, output: 0 },
+        },
+      },
+    } as unknown as ModelsDevProvider;
+    const ids = fromModelsDevProvider(provider, undefined).models.map(
+      (m) => m.id,
+    );
+    expect(ids).toContain("text-llm");
+    expect(ids).not.toContain("seedance-video");
+  });
+
+  it("keeps models with no declared output modality", () => {
+    const provider = {
+      id: "gateway",
+      name: "AI Gateway",
+      models: {
+        "unknown-modality": {
+          id: "unknown-modality",
+          name: "Mystery Model",
+          modalities: { input: ["text"] },
+          limit: { context: 32000, output: 4096 },
+        },
+      },
+    } as unknown as ModelsDevProvider;
+    const ids = fromModelsDevProvider(provider, undefined).models.map(
+      (m) => m.id,
+    );
+    expect(ids).toContain("unknown-modality");
   });
 
   it("uses fallback description and undefined icon for unknown providers", () => {
@@ -90,7 +138,12 @@ describe("fromModelsDevProvider", () => {
 
     it("resolves default provider npm and substituted baseUrl for default model", async () => {
       const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
-      const model = await Promise.resolve(result.createLanguageModel({ resourceName: "test-res", apiKey: "x" }, "gpt-default"));
+      const model = await Promise.resolve(
+        result.createLanguageModel(
+          { resourceName: "test-res", apiKey: "x" },
+          "gpt-default",
+        ),
+      );
       expect(model).toBeDefined();
       expect((model as any).provider).toContain("azure"); // Verify we got an Azure model
     });
@@ -99,16 +152,24 @@ describe("fromModelsDevProvider", () => {
       const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
       // Wait, @ai-sdk/anthropic IS bundled! So it will try to import it and call it.
       // We don't want to make an actual API call, but `createLanguageModel` just returns the model instance, it doesn't make a fetch yet.
-      const model = await Promise.resolve(result.createLanguageModel({ resourceName: "test-res", apiKey: "x" }, "claude-override"));
-      // The model is a LanguageModel object. 
+      const model = await Promise.resolve(
+        result.createLanguageModel(
+          { resourceName: "test-res", apiKey: "x" },
+          "claude-override",
+        ),
+      );
+      // The model is a LanguageModel object.
       expect(model).toBeDefined();
       expect((model as any).provider).toContain("anthropic"); // Just to check it created an Anthropic model.
     });
 
     it("throws if required config value for substitution is missing", async () => {
       const result = fromModelsDevProvider(MULTIPLEX_FIXTURE, quirks);
-      expect(() => result.createLanguageModel({ apiKey: "x" }, "gpt-default"))
-        .toThrow(/Missing required configuration: resourceName \(for AZURE_RESOURCE_NAME\)/);
+      expect(() =>
+        result.createLanguageModel({ apiKey: "x" }, "gpt-default"),
+      ).toThrow(
+        /Missing required configuration: resourceName \(for AZURE_RESOURCE_NAME\)/,
+      );
     });
   });
 });

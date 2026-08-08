@@ -77,6 +77,19 @@ interface ModelPickerProps {
 
   /** Optional extra UI rendered above each model row's tooltip card. */
   renderModelInfo?: (model: ModelOption) => ReactNode;
+  /**
+   * Per-model gate for agent-only pickers. When it returns `{ ok: false }`,
+   * the row is rendered disabled with `reason` as a badge and cannot be
+   * selected — UNLESS `allowSelect` is true, in which case the row stays
+   * selectable and `reason` renders as an advisory badge (e.g. the composer's
+   * "Chat only" models). Omit (or return `{ ok: true }`) to allow every model
+   * — the default for utility pickers (tidy / compaction / evaluator).
+   */
+  modelGate?: (model: ModelOption) => {
+    ok: boolean;
+    reason?: string;
+    allowSelect?: boolean;
+  };
   /** Optional footer rendered below the list (e.g. Configure button). */
   footer?: ReactNode;
   /** Optional extra block under the footer (e.g. thinking toggle). */
@@ -176,6 +189,7 @@ export function ModelPicker({
   open: controlledOpen,
   onOpenChange,
   portalContainer,
+  modelGate,
   disabled = false,
 }: ModelPickerProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -215,11 +229,13 @@ export function ModelPicker({
     if (defaultOption) map.set(defaultOption.value, true);
     for (const group of providerModels) {
       for (const m of group.models) {
-        map.set(`${group.provider}:${m.id}`, group.enabled);
+        const g = modelGate ? modelGate(m) : null;
+        const gatedOut = g ? !g.ok && g.allowSelect !== true : false;
+        map.set(`${group.provider}:${m.id}`, group.enabled && !gatedOut);
       }
     }
     return map;
-  }, [providerModels, defaultOption]);
+  }, [providerModels, defaultOption, modelGate]);
 
   // Precomputed searchable text per compound id. Used by base-ui's
   // internal `filter` (below) so its highlight/keyboard-nav set agrees
@@ -327,10 +343,18 @@ export function ModelPicker({
     starState: "filled" | "outline" | "hover";
   }) => {
     const compoundId = `${item.providerId}:${item.id}`;
+    const gate = modelGate ? modelGate(item.model) : { ok: true as const };
+    const gateAllowsSelect = gate.ok || gate.allowSelect === true;
+    const rowEnabled = item.enabled && gateAllowsSelect;
+    const reasonLabel = !item.enabled
+      ? "Not configured"
+      : !gate.ok
+        ? gate.reason
+        : null;
     const row = (
       <ComboboxItem
         value={compoundId}
-        disabled={!item.enabled}
+        disabled={!rowEnabled}
         onPointerMove={() => setHighlightedModelId(compoundId)}
         onFocus={() => setHighlightedModelId(compoundId)}
       >
@@ -343,9 +367,9 @@ export function ModelPicker({
           }
         />
         <span className="flex-1 truncate">{item.name}</span>
-        {!item.enabled && (
+        {reasonLabel && (
           <span className="mr-2 text-[10px] text-muted-foreground">
-            Not configured
+            {reasonLabel}
           </span>
         )}
         {onFavoriteToggle && (

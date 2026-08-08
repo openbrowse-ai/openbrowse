@@ -6,17 +6,14 @@
  * (`../providers/index.ts`) consume this.
  */
 
-import {
-  createLanguageModelFor,
-  isSupportedNpm,
-} from "./bundled-sdks";
-import type { ProviderQuirks } from "./quirks";
-import type { ModelsDevModel, ModelsDevProvider } from "./types";
 import type {
   ConfigField,
   ModelDefinition,
   ProviderDefinition,
 } from "@/registry/providers/types";
+import { createLanguageModelFor, isSupportedNpm } from "./bundled-sdks";
+import type { ProviderQuirks } from "./quirks";
+import type { ModelsDevModel, ModelsDevProvider } from "./types";
 
 const DEFAULT_API_KEY_PLACEHOLDER = "sk-...";
 
@@ -63,7 +60,9 @@ function defaultConfigSchema(placeholder: string): ConfigField[] {
  * - `vision` from input modalities (image / pdf)
  * - `thinking` from `reasoning`
  */
-function capabilitiesOf(model: ModelsDevModel): ModelDefinition["capabilities"] {
+function capabilitiesOf(
+  model: ModelsDevModel,
+): ModelDefinition["capabilities"] {
   const caps: ModelDefinition["capabilities"] = ["chat"];
   if (model.tool_call) caps.push("tools");
   const inputs = new Set(model.modalities?.input ?? []);
@@ -89,7 +88,11 @@ function mapModel(
   if (typeof model.limit?.output === "number") {
     def.maxOutputTokens = model.limit.output;
   }
-  if (model.cost && typeof model.cost.input === "number" && typeof model.cost.output === "number") {
+  if (
+    model.cost &&
+    typeof model.cost.input === "number" &&
+    typeof model.cost.output === "number"
+  ) {
     def.pricing = {
       inputPer1M: model.cost.input,
       outputPer1M: model.cost.output,
@@ -101,11 +104,21 @@ function mapModel(
 }
 
 /**
- * Filters: deprecated models are always hidden. Alpha/beta surface;
- * the UI can choose to badge them but doesn't gate them.
+ * Filters:
+ * - Deprecated models are always hidden.
+ * - Non-language models are hidden: anything whose declared output modality
+ *   isn't text (image/video/audio generators, embeddings) has no place in a
+ *   chat/agent model picker. This is what keeps ByteDance Seedance (video)
+ *   and Seedream (image), surfaced via aggregators like Vercel AI Gateway,
+ *   out of the list. Models with no declared output modality are kept —
+ *   incomplete catalog metadata shouldn't hide a real LLM.
+ * - Alpha/beta surface; the UI can badge them but doesn't gate them.
  */
 function shouldIncludeModel(model: ModelsDevModel): boolean {
-  return model.status !== "deprecated";
+  if (model.status === "deprecated") return false;
+  const output = model.modalities?.output;
+  if (output && output.length > 0 && !output.includes("text")) return false;
+  return true;
 }
 
 function configSchemaFor(
@@ -135,7 +148,9 @@ function substituteUrlVars(
     const configKey = envVarMap?.[varName] ?? varName;
     const value = config[configKey];
     if (value === undefined || value === "") {
-      throw new Error(`Missing required configuration: ${configKey} (for ${varName})`);
+      throw new Error(
+        `Missing required configuration: ${configKey} (for ${varName})`,
+      );
     }
     return value;
   });

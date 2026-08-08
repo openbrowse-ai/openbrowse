@@ -44,6 +44,10 @@ import { summarizeMessages } from "@/lib/agent/summarize-messages";
 import { chatDb } from "@/lib/chat-db";
 import { openSettingsTab } from "@/lib/open-settings";
 import type { ThinkingConfig, ConversationMode } from "@/lib/types";
+import {
+  composerModelGate,
+  isChatOnlyModel,
+} from "@/registry/agent-capability";
 import { cn } from "@/lib/utils";
 import type { JSONContent } from "@tiptap/core";
 import HardBreak from "@tiptap/extension-hard-break";
@@ -1252,6 +1256,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
               favoriteModels={favoriteModels}
               onFavoriteToggle={onFavoriteToggle}
               showRecommended
+              modelGate={composerModelGate}
               placeholder="Select a model..."
               open={modelSelectorOpen}
               onOpenChange={setModelSelectorOpen}
@@ -1310,9 +1315,22 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
               }
             />
           )}
-          {mode && onModeChange && (
-            <ModeSwitch mode={mode} onChange={onModeChange} hasPlan={hasPlan} />
-          )}
+          {mode &&
+            onModeChange &&
+            // Approval modes (Plan/Act) are meaningless for a chat-only model:
+            // it can't call tools, so there are no tool calls to gate. Hide the
+            // switch when we know the selected model lacks `tools` (undefined
+            // capabilities → unknown → keep showing).
+            !(
+              selectedModelCapabilities != null &&
+              isChatOnlyModel({ capabilities: selectedModelCapabilities })
+            ) && (
+              <ModeSwitch
+                mode={mode}
+                onChange={onModeChange}
+                hasPlan={hasPlan}
+              />
+            )}
         </div>
 
         {/* Action buttons */}

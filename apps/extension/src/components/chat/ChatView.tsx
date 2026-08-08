@@ -3,7 +3,13 @@ import {
   type TabMentionAttrs,
   type Attachment,
 } from "./ChatInput";
+import {
+  composerModelGate,
+  isAgentCapableModel,
+} from "@/registry/agent-capability";
 import { MessageList } from "./MessageList";
+import { useLocalModelOutputWarning } from "./useLocalModelOutputWarning";
+import type { ModelOption } from "./ModelPicker";
 import { PendingMentionBubble } from "./PendingMentionBubble";
 import { computeShowThinking } from "./compute-show-thinking";
 import { PlanApprovalCard } from "./PlanApprovalCard";
@@ -60,6 +66,7 @@ import {
   Pencil,
   Settings2,
   Sparkles,
+  TriangleAlert,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -418,6 +425,10 @@ export function ChatView({
 
   const providerModels = useConfiguredModels(settings);
 
+  // Passive WebLLM corruption notice — see useLocalModelOutputWarning.
+  const { warning: garbledOutput, dismiss: dismissGarbledOutput } =
+    useLocalModelOutputWarning();
+
   // Auto-select a default model when none is set and at least one
   // provider is now configured. Mirrors the same effect in LandingPage
   // so that whichever surface the user lands on after entering their
@@ -427,25 +438,44 @@ export function ChatView({
   // chat input stays disabled until the user manually picks a model,
   // which made the post-config UX feel broken.
   useEffect(() => {
-    if (agentSettings.agentModel) return;
     if (providerModels.length === 0) return;
 
-    const isAvailable = (key: string) => {
+    const findModel = (key: string): ModelOption | undefined => {
       const [pid, ...rest] = key.split(":");
       const mid = rest.join(":");
-      return providerModels.some(
-        (g) => g.provider === pid && g.models.some((m) => m.id === mid),
-      );
+      const group = providerModels.find((g) => g.provider === pid);
+      return group?.models.find((m) => m.id === mid);
     };
+
+    // Keep an existing selection as long as it's a valid composer choice —
+    // agent-capable OR chat-only (chat-only models run the lightweight
+    // chat-only transport, so they're legitimate selections; see
+    // `composerModelGate`). A model not yet in the configured list (e.g. still
+    // downloading) is kept too. Only an explicitly unselectable selection (e.g.
+    // tool-capable but context-too-small) triggers a re-pick, and only when a
+    // capable alternative exists (otherwise `pick` stays null).
+    if (agentSettings.agentModel) {
+      const current = findModel(agentSettings.agentModel);
+      if (!current) return;
+      const gate = composerModelGate(current);
+      if (gate.ok || gate.allowSelect === true) return;
+    }
 
     let pick: string | null = null;
 
-    const favorite = settings.favoriteModels.find(isAvailable);
+    // Prefer a configured favorite that can actually run the agent.
+    const favorite = settings.favoriteModels.find((key) => {
+      const m = findModel(key);
+      return !!m && isAgentCapableModel(m);
+    });
     if (favorite) pick = favorite;
 
+    // Then a recommended, agent-capable model.
     if (!pick) {
       for (const group of providerModels) {
-        const rec = group.models.find((m) => m.recommended);
+        const rec = group.models.find(
+          (m) => m.recommended && isAgentCapableModel(m),
+        );
         if (rec) {
           pick = `${group.provider}:${rec.id}`;
           break;
@@ -453,10 +483,15 @@ export function ChatView({
       }
     }
 
+    // Then the first agent-capable model available anywhere.
     if (!pick) {
-      const group = providerModels[0];
-      const model = group?.models[0];
-      if (group && model) pick = `${group.provider}:${model.id}`;
+      for (const group of providerModels) {
+        const m = group.models.find((mm) => isAgentCapableModel(mm));
+        if (m) {
+          pick = `${group.provider}:${m.id}`;
+          break;
+        }
+      }
     }
 
     if (pick) setAgentModel(pick);
@@ -1006,6 +1041,27 @@ export function ChatView({
               </QueueSectionContent>
             </QueueSection>
           </Queue>
+        )}
+        {garbledOutput && (
+          <div className="mx-2 mb-2 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
+            <div className="min-w-0 flex-1 leading-relaxed text-muted-foreground">
+              <span className="font-medium text-foreground">
+                This model is producing corrupted output on your GPU.
+              </span>{" "}
+              A known WebLLM issue with some quantizations — not a problem with
+              your setup. Try a different quantization (a q4f32 build often works
+              when q4f16 fails) or another model.
+            </div>
+            <button
+              type="button"
+              onClick={dismissGarbledOutput}
+              aria-label="Dismiss"
+              className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
         )}
         <ChatInputHalo space={space}>
           {pendingPlanApproval ? (

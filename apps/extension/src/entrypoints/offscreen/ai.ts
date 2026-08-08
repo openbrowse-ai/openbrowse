@@ -4,7 +4,15 @@ import type { AIProvider, ModelStatus, Settings } from "@/lib/types";
 import { getProvider } from "@/registry/providers";
 import { browserAI, doesBrowserSupportBrowserAI } from "@browser-ai/core";
 import { doesBrowserSupportWebLLM, webLLM } from "@browser-ai/web-llm";
-import { deleteModelAllInfoInCache, hasModelInCache } from "@mlc-ai/web-llm";
+import {
+  type AppConfig,
+  deleteModelAllInfoInCache,
+  hasModelInCache,
+  prebuiltAppConfig,
+} from "@mlc-ai/web-llm";
+import { WEB_LLM_MODEL_CONTEXT } from "@/registry/providers/web-llm-model-context";
+import { createSerialQueue } from "./download-queue";
+import { withLocalEngineLock } from "./engine-lock";
 
 export interface CloudConfig {
   cloudProvider: Settings["cloudProvider"];
@@ -20,7 +28,85 @@ let currentModel:
 let currentProvider: AIProvider | null = null;
 let currentModelId: string | null = null;
 
-async function createCloudModel(cloudConfig: CloudConfig, modelIdOverride?: string) {
+/**
+ * All local-model downloads funnel through one serial queue. WebLLM / Gemini
+ * Nano share a single WebGPU / `chrome.ai` engine in this offscreen document;
+ * running two loads at once contends on that engine and stalls at 0%. The
+ * queue also dedupes a model against itself, so a double-click or a duplicate
+ * `DOWNLOAD_MODEL` message can't launch the same download twice.
+ */
+const downloadQueue = createSerialQueue();
+
+/**
+ * Construct a WebLLM model handle with its context window raised from mlc's
+ * conservative prebuilt default (4096) to the model's real, sourced window
+ * (see `web-llm-model-context.ts`).
+ *
+ * The override must ride on `engineConfig.appConfig`: `@browser-ai/web-llm`
+ * declares a top-level `appConfig` option but its runtime ignores it, only
+ * forwarding `engineConfig` into `new MLCEngine(...)`. mlc's `reload()` then
+ * merges `overrides.context_window_size` over the fetched model config, and
+ * the paged KV cache treats it as a ceiling that grows on demand — so a large
+ * window costs nothing at load (verified empirically at 131072).
+ */
+let lastProgressPct = -1;
+
+function reportLocalModelLoadProgress(
+  modelId: string,
+  progress: number,
+  text: string,
+): void {
+  // mlc fires the init-progress callback very frequently (per tensor/shard).
+  // Throttle to whole-percent changes so we don't flood every extension
+  // context (and its console) with hundreds of near-identical messages.
+  const pct = Math.round((progress ?? 0) * 100);
+  if (pct === lastProgressPct && pct < 100) return;
+  lastProgressPct = pct >= 100 ? -1 : pct;
+  try {
+    chrome.runtime.sendMessage({
+      type: "LOCAL_MODEL_LOAD_PROGRESS",
+      modelId,
+      progress,
+      text,
+    });
+  } catch {
+    // Best-effort UX signal; no receiver (or offscreen teardown) is fine.
+  }
+}
+
+function createWebLLM(modelId: string): ReturnType<typeof webLLM> {
+  // Surface the lazy engine load (WASM instantiate + WebGPU shader compile)
+  // that happens on the first generation of an agent turn. mlc's
+  // `_initializeEngine` falls back to this constructor callback when no
+  // per-call progress cb is supplied, so it fires for inference but NOT for
+  // downloads (which pass their own via `createSessionWithProgress`, which
+  // takes precedence).
+  const initProgressCallback = (report: { progress: number; text: string }) =>
+    reportLocalModelLoadProgress(modelId, report.progress, report.text);
+  const override = WEB_LLM_MODEL_CONTEXT[modelId]?.overrideContextWindowSize;
+  if (!override) return webLLM(modelId, { initProgressCallback });
+  const appConfig: AppConfig = {
+    ...prebuiltAppConfig,
+    model_list: prebuiltAppConfig.model_list.map((m) =>
+      m.model_id === modelId
+        ? {
+            ...m,
+            overrides: {
+              ...(m.overrides ?? {}),
+              context_window_size: override,
+              sliding_window_size: -1,
+            },
+          }
+        : m,
+    ),
+  };
+  return webLLM(modelId, { initProgressCallback, engineConfig: { appConfig } });
+}
+
+async function createCloudModel(
+  cloudConfig: CloudConfig,
+  modelIdOverride?: string,
+) {
   const apiKey = cloudConfig.cloudApiKey;
   if (!apiKey) {
     throw new Error(
@@ -95,7 +181,7 @@ export async function getModel(
     return currentModel;
   }
 
-  currentModel = webLLM(modelId);
+  currentModel = createWebLLM(modelId);
   currentProvider = "web-llm";
   currentModelId = modelId;
   return currentModel;
@@ -216,7 +302,7 @@ export async function checkAvailability(
           message: `${modelId} downloaded — ready to load`,
         };
       }
-      const model = webLLM(modelId);
+      const model = createWebLLM(modelId);
       const avail = await model.availability();
       if (avail === "available") {
         return {
@@ -252,8 +338,16 @@ export async function checkAvailability(
 export async function downloadModel(
   modelId: string,
 ): Promise<{ success: boolean; message: string }> {
+  return downloadQueue.run(`web-llm:${modelId}`, () =>
+    performDownloadModel(modelId),
+  );
+}
+
+async function performDownloadModel(
+  modelId: string,
+): Promise<{ success: boolean; message: string }> {
   try {
-    const model = webLLM(modelId);
+    const model = createWebLLM(modelId);
     const modelKey = `web-llm:${modelId}`;
     await model.createSessionWithProgress((progress: number) => {
       chrome.runtime
@@ -299,6 +393,15 @@ export async function downloadModel(
 }
 
 export async function downloadBrowserAI(): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  return downloadQueue.run("browser-ai:gemini-nano", () =>
+    performDownloadBrowserAI(),
+  );
+}
+
+async function performDownloadBrowserAI(): Promise<{
   success: boolean;
   message: string;
 }> {
@@ -473,7 +576,7 @@ export async function getModelFromRegistry(
   ) {
     return currentModel;
   }
-  currentModel = webLLM(modelId);
+  currentModel = createWebLLM(modelId);
   currentProvider = "web-llm";
   currentModelId = modelId;
   return currentModel;
@@ -499,7 +602,7 @@ export async function testConnectionFromRegistry(
       model = browserAI("text");
     } else if (provider.setup === "web-llm") {
       const resolvedModelId = modelId || provider.models[0]?.id || "";
-      model = webLLM(resolvedModelId);
+      model = createWebLLM(resolvedModelId);
     } else {
       return { success: false, message: "Unknown setup type", responseTime: 0 };
     }
@@ -537,26 +640,39 @@ export async function generateChatTitle(
   const provider = getProvider(providerId);
   if (!provider) throw new Error(`Unknown provider: ${providerId}`);
 
+  const isLocal =
+    provider.setup === "browser-ai" || provider.setup === "web-llm";
+
   let model;
   if (provider.setup === "byok") {
     model = await provider.createLanguageModel(config, modelId);
-  } else if (provider.setup === "browser-ai") {
-    model = browserAI("text");
-  } else if (provider.setup === "web-llm") {
-    model = webLLM(modelId);
+  } else if (isLocal) {
+    // Reuse the agent run's cached engine instead of constructing a second one
+    // (createWebLLM / browserAI). A separate engine would re-load the model's
+    // multi-GB weights concurrently with the agent's first turn — the freeze
+    // right after send. See getModelFromRegistry + createWebLLM.
+    model = await getModelFromRegistry(providerId, config, modelId);
   } else {
     return { title: userMessage.slice(0, 50) };
   }
 
-  const { text } = await generateText({
-    model,
-    prompt: `Summarize the following message into a short chat title (3-6 words). Output ONLY the title, nothing else.
+  const runGenerate = () =>
+    generateText({
+      model,
+      prompt: `Summarize the following message into a short chat title (3-6 words). Output ONLY the title, nothing else.
 
 Message: "${userMessage.slice(0, 300)}"
 
 Title:`,
-    maxOutputTokens: 30,
-  });
+      maxOutputTokens: 30,
+    });
+
+  // Local models share one on-device engine with the agent loop; hold the
+  // engine lock so title generation never overlaps an active agent turn (which
+  // would contend on / interrupt the same engine).
+  const { text } = isLocal
+    ? await withLocalEngineLock(runGenerate)
+    : await runGenerate();
 
   const raw = text
     .trim()
@@ -612,9 +728,12 @@ export async function generateGroupLabel(
   } else if (provider.setup === "browser-ai") {
     model = browserAI("text");
   } else if (provider.setup === "web-llm") {
-    model = webLLM(modelId);
+    model = createWebLLM(modelId);
   } else {
-    return { title: (context.chatTitle || "Agent").slice(0, 24), color: "grey" };
+    return {
+      title: (context.chatTitle || "Agent").slice(0, 24),
+      color: "grey",
+    };
   }
 
   const tabsSnippet = context.tabs
@@ -675,7 +794,7 @@ export async function testConnection(
         webllmModel ||
         DEFAULT_SETTINGS.webllmModel ||
         "Llama-3.2-3B-Instruct-q4f16_1-MLC";
-      model = webLLM(modelId);
+      model = createWebLLM(modelId);
     } else {
       return { success: false, message: "AI is disabled", responseTime: 0 };
     }

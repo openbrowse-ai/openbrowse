@@ -1,9 +1,9 @@
+import { Kbd } from "@/components/ui/kbd";
+import { useProviders } from "@/hooks/useProviders";
+import type { Settings } from "@/lib/types";
+import { QUIRKS } from "@/registry/models-dev/quirks";
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Settings } from "@/lib/types";
-import { useProviders } from "@/hooks/useProviders";
-import { Kbd } from "@/components/ui/kbd";
-import { QUIRKS } from "@/registry/models-dev/quirks";
 import { ProviderSection, type ModelState } from "./ProviderSection";
 
 interface ModelsTabProps {
@@ -26,11 +26,21 @@ const CURATED_IDS = new Set<string>([
 
 export function ModelsTab({ settings, onChange }: ModelsTabProps) {
   const { providers } = useProviders();
-  const [modelStates, setModelStates] = useState<Record<string, ModelState>>({});
+  const [modelStates, setModelStates] = useState<Record<string, ModelState>>(
+    {},
+  );
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const [searchFocused, setSearchFocused] = useState(false);
+
+  // The download-progress listener below is registered once (mount-time)
+  // and would otherwise close over stale settings/onChange. Mirror the
+  // latest values into refs so the completion handler stays correct.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
 
   // "/" focuses the search box (when not already typing somewhere), so
   // the input is reachable without the mouse.
@@ -55,7 +65,13 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
   // Listen for download progress messages from background
   useEffect(() => {
     function handleMessage(message: unknown) {
-      const msg = message as { type?: string; modelKey?: string; progress?: number; done?: boolean; error?: string };
+      const msg = message as {
+        type?: string;
+        modelKey?: string;
+        progress?: number;
+        done?: boolean;
+        error?: string;
+      };
       if (msg.type === "DOWNLOAD_PROGRESS" && msg.modelKey) {
         setModelStates((prev) => ({
           ...prev,
@@ -66,6 +82,15 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
             error: msg.error,
           },
         }));
+        if (msg.done && !msg.error) {
+          const modelId = msg.modelKey.split(":").slice(1).join(":");
+          const current = settingsRef.current.downloadedModels;
+          if (modelId && !current.includes(modelId)) {
+            onChangeRef.current({
+              downloadedModels: [...current, modelId],
+            });
+          }
+        }
       }
     }
 
@@ -124,6 +149,15 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
   // While searching, expand the long tail so the search isn't lying.
   const longTailVisible = hasQuery || showAll;
 
+  // Local models share one WebGPU / chrome.ai engine in the offscreen
+  // document and download one at a time (the offscreen queue serializes
+  // them). Disable the other Download buttons while one is in flight so the
+  // user can't queue up loads that would otherwise appear stuck at 0%.
+  const anyDownloading = useMemo(
+    () => Object.values(modelStates).some((s) => s.downloading),
+    [modelStates],
+  );
+
   return (
     <div className="flex flex-col">
       <div className="px-4 pt-4 pb-3">
@@ -170,6 +204,7 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
             settings={settings}
             onChange={onChange}
             modelStates={modelStates}
+            downloadBusy={anyDownloading}
             onDownload={handleDownload}
             onDelete={handleDelete}
             query={query}
@@ -190,6 +225,7 @@ export function ModelsTab({ settings, onChange }: ModelsTabProps) {
                 settings={settings}
                 onChange={onChange}
                 modelStates={modelStates}
+                downloadBusy={anyDownloading}
                 onDownload={handleDownload}
                 onDelete={handleDelete}
                 query={query}

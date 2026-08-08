@@ -108,7 +108,12 @@ import {
 import type { PlanExtensionData, SerializedUIPart } from "./message-types";
 import type { BrowserTool } from "./types";
 
-import { SYSTEM_PROMPT, CUA_DELEGATION_PROMPT } from "./system-prompt";
+import { isChatOnlyModel } from "@/registry/agent-capability";
+import {
+  SYSTEM_PROMPT,
+  CUA_DELEGATION_PROMPT,
+  CHAT_ONLY_SYSTEM_PROMPT,
+} from "./system-prompt";
 import { buildEditingArtifactBlock } from "./artifact-edit-context";
 
 /**
@@ -1977,6 +1982,92 @@ function resolveCuaSelection(
   return { configured, modelId, provider, actualModelId, config };
 }
 
+/**
+ * Lean transport for the **chat-only** path — used when the selected model
+ * lacks the `tools` capability and therefore can't drive the browser agent.
+ * The composer still lets the user pick such a model (see `composerModelGate`)
+ * to hold a plain conversation. This deliberately skips everything the agent
+ * path assembles: no browser/MCP tools, no page snapshot or per-turn blocks,
+ * no completion-check or curator, and a minimal system prompt — so small local
+ * models aren't handed the large agent prompt they can't fit or reliably
+ * follow. Compaction and usage recording are retained so long chats still work
+ * and the Context popover stays live.
+ */
+function createChatOnlyTransport(args: {
+  model: LanguageModel;
+  modelDef: ModelDefinition | undefined;
+  qualifiedModelId: string;
+  transportCid: () => string | null;
+  providerId: string;
+  actualModelId: string;
+  thinkingConfig?: {
+    enabled: boolean;
+    config?: import("../types").ThinkingConfig;
+  };
+}): ChatTransport<AgentUIMessage> {
+  const {
+    model,
+    modelDef,
+    qualifiedModelId,
+    transportCid,
+    providerId,
+    actualModelId,
+    thinkingConfig,
+  } = args;
+
+  let providerOptions: ToolLoopAgentSettings["providerOptions"];
+  if (thinkingConfig?.enabled && thinkingConfig.config) {
+    providerOptions = buildThinkingProviderOptions(
+      providerId,
+      actualModelId,
+      thinkingConfig.config,
+    ) as ToolLoopAgentSettings["providerOptions"];
+  }
+
+  let needsMidStreamCompaction = false;
+  let transportLastTotalTokens = 0;
+
+  const agent = new ToolLoopAgent({
+    model,
+    tools: {},
+    instructions: CHAT_ONLY_SYSTEM_PROMPT,
+    ...(providerOptions && { providerOptions }),
+    onStepFinish: (stepResult) => {
+      const usage = stepResult.usage;
+      if (usage.inputTokens != null || usage.outputTokens != null) {
+        transportLastTotalTokens =
+          (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
+      }
+      if (
+        transportLastTotalTokens > 0 &&
+        shouldCompact(transportLastTotalTokens, modelDef)
+      ) {
+        needsMidStreamCompaction = true;
+      }
+      void recordUsageForStep(
+        transportCid(),
+        {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+        },
+        modelDef,
+        qualifiedModelId,
+      );
+    },
+    stopWhen: () => needsMidStreamCompaction,
+  });
+
+  return new CompactingChatTransport({
+    agent,
+    onSendStart: () => {
+      needsMidStreamCompaction = false;
+    },
+    getActiveConversationId: () => transportCid(),
+    // No completion-check or curator wiring: a chat-only turn has no tool
+    // calls to review and no site-skill activity to curate.
+  });
+}
+
 export async function createAgentTransport(
   settings: Settings,
   agentModel: string,
@@ -2058,6 +2149,23 @@ export async function createAgentTransport(
     setHeadlessRunPolicy(conversationId, {
       autoApprove: headless.autoApprove,
       allowDelegate: headless.allowDelegate ?? false,
+    });
+  }
+
+  // Chat-only short-circuit: a model without the `tools` capability can't
+  // drive the browser agent. Rather than build the full agent transport it
+  // could never use, run the lean chat-only path (no tools, no page context,
+  // minimal prompt). Only the composer can select such a model (see
+  // `composerModelGate`); agent-only surfaces (scheduled tasks) gate it out.
+  if (modelDef != null && isChatOnlyModel(modelDef)) {
+    return createChatOnlyTransport({
+      model,
+      modelDef,
+      qualifiedModelId,
+      transportCid,
+      providerId: provider.id,
+      actualModelId,
+      thinkingConfig,
     });
   }
 

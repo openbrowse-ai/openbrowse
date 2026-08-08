@@ -2320,8 +2320,21 @@ export function useAgentChat({
 
         const titleConvId = convId;
         const titleMessage = input.trim();
+        // `agentSettings.agentModel` is a compound "<providerId>:<modelId>" key
+        // (legacy stored values may be a flat model id). Both segments must be
+        // split before lookup: comparing the whole compound key against a bare
+        // `m.id` never matches, which silently skipped title generation for
+        // every normally-selected model. Mirrors LandingPage's resolution.
+        const [providerIdStr, ...modelIdParts] =
+          agentSettings.agentModel.split(":");
+        const hasProvider = modelIdParts.length > 0;
+        const normalizedModelId = hasProvider
+          ? modelIdParts.join(":")
+          : agentSettings.agentModel;
         const provider = registryProviders.find((p) =>
-          p.models.some((m) => m.id === agentSettings.agentModel)
+          hasProvider
+            ? p.id === providerIdStr
+            : p.models.some((m) => m.id === normalizedModelId),
         );
         if (provider && titleMessage) {
           const config = settings.providerConfigs[provider.id] ?? {};
@@ -2330,7 +2343,7 @@ export function useAgentChat({
             type: "GENERATE_CHAT_TITLE",
             providerId: provider.id,
             config,
-            modelId: agentSettings.agentModel,
+            modelId: normalizedModelId,
             userMessage: titleMessage,
           }).then((res: any) => {
             if (res?.title) {

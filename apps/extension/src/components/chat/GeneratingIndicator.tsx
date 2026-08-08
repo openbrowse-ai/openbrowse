@@ -9,9 +9,12 @@
  * `entrypoints/sidepanel/app.css` and `entrypoints/_shared/home.css` so the
  * indicator works on every surface that mounts a ChatView.
  */
+import { useLocalModelLoadProgress } from "./useLocalModelLoadProgress";
+
 export function GeneratingIndicator() {
+  const load = useLocalModelLoadProgress();
   return (
-    <div className="flex w-full items-start pt-3">
+    <div className="flex w-full items-center gap-2 pt-3">
       <svg
         viewBox="0 0 9 9"
         className="h-4 w-4 animate-scale-pulse"
@@ -30,6 +33,11 @@ export function GeneratingIndicator() {
         <rect x="0" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
         <rect x="8" y="4" width="1" height="1" fill="currentColor" className="text-blue-500 outward-edge" />
       </svg>
+      {load && (
+        <span className="text-xs text-muted-foreground">
+          Loading model… {Math.round(load.progress * 100)}%
+        </span>
+      )}
     </div>
   );
 }
