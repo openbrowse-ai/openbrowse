@@ -133,6 +133,9 @@ function linkifySourceRefs(md: string): string {
       .replace(/^https?:\/\//i, "")
       .replace(/\/+$/, "")
       // `]` can't occur (the capture excludes it); `[` would break the label.
+      // Backslashes go first, or an existing `\` would turn the escape we add
+      // into a literal backslash and leave the `[` unescaped.
+      .replace(/\\/g, "\\\\")
       .replace(/\[/g, "\\[");
     return `[Source: [${display}](<${url}>)]`;
   });

@@ -96,6 +96,14 @@ describe("linkifyMemoryMarkdown \u2014 web source citations", () => {
     );
   });
 
+  it("escapes a backslash in the label before the bracket escape", () => {
+    // Escaping `[` without first escaping `\` would emit `\\[`, which renders as
+    // a literal backslash and leaves the bracket unescaped — breaking the label.
+    expect(linkifyMemoryMarkdown("[Source: https://example.com/a\\[b]")).toBe(
+      "[Source: [example.com/a\\\\\\[b](<https://example.com/a\\[b>)]",
+    );
+  });
+
   it("normalizes a scheme-ful URL into an explicit link", () => {
     // Left to GFM autolinking, the closing `]` of the citation can be absorbed
     // into the href.

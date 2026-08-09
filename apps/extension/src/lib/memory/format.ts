@@ -247,9 +247,10 @@ function stripQuotes(s: string): string {
   // quoted value by matching itself at both ends.
   if (s.length >= 2) {
     if (s.startsWith('"') && s.endsWith('"')) {
-      // Undo the `\"` escaping `quoteScalar` applies. Without this, a value
-      // containing a quote gains a backslash on every serialize/parse cycle.
-      return s.slice(1, -1).replace(/\\"/g, '"');
+      // Undo the `\\` / `\"` escaping `quoteScalar` applies. Without this, a
+      // value containing a quote or backslash gains one on every
+      // serialize/parse cycle.
+      return s.slice(1, -1).replace(/\\(["\\])/g, "$1");
     }
     if (s.startsWith("'") && s.endsWith("'")) {
       return s.slice(1, -1);
@@ -271,7 +272,11 @@ function quoteScalar(value: string): string {
     value.includes(",") ||
     value !== value.trim()
   ) {
-    return `"${value.replace(/"/g, '\\"')}"`;
+    // Escape backslashes BEFORE quotes, so `stripQuotes` can undo both in one
+    // pass. Skipping the backslash pass would let a value ending in `\` eat its
+    // own closing quote (`"a,\"` reads as an escaped quote), which merges two
+    // inline-array items into one.
+    return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
   return value;
 }

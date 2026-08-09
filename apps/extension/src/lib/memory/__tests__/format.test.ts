@@ -151,6 +151,21 @@ describe("serialize/parse roundtrip", () => {
     expect(twice).toEqual(tricky);
   });
 
+  it("round-trips backslashes, including a value that ends in one", () => {
+    // A trailing backslash is the sharp edge: unless `quoteScalar` escapes it,
+    // the closing quote reads as an escaped quote and the quote-aware array
+    // splitter swallows the item boundary, merging two aliases into one.
+    const tricky: MemoryDoc = {
+      ...doc,
+      title: "C:\\Users\\ada",
+      aliases: ["a,\\", "second"],
+      description: 'a backslash-quote pair: \\" here',
+    };
+    const parsed = parseMemory(serializeMemory(tricky));
+    expect(parsed).toEqual(tricky);
+    expect(parsed.aliases).toHaveLength(2);
+  });
+
   it("emits both headings", () => {
     const text = serializeMemory(doc);
     expect(text).toContain("# Compiled truth");
