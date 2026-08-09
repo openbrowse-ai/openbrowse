@@ -49,6 +49,13 @@ export interface MemoryIndexRow {
   aliases: string[];
   /** Compiled-truth block (for display, diffs, duplicate checks). */
   content: string;
+  /**
+   * Timeline entries, kept verbatim so `rowToDoc` can reconstruct the document
+   * without slicing them back out of `body` by offset. Optional because rows
+   * indexed before this field existed won't have it (a `reconcile()` refills
+   * them from disk).
+   */
+  timeline?: string[];
   /** Full searchable text (title + description + aliases + truth + timeline). */
   body: string;
   contentHash: string;
@@ -84,6 +91,11 @@ interface MemoryDB extends DBSchema {
     key: string;
     value: MemoryIndexRow;
     indexes: {
+      /**
+       * Space-scoped rows only. IndexedDB doesn't index null keys, so global
+       * rows (`spaceId: null`) are absent from this index by design — queries
+       * that need globals scan `allRows()` / `visibleRows()` instead.
+       */
       "by-space": string;
       "by-slug": string;
     };

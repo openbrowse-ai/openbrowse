@@ -56,15 +56,29 @@ function inAppLinkComponents(
   onWikiLink?: (name: string) => void,
   onChatLink?: (conversationId: string) => void,
 ) {
+  // Memory markdown is hand-authorable, so a fragment href can carry a
+  // malformed escape (`#wl-%`) that makes `decodeURIComponent` throw. `resolve`
+  // runs during the anchor's render, so throwing would take down the whole
+  // document — treat an undecodable target as inert instead.
+  const decode = (raw: string): string | null => {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return null;
+    }
+  };
+
   const resolve = (href: string): AnchorAction => {
     if (href.startsWith(WIKILINK_HREF_PREFIX)) {
       if (!onWikiLink) return { inert: true };
-      const name = decodeURIComponent(href.slice(WIKILINK_HREF_PREFIX.length));
+      const name = decode(href.slice(WIKILINK_HREF_PREFIX.length));
+      if (name === null) return { inert: true };
       return { run: () => onWikiLink(name) };
     }
     if (href.startsWith(CHATLINK_HREF_PREFIX)) {
       if (!onChatLink) return { inert: true };
-      const id = decodeURIComponent(href.slice(CHATLINK_HREF_PREFIX.length));
+      const id = decode(href.slice(CHATLINK_HREF_PREFIX.length));
+      if (id === null) return { inert: true };
       return { run: () => onChatLink(id) };
     }
     return null;

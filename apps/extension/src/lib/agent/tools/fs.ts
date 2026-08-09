@@ -540,7 +540,7 @@ export function createFsTools() {
     {
       name: "Move",
       description:
-        "Moves or renames a file within your workspace or memory. Use to reorganize memory into folders. Fails if the destination already exists.",
+        "Moves or renames a file within your workspace or memory. Use to reorganize memory into folders. Memory files can only be moved within the memory tree (use Delete to remove one). Fails if the destination already exists.",
       parameters: z.object({
         from_path: z.string(),
         to_path: z.string(),
@@ -561,6 +561,17 @@ export function createFsTools() {
           if (isAnyMemoryPath(p) && !isOwnMemoryPath(p, spaceId)) {
             return SPACE_CROSS_WRITE_DENIED;
           }
+        }
+        // Move must not cross the memory boundary in either direction.
+        // Moving a note *out* of the memory tree would be an ungated delete
+        // (the index row goes away and the file leaves the scope the UI and
+        // searchMemory can see) — and Delete is the one memory action that
+        // requires approval. Moving a workspace file *in* would smuggle
+        // unreviewed content into memory the same way. Renames and folder
+        // moves inside a single memory tree stay allowed, which is the whole
+        // point of exposing Move for reorganization.
+        if (isAnyMemoryPath(from_path) !== isAnyMemoryPath(to_path)) {
+          return `Error: Permission denied. Move cannot cross the memory boundary. Reorganize memory within its own tree; to remove a memory, use Delete (which asks the user first).`;
         }
         try {
           const fromFull = resolveVfsPath(conversationId, spaceId, from_path);

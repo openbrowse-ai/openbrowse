@@ -161,7 +161,10 @@ function linkifyWikilinks(md: string): string {
     const base = target.includes("/")
       ? target.slice(target.lastIndexOf("/") + 1)
       : target;
-    return `[${display || base}](${WIKILINK_HREF_PREFIX}${encodeURIComponent(base)})`;
+    // The label is sanitized like `display` (a `[` would leave it unbalanced),
+    // but the href keeps the raw basename so resolution still matches the file.
+    const label = display || base.replace(/[[\]]/g, "");
+    return `[${label}](${WIKILINK_HREF_PREFIX}${encodeURIComponent(base)})`;
   });
 }
 

@@ -140,6 +140,7 @@ async function indexRowFromFile(
     domain: doc.domain,
     aliases: doc.aliases,
     content: doc.truth,
+    timeline: doc.timeline,
     body: searchableText(enriched),
     contentHash: contentHash(text),
     createdAt: dateToMs(doc.created, file.lastModified),
@@ -158,15 +159,9 @@ function rowToDoc(row: MemoryIndexRow): MemoryDoc {
     created: today(row.createdAt),
     updated: today(row.updatedAt),
     truth: row.content,
-    timeline: bodyTimeline(row),
+    // Rows indexed before `timeline` was persisted fall back to empty.
+    timeline: row.timeline ?? [],
   };
-}
-
-function bodyTimeline(row: MemoryIndexRow): string[] {
-  const idx = row.content ? row.body.indexOf(row.content) : -1;
-  if (idx === -1) return [];
-  const after = row.body.slice(idx + row.content.length).trim();
-  return after ? after.split(/\r?\n/).filter((l) => l.trim()) : [];
 }
 
 export const memoryStore = {
@@ -220,9 +215,15 @@ export const memoryStore = {
   /**
    * Delete a memory by index id (its OPFS path): removes the file, then the
    * index row + links. Used by the memory management UI.
+   *
+   * A failed file removal propagates: dropping the index row while the file
+   * survives would report success, hide the note from search, and then have
+   * the next `reconcile()` resurrect it. Better to surface the failure.
+   * `OPFS.rm` treats a missing path as a no-op success, so deleting an
+   * already-gone file still cleans up its row.
    */
   async deleteById(id: string): Promise<void> {
-    await OPFS.rm(id).catch(() => {});
+    await OPFS.rm(id);
     await memoryIndexDb.deleteRow(id);
     await memoryIndexDb.deleteLinksFrom(id);
   },

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { memoryIndexDb, type LegacyMemory } from "@/lib/memory-db";
 import { installFakeOpfs, type FakeOpfs } from "@/lib/vfs/__tests__/fake-opfs";
+import { OPFS } from "@/lib/vfs/opfs";
 import { memoryFilePath } from "../format";
 import { migrateMemoryV2 } from "../migrate";
 import { memoryStore } from "../store";
@@ -105,6 +106,50 @@ describe("migrateMemoryV2", () => {
     ]);
     expect(await migrateMemoryV2()).toBe(1);
     expect(await migrateMemoryV2()).toBe(0);
+  });
+
+  it("leaves the flag unset when a row fails to write, and retries without duplicating", async () => {
+    await memoryIndexDb._seedLegacyForTests([
+      legacy({ title: "Flaky", content: "x" }),
+    ]);
+
+    const write = vi
+      .spyOn(OPFS, "writeFile")
+      .mockRejectedValueOnce(new Error("quota exceeded"));
+    expect(await migrateMemoryV2()).toBe(0);
+    write.mockRestore();
+
+    // Flag was never advanced, so the next boot retries the unresolved row
+    // instead of stranding it in the legacy store forever.
+    expect(await migrateMemoryV2()).toBe(1);
+    expect([...fake.files.keys()]).toContain(memoryFilePath("flaky", null));
+  });
+
+  it("a retry after a partial failure doesn't duplicate rows that already landed", async () => {
+    await memoryIndexDb._seedLegacyForTests([
+      legacy({ title: "Good", content: "a" }),
+      legacy({ title: "Bad", content: "b" }),
+    ]);
+
+    // Fail only the second row's write; the first lands.
+    const real = OPFS.writeFile.bind(OPFS);
+    let calls = 0;
+    const write = vi
+      .spyOn(OPFS, "writeFile")
+      .mockImplementation(async (path: string, content: string) => {
+        calls++;
+        if (calls === 2) throw new Error("quota exceeded");
+        return real(path, content);
+      });
+    expect(await migrateMemoryV2()).toBe(1);
+    write.mockRestore();
+
+    // Second pass migrates only the row that failed — the already-written file
+    // is recognized by content rather than re-written as `good-2.md`.
+    expect(await migrateMemoryV2()).toBe(1);
+    expect([...fake.files.keys()]).toContain(memoryFilePath("good", null));
+    expect([...fake.files.keys()]).toContain(memoryFilePath("bad", null));
+    expect([...fake.files.keys()]).not.toContain("memory/good-2.md");
   });
 
   it("returns 0 when there is nothing to migrate", async () => {

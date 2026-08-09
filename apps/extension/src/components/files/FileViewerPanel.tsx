@@ -9,7 +9,6 @@ import {
   type JsonViewerMode,
 } from "@/components/chat/JsonViewer";
 import { Markdown } from "@/components/chat/Markdown";
-import { linkifyMemoryMarkdown } from "@/lib/memory/linkify";
 import { MediaPlayer } from "@/components/chat/MediaPlayer";
 import { SheetViewer } from "@/components/chat/SheetViewer";
 import { Button } from "@/components/ui/button";
@@ -21,6 +20,7 @@ import {
 } from "@/components/ui/tooltip";
 import { downloadBlob, downloadText } from "@/lib/download";
 import { formatBytes } from "@/lib/format-bytes";
+import { linkifyMemoryMarkdown } from "@/lib/memory/linkify";
 import { saveToSpace } from "@/lib/spaces/save-to-space";
 import {
   savedFilesDb,
@@ -249,6 +249,7 @@ export function FileViewerPanel({
   // Reset per-file UI state when the file changes.
   useEffect(() => {
     setHtmlMode("preview");
+    setMarkdownMode("preview");
     setJsonMode("tree");
     setJsonMeta(null);
     setRefreshKey(0);
@@ -273,8 +274,8 @@ export function FileViewerPanel({
       !isBinary && loadedPathRef.current === filePath;
     if (!isSameFileTextReload) {
       loadedPathRef.current = null;
-    setLoaded(null);
-    setError(null);
+      setLoaded(null);
+      setError(null);
     }
     async function load() {
       try {
@@ -586,9 +587,9 @@ export function FileViewerPanel({
           )}
           {headerActions}
           {showClose && (
-          <IconButton onClick={onClose} tooltip="Close file">
-            <X className="size-4" />
-          </IconButton>
+            <IconButton onClick={onClose} tooltip="Close file">
+              <X className="size-4" />
+            </IconButton>
           )}
         </div>
       </div>
@@ -656,7 +657,7 @@ export function FileViewerPanel({
               />
             </div>
           ) : (
-          <div className="flex-1 overflow-auto p-6">
+            <div className="flex-1 overflow-auto p-6">
               {contentHeader}
               <Markdown
                 source={
@@ -671,7 +672,7 @@ export function FileViewerPanel({
                 onWikiLink={onWikiLink}
                 onChatLink={onChatLink}
               />
-          </div>
+            </div>
           )
         ) : loaded.text !== undefined ? (
           <div className="flex-1 overflow-auto">

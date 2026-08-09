@@ -40,20 +40,23 @@ function isSettingsTabId(value: string): value is SettingsTabId {
 }
 
 /**
+ * Build params from a search string, tolerating a full URL, a path+search
+ * string, or a bare query string (everything after the first "?" wins, and a
+ * string without one is treated as the query itself).
+ */
+function searchParams(search: string): URLSearchParams {
+  const qsIndex = search.indexOf("?");
+  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
+  return new URLSearchParams(rawQs.startsWith("?") ? rawQs : `?${rawQs}`);
+}
+
+/**
  * Parse the active tab from a search string (e.g. `window.location.search`
  * or a fully-qualified URL). Falls back to the default tab when the
  * `tab` param is missing or names an unknown tab.
  */
 export function parseSettingsTab(search: string): SettingsTabId {
-  // Extract just the query string portion (everything after the first "?").
-  // This allows the parser to tolerate a full URL, a path+search string,
-  // or a bare query string.
-  const qsIndex = search.indexOf("?");
-  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
-
-  const qs = rawQs.startsWith("?") ? rawQs : `?${rawQs}`;
-  const params = new URLSearchParams(qs);
-  const tab = params.get("tab");
+  const tab = searchParams(search).get("tab");
   if (tab && isSettingsTabId(tab)) return tab;
   return DEFAULT_SETTINGS_TAB;
 }
@@ -64,10 +67,7 @@ export function parseSettingsTab(search: string): SettingsTabId {
  * callers MUST validate it still exists and is in scope before using it.
  */
 export function parseSettingsNote(search: string): string | null {
-  const qsIndex = search.indexOf("?");
-  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
-  const qs = rawQs.startsWith("?") ? rawQs : `?${rawQs}`;
-  const note = new URLSearchParams(qs).get("note");
+  const note = searchParams(search).get("note");
   return note && note.trim() !== "" ? note : null;
 }
 

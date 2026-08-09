@@ -193,8 +193,7 @@ function splitFrontmatter(content: string): ParsedFrontmatter {
       // Inline array: [a, b, c]
       const inner = raw.slice(1, -1).trim();
       fields[key] = inner
-        ? inner
-            .split(",")
+        ? splitInlineArray(inner)
             .map((s) => stripQuotes(s.trim()))
             .filter(Boolean)
         : [];
@@ -205,12 +204,56 @@ function splitFrontmatter(content: string): ParsedFrontmatter {
   return { fields, body: match[2] };
 }
 
+/**
+ * Split the inside of an inline array on commas that aren't inside a quoted
+ * item. A naive `split(",")` would tear `["Smith, John"]` into two aliases,
+ * which is exactly what `quoteScalar` quotes commas to prevent.
+ */
+function splitInlineArray(inner: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      // Keep the escape sequence intact; `stripQuotes` unescapes it later.
+      if (ch === "\\" && quote === '"' && i + 1 < inner.length) {
+        current += ch + inner[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ",") {
+      out.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  out.push(current);
+  return out;
+}
+
 function stripQuotes(s: string): string {
-  if (
-    (s.startsWith('"') && s.endsWith('"')) ||
-    (s.startsWith("'") && s.endsWith("'"))
-  ) {
-    return s.slice(1, -1);
+  // Require at least two characters so a lone `"` isn't read as an empty
+  // quoted value by matching itself at both ends.
+  if (s.length >= 2) {
+    if (s.startsWith('"') && s.endsWith('"')) {
+      // Undo the `\"` escaping `quoteScalar` applies. Without this, a value
+      // containing a quote gains a backslash on every serialize/parse cycle.
+      return s.slice(1, -1).replace(/\\"/g, '"');
+    }
+    if (s.startsWith("'") && s.endsWith("'")) {
+      return s.slice(1, -1);
+    }
   }
   return s;
 }
@@ -218,12 +261,14 @@ function stripQuotes(s: string): string {
 /** Quote a scalar for frontmatter only when it could confuse the parser. */
 function quoteScalar(value: string): string {
   if (value === "") return '""';
-  // Quote when the value starts with a special YAML char or contains a colon
-  // followed by space (which our splitter would misread), or leading/trailing
+  // Quote when the value starts with a special YAML char, contains a colon
+  // followed by space (which our splitter would misread) or a comma (which
+  // would split an inline array item in two), or has leading/trailing
   // whitespace.
   if (
     /^[\[\]{}#&*!|>'"%@`]/.test(value) ||
     /:\s/.test(value) ||
+    value.includes(",") ||
     value !== value.trim()
   ) {
     return `"${value.replace(/"/g, '\\"')}"`;

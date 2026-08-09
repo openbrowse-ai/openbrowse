@@ -147,6 +147,33 @@ describe("fs tools — memory mount", () => {
     expect(moved?.slug).toBe("garry-tan");
   });
 
+  it("Move out of the memory tree is refused so it can't become an ungated delete", async () => {
+    const { writeTool, moveTool } = createFsTools();
+    await writeTool.execute(
+      { file_path: "memory/garry-tan.md", content: MEMORY_DOC },
+      ctx(null),
+    );
+    const res = await moveTool.execute(
+      { from_path: "memory/garry-tan.md", to_path: "notes/garry-tan.md" },
+      ctx(null),
+    );
+    expect(res).toMatch(/memory boundary/i);
+    // File and index row both survive the refusal.
+    expect(fake.files.has("memory/garry-tan.md")).toBe(true);
+    expect(await memoryStore.get("memory/garry-tan.md")).toBeDefined();
+  });
+
+  it("Move into the memory tree from the workspace is refused", async () => {
+    const { moveTool } = createFsTools();
+    fake.files.set("notes/draft.md", new TextEncoder().encode(MEMORY_DOC));
+    const res = await moveTool.execute(
+      { from_path: "notes/draft.md", to_path: "memory/draft.md" },
+      ctx(null),
+    );
+    expect(res).toMatch(/memory boundary/i);
+    expect(fake.files.has("memory/draft.md")).toBe(false);
+  });
+
   it("Delete removes the memory file and its index row", async () => {
     const { writeTool, deleteTool } = createFsTools();
     await writeTool.execute(
@@ -158,6 +185,21 @@ describe("fs tools — memory mount", () => {
     await deleteTool.execute({ path: "memory/temp.md" }, ctx(null));
     expect(fake.files.has("memory/temp.md")).toBe(false);
     expect(await memoryStore.get("memory/temp.md")).toBeUndefined();
+  });
+
+  it("Delete of a memory folder drops the rows beneath it", async () => {
+    const { writeTool, deleteTool } = createFsTools();
+    await writeTool.execute(
+      { file_path: "memory/people/garry-tan.md", content: MEMORY_DOC },
+      ctx(null),
+    );
+    expect(await memoryStore.get("memory/people/garry-tan.md")).toBeDefined();
+
+    await deleteTool.execute({ path: "memory/people" }, ctx(null));
+    expect(fake.files.has("memory/people/garry-tan.md")).toBe(false);
+    // A deleted *directory* doesn't parse as a memory file, so the index has to
+    // clean up by path prefix rather than by row id.
+    expect(await memoryStore.get("memory/people/garry-tan.md")).toBeUndefined();
   });
 
   it("space memory is not visible when no space is active", async () => {

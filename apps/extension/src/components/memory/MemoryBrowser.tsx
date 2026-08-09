@@ -130,25 +130,29 @@ export function MemoryBrowser({
   );
 
   const load = useCallback(async () => {
-    const next: Scope[] = [];
-    if (showGlobal) {
-      const globalBase = memoryDirPath(null);
-      next.push({
-        label: "Global",
-        base: globalBase,
-        paths: await walkMemory(globalBase),
-      });
+    try {
+      const next: Scope[] = [];
+      if (showGlobal) {
+        const globalBase = memoryDirPath(null);
+        next.push({
+          label: "Global",
+          base: globalBase,
+          paths: await walkMemory(globalBase),
+        });
+      }
+      if (spaceId) {
+        const spaceBase = memoryDirPath(spaceId);
+        next.push({
+          label: "This space",
+          base: spaceBase,
+          paths: await walkMemory(spaceBase),
+        });
+      }
+      setScopes(next);
+    } finally {
+      // Always clear, or a failed walk strands the pane on "Loading memory...".
+      setLoading(false);
     }
-    if (spaceId) {
-      const spaceBase = memoryDirPath(spaceId);
-      next.push({
-        label: "This space",
-        base: spaceBase,
-        paths: await walkMemory(spaceBase),
-      });
-    }
-    setScopes(next);
-    setLoading(false);
   }, [spaceId, showGlobal]);
 
   useEffect(() => {
@@ -216,7 +220,7 @@ export function MemoryBrowser({
     await memoryStore.deleteById(selected);
     setSelected(null);
     await load();
-  }, [selected, load]);
+  }, [selected, load, setSelected]);
 
   // Open a file: delegate to the host in picker mode, else select it for the
   // internal detail pane.
@@ -225,7 +229,7 @@ export function MemoryBrowser({
       if (onOpenFile) onOpenFile(fullPath);
       else setSelected(fullPath);
     },
-    [onOpenFile],
+    [onOpenFile, setSelected],
   );
 
   // Resolve a clicked [[wikilink]] to a visible file and open it.

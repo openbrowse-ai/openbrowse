@@ -128,6 +128,29 @@ describe("serialize/parse roundtrip", () => {
     expect(parsed).toEqual(doc);
   });
 
+  it("round-trips values that need quoting (quotes, commas, colons)", () => {
+    // `quoteScalar` quotes these; `stripQuotes` has to unquote *and* unescape
+    // them, or a value gains a backslash on every serialize/parse cycle and a
+    // comma-bearing alias splits into two entries. Note the leading quote —
+    // that's what triggers quoting (an interior quote alone doesn't), so it's
+    // the case that actually exercises the `\"` escaping round-trip.
+    const tricky: MemoryDoc = {
+      ...doc,
+      title: '"ship it" is the rule',
+      description: "Reviews: fast, thorough",
+      aliases: ['Smith, "Jack"', "code review"],
+    };
+    const parsed = parseMemory(serializeMemory(tricky));
+    expect(parsed).toEqual(tricky);
+  });
+
+  it("survives repeated serialize/parse cycles without accumulating escapes", () => {
+    const tricky: MemoryDoc = { ...doc, title: '"quoted" title' };
+    const once = parseMemory(serializeMemory(tricky));
+    const twice = parseMemory(serializeMemory(once));
+    expect(twice).toEqual(tricky);
+  });
+
   it("emits both headings", () => {
     const text = serializeMemory(doc);
     expect(text).toContain("# Compiled truth");

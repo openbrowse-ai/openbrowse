@@ -80,7 +80,7 @@ export function makeFakeOpfs(): FakeOpfs {
           if (seen.has(next)) continue;
           seen.add(next);
           if (rest.includes("/")) {
-            yield [next, makeDir(`${prefix}/${next}`)] as const;
+            yield [next, makeDir(prefix ? `${prefix}/${next}` : next)] as const;
           } else {
             yield [next, makeFile(k)] as const;
           }

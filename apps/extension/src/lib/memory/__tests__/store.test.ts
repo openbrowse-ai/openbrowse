@@ -7,6 +7,7 @@ import { OPFS } from "@/lib/vfs/opfs";
 import {
   memoryFilePath,
   serializeMemory,
+  slugify,
   today,
   type MemoryDoc,
 } from "../format";
@@ -49,7 +50,9 @@ async function writeMemory(
   opts: { spaceId?: string | null; path?: string } = {},
 ): Promise<string> {
   const spaceId = opts.spaceId ?? null;
-  const slug = d.title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  // Use the production slugifier so the helper's paths agree with the slug
+  // `parseMemoryPath` derives from them (notably trailing-hyphen trimming).
+  const slug = slugify(d.title);
   const path = opts.path ?? memoryFilePath(slug, spaceId);
   await OPFS.writeFile(path, serializeMemory(d));
   await memoryStore.syncPath(path);

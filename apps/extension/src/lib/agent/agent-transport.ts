@@ -16,8 +16,7 @@ import { z } from "zod";
 import { chatDb } from "../chat-db";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
-import type { MemoryRecord } from "../memory/store";
-import { memoryStore } from "../memory/store";
+import { memoryStore, type MemoryRecord } from "../memory/store";
 import { storage } from "../storage";
 import type {
   AgentUIMessage,
@@ -2489,7 +2488,6 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   // time would go stale. Instead we build it just-in-time inside `prepareCall`
   // below so every model call sees the live state.
 
-  const memories = await memoryStore.list(spaceId);
   instructions += MEMORY_INSTRUCTIONS;
   // The live conversation id, so the agent can cite THIS chat as the source of
   // a remembered fact (`[Source: [[chat:<id>]]]`). The memory viewer renders
@@ -2498,7 +2496,11 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   if (tcid) {
     instructions += `\nThe id of the conversation you are in right now is \`${tcid}\`. When a timeline entry records something learned here, cite it as \`[Source: [[chat:${tcid}]]]\`.\n`;
   }
-  instructions += `\n${buildMemoryIndexSection(memories, spaceId)}\n`;
+  // The memory index is NOT baked here. The agent writes, moves, and deletes
+  // memory files mid-conversation, so a listing captured at transport-
+  // construction time would advertise stale paths for the rest of the session.
+  // It's rebuilt per-turn in `prepareCall` below, like the tab legend and the
+  // workspace-files block.
 
   if (mcpToolsList.length > 0) {
     const mcpSection = mcpToolsList
@@ -3199,6 +3201,13 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       const wsBlock = cid
         ? await buildWorkspaceFilesBlock(cid).catch(() => "")
         : "";
+      // Memory index: rebuilt per turn so it reflects files the agent just
+      // wrote, moved, or deleted rather than the snapshot taken when the
+      // transport was constructed.
+      const memBlock = await memoryStore
+        .list(spaceId)
+        .then((rows) => buildMemoryIndexSection(rows, spaceId))
+        .catch(() => "");
 
       // Fetch the conversation row ONCE per turn and reuse it for both the
       // editing-artifact block and the mode/plan block (previously two separate
@@ -3276,7 +3285,7 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
       // Append blocks; any can be empty. Mode block goes first (framing),
       // then situational state (legend, workspace), then the editing-artifact
       // block. Double-newline separators render them as distinct sections.
-      const tail = [modeBlock, legend, wsBlock, editBlock]
+      const tail = [modeBlock, legend, wsBlock, memBlock, editBlock]
         .filter(Boolean)
         .join("\n\n");
       return {

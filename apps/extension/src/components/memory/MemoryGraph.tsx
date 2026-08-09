@@ -10,7 +10,8 @@
 //
 // Interactions: wheel to zoom about the cursor, drag the background to pan,
 // drag a node (it keeps momentum on release — the springs pull it back),
-// hover for a tooltip, click to open the note.
+// hover for a tooltip, click to open the note. Nodes are also tabbable, with
+// Enter/Space as the keyboard equivalent of a click.
 
 import { parseMemoryPath } from "@/lib/memory/format";
 import type { GraphEdge, GraphNode } from "@/lib/memory/store";
@@ -389,6 +390,10 @@ export function MemoryGraph({
       <svg
         className="h-full w-full touch-none select-none [--node-accent:var(--color-blue-500)] dark:[--node-accent:var(--color-blue-400)]"
         style={{ cursor: panRef.current ? "grabbing" : "grab" }}
+        // Named via `aria-label` rather than an SVG `<title>`, which browsers
+        // surface as a native tooltip that would fight the hover tooltip below.
+        role="img"
+        aria-label="Memory note graph"
         onPointerDown={onPointerDownBg}
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
@@ -442,6 +447,17 @@ export function MemoryGraph({
                 onPointerLeave={() => setHover(null)}
                 onClick={() => {
                   if (movedRef.current > CLICK_SLOP) return;
+                  if (n.path) onOpenNode(n.path);
+                }}
+                // Keyboard equivalent of the click above. Dangling nodes have
+                // no note to open, so they stay out of the tab order.
+                tabIndex={n.path ? 0 : undefined}
+                role={n.path ? "button" : undefined}
+                aria-label={n.path ? `Open note: ${n.title}` : undefined}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  // Space would otherwise scroll the surrounding pane.
+                  e.preventDefault();
                   if (n.path) onOpenNode(n.path);
                 }}
               >

@@ -11,6 +11,7 @@ interface SearchHit {
   description?: string;
   scope?: "user" | "space";
   snippet?: string;
+  path?: string;
 }
 
 interface SearchRelated {
@@ -26,8 +27,8 @@ export function SearchMemoryResult({ args, result }: SearchProps) {
     | { found?: boolean; results?: SearchHit[]; related?: SearchRelated[] }
     | undefined;
 
-  const results = Array.isArray(r?.results) ? r!.results! : [];
-  const related = Array.isArray(r?.related) ? r!.related! : [];
+  const results = Array.isArray(r?.results) ? r.results : [];
+  const related = Array.isArray(r?.related) ? r.related : [];
   const nothing = r != null && (r.found === false || results.length === 0);
 
   return (
@@ -45,7 +46,8 @@ export function SearchMemoryResult({ args, result }: SearchProps) {
       ) : (
         <div className="px-3 py-2 bg-background/50 flex flex-col gap-2">
           {results.map((hit) => (
-            <div key={hit.slug} className="flex flex-col gap-0.5">
+            // A global and a space note can share a slug, so key on the path.
+            <div key={hit.path ?? hit.slug} className="flex flex-col gap-0.5">
               <div className="flex items-center gap-1.5">
                 <span className="font-medium">{hit.title}</span>
                 {hit.scope ? (
