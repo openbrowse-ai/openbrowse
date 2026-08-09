@@ -43,10 +43,18 @@ function isSettingsTabId(value: string): value is SettingsTabId {
  * Build params from a search string, tolerating a full URL, a path+search
  * string, or a bare query string (everything after the first "?" wins, and a
  * string without one is treated as the query itself).
+ *
+ * A trailing fragment is dropped first: when the caller hands us a whole URL,
+ * `?tab=memory&note=memory/a.md#section` would otherwise fold `#section` into
+ * the `note` value, since `URLSearchParams` has no concept of a fragment.
+ * (`formatSettingsSearch` percent-encodes `#` inside values, so stripping at
+ * the first `#` can't truncate a legitimate one.)
  */
 function searchParams(search: string): URLSearchParams {
-  const qsIndex = search.indexOf("?");
-  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
+  const hashIndex = search.indexOf("#");
+  const withoutHash = hashIndex >= 0 ? search.slice(0, hashIndex) : search;
+  const qsIndex = withoutHash.indexOf("?");
+  const rawQs = qsIndex >= 0 ? withoutHash.slice(qsIndex) : withoutHash;
   return new URLSearchParams(rawQs.startsWith("?") ? rawQs : `?${rawQs}`);
 }
 

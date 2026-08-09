@@ -7,35 +7,19 @@ import {
 } from "@/components/chat/ChatInput";
 import { ChatInputHalo } from "@/components/chat/ChatInputHalo";
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import { MemoryDeleteButton } from "@/components/memory/MemoryDeleteButton";
 import { MemoryFileMeta } from "@/components/memory/MemoryFileMeta";
 import { openSourceChat } from "@/components/memory/source-chat";
 import {
   ColorPickerDialog,
   IconPickerButton,
 } from "@/components/spaces/SpacePickers";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Wordmark } from "@/components/ui/wordmark";
 import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
 import { useProviders } from "@/hooks/useProviders";
@@ -56,7 +40,7 @@ import type {
   Space,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { Trash2, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   useCallback,
@@ -93,61 +77,6 @@ function useIsXl(): boolean {
     return () => mq.removeEventListener("change", onChange);
   }, []);
   return isXl;
-}
-
-/**
- * Delete affordance for the rail's memory viewer, mirroring the one Settings >
- * Memory injects into its own viewer header so a note stays deletable from
- * whichever surface opened it. It lives with the host rather than the viewer
- * because the host owns the selection state that has to be cleared once the
- * file is gone.
- */
-function MemoryDeleteAction({
-  path,
-  onDeleted,
-}: {
-  path: string;
-  onDeleted: () => void;
-}) {
-  const name = path.split("/").pop() ?? path;
-  return (
-    <AlertDialog>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="size-7 text-muted-foreground hover:text-foreground"
-              aria-label="Delete memory"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </AlertDialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Delete memory</TooltipContent>
-      </Tooltip>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete memory</AlertDialogTitle>
-          <AlertDialogDescription>
-            Delete "{name}"? This removes the file and cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={async () => {
-              await memoryStore.deleteById(path);
-              onDeleted();
-            }}
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
 }
 
 interface LandingPageProps {
@@ -871,7 +800,7 @@ export function LandingPage({
                 spaceId={space.id}
                 openInNewTab
                 headerActions={
-                  <MemoryDeleteAction
+                  <MemoryDeleteButton
                     path={selectedMemoryFile}
                     onDeleted={() => setSelectedMemoryFile(null)}
                   />
@@ -978,7 +907,7 @@ export function LandingPage({
                 spaceId={space.id}
                 openInNewTab
                 headerActions={
-                  <MemoryDeleteAction
+                  <MemoryDeleteButton
                     path={selectedMemoryFile}
                     onDeleted={() => setSelectedMemoryFile(null)}
                   />

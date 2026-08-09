@@ -35,6 +35,15 @@ describe("parseSettingsTab", () => {
     expect(parseSettingsTab("?tab=memory")).toBe("memory");
   });
 
+  it("ignores a trailing fragment", () => {
+    // The settings page keeps `window.location.hash` when it rewrites the URL,
+    // so a full URL handed to the parser can carry one.
+    expect(parseSettingsTab("?tab=models#anchor")).toBe("models");
+    expect(
+      parseSettingsTab("chrome-extension://abc/settings.html?tab=skills#x"),
+    ).toBe("skills");
+  });
+
   it("falls back to the default for an unknown tab name", () => {
     expect(parseSettingsTab("?tab=does-not-exist")).toBe(DEFAULT_SETTINGS_TAB);
   });
@@ -63,6 +72,19 @@ describe("parseSettingsNote", () => {
     expect(parseSettingsNote("?note=memory%2Fmy%20note.md")).toBe(
       "memory/my note.md",
     );
+  });
+
+  it("strips a trailing fragment from the note path", () => {
+    // Without this, `#section` folds into the value and the path never matches
+    // a real file, so the viewer would fall back to the graph.
+    expect(
+      parseSettingsNote("?tab=memory&note=memory/andrew-chung.md#section"),
+    ).toBe("memory/andrew-chung.md");
+    expect(
+      parseSettingsNote(
+        "chrome-extension://abc/settings.html?tab=memory&note=memory/a.md#h",
+      ),
+    ).toBe("memory/a.md");
   });
 
   it("returns null when absent or empty", () => {

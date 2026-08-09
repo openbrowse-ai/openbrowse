@@ -171,6 +171,8 @@ describe("fs tools — memory mount", () => {
       ctx(null),
     );
     expect(res).toMatch(/memory boundary/i);
+    // Refused before any bytes moved: the source is still where it was.
+    expect(fake.files.has("notes/draft.md")).toBe(true);
     expect(fake.files.has("memory/draft.md")).toBe(false);
   });
 

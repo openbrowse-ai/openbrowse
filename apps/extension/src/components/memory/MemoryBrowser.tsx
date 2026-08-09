@@ -18,21 +18,10 @@
 // `showGlobal={false}` hides the global tree (used by the space rail).
 
 import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import { MemoryDeleteButton } from "@/components/memory/MemoryDeleteButton";
 import { MemoryFileMeta } from "@/components/memory/MemoryFileMeta";
 import { MemoryGraph } from "@/components/memory/MemoryGraph";
 import { openSourceChat } from "@/components/memory/source-chat";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Tooltip,
@@ -48,7 +37,7 @@ import {
 } from "@/lib/memory/store";
 import { vfsEvents } from "@/lib/vfs/events";
 import { OPFS } from "@/lib/vfs/opfs";
-import { Network, Search, Trash2 } from "lucide-react";
+import { Network, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface Scope {
@@ -215,12 +204,10 @@ export function MemoryBrowser({
     [selected],
   );
 
-  const handleDelete = useCallback(async () => {
-    if (!selected) return;
-    await memoryStore.deleteById(selected);
+  const handleDeleted = useCallback(async () => {
     setSelected(null);
     await load();
-  }, [selected, load, setSelected]);
+  }, [load, setSelected]);
 
   // Open a file: delegate to the host in picker mode, else select it for the
   // internal detail pane.
@@ -308,35 +295,7 @@ export function MemoryBrowser({
   // Delete affordance, injected into the viewer's header action row so the
   // detail pane keeps a single header instead of stacking a second bar.
   const deleteAction = selected ? (
-    <AlertDialog>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <AlertDialogTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="size-7 text-muted-foreground hover:text-foreground"
-              aria-label="Delete memory"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          </AlertDialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Delete memory</TooltipContent>
-      </Tooltip>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete memory</AlertDialogTitle>
-          <AlertDialogDescription>
-            Delete "{selectedName}"? This removes the file and cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction onClick={handleDelete}>Delete</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <MemoryDeleteButton path={selected} onDeleted={handleDeleted} />
   ) : null;
 
   // The graph is the detail pane's default view, so build it whenever no note
