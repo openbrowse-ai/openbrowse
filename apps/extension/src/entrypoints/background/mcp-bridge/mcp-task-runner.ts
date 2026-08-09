@@ -471,7 +471,7 @@ export async function runMcpTask(args: RunMcpTaskArgs): Promise<McpTaskControl> 
         //     (agent-transport.ts:1281-1298) returns `false` for every
         //     approval-gated tool — closeTabs, executePython,
         //     executeOnPage, Write/Edit, Delete, install_skill,
-        //     create_skill, updateMemory, deleteArtifact, proposePlan.
+        //     create_skill, deleteArtifact, proposePlan.
         //
         // With `allowDelegate: true`:
         //   - The tool-set filter (agent-transport.ts:2636-2681) keeps

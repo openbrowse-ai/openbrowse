@@ -1,4 +1,8 @@
 import { getSkillsRegistry } from "@/lib/skills/registry";
+import {
+  renderSiteSkillsBlock,
+  urlToDomain,
+} from "@/lib/skills/site-skill-catalog";
 import type { ModelDefinition } from "@/registry/providers/types";
 import type {
   ChatTransport,
@@ -10,111 +14,102 @@ import type {
 import { ToolLoopAgent, readUIMessageStream, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { chatDb } from "../chat-db";
-import { waitForAssistantPersist as waitForAssistantPersistImpl } from "./curator/wait-for-persist";
-import { storage } from "../storage";
 import { getMcpRegistry } from "../mcp";
 import { sendMcpMessage } from "../mcp/messages";
-import { memoryDb } from "../memory-db";
+import type { MemoryRecord } from "../memory/store";
+import { memoryStore } from "../memory/store";
+import { storage } from "../storage";
 import type {
   AgentUIMessage,
   ApprovedPlan,
   ConversationMode,
   Settings,
 } from "../types";
-import { shouldCompact } from "./compaction";
 import { CompactingChatTransport } from "./compacting-transport";
-import { scanToolUsage, mergeDistinct } from "./tool-usage";
-import { nextUsageSnapshot, type StepUsage } from "./usage-snapshot";
-import { ExtensionDriver } from "./driver/extension-driver";
+import { shouldCompact } from "./compaction";
+import { isAnthropicComputerUseModel, resolveCuaProvider } from "./cua";
+import { waitForAssistantPersist as waitForAssistantPersistImpl } from "./curator/wait-for-persist";
 import type { ToolContext } from "./driver";
-import { resolveCuaProvider, isAnthropicComputerUseModel } from "./cua";
-import { buildThinkingProviderOptions } from "./thinking";
-import type {
-  AgentLoopConfig,
-  AgentLoopResult,
-} from "./subagents/runner";
+import { ExtensionDriver } from "./driver/extension-driver";
+import { staticReadCheck } from "./execute-on-page-static-check";
+import type { PlanExtensionData, SerializedUIPart } from "./message-types";
+import { persistCompletionMarker } from "./persist-completion-marker";
+import {
+  extendPlanWithSite,
+  flipPlanNetwork,
+  planExtensionForCall,
+} from "./plan-store";
 import {
   AssistantStreamPersister,
   persistAssistantStream,
   persistDelegationMessage,
 } from "./subagents/persist-stream";
+import type { AgentLoopConfig, AgentLoopResult } from "./subagents/runner";
 import {
   getOrCreateHandle as getOrCreateTabHandle,
   listHandles as listTabHandles,
   loadHandlesForConversation,
   resolveHandle as resolveTabHandle,
 } from "./tab-handles";
-import { tabRegistry } from "./tab-registry";
-import { persistCompletionMarker } from "./persist-completion-marker";
 import {
-  buildTabLegendEntries,
-  renderTabLegend,
   buildOpenTabsAwarenessEntries,
+  buildTabLegendEntries,
   renderOpenTabsAwareness,
+  renderTabLegend,
 } from "./tab-legend";
-import { buildWorkspaceFilesBlock } from "./workspace-legend";
-import {
-  renderSiteSkillsBlock,
-  urlToDomain,
-} from "@/lib/skills/site-skill-catalog";
+import { tabRegistry } from "./tab-registry";
+import { buildThinkingProviderOptions } from "./thinking";
+import { mergeDistinct, scanToolUsage } from "./tool-usage";
 import {
   clickElementTool,
   closeTabsTool,
+  createArtifactTool,
   createScheduledTaskTool,
   createSkillTool,
-  deleteMemoryTool,
+  deleteArtifactTool,
   deleteSiteSkillTool,
   executeCodeTool,
   executeOnPageTool,
   extractTool,
-  webSearchTool,
   installSkillTool,
+  listArtifactsTool,
   listScheduledTasksTool,
   listTabsTool,
   navigateTool,
+  patchSiteSkillTool,
   pressKeyTool,
+  proposePlanTool,
+  readArtifactDiagnosticsTool,
   readConsoleMessagesTool,
   readNetworkRequestsTool,
   readPageTool,
-  recallMemoryTool,
-  saveMemoryTool,
   screenshotTool,
   scrollPageTool,
+  searchMemoryTool,
   selectTabTool,
   skillTool,
   snapshotTool,
   todoWriteTool,
   typeInElementTool,
-  updateMemoryTool,
-  updateScheduledTaskTool,
-  patchSiteSkillTool,
-  createArtifactTool,
   updateArtifactTool,
-  deleteArtifactTool,
-  listArtifactsTool,
-  readArtifactDiagnosticsTool,
-  proposePlanTool,
+  updateScheduledTaskTool,
+  webSearchTool,
 } from "./tools";
 import { createDelegateTool } from "./tools/delegate";
-import { createFsTools, isAnySpacePath } from "./tools/fs";
 import { createPythonTool } from "./tools/execute-python";
+import { createFsTools, isAnySpacePath } from "./tools/fs";
 import { setTaskTitleTool } from "./tools/set-task-title";
-import { staticReadCheck } from "./execute-on-page-static-check";
-import {
-  planExtensionForCall,
-  extendPlanWithSite,
-  flipPlanNetwork,
-} from "./plan-store";
-import type { PlanExtensionData, SerializedUIPart } from "./message-types";
 import type { BrowserTool } from "./types";
+import { nextUsageSnapshot, type StepUsage } from "./usage-snapshot";
+import { buildWorkspaceFilesBlock } from "./workspace-legend";
 
 import { isChatOnlyModel } from "@/registry/agent-capability";
-import {
-  SYSTEM_PROMPT,
-  CUA_DELEGATION_PROMPT,
-  CHAT_ONLY_SYSTEM_PROMPT,
-} from "./system-prompt";
 import { buildEditingArtifactBlock } from "./artifact-edit-context";
+import {
+  CHAT_ONLY_SYSTEM_PROMPT,
+  CUA_DELEGATION_PROMPT,
+  SYSTEM_PROMPT,
+} from "./system-prompt";
 
 /**
  * When true, the background site-skill curator logs each pipeline stage to the
@@ -138,77 +133,160 @@ if (DEBUG_CURATOR) {
   console.error(`[curator] INSTRUMENTED BUILD LOADED (context=${ctx})`);
 }
 
-
 const MEMORY_INSTRUCTIONS = `
 
 ## Memory
 
-You have persistent memory across conversations. The index below shows saved memories (title + description only). Use recallMemory to read full content when needed.
+You have persistent, file-based memory that carries across conversations. Memory is a folder tree of markdown files you author and maintain **directly** with the normal file tools (Read, Write, Edit, Move, LS, Glob, Grep). Writing a memory is just writing a file. There are no dedicated save/update/recall tools — use searchMemory only for retrieval.
 
-### How to use memories
-- The index below shows [type] [scope] title: description for each memory
-- Call recallMemory with the title to read the full content. The result is always a \`matches: [...]\` array — usually one entry, but may contain two when the same title exists in both \`user\` (global) and \`space\` scopes
-- Call saveMemory to create a new memory (title, description, type, content required; scope required when a space is active)
-- Call updateMemory to modify an existing memory (requires user approval; scope is preserved across updates)
-- Call deleteMemory to remove a memory
+### Where memory lives
+- memory/… — **global** memory: durable knowledge about the user and their world (identity, role, preferences, the people they work with, recurring projects, decisions, references, facts). Visible in every conversation and space.
+- spaces/<activeSpaceId>/memory/… — **space-scoped** memory: knowledge about the current space's project. Visible only inside that space (globals are always visible too).
 
-You never pass a spaceId. The active space is determined by the session, not by you. You only choose *whether* a memory is scoped to the user (global) or to the active space.
+You never manage space IDs directly — write under memory/ for global, or under the active space's memory/ folder for space-scoped. The index below lists what's currently stored.
 
-### When to save memories
-- User explicitly says "remember this" or "don't forget"
-- User corrects your behavior → save as feedback type
-- User confirms a non-obvious approach → save as feedback type
-- You learn about their role or preferences → save as user type
-- You learn where external information lives → save as reference type
- - (Per-site knowledge — navigation patterns, selectors, quirks — goes in that domain's SITE SKILL, authored automatically after the task, NOT a memory.)
+### Workflow
+- **Search first.** Before writing, call searchMemory (or Grep/LS the memory tree). If a relevant note already exists, Edit/extend it instead of creating a near-duplicate.
+- **Read before relying.** Open the file with Read for full content; the index below shows only titles + descriptions.
+- **Write directly.** Create a new note with Write at a descriptive path (e.g. memory/garry-tan.md), or Edit an existing one. Reorganize with Move (rename, or move into a folder). Delete to forget — this is the only memory action that asks for confirmation; every other memory edit is immediate.
 
-### Memory types
-- **user**: Role, preferences, expertise. Free-form content.
-- **feedback**: Behavior corrections or confirmations. Structure: rule, then **Why:** and **How to apply:** lines.
-- **reference**: Where to find things externally. Free-form content.
+### File format (guidance, not enforced)
+Use a small YAML frontmatter block plus a compiled-truth / timeline body. Example (indented here):
 
-### Scoping
+    ---
+    title: Garry Tan
+    description: President & CEO of Y Combinator
+    aliases: [gt]
+    tags: [investor, yc]
+    updated: 2026-08-06
+    ---
 
-A memory is either **global** (visible everywhere) or **space-scoped** (visible only inside the space it was saved in). Globals are *always* visible from inside any space — a space-scoped memory does not hide or replace a global of the same title; recallMemory will return both.
+    # Compiled truth
 
-\`saveMemory\` accepts a \`scope\` field with two values:
+    Current best understanding — read first. May reference [[y-combinator]].
 
-- \`scope: "user"\` — global memory. Use for facts about the human themself: identity, name, role, company, expertise, universal preferences, behavior corrections that apply across every project.
-- \`scope: "space"\` — scoped to the active space. Use for facts about this space's project: repos, tools, dashboards, references, project-specific preferences and workflows.
+    # Timeline
 
-**Inside a space, \`scope\` is required** — you must pick one. Outside any space, \`scope\` may be omitted; only \`"user"\` is meaningful (the tool will error on \`"space"\`).
+    - 2026-08-06 — Met at the YC dinner. [Source: [[chat:0f8c1a92-...]]]
 
-Test: "Is this fact still true and useful in a completely unrelated space?"
-- Yes → \`scope: "user"\`
-- No → \`scope: "space"\`
+Keep the compiled-truth section as the current best summary, and **append** dated entries to the timeline rather than overwriting history. Frontmatter is optional — a plain markdown note still works and stays searchable.
 
-Examples (assume the active space is "Development"):
-- "OpenBrowse's GitHub repo is openbrowse-ai/openbrowse" → \`scope: "space"\` (about the project, not about the user; useless in a different space).
-- "I'm a frontend engineer at Acme" → \`scope: "user"\` (about the human, applies everywhere).
-- "On GitHub, always go to Files Changed first" → \`scope: "user"\` (universal site behavior).
-- "In this space, group tabs by repo" → \`scope: "space"\` (project-specific preference).
-- "The on-call rotation page is at acme.pagerduty.com/schedules/123" while in the Ops space → \`scope: "space"\` (project reference).
+### Linking memories (knowledge graph)
+Reference related notes inline with **bare-basename** [[wikilinks]] — e.g. "works with [[garry-tan]] at [[acme-ai]]". A link is just the filename without extension or folder ([[garry-tan]] resolves to any …/garry-tan.md in scope), so links survive moving a file between folders. Linked-to notes rank higher in searchMemory, and search returns notes related via these links. Link entities (people, companies, projects, tools) whenever you mention one that has — or should have — its own note.
 
-### Disambiguating updates and deletes
+### Citing sources
+End every timeline entry with a [Source: ...] marker so the user can check where a fact came from. Both forms below render as clickable links in the memory viewer:
+- **This conversation** — [Source: [[chat:<conversationId>]]], using the conversation id given at the end of this section. Clicking it takes the user back to this chat. Use it for anything you learned from the user or from your own work this session.
+- **A web page** — [Source: https://www.ycombinator.com/companies/typa]. Always write the full URL including the https:// scheme; a scheme-less ycombinator.com/... may render as dead text.
 
-When the same title exists in both \`user\` and \`space\` scope, \`updateMemory\` and \`deleteMemory\` will refuse to act and return a \`matches\` array showing both. You then call the tool again with \`scope: "user"\` or \`scope: "space"\` to specify which one to operate on. When only one match exists (the common case), omit \`scope\` and the tool just works.
+Prefer the page URL when a fact came from a specific page, and the chat link when it came from the conversation itself. A [[chat:...]] link is a provenance marker, not a note reference — it never creates an edge in the memory graph.
 
-### What NOT to save
-- Current page content or tab URLs (ephemeral)
-- Anything you can see in the current tabs
-- One-off task details that won't matter next session
+### Organization (emergent, not prescribed)
+There is **no required folder structure and no fixed taxonomy.** Default to a flat, descriptively-named file per topic; create a folder only when a natural cluster emerges (e.g. many notes about one project). Let the [[link]] graph — not deep folders — do the organizing.
+- One topic per file, with a clear title/filename.
+- Prefer editing/expanding an existing note over adding a competing one.
+- Capture broadly: facts about the user, the people they work with, projects, decisions, preferences, and where things live are all in scope. This is one unified memory, not a preferences-only store.
 
-### When to delete memories
-- User says "forget X" or "stop doing X" (if it contradicts a saved feedback)
-- A memory is clearly outdated based on conversation context
+### When to write memory
+- User says "remember this" / "don't forget", or corrects/confirms a non-obvious behavior.
+- You learn something durable about the user, their preferences, their people/projects, or where external information lives.
+- (Per-site knowledge — navigation patterns, selectors, quirks — goes in that domain's SITE SKILL, authored automatically after the task, NOT memory.)
+
+### What NOT to write
+- Current page content or tab URLs (ephemeral), anything visible in the current tabs, or one-off task details that won't matter next session.
+
+### When to delete
+- User says "forget X", or a note is clearly outdated. Delete asks for confirmation.
 `;
 
 import { getTargetTabId, registerCidResolver } from "./active-tab";
 import { notifyAgentStatus } from "./agent-indicator";
 import { startCapture } from "./cdp-capture";
 import { releaseAll as releaseAllSessions } from "./cdp-session";
+import { setCurrentAgentModel } from "./current-agent-model";
 
 export { notifyAgentStatus };
+
+/** Max memory files listed inline before we defer the rest to searchMemory. */
+const MEMORY_INDEX_CAP = 40;
+
+/** Path of a memory row relative to its scope's memory root. */
+function memoryRelPath(row: MemoryRecord): string {
+  const clean = row.id.replace(/^\/+/, "");
+  if (clean.startsWith("memory/")) return clean.slice("memory/".length);
+  const m = clean.match(/^spaces\/[^/]+\/memory\/(.+)$/);
+  return m ? m[1] : clean;
+}
+
+/** Top-level folder of a memory row within its scope ("" = scope root). */
+function memoryTopFolder(row: MemoryRecord): string {
+  const rel = memoryRelPath(row);
+  const slash = rel.indexOf("/");
+  return slash === -1 ? "" : rel.slice(0, slash);
+}
+
+/**
+ * Build the injected memory index: a compact, path-indexed listing of the
+ * memory the current session can see (globals + the active space). Sorted
+ * most-recently-updated first, capped at `MEMORY_INDEX_CAP`, and grouped by
+ * scope then top-level folder so the tree stays navigable. Anything past the
+ * cap is deferred to `searchMemory`.
+ */
+function buildMemoryIndexSection(
+  memories: MemoryRecord[],
+  activeSpaceId: string | null,
+): string {
+  const header = `### Current memory (files under \`memory/\`; space memory under \`spaces/<id>/memory/\`)`;
+  if (memories.length === 0) {
+    return `${header}\n(none saved yet — write a file under \`memory/\` to start)`;
+  }
+
+  const sorted = [...memories].sort((a, b) => b.updatedAt - a.updatedAt);
+  const shown = sorted.slice(0, MEMORY_INDEX_CAP);
+  const overflow = sorted.length - shown.length;
+
+  const groups: Array<{ label: string; rows: MemoryRecord[] }> = [
+    { label: "Global", rows: shown.filter((r) => r.scope === "user") },
+  ];
+  if (activeSpaceId) {
+    groups.push({
+      label: "This space",
+      rows: shown.filter((r) => r.scope === "space"),
+    });
+  }
+
+  const lines: string[] = [header];
+  for (const group of groups) {
+    if (group.rows.length === 0) continue;
+    lines.push(`\n**${group.label}**`);
+    // Sub-group by top-level folder so clusters read together; root files first.
+    const byFolder = new Map<string, MemoryRecord[]>();
+    for (const row of group.rows) {
+      const folder = memoryTopFolder(row);
+      const bucket = byFolder.get(folder);
+      if (bucket) bucket.push(row);
+      else byFolder.set(folder, [row]);
+    }
+    const folders = [...byFolder.keys()].sort((a, b) => {
+      if (a === "") return -1;
+      if (b === "") return 1;
+      return a.localeCompare(b);
+    });
+    for (const folder of folders) {
+      if (folder) lines.push(`- ${folder}/`);
+      for (const row of byFolder.get(folder)!) {
+        const rel = memoryRelPath(row);
+        const desc = row.description ? ` — ${row.description}` : "";
+        const indent = folder ? "  " : "";
+        lines.push(`${indent}- ${rel}${desc}`);
+      }
+    }
+  }
+  if (overflow > 0) {
+    lines.push(`\n+${overflow} more — use searchMemory to find them.`);
+  }
+  return lines.join("\n");
+}
 
 /**
  * Per-conversation glow tint cache for the working-overlay. Replaces the
@@ -303,9 +381,7 @@ async function ensureAgentWindow(
     // `active-tab.ts`.
     const modulePath: string = "./conversation-window";
     const mod = (await import(modulePath)) as {
-      resolveConversationWindowId: (
-        cid: string,
-      ) => Promise<number | undefined>;
+      resolveConversationWindowId: (cid: string) => Promise<number | undefined>;
     };
     const resolved = await mod.resolveConversationWindowId(conversationId);
     if (resolved !== undefined) {
@@ -490,7 +566,7 @@ export const HEADLESS_SYSTEM_PROMPT_PREFIX = `### Headless run context
 You are running unattended as part of an automated invocation (e.g. a remote MCP host). There is NO human present to approve individual tool calls. The user granted consent for this entire run UPFRONT via the host's authorization flow.
 
 Concretely:
-- Approval-gated tools (closeTabs, Write, Edit, Delete, executePython, executeOnPage, install_skill, create_skill, updateMemory, deleteArtifact, proposePlan) execute immediately on call. There is NO per-tool prompt.
+- Approval-gated tools (closeTabs, Write, Edit, Delete, executePython, executeOnPage, install_skill, create_skill, deleteArtifact, proposePlan) execute immediately on call. There is NO per-tool prompt.
 - Do NOT emit narration suggesting you are waiting for approval, pausing for confirmation, or asking the user before acting. No such interaction exists in this run.
 - If you decide an action is unsafe or out of scope, simply do not call the tool. Explain your reasoning in your final response.
 - Destructive tools (Delete, install_skill, create_skill, executePython with allow_network) carry real consequences — call them deliberately, not casually.
@@ -524,7 +600,6 @@ export {
   getCurrentAgentModel,
   setCurrentAgentModel,
 } from "./current-agent-model";
-import { setCurrentAgentModel } from "./current-agent-model";
 
 export function getLastTotalTokens(): number {
   return lastTotalTokens;
@@ -585,7 +660,6 @@ export function getAgentContext(): {
     conversationId: agentConversationId,
   };
 }
-
 
 const IMAGE_TOOLS = new Set(["screenshot"]);
 
@@ -793,14 +867,19 @@ export function createBrowserToolSet(
     scrollPage: toSDKTool(scrollPageTool, "scrollPage", cid),
     selectTab: toSDKTool(selectTabTool, "selectTab", cid),
     closeTabs: toSDKTool(closeTabsTool, "closeTabs", cid),
-    saveMemory: toSDKTool(saveMemoryTool, "saveMemory", cid),
-    updateMemory: toSDKTool(updateMemoryTool, "updateMemory", cid),
-    recallMemory: toSDKTool(recallMemoryTool, "recallMemory", cid),
-    deleteMemory: toSDKTool(deleteMemoryTool, "deleteMemory", cid),
+    searchMemory: toSDKTool(searchMemoryTool, "searchMemory", cid),
     executeCode: toSDKTool(executeCodeTool, "executeCode", cid),
     executeOnPage: toSDKTool(executeOnPageTool, "executeOnPage", cid),
-    read_network_requests: toSDKTool(readNetworkRequestsTool, "read_network_requests", cid),
-    read_console_messages: toSDKTool(readConsoleMessagesTool, "read_console_messages", cid),
+    read_network_requests: toSDKTool(
+      readNetworkRequestsTool,
+      "read_network_requests",
+      cid,
+    ),
+    read_console_messages: toSDKTool(
+      readConsoleMessagesTool,
+      "read_console_messages",
+      cid,
+    ),
     patch_site_skill: toSDKTool(guardedPatchSiteSkill, "patch_site_skill", cid),
     delete_site_skill: toSDKTool(deleteSiteSkillTool, "delete_site_skill", cid),
     executePython: toSDKTool(pythonTool, "executePython", cid),
@@ -833,6 +912,7 @@ export function createBrowserToolSet(
     Grep: toSDKTool(fsTools.grepTool, "Grep", cid),
     LS: toSDKTool(fsTools.lsTool, "LS", cid),
     Delete: toSDKTool(fsTools.deleteTool, "Delete", cid),
+    Move: toSDKTool(fsTools.moveTool, "Move", cid),
     create_artifact: toSDKTool(createArtifactTool, "create_artifact", cid),
     update_artifact: toSDKTool(updateArtifactTool, "update_artifact", cid),
     delete_artifact: toSDKTool(deleteArtifactTool, "delete_artifact", cid),
@@ -905,9 +985,7 @@ export function buildExtensionToolContext(
         // listTabs round-trip. tool-context.ts threads this through;
         // bench's session leaves it undefined and falls back to the
         // no-summary error wording.
-        return pinnedConversationId
-          ? listTabHandles(pinnedConversationId)
-          : [];
+        return pinnedConversationId ? listTabHandles(pinnedConversationId) : [];
       },
       isAgentOwnedTab: async (tabId) => {
         if (!pinnedConversationId) return false;
@@ -1169,88 +1247,89 @@ export function toSDKTool<TInput, TOutput>(
         (input: unknown) =>
           (input as { allow_network?: unknown })?.allow_network === true
       : approvalRequired && (toolKey === "Write" || toolKey === "Edit")
-      ? // Write/Edit only require approval when targeting the active space's
-        // shared workspace (`spaces/<spaceId>/workspace/...`). The default
-        // case — writing to the conversation's private workspace — runs
-        // without prompting, matching pre-spaces behavior. Cross-space
-        // writes are denied by the tool itself; we still return `true`
-        // here so the user sees the prompt and can confirm the agent
-        // attempted something disallowed.
-        (input: unknown) => {
-          const filePath = (input as { file_path?: unknown })?.file_path;
-          if (typeof filePath !== "string") return false;
-          return isAnySpacePath(filePath);
-        }
-      : approvalRequired && toolKey === "closeTabs"
-      ? async (input: unknown) => {
-          const cid = getCid();
-          if (!cid) return true;
-          const typed = input as
-            | { target: "group" }
-            | { target: "tabs"; handles?: string[] };
-          let resolved:
-            | { target: "group" }
-            | { target: "tabs"; ltids: string[] };
-          if (typed?.target === "tabs") {
-            // Tool handles → ltids via the per-conversation handle map.
-            // resolveTabHandle returns LogicalTabId post-migration; drop
-            // unresolvable handles silently (the tool itself surfaces the
-            // error message; this path only decides whether approval is
-            // required, and a missing handle defaults to "require approval").
-            const ltids = (typed.handles ?? [])
-              .map((h) => resolveTabHandle(cid, h))
-              .filter((id): id is string => typeof id === "string");
-            resolved = { target: "tabs", ltids };
-          } else {
-            resolved = { target: "group" };
+        ? // Write/Edit only require approval when targeting the active space's
+          // shared workspace (`spaces/<spaceId>/workspace/...`). The default
+          // case — writing to the conversation's private workspace — runs
+          // without prompting, matching pre-spaces behavior. Cross-space
+          // writes are denied by the tool itself; we still return `true`
+          // here so the user sees the prompt and can confirm the agent
+          // attempted something disallowed.
+          (input: unknown) => {
+            const filePath = (input as { file_path?: unknown })?.file_path;
+            if (typeof filePath !== "string") return false;
+            return isAnySpacePath(filePath);
           }
-          return !(await shouldAutoApproveCloseTabs(cid, resolved));
-        }
-      : approvalRequired && toolKey === "executeOnPage"
-      ? // A `scriptRef` run executes an ALREADY-SAVED script from one of the
-        // agent's own site skills (authored by the background curator) — no prompt,
-        // same trust basis as the no-approval site-skill patch/delete.
-        //
-        // Inline `code` with `kind: "read"` whose AST passes the static check
-        // skips approval on ANY origin. The static check is the trust mechanism
-        // for reads — it ensures no DOM/storage/network mutation, no clicks,
-        // no fetch, no navigation. Same exfiltration surface as snapshot/readPage,
-        // both of which already run ungated.
-        //
-        // Inline `code` with `kind: "write"` (or `kind: "read"` whose AST is
-        // rejected — treated as a misclassified write) falls through to the
-        // standard tab-tool allowlist check: skip on user-allowlisted origins,
-        // gate elsewhere.
-        async (input: unknown) => {
-          const typed = input as {
-            scriptRef?: unknown;
-            code?: unknown;
-            kind?: "read" | "write";
-          };
-          if (typed?.scriptRef != null && typed.code == null) return false;
-
-          // Verified-read fast path: kind: "read" + AST clean.
-          if (typed.kind === "read" && typeof typed.code === "string") {
-            const check = staticReadCheck(typed.code);
-            if (check.ok) {
-              // Verified read: skip approval on ANY origin. The static check
-              // is the trust mechanism — it ensures the script can't mutate
-              // the page, modify storage, navigate, or call network. The
-              // allowlist is only consulted for writes (and for AST-rejected
-              // reads, treated as writes per the table below).
-              return false;
+        : approvalRequired && toolKey === "closeTabs"
+          ? async (input: unknown) => {
+              const cid = getCid();
+              if (!cid) return true;
+              const typed = input as
+                | { target: "group" }
+                | { target: "tabs"; handles?: string[] };
+              let resolved:
+                | { target: "group" }
+                | { target: "tabs"; ltids: string[] };
+              if (typed?.target === "tabs") {
+                // Tool handles → ltids via the per-conversation handle map.
+                // resolveTabHandle returns LogicalTabId post-migration; drop
+                // unresolvable handles silently (the tool itself surfaces the
+                // error message; this path only decides whether approval is
+                // required, and a missing handle defaults to "require approval").
+                const ltids = (typed.handles ?? [])
+                  .map((h) => resolveTabHandle(cid, h))
+                  .filter((id): id is string => typeof id === "string");
+                resolved = { target: "tabs", ltids };
+              } else {
+                resolved = { target: "group" };
+              }
+              return !(await shouldAutoApproveCloseTabs(cid, resolved));
             }
-            console.warn(
-              "[executeOnPage] kind: read but static check rejected:",
-              check.reason,
-            );
-          }
+          : approvalRequired && toolKey === "executeOnPage"
+            ? // A `scriptRef` run executes an ALREADY-SAVED script from one of the
+              // agent's own site skills (authored by the background curator) — no prompt,
+              // same trust basis as the no-approval site-skill patch/delete.
+              //
+              // Inline `code` with `kind: "read"` whose AST passes the static check
+              // skips approval on ANY origin. The static check is the trust mechanism
+              // for reads — it ensures no DOM/storage/network mutation, no clicks,
+              // no fetch, no navigation. Same exfiltration surface as snapshot/readPage,
+              // both of which already run ungated.
+              //
+              // Inline `code` with `kind: "write"` (or `kind: "read"` whose AST is
+              // rejected — treated as a misclassified write) falls through to the
+              // standard tab-tool allowlist check: skip on user-allowlisted origins,
+              // gate elsewhere.
+              async (input: unknown) => {
+                const typed = input as {
+                  scriptRef?: unknown;
+                  code?: unknown;
+                  kind?: "read" | "write";
+                };
+                if (typed?.scriptRef != null && typed.code == null)
+                  return false;
 
-          return tabToolNeedsApproval(input);
-        }
-      : approvalRequired && isTabTool
-        ? (input: unknown) => tabToolNeedsApproval(input)
-        : approvalRequired;
+                // Verified-read fast path: kind: "read" + AST clean.
+                if (typed.kind === "read" && typeof typed.code === "string") {
+                  const check = staticReadCheck(typed.code);
+                  if (check.ok) {
+                    // Verified read: skip approval on ANY origin. The static check
+                    // is the trust mechanism — it ensures the script can't mutate
+                    // the page, modify storage, navigate, or call network. The
+                    // allowlist is only consulted for writes (and for AST-rejected
+                    // reads, treated as writes per the table below).
+                    return false;
+                  }
+                  console.warn(
+                    "[executeOnPage] kind: read but static check rejected:",
+                    check.reason,
+                  );
+                }
+
+                return tabToolNeedsApproval(input);
+              }
+            : approvalRequired && isTabTool
+              ? (input: unknown) => tabToolNeedsApproval(input)
+              : approvalRequired;
 
   /**
    * Mode-aware wrapper around `askModeNeedsApproval`. The conversation's
@@ -1330,10 +1409,12 @@ export function toSDKTool<TInput, TOutput>(
 
         // mode === "ask": defer to existing per-tool logic.
         if (typeof askModeNeedsApproval === "function") {
-          return (askModeNeedsApproval as (
-            i: unknown,
-            o: unknown,
-          ) => boolean | Promise<boolean>)(input, opts);
+          return (
+            askModeNeedsApproval as (
+              i: unknown,
+              o: unknown,
+            ) => boolean | Promise<boolean>
+          )(input, opts);
         }
         // approvalRequired === true and askModeNeedsApproval is the
         // boolean fallback (a tool that requires approval but has no
@@ -1532,8 +1613,9 @@ export function toSDKTool<TInput, TOutput>(
           // are denied this turn — recovers on the next call.
         }
       }
-      const baseCtx = (options.experimental_context as ToolContext | undefined)
-        ?? buildExtensionToolContext(cid, fallbackSpaceId);
+      const baseCtx =
+        (options.experimental_context as ToolContext | undefined) ??
+        buildExtensionToolContext(cid, fallbackSpaceId);
       // Stamp the toolCallId on a per-invocation ctx copy so tools that
       // need it (e.g. `delegate` for live-progress broadcasts) can read
       // it without changing the BrowserTool signature.
@@ -1555,13 +1637,13 @@ export function toSDKTool<TInput, TOutput>(
         if (options.abortSignal.aborted) onAbort();
         else options.abortSignal.addEventListener("abort", onAbort);
       }
-      
+
       const ctx: ToolContext = {
         ...baseCtx,
         toolCallId: options.toolCallId,
         signal: ac.signal,
       };
-      
+
       try {
         const result = await t.execute(effectiveInput, ctx);
         toolResultStore.set(options.toolCallId, result);
@@ -1592,7 +1674,10 @@ export function toSDKTool<TInput, TOutput>(
           // Resolution is via the same path as resolveTabFromInput: handle
           // → ltid → ctid. If it doesn't resolve (stale handle, registry
           // miss), we silently skip — capture remains best-effort.
-          const r = result as { tab?: unknown; error?: unknown } | null | undefined;
+          const r = result as
+            | { tab?: unknown; error?: unknown }
+            | null
+            | undefined;
           if (
             r &&
             typeof r === "object" &&
@@ -1601,7 +1686,8 @@ export function toSDKTool<TInput, TOutput>(
             cid
           ) {
             const ltid = resolveTabHandle(cid, r.tab);
-            const producedTabId = ltid != null ? tabRegistry.toChromeTabId(ltid) : null;
+            const producedTabId =
+              ltid != null ? tabRegistry.toChromeTabId(ltid) : null;
             if (producedTabId != null) {
               await startCapture(producedTabId).catch(() => {});
             }
@@ -1659,8 +1745,7 @@ export function toSDKTool<TInput, TOutput>(
 
   const toModelOutput = isImageTool
     ? ({ output }: { output: TOutput }) => {
-        const imageDataUrl = (output as { imageDataUrl?: string })
-          .imageDataUrl;
+        const imageDataUrl = (output as { imageDataUrl?: string }).imageDataUrl;
         if (!imageDataUrl) {
           // Tool errored, produced no image, or had its base64 data
           // stripped during compaction (`stripScreenshotsFromParts`
@@ -1735,9 +1820,7 @@ export const activeToolAbortControllers = new Set<AbortController>();
  * mid-flight tool calls of peer runs in the same realm; the peer run's
  * abort-aware tool wrapper handles the resulting AbortError cleanly.
  */
-export function resetAgentIndicator(
-  conversationId?: string | null,
-): void {
+export function resetAgentIndicator(conversationId?: string | null): void {
   if (agentActive) {
     agentActive = false;
     void resetAgentIndicatorImpl(conversationId ?? null);
@@ -1763,13 +1846,14 @@ async function resetAgentIndicatorImpl(
   conversationId: string | null,
 ): Promise<void> {
   try {
-    const { resetAgentIndicator: resetPerTab } = await import("./agent-indicator");
+    const { resetAgentIndicator: resetPerTab } = await import(
+      "./agent-indicator"
+    );
     await resetPerTab(conversationId);
   } catch {
     // Best-effort.
   }
 }
-
 
 /**
  * Per-conversation tail of in-flight usage writes. `recordToolUsageForStep`
@@ -1823,7 +1907,10 @@ async function recordToolUsageForStep(
         return;
       }
 
-      const mergedConnectors = mergeDistinct(conv.usedConnectorIds, connectorIds);
+      const mergedConnectors = mergeDistinct(
+        conv.usedConnectorIds,
+        connectorIds,
+      );
       const mergedSkills = mergeDistinct(conv.loadedSkillNames, skillNames);
       const mergedSpaceFiles = mergeDistinct(
         conv.referencedSpaceFiles,
@@ -1963,7 +2050,8 @@ function resolveCuaSelection(
       config: Record<string, string>;
     }
   | { configured: false; modelId?: undefined } {
-  const mainModelIsCua = !!agentModel && isAnthropicComputerUseModel(agentModel);
+  const mainModelIsCua =
+    !!agentModel && isAnthropicComputerUseModel(agentModel);
   const modelId = cuaModelSetting || (mainModelIsCua ? agentModel : undefined);
   if (!modelId) return { configured: false };
 
@@ -2401,23 +2489,16 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
   // time would go stale. Instead we build it just-in-time inside `prepareCall`
   // below so every model call sees the live state.
 
-  const memories = await memoryDb.list(spaceId);
-  if (memories.length > 0) {
-    const memoryList = memories
-      .map((m) => {
-        // Show the scope so the agent knows whether a saved fact is global
-        // or project-specific without having to recall it. "space" means
-        // scoped to the active space; "user" means global.
-        const scopeLabel = m.spaceId === null ? "user" : "space";
-        return `- [${m.type}] [${scopeLabel}] ${m.title}: ${m.description}`;
-      })
-      .join("\n");
-    instructions += MEMORY_INSTRUCTIONS;
-    instructions += `\n### Current memories\n${memoryList}\n`;
-  } else {
-    instructions += MEMORY_INSTRUCTIONS;
-    instructions += `\n### Current memories\n(none saved yet)\n`;
+  const memories = await memoryStore.list(spaceId);
+  instructions += MEMORY_INSTRUCTIONS;
+  // The live conversation id, so the agent can cite THIS chat as the source of
+  // a remembered fact (`[Source: [[chat:<id>]]]`). The memory viewer renders
+  // that marker as a link back to this conversation, which is only possible if
+  // the model knows its own id — nothing else in the prompt exposes it.
+  if (tcid) {
+    instructions += `\nThe id of the conversation you are in right now is \`${tcid}\`. When a timeline entry records something learned here, cite it as \`[Source: [[chat:${tcid}]]]\`.\n`;
   }
+  instructions += `\n${buildMemoryIndexSection(memories, spaceId)}\n`;
 
   if (mcpToolsList.length > 0) {
     const mcpSection = mcpToolsList
@@ -2583,8 +2664,8 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // bench harness has no session at all here.
       const tabId =
         typeof ltid === "string"
-          ? tabRegistry.toChromeTabId(ltid) ?? null
-          : ltid ?? null;
+          ? (tabRegistry.toChromeTabId(ltid) ?? null)
+          : (ltid ?? null);
       if (tabId == null) {
         // Strict: never silently guess a tab. Return an actionable
         // instruction to the PARENT agent (this finalText flows back as the
@@ -2762,10 +2843,7 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
           cfg.userMessage,
         );
       } catch (err) {
-        console.warn(
-          "[subagents] persistDelegationMessage failed:",
-          err,
-        );
+        console.warn("[subagents] persistDelegationMessage failed:", err);
         // Continue — UI will be missing the user message but the
         // assistant transcript still renders.
       }
@@ -2875,7 +2953,6 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       for (const k of [
         "closeTabs",
         "executeOnPage",
-        "updateMemory",
         "Delete",
         "install_skill",
         "create_skill",
@@ -2977,7 +3054,9 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // promise.
       getTab: async (ltid) => {
         const ctid =
-          typeof ltid === "string" ? tabRegistry.toChromeTabId(ltid) : Number(ltid);
+          typeof ltid === "string"
+            ? tabRegistry.toChromeTabId(ltid)
+            : Number(ltid);
         if (ctid == null) {
           throw new Error(
             `LogicalTabId ${String(ltid)} no longer maps to a live chrome tab`,
@@ -2991,7 +3070,9 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         // the bench harness path where ids may be numeric.
         getOrCreateTabHandle(
           c,
-          typeof ltid === "string" ? ltid : tabRegistry.registerExisting(Number(ltid)),
+          typeof ltid === "string"
+            ? ltid
+            : tabRegistry.registerExisting(Number(ltid)),
         ),
       // `getTargetTabId` returns a live ctid; map back to the matching
       // ltid so the legend's `active` comparison (which is `ltid === ltid`)
@@ -3086,7 +3167,9 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // leave domainBlock empty
     }
 
-    return [ownedBlock, awarenessBlock, domainBlock].filter(Boolean).join("\n\n");
+    return [ownedBlock, awarenessBlock, domainBlock]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   const agent = new ToolLoopAgent({
@@ -3113,7 +3196,9 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // and site-skill catalog blocks injected here. Empty for fresh
       // conversations (no agent-written files yet).
       const cid = transportCid();
-      const wsBlock = cid ? await buildWorkspaceFilesBlock(cid).catch(() => "") : "";
+      const wsBlock = cid
+        ? await buildWorkspaceFilesBlock(cid).catch(() => "")
+        : "";
 
       // Fetch the conversation row ONCE per turn and reuse it for both the
       // editing-artifact block and the mode/plan block (previously two separate
@@ -3121,7 +3206,8 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       // agentConversationId) to dodge the transport-build race where
       // conversationId isn't settled, and so a mode switch / plan approval /
       // edit-target change mid-conversation takes effect on the next turn.
-      let convRow: Awaited<ReturnType<typeof chatDb.getConversation>> | null = null;
+      let convRow: Awaited<ReturnType<typeof chatDb.getConversation>> | null =
+        null;
       if (cid) {
         try {
           convRow = await chatDb.getConversation(cid);
@@ -3190,10 +3276,14 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
       // Append blocks; any can be empty. Mode block goes first (framing),
       // then situational state (legend, workspace), then the editing-artifact
       // block. Double-newline separators render them as distinct sections.
-      const tail = [modeBlock, legend, wsBlock, editBlock].filter(Boolean).join("\n\n");
+      const tail = [modeBlock, legend, wsBlock, editBlock]
+        .filter(Boolean)
+        .join("\n\n");
       return {
         ...callArgs,
-        instructions: tail ? `${baseInstructions}\n\n${tail}` : baseInstructions,
+        instructions: tail
+          ? `${baseInstructions}\n\n${tail}`
+          : baseInstructions,
         // Cast: TS infers `keyof TOOLS` narrowly here because `tools` is a
         // union (headless filtered Record<string,...> vs the static base
         // shape) — the intersection of keys collapses. Runtime: `proposePlan`
@@ -3232,10 +3322,15 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
       void recordToolUsageForStep(transportCid(), stepResult.toolCalls);
       // Persist the token/cost usage snapshot for the header Context popover.
       // Fire-and-forget; serialized per-conversation alongside tool usage.
-      void recordUsageForStep(transportCid(), {
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-      }, modelDef, qualifiedModelId);
+      void recordUsageForStep(
+        transportCid(),
+        {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+        },
+        modelDef,
+        qualifiedModelId,
+      );
     },
     stopWhen: () => needsMidStreamCompaction,
   });
@@ -3443,10 +3538,7 @@ Stay within the approved sites. If you need to touch a site not listed, call \`p
           const curatorFsTools = createFsTools();
           const curatorTools: ToolSet = {
             Read: toSDKTool(curatorFsTools.readTool, "Read"),
-            patch_site_skill: toSDKTool(
-              patchSiteSkillTool,
-              "patch_site_skill",
-            ),
+            patch_site_skill: toSDKTool(patchSiteSkillTool, "patch_site_skill"),
           };
           const curatorModel = await resolveCuratorModel();
           void drainCuratorQueue({

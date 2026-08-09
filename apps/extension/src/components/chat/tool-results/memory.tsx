@@ -1,70 +1,75 @@
-import { Database } from "lucide-react";
-import { HighlightedCode } from "./highlighted-code";
-import { buildAdditionDiff } from "@/lib/agent/tools/memory-diff";
+import { Search } from "lucide-react";
 
-interface Props {
+interface SearchProps {
   args: Record<string, unknown>;
   result: unknown;
-  action: "save" | "update";
 }
 
-export function MemoryResult({ args, result, action }: Props) {
-  const content = typeof args.content === "string" ? args.content : "";
+interface SearchHit {
+  slug: string;
+  title: string;
+  description?: string;
+  scope?: "user" | "space";
+  snippet?: string;
+}
 
-  // Handle the "didn't happen" outcomes (e.g. update failed, save collided).
+interface SearchRelated {
+  slug: string;
+  title: string;
+  scope?: "user" | "space";
+}
+
+/** Renders the ranked results of a `searchMemory` call. */
+export function SearchMemoryResult({ args, result }: SearchProps) {
+  const query = typeof args.query === "string" ? args.query : "";
   const r = result as
-    | {
-        saved?: boolean;
-        updated?: boolean;
-        reason?: string;
-        diffPreview?: string;
-        scope?: "user" | "space";
-      }
+    | { found?: boolean; results?: SearchHit[]; related?: SearchRelated[] }
     | undefined;
-  const failed =
-    r != null &&
-    ((action === "save" && r.saved === false) ||
-      (action === "update" && r.updated === false));
 
-  let diffText: string;
-  if (action === "update" && typeof r?.diffPreview === "string") {
-    // The updateMemory tool computes the diff at execute time (keeps the
-    // result lightweight — no full memory bodies in the transcript).
-    diffText = r.diffPreview;
-  } else {
-    // Save (or update before result resolves): show the content as additions.
-    diffText = buildAdditionDiff(content);
-  }
-
-  const title = typeof args.title === "string" ? args.title : undefined;
-  // Scope badge surfaces where the memory landed so a misfile is easy to
-  // spot. Falls back to nothing when the tool result hasn't resolved yet
-  // or when the action failed (no scope to report).
-  const scopeBadge =
-    !failed && r?.scope === "space"
-      ? "in this space"
-      : !failed && r?.scope === "user"
-        ? "globally"
-        : null;
-  const headerLabel = action === "save" ? "Memory saved" : "Memory updated";
+  const results = Array.isArray(r?.results) ? r!.results! : [];
+  const related = Array.isArray(r?.related) ? r!.related! : [];
+  const nothing = r != null && (r.found === false || results.length === 0);
 
   return (
-    <div className="ml-3 mt-1 mb-1 rounded-md border border-border overflow-hidden text-xs font-mono">
-      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-muted/50 border-b border-border text-muted-foreground">
-        <Database className="size-3 shrink-0" />
+    <div className="ml-3 mt-1 mb-1 rounded-md border border-border overflow-hidden text-xs">
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-muted/50 border-b border-border text-muted-foreground font-mono">
+        <Search className="size-3 shrink-0" />
         <span className="truncate">
-          {headerLabel}
-          {scopeBadge ? ` ${scopeBadge}` : ""}
-          {title ? `: ${title}` : ""}
+          Memory search{query ? `: ${query}` : ""}
         </span>
       </div>
-      {failed ? (
+      {nothing ? (
         <div className="px-3 py-2 bg-background/50 text-muted-foreground">
-          {r?.reason ?? "No change made."}
+          No matching memories.
         </div>
       ) : (
-        <div className="px-3 py-2 bg-background/50 overflow-x-auto">
-          <HighlightedCode code={diffText} lang="diff" maxLines={15} />
+        <div className="px-3 py-2 bg-background/50 flex flex-col gap-2">
+          {results.map((hit) => (
+            <div key={hit.slug} className="flex flex-col gap-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium">{hit.title}</span>
+                {hit.scope ? (
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {hit.scope}
+                  </span>
+                ) : null}
+              </div>
+              {hit.snippet ? (
+                <span className="text-muted-foreground line-clamp-2">
+                  {hit.snippet}
+                </span>
+              ) : hit.description ? (
+                <span className="text-muted-foreground line-clamp-2">
+                  {hit.description}
+                </span>
+              ) : null}
+            </div>
+          ))}
+          {related.length > 0 ? (
+            <div className="pt-1 border-t border-border text-muted-foreground">
+              Related: {related.map((rel) => rel.title).join(", ")}
+            </div>
+          ) : null}
         </div>
       )}
     </div>

@@ -12,6 +12,14 @@
  *     param is durable across navigations,
  *   - the settings tab id is a fixed enum, not a free-form id, so URL
  *     encoding concerns are minimal.
+ *
+ * The Memory tab additionally encodes the note being viewed as
+ * `?tab=memory&note=<url-encoded OPFS path>` so a reload (or Back/Forward)
+ * restores it. The full path is stored rather than a scope-relative one
+ * because a global and a space-scoped note can share a filename. The path is
+ * NOT trusted on read — the Memory view validates it against the currently
+ * visible file set and falls back to the graph if it's stale or belongs to
+ * another space.
  */
 
 export const SETTINGS_TAB_IDS = [
@@ -51,6 +59,19 @@ export function parseSettingsTab(search: string): SettingsTabId {
 }
 
 /**
+ * Parse the memory note path from a search string. Returns null when absent
+ * or empty. The value is a full OPFS path (e.g. `memory/andrew-chung.md`);
+ * callers MUST validate it still exists and is in scope before using it.
+ */
+export function parseSettingsNote(search: string): string | null {
+  const qsIndex = search.indexOf("?");
+  const rawQs = qsIndex >= 0 ? search.slice(qsIndex) : search;
+  const qs = rawQs.startsWith("?") ? rawQs : `?${rawQs}`;
+  const note = new URLSearchParams(qs).get("note");
+  return note && note.trim() !== "" ? note : null;
+}
+
+/**
  * Format a search string (with leading `?` when non-empty) for the
  * given tab. The default tab is encoded as an empty string so the
  * canonical URL for "settings home" is just `/settings.html` — keeping
@@ -59,10 +80,16 @@ export function parseSettingsTab(search: string): SettingsTabId {
  *
  * Other query params on the page are preserved when callers pass the
  * current `window.location.search` as `currentSearch`.
+ *
+ * `note` is managed explicitly rather than merely preserved: it is only kept
+ * on the `memory` tab, and omitting the argument clears it. That makes "drop
+ * the note when you leave Memory" structural instead of something every
+ * caller has to remember.
  */
 export function formatSettingsSearch(
   tab: SettingsTabId,
   currentSearch = "",
+  note: string | null = null,
 ): string {
   const qs = currentSearch.startsWith("?")
     ? currentSearch.slice(1)
@@ -72,6 +99,11 @@ export function formatSettingsSearch(
     params.delete("tab");
   } else {
     params.set("tab", tab);
+  }
+  if (tab === "memory" && note) {
+    params.set("note", note);
+  } else {
+    params.delete("note");
   }
   const out = params.toString();
   return out ? `?${out}` : "";

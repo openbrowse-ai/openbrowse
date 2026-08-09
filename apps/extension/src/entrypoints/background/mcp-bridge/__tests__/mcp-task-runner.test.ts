@@ -429,8 +429,8 @@ describe("mcp-task-runner", () => {
     // pass `headless: { autoApprove: true, allowDelegate: true }` so:
     //   - autoApprove: true → the agent's approval-gated tools
     //     (closeTabs, executePython, executeOnPage, Write, Edit,
-    //     Delete, install_skill, create_skill, updateMemory,
-    //     deleteArtifact, proposePlan) execute instead of stalling
+    //     Delete, install_skill, create_skill, deleteArtifact,
+    //     proposePlan) execute instead of stalling
     //     and being healed to `output-denied`.
     //   - allowDelegate: true → the tool-set filter keeps `delegate`
     //     available (it's dropped by default for headless scheduled
