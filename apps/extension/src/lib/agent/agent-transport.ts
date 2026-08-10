@@ -94,6 +94,11 @@ import {
   updateScheduledTaskTool,
   webSearchTool,
 } from "./tools";
+import {
+  buildBatchableRegistry,
+  createBatchTool,
+  MIN_INVOCATIONS as MIN_BATCH_INVOCATIONS,
+} from "./tools/batch";
 import { createDelegateTool } from "./tools/delegate";
 import { createPythonTool } from "./tools/execute-python";
 import { createFsTools, isAnySpacePath } from "./tools/fs";
@@ -884,6 +889,7 @@ export function createBrowserToolSet(
     executePython: toSDKTool(pythonTool, "executePython", cid),
     extract: toSDKTool(extractTool, "extract", cid),
     webSearch: toSDKTool(webSearchTool, "webSearch", cid),
+    batch: toSDKTool(createBatchTool(), "batch", cid),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite", cid),
     proposePlan: toSDKTool(proposePlanTool, "proposePlan", cid),
     skill: toSDKTool(skillTool, "skill", cid),
@@ -2817,6 +2823,32 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       if (!allow.has(name)) continue;
       if (deny.has(name)) continue;
       subagentTools[name] = sdkTool;
+    }
+
+    // `batch` must be REBUILT, never inherited. The parent's instance
+    // closes over the full batchable registry, so passing it through
+    // would let a subagent reach read tools its `allowedTools`
+    // deliberately omits — e.g. `explore` would gain `webSearch` and
+    // `recallMemory` for free, through `batch`. Re-derive it over the
+    // intersection so a subagent's batch surface can never exceed its
+    // direct surface.
+    if (subagentTools.batch) {
+      const scopedRegistry = Object.fromEntries(
+        Object.entries(buildBatchableRegistry()).filter(
+          ([toolName]) => allow.has(toolName) && !deny.has(toolName),
+        ),
+      );
+      if (Object.keys(scopedRegistry).length >= MIN_BATCH_INVOCATIONS) {
+        subagentTools.batch = toSDKTool(
+          createBatchTool(scopedRegistry),
+          "batch",
+          cfg.childConversationId,
+        );
+      } else {
+        // Too few batchable tools survive the filter to form a batch —
+        // drop the tool rather than advertise a useless registry.
+        delete subagentTools.batch;
+      }
     }
 
     const maxSteps = cfg.agentDef.maxSteps ?? 30;

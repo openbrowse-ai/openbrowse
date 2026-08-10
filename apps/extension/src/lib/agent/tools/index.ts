@@ -1,3 +1,8 @@
+export {
+  BATCHABLE,
+  buildBatchableRegistry,
+  createBatchTool,
+} from "./batch";
 export { clickElementTool } from "./click-element";
 export { closeTabsTool } from "./close-tabs";
 export { createArtifactTool } from "./create-artifact";

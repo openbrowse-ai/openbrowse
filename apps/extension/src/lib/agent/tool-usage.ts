@@ -1,4 +1,9 @@
 import { resolveMcpToolDisplay } from "@/components/chat/mcp-tool-display";
+import {
+  BATCH_TOOL_NAME,
+  normalizeInvocationArguments,
+  readBatchInvocations,
+} from "./tools/batch-args";
 
 /** Minimal shape of an AI SDK tool call we read. */
 export interface ToolCallLike {
@@ -20,6 +25,36 @@ export interface ScannedToolUsage {
 
 /** Tool names whose `input.file_path` is interpreted as a VFS path. */
 const FS_FILE_PATH_TOOLS = new Set(["Read", "Write", "Edit"]);
+
+/**
+ * Expand `batch` calls into the calls they actually made, so the scanner
+ * below sees `skill` / `Read` invocations nested inside a batch exactly
+ * as it would see direct ones. Without this, batching a `skill` load
+ * would silently drop its badge and batching a `Read` of a space file
+ * would drop it from the conversation's touched-files list.
+ *
+ * The `batch` call itself contributes nothing and is dropped. One level
+ * is enough: `batch` is not in its own registry, so batches never nest.
+ */
+function flattenBatchCalls(
+  toolCalls: readonly ToolCallLike[],
+): ToolCallLike[] {
+  const out: ToolCallLike[] = [];
+  for (const call of toolCalls) {
+    if (call.toolName !== BATCH_TOOL_NAME) {
+      out.push(call);
+      continue;
+    }
+    for (const invocation of readBatchInvocations(call.input)) {
+      const args = normalizeInvocationArguments(invocation.arguments);
+      out.push({
+        toolName: invocation.name,
+        input: args.ok ? args.value : undefined,
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * Extract the workspace-relative tail from a path that targets
@@ -54,6 +89,10 @@ function extractActiveSpaceRelative(
  *   `spaceId` is null the agent cannot reference any space's workspace,
  *   so the array is empty.
  *
+ * `batch` calls are expanded first (see {@link flattenBatchCalls}), so a
+ * batched `skill` load or space-file `Read` is scanned exactly like a
+ * direct one.
+ *
  * Any invocation counts (we do not inspect tool-call success/state),
  * matching the prior message-derived semantics. Results are NOT deduped
  * here — `mergeDistinct` handles dedup against existing stored values.
@@ -65,7 +104,7 @@ export function scanToolUsage(
   const connectorIds: string[] = [];
   const skillNames: string[] = [];
   const spaceFiles: string[] = [];
-  for (const call of toolCalls) {
+  for (const call of flattenBatchCalls(toolCalls)) {
     if (call.toolName.startsWith("mcp_")) {
       const id = resolveMcpToolDisplay(call.toolName).mcpInfo?.connector.id;
       if (id) connectorIds.push(id);
