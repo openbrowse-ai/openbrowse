@@ -33,6 +33,7 @@ import {
   resolveCompactionModel,
   selectTail,
   selectTailForManual,
+  shouldCompact,
   type PrunableMessage,
 } from "./compaction";
 import type { AgentUIMessage } from "./message-types";
@@ -222,6 +223,36 @@ describe("compaction threshold limits", () => {
     expect(getUsableTokens({ contextWindow: 0, maxOutputTokens: 0 })).toBe(
       100_000,
     );
+  });
+
+  it("falls back when positive limits are mutually incompatible", () => {
+    // maxOutputTokens + COMPACTION_BUFFER >= contextWindow leaves no room to
+    // compact into, so the subtraction would go non-positive.
+    expect(
+      getUsableTokens({ contextWindow: 200_000, maxOutputTokens: 200_000 }),
+    ).toBe(100_000);
+    // Real small-context models: Gemini Nano and the smallest WebLLM builds.
+    expect(getUsableTokens({ contextWindow: 4_096, maxOutputTokens: 2_048 })).toBe(
+      100_000,
+    );
+    expect(getUsableTokens({ contextWindow: 8_192, maxOutputTokens: 2_048 })).toBe(
+      100_000,
+    );
+  });
+
+  it("does not report a fresh conversation as needing compaction", () => {
+    // The regression this guards: a negative ceiling made shouldCompact true
+    // at zero tokens, so compaction fired on the very first completed turn
+    // and then re-fired forever.
+    expect(shouldCompact(0, { contextWindow: 4_096, maxOutputTokens: 2_048 })).toBe(
+      false,
+    );
+    expect(shouldCompact(0, { contextWindow: 0, maxOutputTokens: 0 })).toBe(
+      false,
+    );
+    expect(
+      shouldCompact(0, { contextWindow: 1_000_000, maxOutputTokens: 128_000 }),
+    ).toBe(false);
   });
 });
 

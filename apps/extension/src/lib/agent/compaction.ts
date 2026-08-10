@@ -43,6 +43,8 @@ export const MIN_MESSAGES_FOR_COMPACTION = 4;
 export const COMPACTION_DEBOUNCE_MS = 30_000;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_OUTPUT = 8_000;
+const FALLBACK_USABLE_TOKENS =
+  DEFAULT_CONTEXT_WINDOW - DEFAULT_MAX_OUTPUT - COMPACTION_BUFFER;
 
 const COMPACTION_SYSTEM_PROMPT = `You are a context summarization assistant for a browser agent session.
 
@@ -117,18 +119,46 @@ export function estimateMessageTokens(parts: SerializedUIPart[]): number {
   return total;
 }
 
+function resolveTokenLimits(model: TokenLimits | undefined): {
+  context: number;
+  maxOutput: number;
+} {
+  // Usage snapshots store 0 when the SW cannot resolve model metadata; treat
+  // non-positive values as missing.
+  return {
+    context:
+      model?.contextWindow && model.contextWindow > 0
+        ? model.contextWindow
+        : DEFAULT_CONTEXT_WINDOW,
+    maxOutput:
+      model?.maxOutputTokens && model.maxOutputTokens > 0
+        ? model.maxOutputTokens
+        : DEFAULT_MAX_OUTPUT,
+  };
+}
+
+/**
+ * Whether a model has any room to compact into — i.e. its context window
+ * exceeds its output budget plus the safety buffer.
+ *
+ * False for models that legitimately declare a tiny window (Gemini Nano at 4K,
+ * the smallest WebLLM builds): there is no headroom to summarize into, so
+ * proactive compaction is meaningless for them. Kept separate from
+ * {@link getUsableTokens} because callers need this as a capability signal,
+ * whereas `getUsableTokens` must always return a usable positive threshold.
+ */
+export function hasCompactableContext(model: TokenLimits | undefined): boolean {
+  const { context, maxOutput } = resolveTokenLimits(model);
+  return maxOutput + COMPACTION_BUFFER < context;
+}
+
 export function getUsableTokens(model: TokenLimits | undefined): number {
-  // Usage snapshots use 0 when the SW cannot resolve model metadata. Treat
-  // non-positive values as missing; accepting contextWindow=0 makes the
-  // threshold negative and triggers compaction after every completed turn.
-  const context =
-    model?.contextWindow && model.contextWindow > 0
-      ? model.contextWindow
-      : DEFAULT_CONTEXT_WINDOW;
-  const maxOutput =
-    model?.maxOutputTokens && model.maxOutputTokens > 0
-      ? model.maxOutputTokens
-      : DEFAULT_MAX_OUTPUT;
+  const { context, maxOutput } = resolveTokenLimits(model);
+  // A non-positive ceiling would make `shouldCompact` true for every turn and
+  // loop compaction forever, so fall back to the default. Proactive
+  // compaction is effectively off for such models; a genuine context overflow
+  // is still recovered by the overflow-triggered compaction path.
+  if (maxOutput + COMPACTION_BUFFER >= context) return FALLBACK_USABLE_TOKENS;
   return context - maxOutput - COMPACTION_BUFFER;
 }
 
