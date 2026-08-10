@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, vi } from "vitest";
 import {
   enqueueCuratorJob,
   dequeueCuratorJob,
   peekCuratorQueue,
 } from "../queue";
 import { OPFS } from "../../../vfs/opfs";
-import { installFakeOpfs } from "./fake-opfs";
+import { installFakeOpfs } from "@/lib/vfs/__tests__/fake-opfs";
 
 const cand = (code: string) => ({
   domain: "linkedin.com",
@@ -14,7 +14,7 @@ const cand = (code: string) => ({
 });
 
 beforeAll(() => {
-  installFakeOpfs();
+  installFakeOpfs(vi);
 });
 
 describe("curator queue", () => {

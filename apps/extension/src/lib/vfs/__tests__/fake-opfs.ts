@@ -1,11 +1,16 @@
 // src/lib/vfs/__tests__/fake-opfs.ts
 //
-// Reusable in-memory fake of the small slice of OPFS the extension uses.
-// Mirrors the fake in `opfs-atomic.test.ts` but is shared so other suites
-// (e.g. the memory store) can exercise real OPFS code paths without a browser.
+// Reusable in-memory fake of the small slice of OPFS the extension uses, so
+// suites can exercise real `OPFS` code paths under Vitest's `node` env (which
+// has no `navigator.storage`).
 //
 // Not a test file itself (no `.test.ts` suffix) — import `makeFakeOpfs` and
 // `installFakeOpfs` from your suite.
+//
+// `opfs-atomic.test.ts` deliberately keeps its own fake: it injects `close()`
+// failures and wants `getDirectoryHandle` to never throw, both of which exist
+// to test `writeFileAtomic`'s failure paths. Teaching those hooks to this fake
+// would complicate every other caller, so that one stays separate on purpose.
 
 export interface FakeOpfs {
   root: FileSystemDirectoryHandle;
@@ -143,15 +148,18 @@ export function makeFakeOpfs(): FakeOpfs {
 
 /**
  * Stub `navigator.storage.getDirectory()` to serve a fresh in-memory OPFS.
- * Preserves the existing global `crypto` (Node provides `getRandomValues`),
- * which `OPFS.writeFileAtomic` needs for its tmp-file suffix. Pass vitest's
- * `vi` so callers keep control over stub lifetime (`vi.unstubAllGlobals`).
+ * Other `navigator` properties are carried over, so a suite that also relies on
+ * something else on `navigator` keeps it. The global `crypto` is left alone
+ * (Node provides `getRandomValues`), which `OPFS.writeFileAtomic` needs for its
+ * tmp-file suffix. Pass vitest's `vi` so callers keep control over stub
+ * lifetime (`vi.unstubAllGlobals`).
  */
 export function installFakeOpfs(vi: {
   stubGlobal: (name: string, value: unknown) => void;
 }): FakeOpfs {
   const fake = makeFakeOpfs();
   vi.stubGlobal("navigator", {
+    ...(globalThis as { navigator?: object }).navigator,
     storage: { getDirectory: async () => fake.root },
   });
   return fake;
