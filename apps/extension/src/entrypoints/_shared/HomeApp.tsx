@@ -1016,6 +1016,7 @@ export default function HomeApp({ surface }: HomeAppProps) {
             tabCount={allActiveTabs.length}
             pinnedCount={pinnedCount}
             onNewConversation={handleNewConversation}
+            onOpenConversation={handleSelectConversation}
             initialInput={initialInput}
             refocusOnWindowFocus={surface === "newtab"}
           />

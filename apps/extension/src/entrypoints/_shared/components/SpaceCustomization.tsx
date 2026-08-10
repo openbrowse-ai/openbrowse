@@ -1,25 +1,5 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import { useHotkeys } from "react-hotkeys-hook";
-import { ChevronRight, Download, Plus, Upload, X } from "lucide-react";
-import { storage } from "@/lib/storage";
-import { OPFS } from "@/lib/vfs/opfs";
-import {
-  countLines,
-  formatBytes,
-  getTypeBadge,
-  isTextFile,
-} from "@/lib/chat/attachment-meta";
-import { validateFiles } from "@/lib/chat/validate-files";
-import { cn } from "@/lib/utils";
-import { toast } from "sonner";
-import { memoryDb, type Memory } from "@/lib/memory-db";
-import { getSkillsRegistry } from "@/lib/skills/registry";
-import type { InstalledSkill, SpaceSkillConfig } from "@/lib/skills/types";
+import { MemoryBrowser } from "@/components/memory/MemoryBrowser";
+import { Button } from "@/components/ui/button";
 import {
   Collapsible,
   CollapsibleContent,
@@ -31,14 +11,28 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { MemoryItem } from "@/components/memory/MemoryItem";
 import { InstallSkillDialog } from "@/entrypoints/settings/skills/InstallSkillDialog";
 import { UploadSkillDialog } from "@/entrypoints/settings/skills/UploadSkillDialog";
+import {
+  countLines,
+  formatBytes,
+  getTypeBadge,
+  isTextFile,
+} from "@/lib/chat/attachment-meta";
+import { validateFiles } from "@/lib/chat/validate-files";
+import { getSkillsRegistry } from "@/lib/skills/registry";
+import type { InstalledSkill, SpaceSkillConfig } from "@/lib/skills/types";
+import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { OPFS } from "@/lib/vfs/opfs";
+import { ChevronRight, Download, Plus, Upload, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
+import { toast } from "sonner";
 
 /**
  * In-context space configuration surface, embedded into the chat
@@ -53,6 +47,7 @@ import type { Space } from "@/lib/types";
 export function SpaceCustomization({
   space,
   onSelectFile,
+  onSelectMemoryFile,
 }: {
   space: Space;
   /**
@@ -62,6 +57,13 @@ export function SpaceCustomization({
    * mount this component without wiring file selection.
    */
   onSelectFile?: (rel: string) => void;
+  /**
+   * Open a memory file in the shared viewer. Receives the FULL OPFS path
+   * (memory files live under `spaces/<id>/memory/`, not the workspace, so
+   * this is a distinct channel from `onSelectFile`). When omitted, the
+   * memory section falls back to its own embedded viewer.
+   */
+  onSelectMemoryFile?: (fullPath: string) => void;
 }) {
   const [draftInstructions, setDraftInstructions] = useState(
     space.instructions ?? "",
@@ -121,7 +123,10 @@ export function SpaceCustomization({
       </CustomizationSection>
 
       <CustomizationSection id="memory" title="Memory">
-        <SpaceMemorySection space={space} />
+        <SpaceMemorySection
+          space={space}
+          onSelectMemoryFile={onSelectMemoryFile}
+        />
       </CustomizationSection>
 
       <CustomizationSection id="skills" title="Skills">
@@ -146,11 +151,7 @@ export function SpaceCustomization({
           <Button variant="ghost" size="sm" onClick={handleRevert}>
             Revert
           </Button>
-          <Button
-            size="sm"
-            onClick={() => void handleSave()}
-            disabled={!dirty}
-          >
+          <Button size="sm" onClick={() => void handleSave()} disabled={!dirty}>
             Save <Kbd className="ml-1.5">⌘S</Kbd>
           </Button>
         </div>
@@ -162,8 +163,7 @@ export function SpaceCustomization({
 /**
  * One row of the customization stack — a section header that toggles a
  * Radix `Collapsible`. The chevron rotates 90° on open, matching the
- * disclosure pattern shadcn uses elsewhere in this app (see
- * `MemoryItem`).
+ * disclosure pattern shadcn uses elsewhere in this app.
  */
 function CustomizationSection({
   id,
@@ -376,8 +376,7 @@ function SpaceFilesSection({
     >
       <p className="text-xs text-muted-foreground mb-3">
         Add reference docs, data, or files that OpenBrowse should use as
-        context. You can ask OpenBrowse to upload or edit files in this
-        space.
+        context. You can ask OpenBrowse to upload or edit files in this space.
       </p>
       <div className="flex flex-wrap gap-2">
         {files.map((f) => (
@@ -411,7 +410,9 @@ function SpaceFilesSection({
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-md">
           <div className="flex items-center gap-2 rounded-md bg-background/90 px-3 py-1.5 shadow-sm border border-blue-500/40">
             <Upload className="size-4 text-blue-500" />
-            <span className="text-xs font-medium">Drop files to add to space</span>
+            <span className="text-xs font-medium">
+              Drop files to add to space
+            </span>
           </div>
         </div>
       )}
@@ -499,39 +500,24 @@ function SpaceFileCard({
   );
 }
 
-function SpaceMemorySection({ space }: { space: Space }) {
-  const [memories, setMemories] = useState<Memory[]>([]);
-
-  const refresh = useCallback(async () => {
-    const all = await memoryDb.list(space.id);
-    // memoryDb.list returns global memories AND space-scoped memories.
-    // Filter to only this space.
-    setMemories(all.filter((m) => m.spaceId === space.id));
-  }, [space.id]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  async function remove(id: string) {
-    await memoryDb.delete(id);
-    refresh();
-  }
-
+function SpaceMemorySection({
+  space,
+  onSelectMemoryFile,
+}: {
+  space: Space;
+  onSelectMemoryFile?: (fullPath: string) => void;
+}) {
   return (
     <>
       <p className="text-xs text-muted-foreground mb-3">
-        Things OpenBrowse remembers from this space across conversations.
+        Things OpenBrowse remembers from this space across conversations. Files
+        live under this space's memory folder.
       </p>
-      {memories.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No memories saved yet</p>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {memories.map((m) => (
-            <MemoryItem key={m.id} memory={m} onDelete={remove} />
-          ))}
-        </div>
-      )}
+      <MemoryBrowser
+        spaceId={space.id}
+        showGlobal={false}
+        onOpenFile={onSelectMemoryFile}
+      />
     </>
   );
 }
@@ -591,9 +577,8 @@ function SpaceSkillsSection({ space }: { space: Space }) {
     <>
       <div className="flex items-center justify-between mb-2">
         <p className="text-xs text-muted-foreground">
-          Extend what OpenBrowse can do in this space with reusable
-          capabilities and actions. OpenBrowse applies skills automatically
-          when needed.
+          Extend what OpenBrowse can do in this space with reusable capabilities
+          and actions. OpenBrowse applies skills automatically when needed.
         </p>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -620,7 +605,8 @@ function SpaceSkillsSection({ space }: { space: Space }) {
       </div>
       {personalSkills.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No personal skills installed yet. Add one from the URL or by uploading a file.
+          No personal skills installed yet. Add one from the URL or by uploading
+          a file.
         </p>
       ) : (
         <ul className="flex flex-col gap-2">

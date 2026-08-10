@@ -37,10 +37,7 @@ const TOOL_LABELS: Record<string, string> = {
   executeCode: "Running code",
   extract: "Extracting from page",
   todoWrite: "Updating todo list",
-  saveMemory: "Saving memory",
-  updateMemory: "Updating memory",
-  deleteMemory: "Deleting memory",
-  recallMemory: "Recalling memory",
+  searchMemory: "Searching memory",
   createArtifact: "Creating artifact",
   updateArtifact: "Updating artifact",
   deleteArtifact: "Deleting artifact",
@@ -49,6 +46,7 @@ const TOOL_LABELS: Record<string, string> = {
   Write: "Writing file",
   Edit: "Editing file",
   Delete: "Deleting file",
+  Move: "Moving file",
   skill: "Loading skill",
   install_skill: "Installing skill",
   create_skill: "Creating skill",
@@ -160,6 +158,14 @@ function buildArgsHint(toolName: string, args: Record<string, unknown>): string 
     const path = args["file_path"] ?? args["path"];
     if (typeof path === "string" && path.length > 0) {
       return truncate(path, 40);
+    }
+  }
+
+  // Move takes `from_path`/`to_path`; show the destination.
+  if (toolName === "Move") {
+    const to = args["to_path"] ?? args["from_path"];
+    if (typeof to === "string" && to.length > 0) {
+      return truncate(to, 40);
     }
   }
 

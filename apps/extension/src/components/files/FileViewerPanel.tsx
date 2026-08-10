@@ -1,44 +1,26 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { OPFS } from "@/lib/vfs/opfs";
-import { vfsEvents } from "@/lib/vfs/events";
-import { classifyFile, isBinaryClass } from "@/lib/vfs/file-classify";
-import { Markdown } from "@/components/chat/Markdown";
 import { CodeViewer } from "@/components/chat/CodeViewer";
-import { SheetViewer } from "@/components/chat/SheetViewer";
-import {
-  JsonViewer,
-  type JsonViewerMode,
-  type ParseMeta as JsonParseMeta,
-} from "@/components/chat/JsonViewer";
 import {
   HtmlPreview,
   type HtmlPreviewMode,
 } from "@/components/chat/HtmlPreview";
-import { MediaPlayer } from "@/components/chat/MediaPlayer";
 import {
-  Copy,
-  Check,
-  X,
-  Download,
-  RefreshCw,
-  ExternalLink,
-  FileIcon,
-  FileCheck,
-  FileClock,
-  FilePlusCorner,
-  Eye,
-  Code as CodeIcon,
-  ListTree,
-} from "lucide-react";
+  JsonViewer,
+  type ParseMeta as JsonParseMeta,
+  type JsonViewerMode,
+} from "@/components/chat/JsonViewer";
+import { Markdown } from "@/components/chat/Markdown";
+import { MediaPlayer } from "@/components/chat/MediaPlayer";
+import { SheetViewer } from "@/components/chat/SheetViewer";
 import { Button } from "@/components/ui/button";
+import { SegmentedToggle } from "@/components/ui/segmented-toggle";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { SegmentedToggle } from "@/components/ui/segmented-toggle";
 import { downloadBlob, downloadText } from "@/lib/download";
 import { formatBytes } from "@/lib/format-bytes";
+import { linkifyMemoryMarkdown } from "@/lib/memory/linkify";
 import { saveToSpace } from "@/lib/spaces/save-to-space";
 import {
   savedFilesDb,
@@ -46,8 +28,27 @@ import {
   sha256Hex,
   type SavedStatus,
 } from "@/lib/spaces/saved-files-db";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { vfsEvents } from "@/lib/vfs/events";
+import { classifyFile, isBinaryClass } from "@/lib/vfs/file-classify";
+import { OPFS } from "@/lib/vfs/opfs";
+import {
+  Check,
+  Code as CodeIcon,
+  Copy,
+  Download,
+  ExternalLink,
+  Eye,
+  FileCheck,
+  FileClock,
+  FileIcon,
+  FilePlusCorner,
+  ListTree,
+  RefreshCw,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 interface FileViewerPanelProps {
   filePath: string;
@@ -75,6 +76,42 @@ interface FileViewerPanelProps {
    */
   openInNewTab?: boolean;
   onClose: () => void;
+  /**
+   * Whether to render the Close (X) action. Default true. Surfaces that keep a
+   * persistent list next to the viewer (e.g. the Settings memory master/detail,
+   * where you switch files via the tree and there's nothing to return to) can
+   * set this false to drop a redundant control.
+   */
+  showClose?: boolean;
+  /**
+   * Optional extra action(s) rendered in the header's action row, just before
+   * the Close button. Lets a host add file-specific actions (e.g. a Delete
+   * button, with its own confirmation) without this component needing to know
+   * their semantics. Keeps the header single-row instead of the host stacking
+   * a second bar above the viewer.
+   */
+  headerActions?: React.ReactNode;
+  /**
+   * Optional block rendered at the top of the markdown body, above the
+   * rendered content and inside the same scroll area. Lets a host surface
+   * parsed metadata (e.g. a memory file's frontmatter title/description) the
+   * way the Skills tab shows a skill's description. Only rendered for markdown.
+   */
+  contentHeader?: React.ReactNode;
+  /**
+   * When provided, `[[wikilink]]` spans in the markdown body render as clickable
+   * links; clicking one calls this with the bare link name (basename). Lets a
+   * host (e.g. the memory viewer) navigate between linked notes. Only affects
+   * markdown rendering.
+   */
+  onWikiLink?: (name: string) => void;
+  /**
+   * When provided, `[[chat:<conversationId>]]` spans render as clickable links;
+   * clicking one calls this with the conversation id. Lets a host navigate to
+   * the conversation a remembered fact came from. Only affects markdown
+   * rendering.
+   */
+  onChatLink?: (conversationId: string) => void;
   className?: string;
 }
 
@@ -128,6 +165,17 @@ function uppercaseExt(fileName: string): string {
   return ext ? ext.toUpperCase() : "FILE";
 }
 
+/**
+ * Strip a leading YAML frontmatter block so it doesn't render as a stray
+ * setext heading (the trailing `---` turns the preceding lines into an H2)
+ * or a fenced block in the markdown preview. Mirrors the skills viewer. The
+ * raw source (including frontmatter) is still available via Copy / Download.
+ */
+function stripFrontmatter(md: string): string {
+  const match = md.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/);
+  return match ? match[1] : md;
+}
+
 interface LoadedContent {
   text?: string;
   blob?: Blob;
@@ -156,6 +204,11 @@ export function FileViewerPanel({
   spaceId,
   openInNewTab = false,
   onClose,
+  showClose = true,
+  headerActions,
+  contentHeader,
+  onWikiLink,
+  onChatLink,
   className,
 }: FileViewerPanelProps) {
   const fileClass = useMemo(() => classifyFile(fileName), [fileName]);
@@ -168,8 +221,7 @@ export function FileViewerPanel({
       conversationId ? relativeFilePathFor(filePath, conversationId) : null,
     [filePath, conversationId],
   );
-  const canSaveToSpace =
-    conversationId != null && relativeFilePath != null;
+  const canSaveToSpace = conversationId != null && relativeFilePath != null;
   const activeSpaceId = spaceId ?? null;
 
   const [loaded, setLoaded] = useState<LoadedContent | null>(null);
@@ -179,6 +231,9 @@ export function FileViewerPanel({
 
   // Per-viewer modes — owned here so the toolbar can drive them.
   const [htmlMode, setHtmlMode] = useState<HtmlPreviewMode>("preview");
+  const [markdownMode, setMarkdownMode] = useState<"preview" | "source">(
+    "preview",
+  );
   const [jsonMode, setJsonMode] = useState<JsonViewerMode>("tree");
   const [jsonMeta, setJsonMeta] = useState<JsonParseMeta | null>(null);
 
@@ -194,6 +249,7 @@ export function FileViewerPanel({
   // Reset per-file UI state when the file changes.
   useEffect(() => {
     setHtmlMode("preview");
+    setMarkdownMode("preview");
     setJsonMode("tree");
     setJsonMeta(null);
     setRefreshKey(0);
@@ -204,11 +260,23 @@ export function FileViewerPanel({
     if (jsonMeta?.hasError) setJsonMode("raw");
   }, [jsonMeta?.hasError]);
 
+  // Path that `loaded` currently holds content for. A *same-file* reload
+  // (vfs:change, visibility catch-up, manual refresh) can then swap text in
+  // place instead of blanking the pane, so a live-updating file doesn't flash
+  // on every write. Binary reloads still blank, because the effect cleanup
+  // revokes the previous blob URL before the replacement resolves.
+  const loadedPathRef = useRef<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     let createdUrl: string | null = null;
-    setLoaded(null);
-    setError(null);
+    const isSameFileTextReload =
+      !isBinary && loadedPathRef.current === filePath;
+    if (!isSameFileTextReload) {
+      loadedPathRef.current = null;
+      setLoaded(null);
+      setError(null);
+    }
     async function load() {
       try {
         if (isBinary) {
@@ -221,6 +289,8 @@ export function FileViewerPanel({
           if (cancelled) return;
           setLoaded({ text });
         }
+        loadedPathRef.current = filePath;
+        setError(null);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -232,23 +302,36 @@ export function FileViewerPanel({
     };
   }, [filePath, isBinary, refreshKey]);
 
-  // Auto-refresh when the agent rewrites the file we're viewing. Debounced
-  // so a script that writes the same file repeatedly only triggers one
-  // re-load per quiet period.
+  // Auto-refresh when the agent rewrites the file we're viewing. `vfsEvents`
+  // is bridged across extension contexts, so a write from the service worker
+  // (agent run) or another tab lands here. Debounced so a script that writes
+  // the same file repeatedly only triggers one re-load per quiet period.
+  //
+  // The visibility pass is a catch-up for a background tab that was frozen or
+  // throttled while the change was broadcast: re-read on the way back to
+  // visible so the user never reads stale content.
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const onVfsChange = (e: Event) => {
-      const { path } = (e as CustomEvent).detail ?? {};
-      if (path !== filePath) return;
+    const scheduleRefresh = () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = setTimeout(() => {
         debounceTimerRef.current = null;
         setRefreshKey((k) => k + 1);
       }, 200);
     };
+    const onVfsChange = (e: Event) => {
+      const { path } = (e as CustomEvent).detail ?? {};
+      if (path !== filePath) return;
+      scheduleRefresh();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") scheduleRefresh();
+    };
     vfsEvents.addEventListener("vfs:change", onVfsChange);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       vfsEvents.removeEventListener("vfs:change", onVfsChange);
+      document.removeEventListener("visibilitychange", onVisible);
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
@@ -291,13 +374,7 @@ export function FileViewerPanel({
       // Hashing or IDB failed; leave the prior status in place rather than
       // flipping the indicator to a misleading state.
     }
-  }, [
-    canSaveToSpace,
-    conversationId,
-    relativeFilePath,
-    activeSpaceId,
-    loaded,
-  ]);
+  }, [canSaveToSpace, conversationId, relativeFilePath, activeSpaceId, loaded]);
 
   useEffect(() => {
     void refreshSavedStatus();
@@ -318,10 +395,7 @@ export function FileViewerPanel({
       ) {
         return;
       }
-      if (
-        detail.filePath != null &&
-        detail.filePath !== relativeFilePath
-      ) {
+      if (detail.filePath != null && detail.filePath !== relativeFilePath) {
         return;
       }
       void refreshSavedStatus();
@@ -400,7 +474,9 @@ export function FileViewerPanel({
   const onJsonMeta = useCallback((m: JsonParseMeta) => setJsonMeta(m), []);
 
   return (
-    <div className={cn("flex flex-col h-full min-h-0 bg-background", className)}>
+    <div
+      className={cn("flex flex-col h-full min-h-0 bg-background", className)}
+    >
       {/* Header */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border bg-muted/30 shrink-0">
         {/* Left: filename + type badge */}
@@ -439,6 +515,16 @@ export function FileViewerPanel({
               onChange={setHtmlMode}
               options={[
                 { value: "preview", icon: Eye, label: "Preview" },
+                { value: "source", icon: CodeIcon, label: "Source" },
+              ]}
+            />
+          )}
+          {fileClass === "markdown" && (
+            <SegmentedToggle
+              value={markdownMode}
+              onChange={setMarkdownMode}
+              options={[
+                { value: "preview", icon: Eye, label: "Rendered" },
                 { value: "source", icon: CodeIcon, label: "Source" },
               ]}
             />
@@ -499,9 +585,12 @@ export function FileViewerPanel({
               )}
             </IconButton>
           )}
-          <IconButton onClick={onClose} tooltip="Close file">
-            <X className="size-4" />
-          </IconButton>
+          {headerActions}
+          {showClose && (
+            <IconButton onClick={onClose} tooltip="Close file">
+              <X className="size-4" />
+            </IconButton>
+          )}
         </div>
       </div>
 
@@ -558,15 +647,39 @@ export function FileViewerPanel({
         ) : fileClass === "html" && loaded.text !== undefined ? (
           <HtmlPreview text={loaded.text} fileName={fileName} mode={htmlMode} />
         ) : fileClass === "markdown" && loaded.text !== undefined ? (
-          <div className="flex-1 overflow-auto p-6">
-            <Markdown source={loaded.text} />
-          </div>
+          markdownMode === "source" ? (
+            // Source shows the file verbatim, frontmatter included.
+            <div className="flex-1 overflow-auto">
+              <CodeViewer
+                code={loaded.text}
+                language={language}
+                className="text-sm leading-relaxed [&_pre]:m-0! [&_pre]:p-4 [&_pre]:overflow-auto [&_code]:font-mono"
+              />
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto p-6">
+              {contentHeader}
+              <Markdown
+                source={
+                  // The memory pre-pass (note links, source-chat links, bare
+                  // URL citations) only applies to memory surfaces — signalled
+                  // by either in-app link handler being wired. Plain file
+                  // previews render verbatim.
+                  onWikiLink || onChatLink
+                    ? linkifyMemoryMarkdown(stripFrontmatter(loaded.text))
+                    : stripFrontmatter(loaded.text)
+                }
+                onWikiLink={onWikiLink}
+                onChatLink={onChatLink}
+              />
+            </div>
+          )
         ) : loaded.text !== undefined ? (
           <div className="flex-1 overflow-auto">
             <CodeViewer
               code={loaded.text}
               language={language}
-              className="text-sm leading-relaxed [&_pre]:!m-0 [&_pre]:p-4 [&_pre]:overflow-auto [&_code]:font-mono"
+              className="text-sm leading-relaxed [&_pre]:m-0! [&_pre]:p-4 [&_pre]:overflow-auto [&_code]:font-mono"
             />
           </div>
         ) : null}
@@ -699,7 +812,12 @@ function BinaryDownloadStub({
           {typeLabel} · {sizeLabel}
         </span>
       </div>
-      <Button size="sm" variant="secondary" onClick={onDownload} className="mt-2">
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={onDownload}
+        className="mt-2"
+      >
         <Download className="size-3.5" />
         Download
       </Button>

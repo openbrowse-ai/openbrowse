@@ -9,7 +9,11 @@ import { handleNewWindowAutoHome } from "./auto-home";
 import { openHomePage } from "./messages";
 import { registerModelsDevRefresh } from "./models-dev-refresh";
 import { registerScheduler } from "./scheduler";
-import { isUserOpenedSidePanel, markUserClosedSidePanel, markUserOpenedSidePanel } from "./tab-scoping";
+import {
+  isUserOpenedSidePanel,
+  markUserClosedSidePanel,
+  markUserOpenedSidePanel,
+} from "./tab-scoping";
 
 /**
  * Undo ids already applied by the `OVERLAY_UNDO` `reopen` handler. Makes
@@ -20,12 +24,14 @@ import { isUserOpenedSidePanel, markUserClosedSidePanel, markUserOpenedSidePanel
 const consumedReopenUndoIds = new Set<string>();
 
 function getTidyState(data: Record<string, unknown>, key: string): TidyState {
-  return (data[key] as TidyState) ?? {
-    sections: [],
-    tabAssignments: {},
-    tidiedTitles: {},
-    manualTitles: {},
-  };
+  return (
+    (data[key] as TidyState) ?? {
+      sections: [],
+      tabAssignments: {},
+      tidiedTitles: {},
+      manualTitles: {},
+    }
+  );
 }
 
 export default defineBackground({
@@ -107,11 +113,33 @@ export default defineBackground({
       }
     })();
 
+    // One-time file-based memory (v2) migration: rewrite legacy IndexedDB
+    // memory rows as OPFS markdown files + a derived search index. Idempotent
+    // and guarded by a schema-version flag, so this no-ops after the first run.
+    // A startup reconcile then re-derives the index from the files (source of
+    // truth), self-healing any drift and picking up hand edits made in the UI.
+    void (async () => {
+      try {
+        const { storage } = await import("@/lib/storage");
+        const spaceIds = (await storage.getSpaces()).map((s) => s.id);
+        const { migrateMemoryV2 } = await import("@/lib/memory/migrate");
+        const n = await migrateMemoryV2(spaceIds);
+        if (n > 0) console.log(`[memory] migrated ${n} memories to v2`);
+        const { memoryStore } = await import("@/lib/memory/store");
+        await memoryStore.reconcile(spaceIds);
+      } catch (err) {
+        console.warn("[memory] v2 migration/reconcile failed:", err);
+      }
+    })();
+
     chrome.action.onClicked.addListener((tab) => {
       if (!tab.id || !tab.windowId) return;
       const ownExtUrl = chrome.runtime.getURL("");
       if (tab.url?.startsWith(ownExtUrl)) {
-        chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId: tab.windowId });
+        chrome.runtime.sendMessage({
+          type: "TOGGLE_HOME_OVERLAY",
+          windowId: tab.windowId,
+        });
         return;
       }
 
@@ -193,7 +221,11 @@ export default defineBackground({
         if (info.tabId != null) {
           markUserClosedSidePanel(info.tabId);
           chrome.sidePanel
-            .setOptions({ tabId: info.tabId, path: "sidepanel.html", enabled: false })
+            .setOptions({
+              tabId: info.tabId,
+              path: "sidepanel.html",
+              enabled: false,
+            })
             .catch(() => {});
         }
       });
@@ -257,9 +289,11 @@ export default defineBackground({
         activeTabByWindow.set(tab.windowId, tab.id);
       }
       if (tab.pinned && tab.windowId != null) {
-        import("./spaces").then(({ schedulePinnedSnapshot }) => {
-          schedulePinnedSnapshot(tab.windowId!);
-        }).catch(() => {});
+        import("./spaces")
+          .then(({ schedulePinnedSnapshot }) => {
+            schedulePinnedSnapshot(tab.windowId!);
+          })
+          .catch(() => {});
       }
     });
 
@@ -292,7 +326,9 @@ export default defineBackground({
     // 5s reconnect — fail-open behavior for Phase 1.
     (async () => {
       try {
-        const { bootMcpBridge, handleKeepaliveAlarm } = await import("./mcp-bridge/boot");
+        const { bootMcpBridge, handleKeepaliveAlarm } = await import(
+          "./mcp-bridge/boot"
+        );
         await bootMcpBridge();
         chrome.alarms.onAlarm.addListener(handleKeepaliveAlarm);
       } catch (err) {
@@ -313,7 +349,9 @@ export default defineBackground({
         attachTasksPort();
         const { attachBadgeWatcher } = await import("./mcp-bridge/badge");
         attachBadgeWatcher();
-        const { attachFirstRunHandler } = await import("./mcp-bridge/first-run-tofu");
+        const { attachFirstRunHandler } = await import(
+          "./mcp-bridge/first-run-tofu"
+        );
         attachFirstRunHandler();
       } catch (err) {
         console.warn("MCP bridge status surfaces failed to attach:", err);
@@ -367,7 +405,7 @@ export default defineBackground({
         const w = await chrome.windows.get(windowId);
         if (w.type === "normal") lastFocusedWindowId = windowId;
       } catch {
-         // Window vanished between focus event and lookup — ignore.
+        // Window vanished between focus event and lookup — ignore.
       }
     });
 
@@ -435,7 +473,10 @@ export default defineBackground({
               }
             }
           } catch (err) {
-            console.warn("[global-chat] failed to read last conversation:", err);
+            console.warn(
+              "[global-chat] failed to read last conversation:",
+              err,
+            );
           }
 
           const params = new URLSearchParams({
@@ -480,11 +521,13 @@ export default defineBackground({
         };
 
         if (windowId == null) {
-          chrome.windows.getLastFocused({ windowTypes: ["normal"] }).then((w) => {
-            if (w.id == null) return;
-            const tabId = activeTabByWindow.get(w.id);
-            if (tabId != null) toggleOnTab(tabId);
-          });
+          chrome.windows
+            .getLastFocused({ windowTypes: ["normal"] })
+            .then((w) => {
+              if (w.id == null) return;
+              const tabId = activeTabByWindow.get(w.id);
+              if (tabId != null) toggleOnTab(tabId);
+            });
           return;
         }
 
@@ -497,7 +540,10 @@ export default defineBackground({
         // openHomePage uses chrome.tabs APIs, which don't require a user
         // gesture, so we can safely await.
         (async () => {
-          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+          const windowId =
+            lastFocusedWindowId ??
+            (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+              .id;
           if (windowId == null) return;
           await openHomePage(windowId);
         })();
@@ -506,7 +552,10 @@ export default defineBackground({
 
       if (command === "open-search") {
         (async () => {
-          const windowId = lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+          const windowId =
+            lastFocusedWindowId ??
+            (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+              .id;
           if (!windowId) return;
 
           const [tab] = await chrome.tabs.query({ active: true, windowId });
@@ -520,16 +569,25 @@ export default defineBackground({
           // on TOGGLE_HOME_OVERLAY. Route it (and any of our own extension
           // pages) there BEFORE the generic chrome:// bail below.
           const isNewTab =
-            url.startsWith("chrome://newtab") || url.startsWith("chrome://new-tab-page");
+            url.startsWith("chrome://newtab") ||
+            url.startsWith("chrome://new-tab-page");
           if (isNewTab || url.startsWith(ownExtUrl)) {
-            chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", windowId });
+            chrome.runtime.sendMessage({
+              type: "TOGGLE_HOME_OVERLAY",
+              windowId,
+            });
             return;
           }
           // Other chrome:// pages, or a different extension's page: can't inject.
-          if (url.startsWith("chrome://") || url.startsWith("chrome-extension://")) {
+          if (
+            url.startsWith("chrome://") ||
+            url.startsWith("chrome-extension://")
+          ) {
             return;
           }
-          const { sendToContentScript } = await import("@/lib/agent/active-tab");
+          const { sendToContentScript } = await import(
+            "@/lib/agent/active-tab"
+          );
           try {
             await sendToContentScript(tab.id, { type: "TOGGLE_OVERLAY" });
           } catch {
@@ -543,7 +601,9 @@ export default defineBackground({
       const { storage } = await import("@/lib/storage");
       const space = await storage.getSpaceByWindowId(windowId);
       if (!space) return;
-      const { getAssociatedTabIds: getFavTabIds } = await import("./favorite-tabs");
+      const { getAssociatedTabIds: getFavTabIds } = await import(
+        "./favorite-tabs"
+      );
       const favTabIds = getFavTabIds(space.id);
       const favoriteUrls = new Set(space.favorites.map((f) => f.url));
       const homeUrl = chrome.runtime.getURL("/home.html");
@@ -572,8 +632,13 @@ export default defineBackground({
         const { ensureOffscreenDocument } = await import("./messages");
         await ensureOffscreenDocument();
         const { sendToOffscreen } = await import("@/lib/messages");
-        const enriched = await enrichWithSettings({ type: "SORT_TABS", tabs: tabData });
-        const result = (await sendToOffscreen(enriched)) as SortResult & { error?: string };
+        const enriched = await enrichWithSettings({
+          type: "SORT_TABS",
+          tabs: tabData,
+        });
+        const result = (await sendToOffscreen(enriched)) as SortResult & {
+          error?: string;
+        };
         if (result?.archivedTabIds?.length) {
           const tabIdsToClose = result.archivedTabIds
             .map((id: string) => Number(id))
@@ -593,12 +658,17 @@ export default defineBackground({
           });
 
           // Persist tidy state so home page picks it up
-          const sections = (result.sections || []).map((s: { name: string; tabs: { id: string; tidiedTitle: string }[] }, i: number) => ({
-            id: crypto.randomUUID(),
-            name: s.name,
-            position: i,
-            collapsed: false,
-          }));
+          const sections = (result.sections || []).map(
+            (
+              s: { name: string; tabs: { id: string; tidiedTitle: string }[] },
+              i: number,
+            ) => ({
+              id: crypto.randomUUID(),
+              name: s.name,
+              position: i,
+              collapsed: false,
+            }),
+          );
           const tabAssignments: Record<number, string> = {};
           const tidiedTitles: Record<number, string> = {};
           for (let i = 0; i < sections.length; i++) {
@@ -618,7 +688,9 @@ export default defineBackground({
               }
             }
           }
-          const existing = await chrome.storage.local.get(`_tidyState:${space.id}`);
+          const existing = await chrome.storage.local.get(
+            `_tidyState:${space.id}`,
+          );
           const prev = getTidyState(existing, `_tidyState:${space.id}`);
           await chrome.storage.local.set({
             [`_tidyState:${space.id}`]: {
@@ -641,7 +713,9 @@ export default defineBackground({
       if (message.type?.startsWith("MCP_BRIDGE_")) {
         (async () => {
           try {
-            const { handleMcpBridgeMessage } = await import("./mcp-bridge-messages");
+            const { handleMcpBridgeMessage } = await import(
+              "./mcp-bridge-messages"
+            );
             await handleMcpBridgeMessage(message, sendResponse);
           } catch (err) {
             console.error("[MCP_BRIDGE bg] Error:", err);
@@ -671,7 +745,10 @@ export default defineBackground({
             handleArtifactRpc(message, sendResponse);
           } catch (err) {
             console.error("[ARTIFACT_RPC bg] Error:", err);
-            sendResponse({ ok: false, error: err instanceof Error ? err.message : String(err) });
+            sendResponse({
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         })();
         return true;
@@ -888,7 +965,10 @@ export default defineBackground({
 
       if (message.type === "GET_FAVORITE_ASSOCIATIONS") {
         import("./favorite-tabs").then(({ getAssociations }) => {
-          sendResponse({ ok: true, associations: getAssociations(message.spaceId) });
+          sendResponse({
+            ok: true,
+            associations: getAssociations(message.spaceId),
+          });
         });
         return true;
       }
@@ -912,16 +992,21 @@ export default defineBackground({
               activeSpaceId = space?.id ?? null;
             }
             const spaces = await storage.getSpaces();
-            const autoTidyNotification = await storage.getAutoTidyNotification();
-            sendResponse({ ok: true, spaces, activeSpaceId, windowId: windowId ?? null, autoTidyNotification });
+            const autoTidyNotification =
+              await storage.getAutoTidyNotification();
+            sendResponse({
+              ok: true,
+              spaces,
+              activeSpaceId,
+              windowId: windowId ?? null,
+              autoTidyNotification,
+            });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
           }
         })();
         return true;
       }
-
-
 
       if (message.type === "DISMISS_AUTO_TIDY_NOTIFICATION") {
         (async () => {
@@ -943,8 +1028,9 @@ export default defineBackground({
               sendResponse({ ok: true, skipped: true });
               return;
             }
-            const { runScheduledTask, getHomeHostDeps } =
-              await import("@/lib/agent/scheduled-run");
+            const { runScheduledTask, getHomeHostDeps } = await import(
+              "@/lib/agent/scheduled-run"
+            );
             await runScheduledTask(message.taskId, {
               ...getHomeHostDeps(),
               notify: (payload) =>
@@ -963,46 +1049,63 @@ export default defineBackground({
       if (message.type === "AGENT_NOTIFY") {
         (async () => {
           try {
-          const { storage } = await import("@/lib/storage");
-          const settings = await storage.getSettings();
-          console.log("[BG] AGENT_NOTIFY received, notificationsEnabled:", settings.notificationsEnabled);
-          if (!settings.notificationsEnabled) {
-            sendResponse({ ok: true });
-            return;
-          }
-          const { kind, snippet, conversationId, origin } = message.payload as {
-            kind: "complete" | "approval-needed";
-            conversationId: string;
-            snippet: string;
-            origin: "sidepanel" | "home";
-          };
-          const title = kind === "complete" ? "OpenBrowse: Agent finished" : "OpenBrowse: Approval needed";
-          const notifMessage = kind === "complete"
-            ? snippet
-            : `${snippet} wants to run`;
-          const notificationId = `openbrowse-${conversationId}-${Date.now()}`;
-          chrome.notifications.create(notificationId, {
-            type: "basic",
-            iconUrl: chrome.runtime.getURL("icon/128.png"),
-            title,
-            message: notifMessage,
-          }, (id) => {
-            if (chrome.runtime.lastError) {
-              console.error("[BG] notifications.create error:", chrome.runtime.lastError.message);
-            } else {
-              console.log("[BG] notification created:", id);
+            const { storage } = await import("@/lib/storage");
+            const settings = await storage.getSettings();
+            console.log(
+              "[BG] AGENT_NOTIFY received, notificationsEnabled:",
+              settings.notificationsEnabled,
+            );
+            if (!settings.notificationsEnabled) {
+              sendResponse({ ok: true });
+              return;
             }
-          });
-          pendingNotifications.set(notificationId, {
-            conversationId,
-            origin,
-            senderTabId: sender.tab?.id ?? null,
-            senderWindowId: sender.tab?.windowId ?? null,
-          });
-          import("./tab-scoping").then(({ clearToastDismissalForConversation }) => {
-            clearToastDismissalForConversation(conversationId).catch(() => {});
-          });
-          sendResponse({ ok: true });
+            const { kind, snippet, conversationId, origin } =
+              message.payload as {
+                kind: "complete" | "approval-needed";
+                conversationId: string;
+                snippet: string;
+                origin: "sidepanel" | "home";
+              };
+            const title =
+              kind === "complete"
+                ? "OpenBrowse: Agent finished"
+                : "OpenBrowse: Approval needed";
+            const notifMessage =
+              kind === "complete" ? snippet : `${snippet} wants to run`;
+            const notificationId = `openbrowse-${conversationId}-${Date.now()}`;
+            chrome.notifications.create(
+              notificationId,
+              {
+                type: "basic",
+                iconUrl: chrome.runtime.getURL("icon/128.png"),
+                title,
+                message: notifMessage,
+              },
+              (id) => {
+                if (chrome.runtime.lastError) {
+                  console.error(
+                    "[BG] notifications.create error:",
+                    chrome.runtime.lastError.message,
+                  );
+                } else {
+                  console.log("[BG] notification created:", id);
+                }
+              },
+            );
+            pendingNotifications.set(notificationId, {
+              conversationId,
+              origin,
+              senderTabId: sender.tab?.id ?? null,
+              senderWindowId: sender.tab?.windowId ?? null,
+            });
+            import("./tab-scoping").then(
+              ({ clearToastDismissalForConversation }) => {
+                clearToastDismissalForConversation(conversationId).catch(
+                  () => {},
+                );
+              },
+            );
+            sendResponse({ ok: true });
           } catch (err) {
             console.error("[BG] AGENT_NOTIFY error:", err);
             sendResponse({ ok: false, error: String(err) });
@@ -1033,9 +1136,16 @@ export default defineBackground({
             const sidepanelUrl = chrome.runtime.getURL("/sidepanel.html");
             const overlayUrl = chrome.runtime.getURL("/overlay.html");
             const isExtPage = (url?: string) =>
-              !url || url.startsWith(homeUrl) || url.startsWith(sidepanelUrl) || url.startsWith(overlayUrl);
+              !url ||
+              url.startsWith(homeUrl) ||
+              url.startsWith(sidepanelUrl) ||
+              url.startsWith(overlayUrl);
 
-            const mapTab = (t: chrome.tabs.Tab, spaceName?: string, spaceIcon?: string | null) => ({
+            const mapTab = (
+              t: chrome.tabs.Tab,
+              spaceName?: string,
+              spaceIcon?: string | null,
+            ) => ({
               id: t.id!,
               url: t.url ?? "",
               title: t.title ?? "Untitled",
@@ -1048,14 +1158,17 @@ export default defineBackground({
             });
 
             const windowId = message.windowId as number;
-            const windowTabs = (await chrome.tabs.query({ windowId }))
-              .map((t) => mapTab(t));
+            const windowTabs = (await chrome.tabs.query({ windowId })).map(
+              (t) => mapTab(t),
+            );
 
             const spaces = await storage.getSpaces();
             const allTabs: typeof windowTabs = [];
             for (const space of spaces) {
               if (!space.windowId || space.windowId === windowId) continue;
-              const tabs = await chrome.tabs.query({ windowId: space.windowId });
+              const tabs = await chrome.tabs.query({
+                windowId: space.windowId,
+              });
               for (const t of tabs) {
                 allTabs.push(mapTab(t, space.name, space.icon));
               }
@@ -1069,31 +1182,50 @@ export default defineBackground({
               tidyState = tidyData[tidyKey] ?? null;
             }
 
-            const recentlyClosed: { url: string; title: string; favicon: string; lastVisitTime: number; visitCount: number; sessionId?: string }[] = [];
+            const recentlyClosed: {
+              url: string;
+              title: string;
+              favicon: string;
+              lastVisitTime: number;
+              visitCount: number;
+              sessionId?: string;
+            }[] = [];
             try {
-              const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+              const sessions = await chrome.sessions.getRecentlyClosed({
+                maxResults: 25,
+              });
               const seenUrls = new Set<string>();
               const openUrls = new Set(windowTabs.map((t) => t.url));
               for (const s of sessions) {
-                if (s.tab && s.tab.url && !openUrls.has(s.tab.url) && !seenUrls.has(s.tab.url)) {
+                if (
+                  s.tab &&
+                  s.tab.url &&
+                  !openUrls.has(s.tab.url) &&
+                  !seenUrls.has(s.tab.url)
+                ) {
                   seenUrls.add(s.tab.url);
                   recentlyClosed.push({
                     url: s.tab.url,
                     title: s.tab.title ?? "",
                     favicon: s.tab.favIconUrl ?? "",
-                    lastVisitTime: s.lastModified ? s.lastModified * 1000 : Date.now(),
+                    lastVisitTime: s.lastModified
+                      ? s.lastModified * 1000
+                      : Date.now(),
                     visitCount: 1,
                     sessionId: s.tab.sessionId,
                   });
                 } else if (s.window && s.window.tabs) {
                   for (const t of s.window.tabs) {
-                    if (!t.url || openUrls.has(t.url) || seenUrls.has(t.url)) continue;
+                    if (!t.url || openUrls.has(t.url) || seenUrls.has(t.url))
+                      continue;
                     seenUrls.add(t.url);
                     recentlyClosed.push({
                       url: t.url,
                       title: t.title ?? "",
                       favicon: t.favIconUrl ?? "",
-                      lastVisitTime: s.lastModified ? s.lastModified * 1000 : Date.now(),
+                      lastVisitTime: s.lastModified
+                        ? s.lastModified * 1000
+                        : Date.now(),
                       visitCount: 1,
                       sessionId: t.sessionId,
                     });
@@ -1105,21 +1237,42 @@ export default defineBackground({
             }
 
             const bookmarkTree = await chrome.bookmarks.getTree();
-            const bookmarks: { url: string; title: string; favicon: string }[] = [];
-            const walkBookmarks = (nodes: chrome.bookmarks.BookmarkTreeNode[]) => {
+            const bookmarks: { url: string; title: string; favicon: string }[] =
+              [];
+            const walkBookmarks = (
+              nodes: chrome.bookmarks.BookmarkTreeNode[],
+            ) => {
               for (const node of nodes) {
                 if (node.url) {
-                  bookmarks.push({ url: node.url, title: node.title ?? "", favicon: "" });
+                  bookmarks.push({
+                    url: node.url,
+                    title: node.title ?? "",
+                    favicon: "",
+                  });
                 }
                 if (node.children) walkBookmarks(node.children);
               }
             };
             walkBookmarks(bookmarkTree);
 
-            const { getAssociations: getFavAssoc } = await import("./favorite-tabs");
-            const favoriteAssociations = activeSpace ? getFavAssoc(activeSpace.id) : [];
+            const { getAssociations: getFavAssoc } = await import(
+              "./favorite-tabs"
+            );
+            const favoriteAssociations = activeSpace
+              ? getFavAssoc(activeSpace.id)
+              : [];
 
-            sendResponse({ ok: true, tabs: windowTabs, allTabs, tidyState, recentlyClosed, bookmarks, spaces, activeSpaceId: activeSpace?.id ?? null, favoriteAssociations });
+            sendResponse({
+              ok: true,
+              tabs: windowTabs,
+              allTabs,
+              tidyState,
+              recentlyClosed,
+              bookmarks,
+              spaces,
+              activeSpaceId: activeSpace?.id ?? null,
+              favoriteAssociations,
+            });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
           }
@@ -1130,10 +1283,18 @@ export default defineBackground({
       if (message.type === "SEARCH_HISTORY") {
         (async () => {
           try {
-            const { query, maxResults = 200 } = message as { type: string; query: string; maxResults?: number };
+            const { query, maxResults = 200 } = message as {
+              type: string;
+              query: string;
+              maxResults?: number;
+            };
             // chrome.history.search defaults startTime to 24h ago; pass 0 to search the full history
             // (Chrome internally caps the candidate pool, and maxResults bounds the response).
-            const historyItems = await chrome.history.search({ text: query, maxResults, startTime: 0 });
+            const historyItems = await chrome.history.search({
+              text: query,
+              maxResults,
+              startTime: 0,
+            });
             const results = historyItems
               .filter((h) => h.url)
               .map((h) => ({
@@ -1237,7 +1398,10 @@ export default defineBackground({
                   nextUrl = u.toString();
                 } catch {}
               }
-              await chrome.tabs.update(target.id, { active: true, url: nextUrl });
+              await chrome.tabs.update(target.id, {
+                active: true,
+                url: nextUrl,
+              });
               if (target.windowId != null) {
                 chrome.windows
                   .update(target.windowId, { focused: true })
@@ -1309,7 +1473,11 @@ export default defineBackground({
           const res = await handleCloseAgentTabs({ conversationId, ltids });
           if (res.ok && res.undo && res.undo.tabs.length > 0) {
             chrome.runtime
-              .sendMessage({ type: "AGENT_TABS_CLOSED", conversationId, undo: res.undo })
+              .sendMessage({
+                type: "AGENT_TABS_CLOSED",
+                conversationId,
+                undo: res.undo,
+              })
               .catch(() => {});
           }
           sendResponse(res);
@@ -1333,7 +1501,15 @@ export default defineBackground({
               const wasPinned = tab.pinned;
               const closedWindowId = tab.windowId;
               await chrome.tabs.remove(tabId);
-              sendResponse({ ok: true, undo: { action: "close", url: closedUrl, pinned: wasPinned, windowId: closedWindowId } });
+              sendResponse({
+                ok: true,
+                undo: {
+                  action: "close",
+                  url: closedUrl,
+                  pinned: wasPinned,
+                  windowId: closedWindowId,
+                },
+              });
               return;
             } else if (action === "pin" || action === "unpin") {
               const { storage } = await import("@/lib/storage");
@@ -1364,7 +1540,10 @@ export default defineBackground({
                   }
                 }
               }
-              sendResponse({ ok: true, undo: { action, tabId, prevFavorites, spaceId } });
+              sendResponse({
+                ok: true,
+                undo: { action, tabId, prevFavorites, spaceId },
+              });
               return;
             } else if (action === "favorite") {
               const { storage } = await import("@/lib/storage");
@@ -1384,19 +1563,37 @@ export default defineBackground({
                   await storage.updateSpace(space.id, {
                     favorites: [...space.favorites, newFav],
                   });
-                  assocFav(space.id, url, tabId, tab.url ?? url, tab.title ?? url, tab.favIconUrl ?? "");
+                  assocFav(
+                    space.id,
+                    url,
+                    tabId,
+                    tab.url ?? url,
+                    tab.title ?? url,
+                    tab.favIconUrl ?? "",
+                  );
                   // Move the tab into the favorites zone right away so the
                   // strip order reflects its new status (pinned → favorites
                   // → regular) without waiting for a manual drag.
-                  const { positionFavoriteTab } = await import("./tab-ordering");
+                  const { positionFavoriteTab } = await import(
+                    "./tab-ordering"
+                  );
                   await positionFavoriteTab(windowId, tabId);
-                  sendResponse({ ok: true, undo: { action: "favorite", spaceId: space.id, prevFavorites } });
+                  sendResponse({
+                    ok: true,
+                    undo: {
+                      action: "favorite",
+                      spaceId: space.id,
+                      prevFavorites,
+                    },
+                  });
                   return;
                 }
               }
             } else if (action === "unfavorite") {
               const { storage } = await import("@/lib/storage");
-              const { disassociateByFavorite } = await import("./favorite-tabs");
+              const { disassociateByFavorite } = await import(
+                "./favorite-tabs"
+              );
               const windowId = sender.tab?.windowId;
               if (windowId) {
                 const space = await storage.getSpaceByWindowId(windowId);
@@ -1406,7 +1603,14 @@ export default defineBackground({
                     favorites: space.favorites.filter((f) => f.url !== url),
                   });
                   disassociateByFavorite(space.id, url);
-                  sendResponse({ ok: true, undo: { action: "unfavorite", spaceId: space.id, prevFavorites } });
+                  sendResponse({
+                    ok: true,
+                    undo: {
+                      action: "unfavorite",
+                      spaceId: space.id,
+                      prevFavorites,
+                    },
+                  });
                   return;
                 }
               }
@@ -1432,7 +1636,9 @@ export default defineBackground({
               const targetTab = await chrome.tabs.get(tabId);
               await chrome.tabs.update(tabId, { active: true });
               if (targetTab.windowId) {
-                await chrome.windows.update(targetTab.windowId, { focused: true });
+                await chrome.windows.update(targetTab.windowId, {
+                  focused: true,
+                });
               }
             }
 
@@ -1455,15 +1661,26 @@ export default defineBackground({
             const { storage } = await import("@/lib/storage");
             const spaces = await storage.getSpaces();
             const targetSpace = spaces.find((s) => s.id === targetSpaceId);
-            if (!targetSpace) { sendResponse({ ok: false, error: "Space not found" }); return; }
+            if (!targetSpace) {
+              sendResponse({ ok: false, error: "Space not found" });
+              return;
+            }
             const tab = await chrome.tabs.get(tabId);
             const sourceWindowId = tab.windowId;
             const { focusOrCreateWindow } = await import("./spaces");
             await focusOrCreateWindow(targetSpace);
             const updated = await storage.getSpaces();
-            const targetWindowId = updated.find((s) => s.id === targetSpaceId)?.windowId;
-            if (!targetWindowId) { sendResponse({ ok: false, error: "No window" }); return; }
-            await chrome.tabs.move(tabId, { windowId: targetWindowId, index: -1 });
+            const targetWindowId = updated.find(
+              (s) => s.id === targetSpaceId,
+            )?.windowId;
+            if (!targetWindowId) {
+              sendResponse({ ok: false, error: "No window" });
+              return;
+            }
+            await chrome.tabs.move(tabId, {
+              windowId: targetWindowId,
+              index: -1,
+            });
             sendResponse({ ok: true, undo: { tabId, sourceWindowId } });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
@@ -1482,21 +1699,43 @@ export default defineBackground({
             };
             const { storage } = await import("@/lib/storage");
             const spaces = await storage.getSpaces();
-            const currentSpace = spaces.find((s) => s.favorites.some((f) => f.url === url));
+            const currentSpace = spaces.find((s) =>
+              s.favorites.some((f) => f.url === url),
+            );
             const targetSpace = spaces.find((s) => s.id === targetSpaceId);
-            if (!currentSpace || !targetSpace) { sendResponse({ ok: false, error: "Space not found" }); return; }
+            if (!currentSpace || !targetSpace) {
+              sendResponse({ ok: false, error: "Space not found" });
+              return;
+            }
             const fav = currentSpace.favorites.find((f) => f.url === url);
-            if (!fav) { sendResponse({ ok: false, error: "Favorite not found" }); return; }
+            if (!fav) {
+              sendResponse({ ok: false, error: "Favorite not found" });
+              return;
+            }
             const prevSourceFavorites = [...currentSpace.favorites];
             await storage.updateSpace(currentSpace.id, {
               favorites: currentSpace.favorites.filter((f) => f.url !== url),
             });
-            const maxPos = targetSpace.favorites.reduce((m, f) => Math.max(m, f.position), -1);
+            const maxPos = targetSpace.favorites.reduce(
+              (m, f) => Math.max(m, f.position),
+              -1,
+            );
             const prevTargetFavorites = [...targetSpace.favorites];
             await storage.updateSpace(targetSpaceId, {
-              favorites: [...targetSpace.favorites, { ...fav, position: maxPos + 1 }],
+              favorites: [
+                ...targetSpace.favorites,
+                { ...fav, position: maxPos + 1 },
+              ],
             });
-            sendResponse({ ok: true, undo: { sourceSpaceId: currentSpace.id, prevSourceFavorites, targetSpaceId, prevTargetFavorites } });
+            sendResponse({
+              ok: true,
+              undo: {
+                sourceSpaceId: currentSpace.id,
+                prevSourceFavorites,
+                targetSpaceId,
+                prevTargetFavorites,
+              },
+            });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
           }
@@ -1508,33 +1747,56 @@ export default defineBackground({
         (async () => {
           try {
             const { undoData } = message as { type: string; undoData: any };
-            if (!undoData) { sendResponse({ ok: false }); return; }
+            if (!undoData) {
+              sendResponse({ ok: false });
+              return;
+            }
 
             if (undoData.action === "close") {
-              await chrome.tabs.create({ url: undoData.url, pinned: undoData.pinned, windowId: undoData.windowId });
+              await chrome.tabs.create({
+                url: undoData.url,
+                pinned: undoData.pinned,
+                windowId: undoData.windowId,
+              });
             } else if (undoData.action === "pin") {
               await chrome.tabs.update(undoData.tabId, { pinned: false });
               if (undoData.spaceId && undoData.prevFavorites) {
                 const { storage: st } = await import("@/lib/storage");
-                await st.updateSpace(undoData.spaceId, { favorites: undoData.prevFavorites });
+                await st.updateSpace(undoData.spaceId, {
+                  favorites: undoData.prevFavorites,
+                });
               }
             } else if (undoData.action === "unpin") {
               const { storage } = await import("@/lib/storage");
               await chrome.tabs.update(undoData.tabId, { pinned: true });
               if (undoData.spaceId && undoData.prevFavorites) {
-                await storage.updateSpace(undoData.spaceId, { favorites: undoData.prevFavorites });
+                await storage.updateSpace(undoData.spaceId, {
+                  favorites: undoData.prevFavorites,
+                });
               }
-            } else if (undoData.action === "favorite" || undoData.action === "unfavorite") {
+            } else if (
+              undoData.action === "favorite" ||
+              undoData.action === "unfavorite"
+            ) {
               const { storage } = await import("@/lib/storage");
               if (undoData.spaceId && undoData.prevFavorites) {
-                await storage.updateSpace(undoData.spaceId, { favorites: undoData.prevFavorites });
+                await storage.updateSpace(undoData.spaceId, {
+                  favorites: undoData.prevFavorites,
+                });
               }
             } else if (undoData.action === "move-favorite") {
               const { storage } = await import("@/lib/storage");
-              await storage.updateSpace(undoData.sourceSpaceId, { favorites: undoData.prevSourceFavorites });
-              await storage.updateSpace(undoData.targetSpaceId, { favorites: undoData.prevTargetFavorites });
+              await storage.updateSpace(undoData.sourceSpaceId, {
+                favorites: undoData.prevSourceFavorites,
+              });
+              await storage.updateSpace(undoData.targetSpaceId, {
+                favorites: undoData.prevTargetFavorites,
+              });
             } else if (undoData.action === "move") {
-              await chrome.tabs.move(undoData.tabId, { windowId: undoData.sourceWindowId, index: -1 });
+              await chrome.tabs.move(undoData.tabId, {
+                windowId: undoData.sourceWindowId,
+                index: -1,
+              });
             } else if (undoData.action === "clean") {
               for (const url of undoData.closedUrls ?? []) {
                 await chrome.tabs.create({ url, windowId: undoData.windowId });
@@ -1562,9 +1824,15 @@ export default defineBackground({
             };
             const { storage } = await import("@/lib/storage");
             const wId = sender.tab?.windowId;
-            if (!wId) { sendResponse({ ok: false }); return; }
+            if (!wId) {
+              sendResponse({ ok: false });
+              return;
+            }
             const space = await storage.getSpaceByWindowId(wId);
-            if (!space) { sendResponse({ ok: false }); return; }
+            if (!space) {
+              sendResponse({ ok: false });
+              return;
+            }
 
             const tidyKey = `_tidyState:${space.id}`;
             const tidyData = await chrome.storage.local.get(tidyKey);
@@ -1587,20 +1855,41 @@ export default defineBackground({
         (async () => {
           try {
             const { tabIds } = message as { type: string; tabIds: number[] };
-            if (!tabIds.length) { sendResponse({ ok: false }); return; }
+            if (!tabIds.length) {
+              sendResponse({ ok: false });
+              return;
+            }
             const closedTabs = await Promise.all(
               tabIds.map(async (id) => {
                 try {
                   const tab = await chrome.tabs.get(id);
-                  return { id: tab.id!, url: tab.url ?? "", title: tab.title ?? "", windowId: tab.windowId };
-                } catch { return null; }
+                  return {
+                    id: tab.id!,
+                    url: tab.url ?? "",
+                    title: tab.title ?? "",
+                    windowId: tab.windowId,
+                  };
+                } catch {
+                  return null;
+                }
               }),
             );
-            const validClosed = closedTabs.filter(Boolean) as { id: number; url: string; title: string; windowId: number }[];
+            const validClosed = closedTabs.filter(Boolean) as {
+              id: number;
+              url: string;
+              title: string;
+              windowId: number;
+            }[];
             await chrome.tabs.remove(validClosed.map((t) => t.id));
             sendResponse({
               ok: true,
-              undo: { action: "reopen", tabs: validClosed.map((t) => ({ url: t.url, windowId: t.windowId })) },
+              undo: {
+                action: "reopen",
+                tabs: validClosed.map((t) => ({
+                  url: t.url,
+                  windowId: t.windowId,
+                })),
+              },
             });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
@@ -1669,19 +1958,30 @@ export default defineBackground({
             };
             const { storage } = await import("@/lib/storage");
             const wId = sender.tab?.windowId;
-            if (!wId) { sendResponse({ ok: false }); return; }
+            if (!wId) {
+              sendResponse({ ok: false });
+              return;
+            }
             const space = await storage.getSpaceByWindowId(wId);
-            if (!space) { sendResponse({ ok: false }); return; }
+            if (!space) {
+              sendResponse({ ok: false });
+              return;
+            }
 
             const favs = [...space.favorites];
             const fromIdx = favs.findIndex((f) => f.url === url);
             const toIdx = favs.findIndex((f) => f.url === overUrl);
-            if (fromIdx === -1 || toIdx === -1) { sendResponse({ ok: false }); return; }
+            if (fromIdx === -1 || toIdx === -1) {
+              sendResponse({ ok: false });
+              return;
+            }
 
             const [moved] = favs.splice(fromIdx, 1);
             const insertIdx = favs.findIndex((f) => f.url === overUrl);
             favs.splice(insertIdx, 0, moved);
-            favs.forEach((f, i) => { f.position = i; });
+            favs.forEach((f, i) => {
+              f.position = i;
+            });
 
             await storage.updateSpace(space.id, { favorites: favs });
             // Physically arrange the live favorite tabs to match the new
@@ -1706,9 +2006,15 @@ export default defineBackground({
             const tab = await chrome.tabs.get(tabId);
             const { storage } = await import("@/lib/storage");
             const wId = sender.tab?.windowId;
-            if (!wId) { sendResponse({ ok: false }); return; }
+            if (!wId) {
+              sendResponse({ ok: false });
+              return;
+            }
             const space = await storage.getSpaceByWindowId(wId);
-            if (!space) { sendResponse({ ok: false }); return; }
+            if (!space) {
+              sendResponse({ ok: false });
+              return;
+            }
 
             const { enrichWithSettings } = await import("./auto-tidy");
             const { ensureOffscreenDocument } = await import("./messages");
@@ -1716,9 +2022,17 @@ export default defineBackground({
             const { sendToOffscreen } = await import("@/lib/messages");
             const enriched = await enrichWithSettings({
               type: "SORT_TABS",
-              tabs: [{ id: String(tabId), url: tab.url ?? "", title: tab.title ?? "Untitled" }],
+              tabs: [
+                {
+                  id: String(tabId),
+                  url: tab.url ?? "",
+                  title: tab.title ?? "Untitled",
+                },
+              ],
             });
-            const result = (await sendToOffscreen(enriched)) as SortResult & { error?: string };
+            const result = (await sendToOffscreen(enriched)) as SortResult & {
+              error?: string;
+            };
 
             let tidiedTitle: string | null = null;
             if (result && !result.error) {
@@ -1784,7 +2098,10 @@ export default defineBackground({
               }
             }
             if (!tabId) {
-              const created = await chrome.tabs.create({ url, windowId: windowId || undefined });
+              const created = await chrome.tabs.create({
+                url,
+                windowId: windowId || undefined,
+              });
               tabId = created.id!;
             }
             await chrome.tabs.update(tabId, { pinned: true });
@@ -1802,7 +2119,10 @@ export default defineBackground({
                 }
               }
             }
-            sendResponse({ ok: true, undo: { action: "pin", tabId, prevFavorites, spaceId } });
+            sendResponse({
+              ok: true,
+              undo: { action: "pin", tabId, prevFavorites, spaceId },
+            });
           } catch (err) {
             sendResponse({ ok: false, error: String(err) });
           }
@@ -1841,7 +2161,10 @@ export default defineBackground({
               }
             }
             if (!focusedTabId) {
-              const created = await chrome.tabs.create({ url, windowId: windowId || undefined });
+              const created = await chrome.tabs.create({
+                url,
+                windowId: windowId || undefined,
+              });
               focusedTabId = created.id!;
             }
             if (source === "favorite" && windowId && focusedTabId) {
@@ -1850,7 +2173,14 @@ export default defineBackground({
               if (space) {
                 const { associate } = await import("./favorite-tabs");
                 const tab = await chrome.tabs.get(focusedTabId);
-                associate(space.id, url, focusedTabId, tab.url ?? url, tab.title ?? url, tab.favIconUrl ?? "");
+                associate(
+                  space.id,
+                  url,
+                  focusedTabId,
+                  tab.url ?? url,
+                  tab.title ?? url,
+                  tab.favIconUrl ?? "",
+                );
               }
             }
             sendResponse({ ok: true });
@@ -1865,7 +2195,9 @@ export default defineBackground({
         (async () => {
           try {
             const { action } = message as { type: string; action: string };
-            const windowId = sender.tab?.windowId ?? (message as { windowId?: number }).windowId;
+            const windowId =
+              sender.tab?.windowId ??
+              (message as { windowId?: number }).windowId;
 
             if (action === "clean") {
               if (!windowId) {
@@ -1873,30 +2205,56 @@ export default defineBackground({
                 return;
               }
               const { storage } = await import("@/lib/storage");
-              const { getAssociatedTabIds: getCleanFavTabIds } = await import("./favorite-tabs");
+              const { getAssociatedTabIds: getCleanFavTabIds } = await import(
+                "./favorite-tabs"
+              );
               const space = await storage.getSpaceByWindowId(windowId);
-              const favTabIds = space ? getCleanFavTabIds(space.id) : new Set<number>();
-              const favoriteUrls = new Set(space?.favorites.map((f) => f.url) ?? []);
+              const favTabIds = space
+                ? getCleanFavTabIds(space.id)
+                : new Set<number>();
+              const favoriteUrls = new Set(
+                space?.favorites.map((f) => f.url) ?? [],
+              );
               const homeUrl = chrome.runtime.getURL("/home.html");
               const sidepanelUrl = chrome.runtime.getURL("/sidepanel.html");
               const overlayUrl = chrome.runtime.getURL("/overlay.html");
               const isExtPage = (url?: string) =>
-                !url || url.startsWith(homeUrl) || url.startsWith(sidepanelUrl) || url.startsWith(overlayUrl);
+                !url ||
+                url.startsWith(homeUrl) ||
+                url.startsWith(sidepanelUrl) ||
+                url.startsWith(overlayUrl);
 
               const tabs = await chrome.tabs.query({ windowId });
               const toClose = tabs.filter(
-                (t) => t.id && !t.pinned && !isExtPage(t.url) && !favTabIds.has(t.id!) && !favoriteUrls.has(t.url ?? ""),
+                (t) =>
+                  t.id &&
+                  !t.pinned &&
+                  !isExtPage(t.url) &&
+                  !favTabIds.has(t.id!) &&
+                  !favoriteUrls.has(t.url ?? ""),
               );
               if (toClose.length > 0) {
                 const closedUrls = toClose.map((t) => t.url!).filter(Boolean);
                 await chrome.tabs.remove(toClose.map((t) => t.id!));
-                sendResponse({ ok: true, undo: { action: "clean", closedUrls, windowId }, closedCount: toClose.length });
+                sendResponse({
+                  ok: true,
+                  undo: { action: "clean", closedUrls, windowId },
+                  closedCount: toClose.length,
+                });
                 return;
               }
             } else if (action === "new-space") {
-              const { createSpace, focusOrCreateWindow } = await import("./spaces");
-              const { spaceName, spaceIcon } = message as { spaceName?: string; spaceIcon?: string | null };
-              const space = await createSpace(spaceName || "New Space", spaceIcon ?? null);
+              const { createSpace, focusOrCreateWindow } = await import(
+                "./spaces"
+              );
+              const { spaceName, spaceIcon } = message as {
+                spaceName?: string;
+                spaceIcon?: string | null;
+              };
+              const space = await createSpace(
+                spaceName || "New Space",
+                spaceIcon ?? null,
+              );
               await focusOrCreateWindow(space);
             } else if (action === "new-chat") {
               // Open the chat landing page. A blank new tab resolves to our
@@ -1914,7 +2272,10 @@ export default defineBackground({
               const pinned = existingTabs.find((t) => t.pinned);
               const target = pinned || existingTabs[0];
               if (target?.id) {
-                await chrome.tabs.update(target.id, { active: true, url: homeUrl + hash });
+                await chrome.tabs.update(target.id, {
+                  active: true,
+                  url: homeUrl + hash,
+                });
               } else {
                 const tab = await chrome.tabs.create({
                   url: homeUrl + hash,
@@ -1962,7 +2323,8 @@ export default defineBackground({
               m.originWindowId ??
               sender.tab?.windowId ??
               lastFocusedWindowId ??
-              (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+              (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+                .id;
 
             // Resolve origin tab if not provided, by looking up the active
             // tab in the origin window.
@@ -1970,7 +2332,10 @@ export default defineBackground({
             let originUrl = m.originUrl ?? null;
             if (originTabId == null && originWindowId != null) {
               try {
-                const [tab] = await chrome.tabs.query({ active: true, windowId: originWindowId });
+                const [tab] = await chrome.tabs.query({
+                  active: true,
+                  windowId: originWindowId,
+                });
                 if (tab?.id != null) {
                   originTabId = tab.id;
                   originUrl = tab.url ?? null;
@@ -1986,19 +2351,28 @@ export default defineBackground({
               markUserClosedSidePanel(originTabId);
               closePanel({ tabId: originTabId }).catch(() => {});
               chrome.sidePanel
-                .setOptions({ tabId: originTabId, path: "sidepanel.html", enabled: false })
+                .setOptions({
+                  tabId: originTabId,
+                  path: "sidepanel.html",
+                  enabled: false,
+                })
                 .catch(() => {});
             }
 
             const params = new URLSearchParams({ mode: "popup" });
-            if (originWindowId != null) params.set("originWindowId", String(originWindowId));
-            if (originTabId != null) params.set("originTabId", String(originTabId));
+            if (originWindowId != null)
+              params.set("originWindowId", String(originWindowId));
+            if (originTabId != null)
+              params.set("originTabId", String(originTabId));
             if (originUrl) params.set("originUrl", originUrl);
-            if (m.activeConversationId) params.set("conversationId", m.activeConversationId);
+            if (m.activeConversationId)
+              params.set("conversationId", m.activeConversationId);
 
             const popupWindow = await chrome.windows.create({
               type: "popup",
-              url: chrome.runtime.getURL(`/sidepanel.html?${params.toString()}`),
+              url: chrome.runtime.getURL(
+                `/sidepanel.html?${params.toString()}`,
+              ),
               width: 420,
               height: 700,
               focused: true,
@@ -2015,7 +2389,11 @@ export default defineBackground({
       if (message.type === "OPEN_SIDEPANEL_SEARCH") {
         (async () => {
           try {
-            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
+            const windowId =
+              sender.tab?.windowId ??
+              lastFocusedWindowId ??
+              (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+                .id;
             if (windowId) {
               chrome.storage.session.set({ focusSearch: true });
               const tabId = sender.tab?.id ?? activeTabByWindow.get(windowId);
@@ -2036,19 +2414,39 @@ export default defineBackground({
         return false;
       }
 
-      if (message.type === "OPEN_NEW_SPACE_OVERLAY" || message.type === "OPEN_OVERLAY_ACTION") {
+      if (
+        message.type === "OPEN_NEW_SPACE_OVERLAY" ||
+        message.type === "OPEN_OVERLAY_ACTION"
+      ) {
         const action = message.action ?? "new-space";
         (async () => {
           try {
-            const windowId = sender.tab?.windowId ?? lastFocusedWindowId ?? (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id;
-            if (!windowId) { sendResponse({ ok: false }); return; }
+            const windowId =
+              sender.tab?.windowId ??
+              lastFocusedWindowId ??
+              (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+                .id;
+            if (!windowId) {
+              sendResponse({ ok: false });
+              return;
+            }
             const [tab] = await chrome.tabs.query({ active: true, windowId });
-            if (!tab?.id) { sendResponse({ ok: false }); return; }
+            if (!tab?.id) {
+              sendResponse({ ok: false });
+              return;
+            }
             const homeUrl = chrome.runtime.getURL("/home.html");
             if (tab.url?.startsWith(homeUrl)) {
-              chrome.runtime.sendMessage({ type: "TOGGLE_HOME_OVERLAY", action, windowId });
+              chrome.runtime.sendMessage({
+                type: "TOGGLE_HOME_OVERLAY",
+                action,
+                windowId,
+              });
             } else {
-              await chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_OVERLAY", action });
+              await chrome.tabs.sendMessage(tab.id, {
+                type: "TOGGLE_OVERLAY",
+                action,
+              });
             }
             sendResponse({ ok: true });
           } catch {
@@ -2071,7 +2469,9 @@ export default defineBackground({
             // this space so the indicator doesn't surface stale "saved"
             // state for files whose destination has just disappeared.
             try {
-              const { savedFilesDb } = await import("@/lib/spaces/saved-files-db");
+              const { savedFilesDb } = await import(
+                "@/lib/spaces/saved-files-db"
+              );
               await savedFilesDb.clearForSpace(message.spaceId);
             } catch (e) {
               console.warn(
@@ -2086,9 +2486,11 @@ export default defineBackground({
             if (updated.length > 0) {
               const { switchToSpaceById } = await import("./spaces");
               const withWindow = updated.find(
-                (s) => s.windowId !== null && s.windowId !== targetWindowId
+                (s) => s.windowId !== null && s.windowId !== targetWindowId,
               );
-              await switchToSpaceById(withWindow ? withWindow.id : updated[0].id);
+              await switchToSpaceById(
+                withWindow ? withWindow.id : updated[0].id,
+              );
             }
 
             // Close the deleted space's window after switching
@@ -2144,7 +2546,10 @@ export default defineBackground({
         return true;
       }
 
-      if (message.type === "AGENT_TAB_WORKING" || message.type === "AGENT_TAB_IDLE") {
+      if (
+        message.type === "AGENT_TAB_WORKING" ||
+        message.type === "AGENT_TAB_IDLE"
+      ) {
         const working = message.type === "AGENT_TAB_WORKING";
         const tabId = message.tabId as number | undefined;
         if (tabId) {
@@ -2219,7 +2624,10 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(message)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(message)) as {
+              success?: boolean;
+              error?: string;
+            };
             if (result?.success) {
               const { storage } = await import("@/lib/storage");
               await storage.addDownloadedModel(message.modelId);
@@ -2238,7 +2646,10 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(message)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(message)) as {
+              success?: boolean;
+              error?: string;
+            };
             if (result?.success) {
               const { storage } = await import("@/lib/storage");
               await storage.removeDownloadedModel(message.modelId);
@@ -2353,7 +2764,10 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(enrichedMsg)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(enrichedMsg)) as {
+              success?: boolean;
+              error?: string;
+            };
             if (
               result?.success &&
               message.provider === "web-llm" &&
@@ -2367,7 +2781,10 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(message)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(message)) as {
+              success?: boolean;
+              error?: string;
+            };
             if (result?.success) {
               const { storage } = await import("@/lib/storage");
               await storage.addDownloadedModel(message.modelId);
@@ -2380,10 +2797,15 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             // #region DEBUG
-            console.log("[DEBUG H5] offscreen document ensured, sending to offscreen");
+            console.log(
+              "[DEBUG H5] offscreen document ensured, sending to offscreen",
+            );
             // #endregion DEBUG
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(message)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(message)) as {
+              success?: boolean;
+              error?: string;
+            };
             // #region DEBUG
             console.log("[DEBUG H5] offscreen result:", result);
             // #endregion DEBUG
@@ -2392,7 +2814,10 @@ export default defineBackground({
             const { ensureOffscreenDocument } = await import("./messages");
             await ensureOffscreenDocument();
             const { sendToOffscreen } = await import("@/lib/messages");
-            const result = (await sendToOffscreen(message)) as { success?: boolean; error?: string };
+            const result = (await sendToOffscreen(message)) as {
+              success?: boolean;
+              error?: string;
+            };
             if (result?.success) {
               const { storage } = await import("@/lib/storage");
               await storage.removeDownloadedModel(message.modelId);
@@ -2437,7 +2862,10 @@ export default defineBackground({
             const { sendToOffscreen } = await import("@/lib/messages");
             let result: { error?: string; [key: string]: unknown };
             try {
-              result = (await sendToOffscreen(enriched)) as { error?: string; [key: string]: unknown };
+              result = (await sendToOffscreen(enriched)) as {
+                error?: string;
+                [key: string]: unknown;
+              };
               // #region DEBUG
               await (
                 await import("@/lib/debug-log")
@@ -2484,7 +2912,10 @@ export default defineBackground({
             }
 
             if (!resultTabId) {
-              const created = await chrome.tabs.create({ url, windowId: windowId || undefined });
+              const created = await chrome.tabs.create({
+                url,
+                windowId: windowId || undefined,
+              });
               resultTabId = created.id!;
             }
 
@@ -2494,7 +2925,14 @@ export default defineBackground({
               if (space) {
                 const { associate } = await import("./favorite-tabs");
                 const tab = await chrome.tabs.get(resultTabId);
-                associate(space.id, url, resultTabId, tab.url ?? url, tab.title ?? url, tab.favIconUrl ?? "");
+                associate(
+                  space.id,
+                  url,
+                  resultTabId,
+                  tab.url ?? url,
+                  tab.title ?? url,
+                  tab.favIconUrl ?? "",
+                );
               }
             }
 
@@ -2554,7 +2992,9 @@ export default defineBackground({
 
       const { chatDb } = await import("@/lib/chat-db");
       const { storage } = await import("@/lib/storage");
-      const conv = await chatDb.getConversation(conversationId).catch(() => null);
+      const conv = await chatDb
+        .getConversation(conversationId)
+        .catch(() => null);
       const spaceId = conv?.spaceId ?? null;
 
       // Is the originating tab still live? That tab/window is the
@@ -2604,14 +3044,17 @@ export default defineBackground({
         } catch {}
         return (
           lastFocusedWindowId ??
-          (await chrome.windows.getLastFocused({ windowTypes: ["normal"] })).id ??
+          (await chrome.windows.getLastFocused({ windowTypes: ["normal"] }))
+            .id ??
           undefined
         );
       }
 
       if (info.origin === "sidepanel") {
         const windowId =
-          senderTab?.windowId ?? senderWindowId ?? (await resolveFallbackWindowId());
+          senderTab?.windowId ??
+          senderWindowId ??
+          (await resolveFallbackWindowId());
         if (windowId != null) {
           const tabId = activeTabByWindow.get(windowId);
           if (tabId != null) openSidePanelOnTab(tabId);
@@ -2708,9 +3151,11 @@ export default defineBackground({
           (changeInfo.url && tab.pinned === true)) &&
         tab.windowId != null
       ) {
-        import("./spaces").then(({ schedulePinnedSnapshot }) => {
-          schedulePinnedSnapshot(tab.windowId!);
-        }).catch(() => {});
+        import("./spaces")
+          .then(({ schedulePinnedSnapshot }) => {
+            schedulePinnedSnapshot(tab.windowId!);
+          })
+          .catch(() => {});
       }
       if (changeInfo.url || changeInfo.title || changeInfo.favIconUrl) {
         // Reconcile favorite adoption/retention on navigation: adopt the
@@ -2742,7 +3187,12 @@ export default defineBackground({
           })().catch(() => {});
         } else {
           import("./favorite-tabs").then(({ updateTabInfo }) => {
-            updateTabInfo(tabId, changeInfo.url, changeInfo.title, changeInfo.favIconUrl);
+            updateTabInfo(
+              tabId,
+              changeInfo.url,
+              changeInfo.title,
+              changeInfo.favIconUrl,
+            );
           });
         }
       }
@@ -2752,14 +3202,16 @@ export default defineBackground({
         agentWorkingByTab.has(tab.id)
       ) {
         const entry = agentWorkingByTab.get(tab.id)!;
-        import("@/lib/agent/agent-transport").then(({ notifyAgentStatus }) => {
-          // No conversationId here: this is the SW's tab-listener re-tint
-          // hook, not a run-driven call. The per-tab indicator state will
-          // preserve whatever ownership was last set on this tab — the
-          // re-tint just re-injects the overlay with the same color after
-          // navigation reloaded the page (and wiped the content script).
-          notifyAgentStatus(true, { tabId: tab.id!, color: entry.color });
-        }).catch(() => {});
+        import("@/lib/agent/agent-transport")
+          .then(({ notifyAgentStatus }) => {
+            // No conversationId here: this is the SW's tab-listener re-tint
+            // hook, not a run-driven call. The per-tab indicator state will
+            // preserve whatever ownership was last set on this tab — the
+            // re-tint just re-injects the overlay with the same color after
+            // navigation reloaded the page (and wiped the content script).
+            notifyAgentStatus(true, { tabId: tab.id!, color: entry.color });
+          })
+          .catch(() => {});
       }
     });
 
@@ -2771,9 +3223,11 @@ export default defineBackground({
         await handleTabRemoved(spaces, tabId);
       })().catch(() => {});
       if (removeInfo.windowId != null && !removeInfo.isWindowClosing) {
-        import("./spaces").then(({ schedulePinnedSnapshot }) => {
-          schedulePinnedSnapshot(removeInfo.windowId);
-        }).catch(() => {});
+        import("./spaces")
+          .then(({ schedulePinnedSnapshot }) => {
+            schedulePinnedSnapshot(removeInfo.windowId);
+          })
+          .catch(() => {});
       }
     });
 
@@ -2786,40 +3240,46 @@ export default defineBackground({
     // `onActivated` event (which is non-deterministic across replace).
     // The tab-registry deduplicates replace vs. remove and exposes a
     // single `onReplace` event we hook here.
-    import("@/lib/agent/tab-registry").then(({ tabRegistry }) => {
-      tabRegistry.onReplace(({ oldCtid, newCtid }) => {
-        // Window-active-tab cache: rewrite any window whose active tab
-        // was the replaced ctid.
-        for (const [windowId, ctid] of activeTabByWindow) {
-          if (ctid === oldCtid) activeTabByWindow.set(windowId, newCtid);
-        }
-        // Per-tab agent-working state: swap the key so the prerender-
-        // activated tab keeps its overlay. Each parallel working tab swaps
-        // independently — peer tabs are unaffected.
-        if (agentWorkingByTab.has(oldCtid)) {
-          const entry = agentWorkingByTab.get(oldCtid)!;
-          agentWorkingByTab.delete(oldCtid);
-          agentWorkingByTab.set(newCtid, entry);
-          import("@/lib/agent/agent-transport")
-            .then(({ notifyAgentStatus }) => {
-              notifyAgentStatus(true, { tabId: newCtid, color: entry.color });
-            })
-            .catch(() => {});
-        }
-      });
-    }).catch(() => {});
+    import("@/lib/agent/tab-registry")
+      .then(({ tabRegistry }) => {
+        tabRegistry.onReplace(({ oldCtid, newCtid }) => {
+          // Window-active-tab cache: rewrite any window whose active tab
+          // was the replaced ctid.
+          for (const [windowId, ctid] of activeTabByWindow) {
+            if (ctid === oldCtid) activeTabByWindow.set(windowId, newCtid);
+          }
+          // Per-tab agent-working state: swap the key so the prerender-
+          // activated tab keeps its overlay. Each parallel working tab swaps
+          // independently — peer tabs are unaffected.
+          if (agentWorkingByTab.has(oldCtid)) {
+            const entry = agentWorkingByTab.get(oldCtid)!;
+            agentWorkingByTab.delete(oldCtid);
+            agentWorkingByTab.set(newCtid, entry);
+            import("@/lib/agent/agent-transport")
+              .then(({ notifyAgentStatus }) => {
+                notifyAgentStatus(true, { tabId: newCtid, color: entry.color });
+              })
+              .catch(() => {});
+          }
+        });
+      })
+      .catch(() => {});
 
     // Enforce the strip ordering invariant (pinned → favorites → regular)
     // when a tab is moved — whether dragged manually in Chrome's tab strip
     // or moved programmatically. Bounces a favorite back if it lands after
     // a regular tab (or vice versa).
     chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
-      import("./tab-ordering").then(({ enforceTabOrder }) => {
-        enforceTabOrder(moveInfo.windowId, tabId);
-      }).catch(() => {});
-      import("./spaces").then(({ schedulePinnedSnapshot }) => {
-        schedulePinnedSnapshot(moveInfo.windowId);
-      }).catch(() => {});
+      import("./tab-ordering")
+        .then(({ enforceTabOrder }) => {
+          enforceTabOrder(moveInfo.windowId, tabId);
+        })
+        .catch(() => {});
+      import("./spaces")
+        .then(({ schedulePinnedSnapshot }) => {
+          schedulePinnedSnapshot(moveInfo.windowId);
+        })
+        .catch(() => {});
     });
 
     import("./auto-tidy").then(({ startAutoTidy }) => {
@@ -2829,8 +3289,18 @@ export default defineBackground({
     function updateIcon(isDark: boolean) {
       chrome.action.setIcon({
         path: isDark
-          ? { 16: "icon/16-dark.png", 32: "icon/32-dark.png", 48: "icon/48-dark.png", 128: "icon/128-dark.png" }
-          : { 16: "icon/16.png", 32: "icon/32.png", 48: "icon/48.png", 128: "icon/128.png" },
+          ? {
+              16: "icon/16-dark.png",
+              32: "icon/32-dark.png",
+              48: "icon/48-dark.png",
+              128: "icon/128-dark.png",
+            }
+          : {
+              16: "icon/16.png",
+              32: "icon/32.png",
+              48: "icon/48.png",
+              128: "icon/128.png",
+            },
       });
     }
 
@@ -2843,6 +3313,5 @@ export default defineBackground({
         updateIcon(changes["theme-is-dark"].newValue === true);
       }
     });
-
   },
 });

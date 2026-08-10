@@ -154,7 +154,7 @@ describe("isInPlanCore — cid-pinning contract", () => {
     ).toBe(true);
     expect(
       await isInPlanCore(
-        "recallMemory",
+        "searchMemory",
         {},
         samplePlan,
         "cid",

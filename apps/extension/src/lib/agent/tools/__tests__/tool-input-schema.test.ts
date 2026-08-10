@@ -20,7 +20,6 @@ import { z } from "zod";
 import { clickElementTool } from "../click-element";
 import { closeTabsTool } from "../close-tabs";
 import { createSkillTool } from "../create-skill";
-import { deleteMemoryTool } from "../delete-memory";
 import { deleteSiteSkillTool } from "../delete-site-skill";
 import { executeCodeTool } from "../execute-code";
 import { executeOnPageTool } from "../execute-on-page";
@@ -30,20 +29,18 @@ import { createFsTools } from "../fs";
 import { installSkillTool } from "../install-skill";
 import { listTabsTool } from "../list-tabs";
 import { navigateTool } from "../navigate";
+import { patchSiteSkillTool } from "../patch-site-skill";
 import { readConsoleMessagesTool } from "../read-console-messages";
 import { readNetworkRequestsTool } from "../read-network-requests";
 import { readPageTool } from "../read-page";
-import { recallMemoryTool } from "../recall-memory";
-import { saveMemoryTool } from "../save-memory";
 import { screenshotTool } from "../screenshot";
 import { scrollPageTool } from "../scroll-page";
+import { searchMemoryTool } from "../search-memory";
 import { selectTabTool } from "../select-tab";
 import { skillTool } from "../skill";
 import { snapshotTool } from "../snapshot";
 import { todoWriteTool } from "../todowrite";
 import { typeInElementTool } from "../type-in-element";
-import { updateMemoryTool } from "../update-memory";
-import { patchSiteSkillTool } from "../patch-site-skill";
 import { webSearchTool } from "../web-search";
 
 const fsTools = createFsTools();
@@ -62,10 +59,7 @@ const allTools = [
   ["scrollPage", scrollPageTool],
   ["selectTab", selectTabTool],
   ["closeTabs", closeTabsTool],
-  ["saveMemory", saveMemoryTool],
-  ["updateMemory", updateMemoryTool],
-  ["recallMemory", recallMemoryTool],
-  ["deleteMemory", deleteMemoryTool],
+  ["searchMemory", searchMemoryTool],
   ["executeCode", executeCodeTool],
   ["executeOnPage", executeOnPageTool],
   ["read_network_requests", readNetworkRequestsTool],
@@ -86,6 +80,7 @@ const allTools = [
   ["Grep", fsTools.grepTool],
   ["LS", fsTools.lsTool],
   ["Delete", fsTools.deleteTool],
+  ["Move", fsTools.moveTool],
 ] as const;
 
 describe("tool input schemas (Anthropic compatibility)", () => {

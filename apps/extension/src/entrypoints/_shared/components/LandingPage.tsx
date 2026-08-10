@@ -6,18 +6,30 @@ import {
   type TabMentionAttrs,
 } from "@/components/chat/ChatInput";
 import { ChatInputHalo } from "@/components/chat/ChatInputHalo";
+import { FileViewerPanel } from "@/components/files/FileViewerPanel";
+import { MemoryDeleteButton } from "@/components/memory/MemoryDeleteButton";
+import { MemoryFileMeta } from "@/components/memory/MemoryFileMeta";
+import { openSourceChat } from "@/components/memory/source-chat";
 import {
   ColorPickerDialog,
   IconPickerButton,
 } from "@/components/spaces/SpacePickers";
 import { Input } from "@/components/ui/input";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { Wordmark } from "@/components/ui/wordmark";
+import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
 import { useProviders } from "@/hooks/useProviders";
 import { useRecentTabs } from "@/hooks/useRecentTabs";
 import { markPendingFirstTurn } from "@/lib/agent/pending-first-turn";
+import { animatePanelResize } from "@/lib/animate-panel-resize";
 import { chatDb } from "@/lib/chat-db";
 import { formatAttachments } from "@/lib/chat/format-attachments";
 import { DEFAULT_AGENT_SETTINGS, DEFAULT_SETTINGS } from "@/lib/constants";
+import { memoryStore } from "@/lib/memory/store";
 import { openSettingsTab } from "@/lib/open-settings";
 import { storage } from "@/lib/storage";
 import type {
@@ -27,6 +39,9 @@ import type {
   Settings,
   Space,
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { Upload } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   useCallback,
   useEffect,
@@ -35,27 +50,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "sonner";
-import { SpaceCustomization } from "./SpaceCustomization";
-import { TabCard } from "./TabCard";
-import { FileViewerPanel } from "@/components/files/FileViewerPanel";
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from "@/components/ui/resizable";
 import type { PanelImperativeHandle, PanelSize } from "react-resizable-panels";
-import { animatePanelResize } from "@/lib/animate-panel-resize";
+import { toast } from "sonner";
 import {
-  FILE_MIN_PX,
-  FILE_AUTO_WIDEN_THRESHOLD_PX,
   FILE_AUTO_WIDEN_PX,
+  FILE_AUTO_WIDEN_THRESHOLD_PX,
+  FILE_MIN_PX,
   TWEEN_MS,
 } from "./file-panel-constants";
-import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
-import { AnimatePresence, motion } from "motion/react";
-import { Upload } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { SpaceCustomization } from "./SpaceCustomization";
+import { TabCard } from "./TabCard";
 
 /** Tracks the Tailwind `xl` (min-width: 1280px) breakpoint. */
 function useIsXl(): boolean {
@@ -81,6 +85,12 @@ interface LandingPageProps {
   tabCount: number;
   pinnedCount: number;
   onNewConversation: (id: string) => void;
+  /**
+   * Navigate to an existing conversation. Used by `[[chat:<id>]]` source links
+   * in the rail's memory viewer, which point at the conversation a remembered
+   * fact came from. Omitted → such links open/focus a home tab instead.
+   */
+  onOpenConversation?: (id: string) => void;
   /**
    * Pre-seeded value for the chat input (consumed once on mount). Used by the
    * "Try in chat" flow from settings.
@@ -109,6 +119,7 @@ export function LandingPage({
   tabCount,
   pinnedCount,
   onNewConversation,
+  onOpenConversation,
   initialInput,
   refocusOnWindowFocus = false,
 }: LandingPageProps) {
@@ -146,9 +157,48 @@ export function LandingPage({
   const [selectedSpaceFile, setSelectedSpaceFile] = useState<string | null>(
     null,
   );
+  /**
+   * Full OPFS path of a memory file the user clicked in the rail's memory
+   * section. Distinct from `selectedSpaceFile` because memory lives under
+   * `spaces/<id>/memory/` (or global `memory/`), not the workspace, so it
+   * carries a full path rather than a workspace-relative one. Mutually
+   * exclusive with `selectedSpaceFile` (selecting one clears the other).
+   */
+  const [selectedMemoryFile, setSelectedMemoryFile] = useState<string | null>(
+    null,
+  );
   useEffect(() => {
     setSelectedSpaceFile(null);
+    setSelectedMemoryFile(null);
   }, [space?.id]);
+
+  const handleSelectSpaceFile = useCallback((rel: string) => {
+    setSelectedMemoryFile(null);
+    setSelectedSpaceFile(rel);
+  }, []);
+  const handleSelectMemoryFile = useCallback((fullPath: string) => {
+    setSelectedSpaceFile(null);
+    setSelectedMemoryFile(fullPath);
+  }, []);
+  const handleMemoryWikiLink = useCallback(
+    async (name: string) => {
+      const path = await memoryStore.resolveVisiblePath(
+        name,
+        space?.id ?? null,
+      );
+      if (path) {
+        setSelectedSpaceFile(null);
+        setSelectedMemoryFile(path);
+      }
+    },
+    [space?.id],
+  );
+  const handleMemoryChatLink = useCallback(
+    (conversationId: string) => {
+      void openSourceChat(conversationId, onOpenConversation);
+    },
+    [onOpenConversation],
+  );
 
   // ── Resizable right-aside plumbing (mirrors RightRail) ────────────────────
   // The aside hosts either SpaceCustomization (fixed width) or the file viewer
@@ -156,7 +206,7 @@ export function LandingPage({
   const isXl = useIsXl();
   const [fileWidthPx, setFileWidthPx] = useFilePanelWidth();
   const asidePanelRef = useRef<PanelImperativeHandle | null>(null);
-  const inFileMode = selectedSpaceFile !== null;
+  const inFileMode = selectedSpaceFile !== null || selectedMemoryFile !== null;
   const inFileModeRef = useRef(inFileMode);
   inFileModeRef.current = inFileMode;
   const fileWidthRef = useRef(fileWidthPx);
@@ -222,7 +272,6 @@ export function LandingPage({
       ),
     ),
   )}px`;
-
 
   // Seed the composer from a "seed-chat-input" event targeting a new chat
   // (conversationId === null) — used by the Scheduled view's "Create with
@@ -453,10 +502,13 @@ export function LandingPage({
       // side-panel-started chats. The async result also feeds the tab-group
       // labeler when navigate fires later.
       if (baseText) {
-        const [providerIdStr, ...modelIdParts] = agentSettings.agentModel.split(":");
+        const [providerIdStr, ...modelIdParts] =
+          agentSettings.agentModel.split(":");
         const hasProvider = modelIdParts.length > 0;
         const targetProviderId = hasProvider ? providerIdStr : undefined;
-        const normalizedModelId = hasProvider ? modelIdParts.join(":") : agentSettings.agentModel;
+        const normalizedModelId = hasProvider
+          ? modelIdParts.join(":")
+          : agentSettings.agentModel;
 
         const provider = providers.find((p) =>
           hasProvider
@@ -589,8 +641,7 @@ export function LandingPage({
     [isOverFilesDropzone],
   );
 
-  const handlePageDragLeave = useCallback(
-    (e: React.DragEvent) => {
+  const handlePageDragLeave = useCallback((e: React.DragEvent) => {
       if (!e.dataTransfer.types.includes("Files")) return;
       // Don't decrement if we never counted this drag (target was
       // inside the files dropzone).
@@ -599,9 +650,7 @@ export function LandingPage({
         pageDragCounter.current = 0;
         setPageDragOver(false);
       }
-    },
-    [],
-  );
+  }, []);
 
   const handlePageDragOver = useCallback(
     (e: React.DragEvent) => {
@@ -733,7 +782,7 @@ export function LandingPage({
   const asideBody = (
     <div className="relative h-full w-full overflow-hidden">
       <AnimatePresence mode="wait" initial={false}>
-        {selectedSpaceFile !== null ? (
+        {selectedSpaceFile !== null || selectedMemoryFile !== null ? (
           <motion.div
             key="space-file"
             className="absolute inset-0"
@@ -742,13 +791,36 @@ export function LandingPage({
             exit={{ x: -16, opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
           >
-            <FileViewerPanel
-              filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
-              fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
-              spaceId={space.id}
-              openInNewTab
-              onClose={() => setSelectedSpaceFile(null)}
-            />
+            {selectedMemoryFile !== null ? (
+              <FileViewerPanel
+                filePath={selectedMemoryFile}
+                fileName={
+                  selectedMemoryFile.split("/").pop() ?? selectedMemoryFile
+                }
+                spaceId={space.id}
+                openInNewTab
+                headerActions={
+                  <MemoryDeleteButton
+                    path={selectedMemoryFile}
+                    onDeleted={() => setSelectedMemoryFile(null)}
+                  />
+                }
+                contentHeader={<MemoryFileMeta path={selectedMemoryFile} />}
+                onWikiLink={handleMemoryWikiLink}
+                onChatLink={handleMemoryChatLink}
+                onClose={() => setSelectedMemoryFile(null)}
+              />
+            ) : (
+              <FileViewerPanel
+                filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
+                fileName={
+                  selectedSpaceFile!.split("/").pop() ?? selectedSpaceFile!
+                }
+                spaceId={space.id}
+                openInNewTab
+                onClose={() => setSelectedSpaceFile(null)}
+              />
+            )}
           </motion.div>
         ) : (
           <motion.div
@@ -759,7 +831,11 @@ export function LandingPage({
             exit={{ x: 16, opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
           >
-            <SpaceCustomization space={space} onSelectFile={setSelectedSpaceFile} />
+            <SpaceCustomization
+              space={space}
+              onSelectFile={handleSelectSpaceFile}
+              onSelectMemoryFile={handleSelectMemoryFile}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -778,7 +854,10 @@ export function LandingPage({
       <SpaceLandingHeader space={space} headerRef={headerRef} />
 
       {isXl ? (
-        <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
+        <ResizablePanelGroup
+          orientation="horizontal"
+          className="flex-1 min-h-0"
+        >
           <ResizablePanel
             minSize="400px"
             groupResizeBehavior="preserve-relative-size"
@@ -799,7 +878,9 @@ export function LandingPage({
           <ResizablePanel
             panelRef={asidePanelRef}
             defaultSize={initialAsideSize}
-            minSize={inFileMode ? `${FILE_MIN_PX}px` : `${CUSTOMIZATION_WIDTH_PX}px`}
+            minSize={
+              inFileMode ? `${FILE_MIN_PX}px` : `${CUSTOMIZATION_WIDTH_PX}px`
+            }
             maxSize={inFileMode ? maxAsidePx : `${CUSTOMIZATION_WIDTH_PX}px`}
             groupResizeBehavior="preserve-pixel-size"
             onResize={(panelSize: PanelSize) => {
@@ -817,16 +898,41 @@ export function LandingPage({
         <div className="flex flex-col">
           <div className={heroColumnClass}>{heroContent}</div>
           <aside className="w-full border-t border-border">
-            {selectedSpaceFile !== null ? (
+            {selectedMemoryFile !== null ? (
+              <FileViewerPanel
+                filePath={selectedMemoryFile}
+                fileName={
+                  selectedMemoryFile.split("/").pop() ?? selectedMemoryFile
+                }
+                spaceId={space.id}
+                openInNewTab
+                headerActions={
+                  <MemoryDeleteButton
+                    path={selectedMemoryFile}
+                    onDeleted={() => setSelectedMemoryFile(null)}
+                  />
+                }
+                contentHeader={<MemoryFileMeta path={selectedMemoryFile} />}
+                onWikiLink={handleMemoryWikiLink}
+                onChatLink={handleMemoryChatLink}
+                onClose={() => setSelectedMemoryFile(null)}
+              />
+            ) : selectedSpaceFile !== null ? (
               <FileViewerPanel
                 filePath={`spaces/${space.id}/workspace/${selectedSpaceFile}`}
-                fileName={selectedSpaceFile.split("/").pop() ?? selectedSpaceFile}
+                fileName={
+                  selectedSpaceFile.split("/").pop() ?? selectedSpaceFile
+                }
                 spaceId={space.id}
                 openInNewTab
                 onClose={() => setSelectedSpaceFile(null)}
               />
             ) : (
-              <SpaceCustomization space={space} onSelectFile={setSelectedSpaceFile} />
+              <SpaceCustomization
+                space={space}
+                onSelectFile={handleSelectSpaceFile}
+                onSelectMemoryFile={handleSelectMemoryFile}
+              />
             )}
           </aside>
         </div>
@@ -846,7 +952,9 @@ function PageDropOverlay() {
     <div className="pointer-events-none fixed inset-0 z-40 flex items-center justify-center">
       <div className="flex items-center gap-2 rounded-md bg-background/95 px-4 py-2 shadow-lg border border-blue-500/40">
         <Upload className="size-4 text-blue-500" />
-        <span className="text-sm font-medium">Drop files to attach to message</span>
+        <span className="text-sm font-medium">
+          Drop files to attach to message
+        </span>
       </div>
     </div>
   );
@@ -901,8 +1009,7 @@ function SpaceLandingHeader({
   }, [space.id, space.description]);
 
   const systemDark = useMemo(
-    () =>
-      window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
+    () => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false,
     [],
   );
 
@@ -1132,7 +1239,8 @@ function HeroComposer({
                 ? p.id === targetProviderId
                 : p.models.some((m) => m.id === actualId),
             );
-            return provider?.models.find((m) => m.id === actualId)?.capabilities;
+              return provider?.models.find((m) => m.id === actualId)
+                ?.capabilities;
           })()}
           />
           {!isConfigured && (

@@ -1,23 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { X } from "lucide-react";
-import { useHotkeys } from "react-hotkeys-hook";
 import { useTheme } from "@/hooks/useTheme";
-import { DEFAULT_SETTINGS, DEFAULT_AGENT_SETTINGS } from "@/lib/constants";
+import { DEFAULT_AGENT_SETTINGS, DEFAULT_SETTINGS } from "@/lib/constants";
 import { storage } from "@/lib/storage";
-import type { Settings, AgentSettings } from "@/lib/types";
+import type { AgentSettings, Settings } from "@/lib/types";
+import { X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
+import { ConnectorsTab } from "./ConnectorsTab";
 import { GeneralTab } from "./GeneralTab";
+import { McpBridgeTab } from "./mcp-bridge";
 import { MemoryTab } from "./MemoryTab";
 import { ModelsTab } from "./ModelsTab";
-import { SkillsTab } from "./SkillsTab";
-import { ConnectorsTab } from "./ConnectorsTab";
-import { McpBridgeTab } from "./mcp-bridge";
 import {
   formatSettingsSearch,
+  parseSettingsNote,
   parseSettingsTab,
   type SettingsTabId,
 } from "./route";
+import { SkillsTab } from "./SkillsTab";
 
 const TABS: ReadonlyArray<{ id: SettingsTabId; label: string }> = [
   { id: "general", label: "General" },
@@ -37,16 +38,30 @@ interface SettingsPageProps {
 export function SettingsPage({ onBack }: SettingsPageProps) {
   useTheme();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [savedSettings, setSavedSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [agentSettings, setAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
-  const [savedAgentSettings, setSavedAgentSettings] = useState<AgentSettings>(DEFAULT_AGENT_SETTINGS);
-  
+  const [savedSettings, setSavedSettings] =
+    useState<Settings>(DEFAULT_SETTINGS);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>(
+    DEFAULT_AGENT_SETTINGS,
+  );
+  const [savedAgentSettings, setSavedAgentSettings] = useState<AgentSettings>(
+    DEFAULT_AGENT_SETTINGS,
+  );
+
   // Active tab is URL-backed via `?tab=<id>`. Reading from the query
   // string on mount lets external callers (e.g. `openSettingsTab("models")`)
   // deep-link, and writing back via `pushState` on tab change makes the
   // tab survive reload and Back/Forward navigation.
   const [activeTab, setActiveTabState] = useState<TabId>(() =>
     parseSettingsTab(window.location.search),
+  );
+  /**
+   * Memory note being viewed, URL-backed as `?note=<path>` so a reload or
+   * Back/Forward restores it. Owned here (rather than inside the Memory tab)
+   * so all settings URL writes stay in one place and can't race the
+   * `lastWrittenSearchRef` bookkeeping below.
+   */
+  const [selectedNote, setSelectedNoteState] = useState<string | null>(() =>
+    parseSettingsNote(window.location.search),
   );
 
   // Track the most recent search string we wrote so the URL→state
@@ -55,10 +70,30 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
   const setActiveTab = useCallback((next: TabId) => {
     setActiveTabState(next);
+    // `formatSettingsSearch` drops `note` unless we pass one, so leaving (or
+    // re-entering) Memory clears the stale note automatically.
+    setSelectedNoteState(null);
     const nextSearch = formatSettingsSearch(next, window.location.search);
     if (nextSearch !== window.location.search) {
-      const url =
-        window.location.pathname + nextSearch + window.location.hash;
+      const url = window.location.pathname + nextSearch + window.location.hash;
+      history.pushState(null, "", url);
+      lastWrittenSearchRef.current = nextSearch;
+    }
+  }, []);
+
+  /**
+   * Select (or clear) the memory note. Uses `pushState` so Back closes the
+   * note and returns to the graph / previously-viewed note.
+   */
+  const setSelectedNote = useCallback((next: string | null) => {
+    setSelectedNoteState(next);
+    const nextSearch = formatSettingsSearch(
+      "memory",
+      window.location.search,
+      next,
+    );
+    if (nextSearch !== window.location.search) {
+      const url = window.location.pathname + nextSearch + window.location.hash;
       history.pushState(null, "", url);
       lastWrittenSearchRef.current = nextSearch;
     }
@@ -71,13 +106,15 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
       if (window.location.search === lastWrittenSearchRef.current) return;
       lastWrittenSearchRef.current = window.location.search;
       setActiveTabState(parseSettingsTab(window.location.search));
+      setSelectedNoteState(parseSettingsNote(window.location.search));
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  const dirty = JSON.stringify(settings) !== JSON.stringify(savedSettings) ||
-                JSON.stringify(agentSettings) !== JSON.stringify(savedAgentSettings);
+  const dirty =
+    JSON.stringify(settings) !== JSON.stringify(savedSettings) ||
+    JSON.stringify(agentSettings) !== JSON.stringify(savedAgentSettings);
 
   useEffect(() => {
     storage.getSettings().then((s) => {
@@ -102,8 +139,14 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
     // Auto-select first favorite model if none is currently selected
     if (settings.favoriteModels.length > 0 && !agentSettings.agentModel) {
-      const firstModelId = settings.favoriteModels[0].split(":").slice(1).join(":");
-      const updatedAgentSettings = { ...agentSettings, agentModel: firstModelId };
+      const firstModelId = settings.favoriteModels[0]
+        .split(":")
+        .slice(1)
+        .join(":");
+      const updatedAgentSettings = {
+        ...agentSettings,
+        agentModel: firstModelId,
+      };
       await storage.setAgentSettings(updatedAgentSettings);
       setAgentSettings(updatedAgentSettings);
       setSavedAgentSettings(updatedAgentSettings);
@@ -148,8 +191,16 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
       <div className="sticky top-0 z-50 flex items-center justify-between border-b border-border bg-muted px-4 py-2 shrink-0">
         <div className="flex items-center gap-2">
           <span className="flex items-center">
-            <img src="/icon/logo.svg" alt="OpenBrowse" className="h-4 w-4 dark:hidden" />
-            <img src="/icon/logo-dark.svg" alt="OpenBrowse" className="h-4 w-4 hidden dark:block" />
+            <img
+              src="/icon/logo.svg"
+              alt="OpenBrowse"
+              className="h-4 w-4 dark:hidden"
+            />
+            <img
+              src="/icon/logo-dark.svg"
+              alt="OpenBrowse"
+              className="h-4 w-4 hidden dark:block"
+            />
           </span>
           <span className="text-muted-foreground text-sm">/</span>
           <h1 className="text-sm font-semibold">Settings</h1>
@@ -198,25 +249,31 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
           )}
           {activeTab === "models" && (
-            <ModelsTab settings={settings} onChange={async (patch) => {
-              // Model download/delete persists `downloadedModels` immediately
-              // (the background writes storage via add/removeDownloadedModel).
-              // Reconcile it into BOTH working and saved state so it never
-              // registers as an unsaved change, without disturbing other
-              // in-flight field edits.
-              if (patch.downloadedModels) {
-                const next = patch.downloadedModels;
-                setSettings((prev) => ({ ...prev, downloadedModels: next }));
-                setSavedSettings((prev) => ({ ...prev, downloadedModels: next }));
-                return;
-              }
-              const updated = { ...settings, ...patch };
-              setSettings(updated);
-              if (patch.providerConfigs) {
-                setSavedSettings(updated);
-                await storage.setSettings(updated);
-              }
-            }} />
+            <ModelsTab
+              settings={settings}
+              onChange={async (patch) => {
+                // Model download/delete persists `downloadedModels` immediately
+                // (the background writes storage via add/removeDownloadedModel).
+                // Reconcile it into BOTH working and saved state so it never
+                // registers as an unsaved change, without disturbing other
+                // in-flight field edits.
+                if (patch.downloadedModels) {
+                  const next = patch.downloadedModels;
+                  setSettings((prev) => ({ ...prev, downloadedModels: next }));
+                  setSavedSettings((prev) => ({
+                    ...prev,
+                    downloadedModels: next,
+                  }));
+                  return;
+                }
+                const updated = { ...settings, ...patch };
+                setSettings(updated);
+                if (patch.providerConfigs) {
+                  setSavedSettings(updated);
+                  await storage.setSettings(updated);
+                }
+              }}
+            />
           )}
           {activeTab === "connectors" && (
             <ConnectorsTab
@@ -229,7 +286,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 const current = await storage.getSettings();
                 if (patch.mcpServers) {
                   const merged = patch.mcpServers.map((s) => {
-                    const existing = current.mcpServers.find((e) => e.id === s.id);
+                    const existing = current.mcpServers.find(
+                      (e) => e.id === s.id,
+                    );
                     return existing ? { ...existing, ...s } : s;
                   });
                   await storage.setSettings({ ...current, mcpServers: merged });
@@ -252,9 +311,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             />
           )}
           {activeTab === "memory" && (
-            <div className="p-4">
-              <MemoryTab />
-            </div>
+            <MemoryTab
+              selectedNote={selectedNote}
+              onSelectNote={setSelectedNote}
+            />
           )}
           {activeTab === "mcp-bridge" && (
             <div className="p-4">

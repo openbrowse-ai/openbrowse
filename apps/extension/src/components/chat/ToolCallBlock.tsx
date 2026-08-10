@@ -6,38 +6,38 @@ import {
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
 import { cn } from "@/lib/utils";
-import { resolveMcpToolDisplay } from "./mcp-tool-display";
 import { AlertCircle, ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { CodeResult } from "./tool-results/execute-code";
-import { PageScriptResult } from "./tool-results/page-script";
-import { PlanResult } from "./tool-results/plan";
-import { PythonResult } from "./tool-results/execute-python";
+import { resolveMcpToolDisplay } from "./mcp-tool-display";
+import { ArtifactResult } from "./tool-results/artifact";
+import { ArtifactDiagnosticsResult } from "./tool-results/artifact-diagnostics";
+import { ComputerResult } from "./tool-results/computer";
 import { DelegateResult } from "./tool-results/delegate";
+import { CodeResult } from "./tool-results/execute-code";
+import { PythonResult } from "./tool-results/execute-python";
 import {
   GlobResult,
   GrepResult,
   LSResult,
   ReadFileResult,
 } from "./tool-results/fs";
-import { ScreenshotResult } from "./tool-results/screenshot";
-import { ComputerResult } from "./tool-results/computer";
-import { NavigateResult } from "./tool-results/navigate";
-import { SkillResult } from "./tool-results/skill";
 import { InstallSkillResult } from "./tool-results/install-skill";
-import { SnapshotResult } from "./tool-results/snapshot";
-import { WebFetchResult } from "./tool-results/web-fetch";
-import { WebSearchResult } from "./tool-results/web-search";
-import { MemoryResult } from "./tool-results/memory";
-import { SelectTabResult } from "./tool-results/select-tab";
+import { SearchMemoryResult } from "./tool-results/memory";
+import { NavigateResult } from "./tool-results/navigate";
+import { PageScriptResult } from "./tool-results/page-script";
+import { PlanResult } from "./tool-results/plan";
 import {
   CreateScheduledTaskResult,
   ListScheduledTasksResult,
   UpdateScheduledTaskResult,
 } from "./tool-results/scheduled-task";
-import { ArtifactResult } from "./tool-results/artifact";
-import { ArtifactDiagnosticsResult } from "./tool-results/artifact-diagnostics";
+import { ScreenshotResult } from "./tool-results/screenshot";
+import { SelectTabResult } from "./tool-results/select-tab";
+import { SkillResult } from "./tool-results/skill";
+import { SnapshotResult } from "./tool-results/snapshot";
+import { WebFetchResult } from "./tool-results/web-fetch";
+import { WebSearchResult } from "./tool-results/web-search";
 
 import { getToolPreview } from "./tool-previews";
 
@@ -59,8 +59,12 @@ type ResultRenderer = (props: {
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
   snapshot: ({ result }) => <SnapshotResult result={result} />,
   screenshot: ({ result }) => <ScreenshotResult result={result} />,
-  computer: ({ args, result }) => <ComputerResult args={args} result={result} />,
-  navigate: ({ args, result }) => <NavigateResult args={args} result={result} />,
+  computer: ({ args, result }) => (
+    <ComputerResult args={args} result={result} />
+  ),
+  navigate: ({ args, result }) => (
+    <NavigateResult args={args} result={result} />
+  ),
   goBack: ({ args, result }) => <NavigateResult args={args} result={result} />,
   goForward: ({ args, result }) => (
     <NavigateResult args={args} result={result} />
@@ -74,16 +78,15 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
     ) : (
       <CodeResult args={args} result={result} />
     ),
-  executePython: ({ args, result }) => <PythonResult args={args} result={result} />,
+  executePython: ({ args, result }) => (
+    <PythonResult args={args} result={result} />
+  ),
   proposePlan: ({ args, result }) => <PlanResult args={args} result={result} />,
   selectTab: ({ result, toolCallId }) => (
     <SelectTabResult result={result} toolCallId={toolCallId} />
   ),
-  saveMemory: ({ args, result }) => (
-    <MemoryResult args={args} result={result} action="save" />
-  ),
-  updateMemory: ({ args, result }) => (
-    <MemoryResult args={args} result={result} action="update" />
+  searchMemory: ({ args, result }) => (
+    <SearchMemoryResult args={args} result={result} />
   ),
   Read: ({ args, result }) => <ReadFileResult args={args} result={result} />,
   Glob: ({ args, result }) => <GlobResult args={args} result={result} />,
@@ -100,8 +103,12 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
       errorText={errorText}
     />
   ),
-  webFetch: ({ args, result }) => <WebFetchResult args={args} result={result} />,
-  webSearch: ({ args, result }) => <WebSearchResult args={args} result={result} />,
+  webFetch: ({ args, result }) => (
+    <WebFetchResult args={args} result={result} />
+  ),
+  webSearch: ({ args, result }) => (
+    <WebSearchResult args={args} result={result} />
+  ),
   create_scheduled_task: ({ args, result }) => (
     <CreateScheduledTaskResult args={args} result={result} />
   ),
@@ -183,6 +190,7 @@ const TOOL_LABELS: Record<
   Grep: { pending: "Searching...", done: "Searched" },
   LS: { pending: "Listing folder...", done: "Listed folder" },
   Delete: { pending: "Deleting...", done: "Deleted" },
+  Move: { pending: "Moving...", done: "Moved" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
   proposePlan: {
     pending: "Drafting plan...",
@@ -196,21 +204,30 @@ const TOOL_LABELS: Record<
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   webSearch: { pending: "Searching the web...", done: "Searched the web" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
-  read_network_requests: { pending: "Reading network...", done: "Read network" },
-  read_console_messages: { pending: "Reading console...", done: "Read console" },
+  read_network_requests: {
+    pending: "Reading network...",
+    done: "Read network",
+  },
+  read_console_messages: {
+    pending: "Reading console...",
+    done: "Read console",
+  },
 
   // Memory tools
-  saveMemory: { pending: "Saving memory...", done: "Saved memory" },
-  updateMemory: { pending: "Updating memory...", done: "Updated memory" },
-  deleteMemory: { pending: "Deleting memory...", done: "Deleted memory" },
-  recallMemory: { pending: "Searching memory...", done: "Searched memory" },
+  searchMemory: { pending: "Searching memory...", done: "Searched memory" },
 
   // Skill tools
   skill: { pending: "Loading skill...", done: "Loaded skill" },
   create_skill: { pending: "Creating skill...", done: "Created skill" },
   install_skill: { pending: "Installing skill...", done: "Installed skill" },
-  patch_site_skill: { pending: "Updating site skill...", done: "Updated site skill" },
-  delete_site_skill: { pending: "Deleting site skill...", done: "Deleted site skill" },
+  patch_site_skill: {
+    pending: "Updating site skill...",
+    done: "Updated site skill",
+  },
+  delete_site_skill: {
+    pending: "Deleting site skill...",
+    done: "Deleted site skill",
+  },
 
   // Scheduled task tools
   create_scheduled_task: {
@@ -227,10 +244,19 @@ const TOOL_LABELS: Record<
   },
 
   // Artifact tools
-  create_artifact: { pending: "Creating artifact...", done: "Created artifact" },
-  update_artifact: { pending: "Updating artifact...", done: "Updated artifact" },
-  delete_artifact: { pending: "Deleting artifact...", done: "Deleted artifact" },
-  list_artifacts:  { pending: "Listing artifacts...", done: "Listed artifacts" },
+  create_artifact: {
+    pending: "Creating artifact...",
+    done: "Created artifact",
+  },
+  update_artifact: {
+    pending: "Updating artifact...",
+    done: "Updated artifact",
+  },
+  delete_artifact: {
+    pending: "Deleting artifact...",
+    done: "Deleted artifact",
+  },
+  list_artifacts: { pending: "Listing artifacts...", done: "Listed artifacts" },
   read_artifact_diagnostics: {
     pending: "Verifying artifact...",
     done: "Verified artifact",
@@ -359,11 +385,20 @@ export function computerLabels(
     case "right_click":
       return { pending: `Right-clicking${at}...`, done: `Right-clicked${at}` };
     case "middle_click":
-      return { pending: `Middle-clicking${at}...`, done: `Middle-clicked${at}` };
+      return {
+        pending: `Middle-clicking${at}...`,
+        done: `Middle-clicked${at}`,
+      };
     case "double_click":
-      return { pending: `Double-clicking${at}...`, done: `Double-clicked${at}` };
+      return {
+        pending: `Double-clicking${at}...`,
+        done: `Double-clicked${at}`,
+      };
     case "triple_click":
-      return { pending: `Triple-clicking${at}...`, done: `Triple-clicked${at}` };
+      return {
+        pending: `Triple-clicking${at}...`,
+        done: `Triple-clicked${at}`,
+      };
     case "left_click_drag":
       return { pending: "Dragging...", done: "Dragged" };
     case "mouse_move":
@@ -416,7 +451,10 @@ export function closeTabsLabels(
     const n = Array.isArray(args.handles) ? args.handles.length : 0;
     if (n > 0) {
       const noun = n === 1 ? "tab" : "tabs";
-      return { pending: `Closing ${n} ${noun}...`, done: `Closed ${n} ${noun}` };
+      return {
+        pending: `Closing ${n} ${noun}...`,
+        done: `Closed ${n} ${noun}`,
+      };
     }
   }
   return fallback;
@@ -574,8 +612,7 @@ export function ToolCallBlock({
     done: string;
     denied?: string;
     deniedReplace?: string;
-  } =
-    TOOL_LABELS[toolName] ??
+  } = TOOL_LABELS[toolName] ??
     connectorLabels ?? {
       pending: readableName ? `Running ${readableName}...` : `${toolName}...`,
       done: readableNameSentence ? readableNameSentence : toolName,
@@ -588,24 +625,24 @@ export function ToolCallBlock({
     toolName === "webSearch"
       ? webSearchLabels(args, resolvedResult, labels)
       : toolName === "webFetch"
-      ? webFetchLabels(args, labels)
-      : toolName === "computer"
-        ? computerLabels(args, labels)
-        : toolName === "closeTabs"
-          ? closeTabsLabels(args, labels)
-          : toolName === "create_scheduled_task" ||
-              toolName === "update_scheduled_task"
-            ? scheduledTaskLabels(toolName, args, labels)
-            : toolName === "Delete"
-              ? deleteLabels(args, labels)
-              : toolName === "executeOnPage"
-                ? executeOnPageLabels(args, labels)
-                : toolName === "patch_site_skill" ||
-                    toolName === "delete_site_skill"
-                  ? siteSkillLabels(args, labels)
-                  : toolName === "read_artifact_diagnostics"
-                    ? artifactDiagnosticsLabels(resolvedResult, labels)
-                    : labels;
+        ? webFetchLabels(args, labels)
+        : toolName === "computer"
+          ? computerLabels(args, labels)
+          : toolName === "closeTabs"
+            ? closeTabsLabels(args, labels)
+            : toolName === "create_scheduled_task" ||
+                toolName === "update_scheduled_task"
+              ? scheduledTaskLabels(toolName, args, labels)
+              : toolName === "Delete"
+                ? deleteLabels(args, labels)
+                : toolName === "executeOnPage"
+                  ? executeOnPageLabels(args, labels)
+                  : toolName === "patch_site_skill" ||
+                      toolName === "delete_site_skill"
+                    ? siteSkillLabels(args, labels)
+                    : toolName === "read_artifact_diagnostics"
+                      ? artifactDiagnosticsLabels(resolvedResult, labels)
+                      : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 
@@ -753,7 +790,9 @@ export function ToolCallBlock({
               <span
                 className={cn(
                   "text-sm",
-                  errored ? "text-red-600/90 dark:text-red-400/90" : "text-muted-foreground",
+                  errored
+                    ? "text-red-600/90 dark:text-red-400/90"
+                    : "text-muted-foreground",
                 )}
               >
                 {dynamicLabels.done}
