@@ -45,6 +45,8 @@ import {
   getCompactionSystemPrompt,
   prepareMessagesForSummarization,
   findCompactionEvents,
+  filterCompactedMessages,
+  hasCompactionHeadProgress,
   shouldCompact,
   shouldDebounceCompaction,
   MIN_MESSAGES_FOR_COMPACTION,
@@ -1108,7 +1110,16 @@ export function useAgentChat({
           createdAt: 0,
         }));
 
-        const { pruned } = pruneMessageParts(prunableMessages);
+        // The UI intentionally retains the full transcript, but a repeated
+        // auto-compaction must start from the same compacted history the LLM
+        // currently sees. Otherwise every pass re-summarizes the original
+        // pre-compaction head and can retrigger indefinitely while usage
+        // stays above the threshold. Manual `/compact` stays a whole-history
+        // operation by design.
+        const compactionInput = manual
+          ? prunableMessages
+          : filterCompactedMessages(prunableMessages);
+        const { pruned } = pruneMessageParts(compactionInput);
         const modelDef = getCurrentModelDef();
 
         // Compute the tail boundary. The CompactionPart will anchor here so
@@ -1124,6 +1135,14 @@ export function useAgentChat({
           : selectTail(pruned, modelDef);
         if (manual ? headMessages.length === 0 : !tailStartId || headMessages.length === 0) {
           if (manual) toast.info("Conversation is too short to compact yet");
+          return;
+        }
+
+        // A head containing only the previous marker + summary cannot shrink
+        // context, so summarizing it again is pure thrash. Unlike the time
+        // debounce, this invariant blocks unchanged re-entry permanently while
+        // still allowing compaction once genuinely new head content lands.
+        if (!manual && !hasCompactionHeadProgress(headMessages, events.at(-1))) {
           return;
         }
 
@@ -1430,7 +1449,11 @@ export function useAgentChat({
           // mutated by the agent loop under SW-host).
           const modelLimits = {
             contextWindow: conv.usage.contextWindow,
-            maxOutputTokens: getCurrentModelDef()?.maxOutputTokens,
+            // Newer snapshots persist the exact output ceiling of the model the
+            // SW used this turn; fall back to the renderer copy only for
+            // conversations written before that field existed.
+            maxOutputTokens:
+              conv.usage.maxOutputTokens ?? getCurrentModelDef()?.maxOutputTokens,
           };
           if (shouldCompact(conv.usage.totalTokens, modelLimits)) {
             runCompaction(cid, localMessages, { auto: true });

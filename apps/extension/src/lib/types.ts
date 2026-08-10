@@ -1,4 +1,3 @@
-import type { UIMessage } from "ai";
 import type { CompletionCheckSettings } from "./agent/completion-check/types";
 import type { IsolationProfile, SubagentStatus } from "./agent/subagents/types";
 import type { McpServerConfig } from "./mcp/types";
@@ -68,7 +67,11 @@ export type ThemeMode = "system" | "light" | "dark";
 
 export type AIProvider = "browser-ai" | "web-llm" | "cloud" | "disabled";
 
-export type CloudProvider = "openai" | "anthropic" | "google" | "openai-compatible";
+export type CloudProvider =
+  | "openai"
+  | "anthropic"
+  | "google"
+  | "openai-compatible";
 
 export interface Settings {
   // General
@@ -392,6 +395,8 @@ export interface ConversationUsage {
   costUsd: number;
   /** Snapshot of the model's context window at write time. */
   contextWindow: number;
+  /** Snapshot of the model's maximum output budget at write time. */
+  maxOutputTokens?: number;
   /** Model id used for the latest step (e.g. "anthropic:claude-..."). */
   modelId: string;
   /**
@@ -585,4 +590,3 @@ export interface QueuedMessage {
   visionFiles: { mediaType: string; url: string }[];
   createdAt: number;
 }
-

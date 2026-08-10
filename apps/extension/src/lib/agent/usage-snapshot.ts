@@ -61,6 +61,7 @@ export function nextUsageSnapshot(
     totalTokens,
     costUsd: (prev?.costUsd ?? 0) + stepCost,
     contextWindow: model?.contextWindow ?? 0,
+    maxOutputTokens: model?.maxOutputTokens,
     modelId,
     modelIds,
     updatedAt: now,
