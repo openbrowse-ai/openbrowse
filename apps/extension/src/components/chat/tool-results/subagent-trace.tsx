@@ -5,6 +5,16 @@
  * count + status pill + chevron) and a vertical-rail content list of
  * parts.
  *
+ * The whole block sits behind a `ㄴ` branch marker and is collapsed by
+ * default. The marker reads the run as a layer *below* the parent
+ * conversation: a delegation is one indented step in the parent's transcript,
+ * not a continuation of the parent's own work. (The marker goes on the block,
+ * not on each row inside it — a trace runs to dozens of steps, and marking
+ * every one of them says nothing the single block-level marker doesn't.)
+ * Collapsing matters for the same reason: the header row already carries the
+ * live status on its own (shimmering title while running, step count, failure
+ * dot), so nothing needed at a glance is hidden. Expand for the full run.
+ *
  * Part rendering:
  *  - Tool parts map directly to the chat's standard `ToolCallBlock`
  *    component, so they look and behave exactly like top-level tools
@@ -81,8 +91,14 @@ export function SubagentTrace({
   const stepLabel = stepCount === 1 ? "1 step" : `${stepCount} steps`;
 
   return (
-    <div className="my-1">
-      <TraceBlock>
+    <div className="my-1 flex w-full items-start gap-1.5">
+      <span
+        aria-hidden="true"
+        className="shrink-0 select-none pt-0.5 text-[11px] leading-5 text-muted-foreground/50"
+      >
+        ㄴ
+      </span>
+      <TraceBlock className="min-w-0 flex-1">
         <TraceBlockTrigger
           title={triggerTitle}
           slug={slug}
@@ -196,7 +212,7 @@ function countMeaningfulParts(parts: SerializedUIPart[]): number {
 type TraceBlockProps = ComponentProps<typeof Collapsible>;
 
 const TraceBlock = ({
-  defaultOpen = true,
+  defaultOpen = false,
   className,
   ...props
 }: TraceBlockProps) => (
