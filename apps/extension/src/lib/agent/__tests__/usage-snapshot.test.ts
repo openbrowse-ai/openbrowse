@@ -1,12 +1,13 @@
+import type { ModelDefinition } from "@/registry/providers/types";
 import { describe, expect, it } from "vitest";
 import { nextUsageSnapshot } from "../usage-snapshot";
-import type { ModelDefinition } from "@/registry/providers/types";
 
 const model: ModelDefinition = {
   id: "claude-x",
   name: "Claude X",
   capabilities: ["chat"],
   contextWindow: 200_000,
+  maxOutputTokens: 32_000,
   pricing: { inputPer1M: 3, outputPer1M: 15 },
 };
 
@@ -32,6 +33,7 @@ describe("nextUsageSnapshot", () => {
     // 1M input * $3 + 1M output * $15 = $18
     expect(next.costUsd).toBeCloseTo(18, 6);
     expect(next.contextWindow).toBe(200_000);
+    expect(next.maxOutputTokens).toBe(32_000);
     expect(next.modelId).toBe("anthropic:claude-x");
     expect(next.updatedAt).toBe(123);
   });

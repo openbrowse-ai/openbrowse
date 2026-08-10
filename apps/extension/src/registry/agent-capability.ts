@@ -1,4 +1,4 @@
-import { getUsableTokens } from "@/lib/agent/compaction";
+import { hasCompactableContext } from "@/lib/agent/compaction";
 
 /**
  * Can a model serve as the **main browser-use agent**?
@@ -56,7 +56,7 @@ export function agentModelGate(model: AgentGateModel): AgentModelGateResult {
   // Only gate on context when the window is known. An unknown window falls
   // back to the compaction default (large), so we give it the benefit of the
   // doubt rather than hiding a legitimate model with missing metadata.
-  if (model.contextWindow != null && getUsableTokens(model) <= 0) {
+  if (model.contextWindow != null && !hasCompactableContext(model)) {
     return {
       ok: false,
       reason: "Context too small",

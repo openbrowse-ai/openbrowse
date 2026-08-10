@@ -21,16 +21,22 @@
  */
 
 import { describe, expect, it } from "vitest";
+import type { ProviderDefinition } from "../../registry/providers/types";
 import {
+  filterCompactedMessages,
+  findCompactionEvents,
+  getUsableTokens,
+  hasCompactionHeadProgress,
   keepOnlyLatestScreenshot,
   keepOnlyLatestSnapshotPerTab,
   PAGE_SCREENSHOT_TOOLS,
-  selectTailForManual,
   resolveCompactionModel,
+  selectTail,
+  selectTailForManual,
+  shouldCompact,
   type PrunableMessage,
 } from "./compaction";
 import type { AgentUIMessage } from "./message-types";
-import type { ProviderDefinition } from "../../registry/providers/types";
 
 /** Build an assistant message wrapping a single tool-result part. */
 function toolResultMsg(
@@ -168,7 +174,11 @@ describe("keepOnlyLatestScreenshot — custom allowlist", () => {
       id: "u1",
       role: "user",
       parts: [
-        { type: "file", mediaType: "image/png", url: "data:image/png;base64,USER" },
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "data:image/png;base64,USER",
+        },
       ],
     } as unknown as AgentUIMessage;
 
@@ -199,6 +209,159 @@ describe("keepOnlyLatestScreenshot — custom allowlist", () => {
  * It returns an empty head (→ caller toasts "too short") only when there
  * are fewer than two user turns, since there's nothing worth summarizing.
  */
+describe("compaction threshold limits", () => {
+  it("uses the persisted 1M model limits", () => {
+    expect(
+      getUsableTokens({
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+      }),
+    ).toBe(852_000);
+  });
+
+  it("falls back when a usage snapshot has unresolved zero limits", () => {
+    expect(getUsableTokens({ contextWindow: 0, maxOutputTokens: 0 })).toBe(
+      100_000,
+    );
+  });
+
+  it("falls back when positive limits are mutually incompatible", () => {
+    // maxOutputTokens + COMPACTION_BUFFER >= contextWindow leaves no room to
+    // compact into, so the subtraction would go non-positive.
+    expect(
+      getUsableTokens({ contextWindow: 200_000, maxOutputTokens: 200_000 }),
+    ).toBe(100_000);
+    // Real small-context models: Gemini Nano and the smallest WebLLM builds.
+    expect(getUsableTokens({ contextWindow: 4_096, maxOutputTokens: 2_048 })).toBe(
+      100_000,
+    );
+    expect(getUsableTokens({ contextWindow: 8_192, maxOutputTokens: 2_048 })).toBe(
+      100_000,
+    );
+  });
+
+  it("does not report a fresh conversation as needing compaction", () => {
+    // The regression this guards: a negative ceiling made shouldCompact true
+    // at zero tokens, so compaction fired on the very first completed turn
+    // and then re-fired forever.
+    expect(shouldCompact(0, { contextWindow: 4_096, maxOutputTokens: 2_048 })).toBe(
+      false,
+    );
+    expect(shouldCompact(0, { contextWindow: 0, maxOutputTokens: 0 })).toBe(
+      false,
+    );
+    expect(
+      shouldCompact(0, { contextWindow: 1_000_000, maxOutputTokens: 128_000 }),
+    ).toBe(false);
+  });
+});
+
+describe("repeated auto-compaction progress", () => {
+  function msg(
+    id: string,
+    role: PrunableMessage["role"],
+    text: string,
+  ): PrunableMessage {
+    return { id, role, parts: [{ type: "text", text }], createdAt: 0 };
+  }
+
+  it("uses the compacted model view and rejects summary-only re-entry", () => {
+    const original: PrunableMessage[] = [
+      msg("u1", "user", "first question"),
+      msg("a1", "assistant", "first answer"),
+      msg("u2", "user", "second question"),
+      msg("a2", "assistant", "second answer"),
+    ];
+    const marker: PrunableMessage = {
+      id: "compact-user",
+      role: "user",
+      parts: [
+        {
+          type: "data-compaction",
+          data: { auto: true, tailStartMessageId: "u2" },
+        },
+      ],
+      createdAt: 10,
+    };
+    const summary: PrunableMessage & { summary: true } = {
+      ...msg("compact-summary", "assistant", "anchored summary"),
+      createdAt: 11,
+      summary: true,
+    };
+    const continued = [
+      msg("continue", "user", "Continue where you left off"),
+      msg("continued-answer", "assistant", "Done"),
+    ];
+    const visible = [...original, marker, summary, ...continued];
+
+    // The SDK's in-memory summary omits the database-only `summary` flag.
+    const uiVisible = visible.map((message) => {
+      const { summary: _summary, ...uiMessage } = message as PrunableMessage & {
+        summary?: boolean;
+      };
+      return uiMessage;
+    });
+    const compacted = filterCompactedMessages(uiVisible);
+    expect(compacted.map((message) => message.id)).toEqual([
+      "compact-user",
+      "compact-summary",
+      "u2",
+      "a2",
+      "continue",
+      "continued-answer",
+    ]);
+
+    const { headMessages, tailStartId } = selectTail(compacted, {
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    expect(tailStartId).toBe("u2");
+    expect(headMessages.map((message) => message.id)).toEqual([
+      "compact-user",
+      "compact-summary",
+    ]);
+
+    const persistedEvents = findCompactionEvents(visible);
+    expect(
+      hasCompactionHeadProgress(headMessages, persistedEvents.at(-1)),
+    ).toBe(false);
+  });
+
+  it("allows another compaction once the selected head contains new content", () => {
+    const event = findCompactionEvents([
+      {
+        id: "compact-user",
+        role: "user",
+        parts: [
+          {
+            type: "data-compaction",
+            data: { auto: true, tailStartMessageId: "u2" },
+          },
+        ],
+        createdAt: 10,
+      },
+      {
+        id: "compact-summary",
+        role: "assistant",
+        parts: [{ type: "text", text: "summary" }],
+        summary: true,
+        createdAt: 11,
+      },
+    ]).at(-1);
+
+    expect(
+      hasCompactionHeadProgress(
+        [
+          msg("compact-user", "user", "marker replacement"),
+          msg("compact-summary", "assistant", "summary"),
+          msg("new-head", "assistant", "new accumulated context"),
+        ],
+        event,
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("selectTailForManual", () => {
   function msg(
     id: string,

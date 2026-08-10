@@ -1,11 +1,10 @@
 // src/lib/agent/compaction.ts
+import type { ProviderDefinition } from "../../registry/providers/types";
 import type {
   AgentUIMessage,
-  ChatMessage,
   CompactionPart,
   SerializedUIPart,
 } from "../types";
-import type { ProviderDefinition } from "../../registry/providers/types";
 export interface TokenLimits {
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -44,6 +43,8 @@ export const MIN_MESSAGES_FOR_COMPACTION = 4;
 export const COMPACTION_DEBOUNCE_MS = 30_000;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_OUTPUT = 8_000;
+const FALLBACK_USABLE_TOKENS =
+  DEFAULT_CONTEXT_WINDOW - DEFAULT_MAX_OUTPUT - COMPACTION_BUFFER;
 
 const COMPACTION_SYSTEM_PROMPT = `You are a context summarization assistant for a browser agent session.
 
@@ -102,7 +103,7 @@ export function estimateMessageTokens(parts: SerializedUIPart[]): number {
         total += estimateTokens(
           typeof part.output === "string"
             ? part.output
-            : JSON.stringify(part.output)
+            : JSON.stringify(part.output),
         );
       }
     } else if (part.type === "file") {
@@ -118,15 +119,52 @@ export function estimateMessageTokens(parts: SerializedUIPart[]): number {
   return total;
 }
 
+function resolveTokenLimits(model: TokenLimits | undefined): {
+  context: number;
+  maxOutput: number;
+} {
+  // Usage snapshots store 0 when the SW cannot resolve model metadata; treat
+  // non-positive values as missing.
+  return {
+    context:
+      model?.contextWindow && model.contextWindow > 0
+        ? model.contextWindow
+        : DEFAULT_CONTEXT_WINDOW,
+    maxOutput:
+      model?.maxOutputTokens && model.maxOutputTokens > 0
+        ? model.maxOutputTokens
+        : DEFAULT_MAX_OUTPUT,
+  };
+}
+
+/**
+ * Whether a model has any room to compact into — i.e. its context window
+ * exceeds its output budget plus the safety buffer.
+ *
+ * False for models that legitimately declare a tiny window (Gemini Nano at 4K,
+ * the smallest WebLLM builds): there is no headroom to summarize into, so
+ * proactive compaction is meaningless for them. Kept separate from
+ * {@link getUsableTokens} because callers need this as a capability signal,
+ * whereas `getUsableTokens` must always return a usable positive threshold.
+ */
+export function hasCompactableContext(model: TokenLimits | undefined): boolean {
+  const { context, maxOutput } = resolveTokenLimits(model);
+  return maxOutput + COMPACTION_BUFFER < context;
+}
+
 export function getUsableTokens(model: TokenLimits | undefined): number {
-  const context = model?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  const maxOutput = model?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT;
+  const { context, maxOutput } = resolveTokenLimits(model);
+  // A non-positive ceiling would make `shouldCompact` true for every turn and
+  // loop compaction forever, so fall back to the default. Proactive
+  // compaction is effectively off for such models; a genuine context overflow
+  // is still recovered by the overflow-triggered compaction path.
+  if (maxOutput + COMPACTION_BUFFER >= context) return FALLBACK_USABLE_TOKENS;
   return context - maxOutput - COMPACTION_BUFFER;
 }
 
 export function shouldCompact(
   totalTokens: number,
-  model: TokenLimits | undefined
+  model: TokenLimits | undefined,
 ): boolean {
   return totalTokens >= getUsableTokens(model);
 }
@@ -243,7 +281,8 @@ export function stripScreenshotsFromParts(
     if (
       part.type === "dynamic-tool" &&
       part.state === "output-available" &&
-      part.toolName && STRIPPABLE_IMAGE_TOOLS.has(part.toolName)
+      part.toolName &&
+      STRIPPABLE_IMAGE_TOOLS.has(part.toolName)
     ) {
       out.push({
         ...part,
@@ -296,13 +335,13 @@ export function keepOnlyLatestScreenshot(
     for (let p = 0; p < msg.parts.length; p++) {
       const part = msg.parts[p] as any;
       if (
-        part?.type === "dynamic-tool"
-        && part.state === "output-available"
-        && typeof part.toolName === "string"
-        && allowlist.has(part.toolName)
-        && part.output
-        && typeof part.output === "object"
-        && "imageDataUrl" in part.output
+        part?.type === "dynamic-tool" &&
+        part.state === "output-available" &&
+        typeof part.toolName === "string" &&
+        allowlist.has(part.toolName) &&
+        part.output &&
+        typeof part.output === "object" &&
+        "imageDataUrl" in part.output
       ) {
         screenshotLocs.push({ m, p });
       }
@@ -470,9 +509,10 @@ export function findProtectedTailStart<T extends { role: string }>(
   return 0;
 }
 
-export function pruneMessages(
-  messages: PrunableMessage[]
-): { pruned: PrunableMessage[]; freedTokens: number } {
+export function pruneMessages(messages: PrunableMessage[]): {
+  pruned: PrunableMessage[];
+  freedTokens: number;
+} {
   // Return unchanged if fewer than minimum messages
   if (messages.length < MIN_MESSAGES_FOR_COMPACTION) {
     return { pruned: messages, freedTokens: 0 };
@@ -536,11 +576,14 @@ export function pruneMessages(
             ...part,
             output: "[screenshot removed during compaction]",
           });
-          freedTokens += outputTokens - estimateTokens("[screenshot removed during compaction]");
+          freedTokens +=
+            outputTokens -
+            estimateTokens("[screenshot removed during compaction]");
           messageChanged = true;
         } else if (outputStr.length > TOOL_OUTPUT_MAX_CHARS) {
           // Truncate long outputs
-          const truncated = outputStr.substring(0, TOOL_OUTPUT_MAX_CHARS) + "...";
+          const truncated =
+            outputStr.substring(0, TOOL_OUTPUT_MAX_CHARS) + "...";
           newParts.push({
             ...part,
             output: truncated,
@@ -570,12 +613,12 @@ export function pruneMessages(
 
 export function selectTail(
   messages: PrunableMessage[],
-  model: TokenLimits | undefined
+  model: TokenLimits | undefined,
 ): { headMessages: PrunableMessage[]; tailStartId: string | undefined } {
   const usable = getUsableTokens(model);
   const budget = Math.min(
     MAX_PRESERVE_RECENT_TOKENS,
-    Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable * 0.25))
+    Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable * 0.25)),
   );
 
   let tokenAccumulator = 0;
@@ -634,12 +677,13 @@ export function selectTail(
  * "conversation too short to compact" message instead of producing a
  * trivial summary.
  */
-export function selectTailForManual(
-  messages: PrunableMessage[]
-): { headMessages: PrunableMessage[]; tailStartId: string | undefined } {
+export function selectTailForManual(messages: PrunableMessage[]): {
+  headMessages: PrunableMessage[];
+  tailStartId: string | undefined;
+} {
   const userTurns = messages.reduce(
     (n, m) => (m.role === "user" ? n + 1 : n),
-    0
+    0,
   );
 
   // Need at least two user turns for a meaningful manual compaction.
@@ -674,7 +718,7 @@ export interface ResolvedModelSelection {
  */
 export function resolveCompactionModel(
   rawModelKey: string,
-  providers: ProviderDefinition[]
+  providers: ProviderDefinition[],
 ): ResolvedModelSelection | undefined {
   const [providerId, ...modelIdParts] = rawModelKey.split(":");
   const hasPrefix = modelIdParts.length > 0;
@@ -711,7 +755,7 @@ export function getCompactionSystemPrompt(): string {
 // Message Preparation for Summarization
 
 export function prepareMessagesForSummarization(
-  messages: PrunableMessage[]
+  messages: PrunableMessage[],
 ): string {
   const formatted: string[] = [];
 
@@ -732,7 +776,9 @@ export function prepareMessagesForSummarization(
         if (part.input !== undefined) {
           const inputStr = JSON.stringify(part.input);
           const truncatedInput =
-            inputStr.length > 500 ? inputStr.substring(0, 500) + "..." : inputStr;
+            inputStr.length > 500
+              ? inputStr.substring(0, 500) + "..."
+              : inputStr;
           toolStr += `\ninput: ${truncatedInput}`;
         }
 
@@ -762,7 +808,9 @@ export function prepareMessagesForSummarization(
 
 /**
  * A "completed compaction" is a user message containing a `CompactionPart`
- * immediately followed by an assistant message marked `summary: true`.
+ * immediately followed by its assistant summary. Persisted messages carry
+ * `summary: true`; AI SDK UI messages omit that database-only field, so an
+ * absent flag is accepted while an explicit `summary: false` is rejected.
  *
  * The pair represents one auto- or manually-triggered compaction event.
  * The pre-compaction head can be safely dropped from the LLM view; the
@@ -771,8 +819,12 @@ export function prepareMessagesForSummarization(
 export interface CompactionEvent {
   /** Index of the user message carrying the CompactionPart. */
   userIndex: number;
+  /** Stable id of the user message, when available. */
+  userMessageId?: string;
   /** Index of the assistant message carrying the summary text. */
   summaryIndex: number;
+  /** Stable id of the summary assistant message, when available. */
+  summaryMessageId?: string;
   /** The CompactionPart on the user message (carries `tailStartMessageId`). */
   part: CompactionPart;
   /** Plain-text summary extracted from the assistant message. */
@@ -785,11 +837,19 @@ export interface CompactionEvent {
  * Walks `messages` in order and identifies completed compaction events.
  *
  * A compaction is "completed" when the user-with-CompactionPart is
- * immediately followed by an assistant with `summary: true`. Returns
- * events in chronological order.
+ * immediately followed by an assistant summary. The persisted shape marks
+ * that assistant with `summary: true`; the in-memory SDK shape has no summary
+ * field, so only an explicit `false` rejects the pair. Returns events in
+ * chronological order.
  */
 export function findCompactionEvents(
-  messages: { role: string; parts: any[]; summary?: boolean; createdAt?: number }[],
+  messages: {
+    id?: string;
+    role: string;
+    parts: any[];
+    summary?: boolean;
+    createdAt?: number;
+  }[],
 ): CompactionEvent[] {
   const events: CompactionEvent[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -800,7 +860,7 @@ export function findCompactionEvents(
     );
     if (!part) continue;
     const next = messages[i + 1];
-    if (!next || next.role !== "assistant" || !next.summary) continue;
+    if (!next || next.role !== "assistant" || next.summary === false) continue;
     const summaryText = next.parts
       .filter((p): p is { type: "text"; text: string } => p.type === "text")
       .map((p) => p.text)
@@ -808,7 +868,9 @@ export function findCompactionEvents(
       .trim();
     events.push({
       userIndex: i,
+      userMessageId: m.id,
       summaryIndex: i + 1,
+      summaryMessageId: next.id,
       part,
       summaryText,
       completedAt: next.createdAt ?? 0,
@@ -829,6 +891,24 @@ export function shouldDebounceCompaction(
   const last = events.at(-1);
   if (!last) return false;
   return nowMs - last.completedAt < COMPACTION_DEBOUNCE_MS;
+}
+
+/**
+ * Whether a newly selected compaction head contains anything beyond the
+ * latest compaction marker and its summary. Re-summarizing only that pair
+ * cannot reduce context and is a no-progress loop, regardless of elapsed
+ * wall-clock time.
+ */
+export function hasCompactionHeadProgress(
+  headMessages: { id: string }[],
+  latestEvent: CompactionEvent | undefined,
+): boolean {
+  if (!latestEvent?.userMessageId || !latestEvent.summaryMessageId) return true;
+  return headMessages.some(
+    (message) =>
+      message.id !== latestEvent.userMessageId &&
+      message.id !== latestEvent.summaryMessageId,
+  );
 }
 
 /**
@@ -883,4 +963,3 @@ export function filterCompactedMessages<
  * transport (which substitutes at send time) and any future consumer.
  */
 export const COMPACTION_USER_PROMPT = "What did we do so far?";
-
