@@ -158,18 +158,103 @@ interface AssistantMessageProps {
 }
 
 /**
- * Part types that belong inside a "step" group: tool calls and the reasoning
- * that accompanies them. These get folded into the "Completed N steps"
- * collapsible once the assistant begins its answer text. `step-start` is
- * grouped too (skipped at render time) so it never breaks a run of tools.
+ * Longest a text part may be and still be folded away as narration. Anything
+ * longer is substantive prose and keeps full weight even when tool calls
+ * follow it — which happens legitimately when the agent answers and THEN
+ * closes the tabs it opened, as the system prompt tells it to.
  */
-function isWorkPart(part: AgentUIMessage["parts"][number]): boolean {
+const NARRATION_MAX_CHARS = 400;
+
+/**
+ * Tool calls needed in a group before it folds into "Completed N steps". One
+ * call stays inline (folding it hides more than it saves); two or more fold.
+ * Narration no longer splits runs, so groups now reach this threshold roughly
+ * whenever the agent actually batches work.
+ */
+const MIN_TOOLS_TO_FOLD = 2;
+
+/** A text part carrying something other than whitespace. */
+function isNonEmptyText(part: AgentUIMessage["parts"][number]): boolean {
+  return part.type === "text" && part.text.trim().length > 0;
+}
+
+/** Does a tool call appear anywhere after `index`? */
+function toolCallFollows(
+  parts: AgentUIMessage["parts"],
+  index: number,
+): boolean {
+  return parts.some(
+    (p, i) =>
+      i > index &&
+      (p.type === "dynamic-tool" ||
+        (typeof p.type === "string" && p.type.startsWith("tool-"))),
+  );
+}
+
+/**
+ * Work out which text parts are *narration* rather than *answer*.
+ *
+ * Narration is the running commentary the agent writes between tool calls
+ * ("Checking the pricing page."). Answer text is what the user actually asked
+ * for. Only answer text earns full weight in the transcript; narration folds
+ * into the step group next to the calls it introduced. Without this split
+ * every text part is a hard break (see `buildSegments`), so a long run reads
+ * as alternating prose and collapsed blocks, and the runs of tool calls are
+ * chopped too finely to ever reach `MIN_TOOLS_TO_FOLD`.
+ *
+ * A text part is narration when all of these hold:
+ *  - it has content, and
+ *  - it's short enough to be a status line (`NARRATION_MAX_CHARS`), and
+ *  - at least one tool call follows it — it introduces work rather than
+ *    concluding it, and
+ *  - it isn't the last word of a finished message. Once the stream ends the
+ *    final non-empty text part is the answer however terse, so a short
+ *    "Done — updated 3 rows." followed by tab cleanup is never folded. While
+ *    streaming that guard is lifted, because the trailing text of an in-flight
+ *    message reads as narration until the real answer arrives.
+ */
+export function findNarrationIndices(
+  parts: AgentUIMessage["parts"],
+  opts: { isStreaming?: boolean } = {},
+): Set<number> {
+  const lastTextIndex = (() => {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (isNonEmptyText(parts[i])) return i;
+    }
+    return -1;
+  })();
+
+  const narration = new Set<number>();
+  parts.forEach((part, i) => {
+    if (part.type !== "text") return;
+    if (part.text.trim().length === 0) return;
+    if (part.text.length > NARRATION_MAX_CHARS) return;
+    if (!toolCallFollows(parts, i)) return;
+    if (!opts.isStreaming && i === lastTextIndex) return;
+    narration.add(i);
+  });
+  return narration;
+}
+
+/**
+ * Part types that belong inside a "step" group: tool calls, the reasoning that
+ * accompanies them, and the agent's between-call narration. These get folded
+ * into the "Completed N steps" collapsible once the assistant begins its
+ * answer text. `step-start` is grouped too (skipped at render time) so it
+ * never breaks a run of tools.
+ */
+function isWorkPart(
+  part: AgentUIMessage["parts"][number],
+  index: number,
+  narration: Set<number>,
+): boolean {
   const t = part.type;
   return (
     t === "reasoning" ||
     t === "dynamic-tool" ||
     t === "step-start" ||
-    (typeof t === "string" && t.startsWith("tool-"))
+    (typeof t === "string" && t.startsWith("tool-")) ||
+    narration.has(index)
   );
 }
 
@@ -190,15 +275,24 @@ function hasPendingApproval(parts: AgentUIMessage["parts"]): boolean {
   );
 }
 
-type Segment =
+export type Segment =
   | { kind: "break"; part: AgentUIMessage["parts"][number]; index: number }
   | {
       kind: "group";
       parts: { part: AgentUIMessage["parts"][number]; index: number }[];
     };
 
-/** Build render segments: runs of work parts grouped, break parts standalone. */
-function buildSegments(parts: AgentUIMessage["parts"]): Segment[] {
+/**
+ * Build render segments: runs of work parts grouped, break parts standalone.
+ *
+ * `narration` marks text parts that should be grouped with the work instead of
+ * breaking it — pass the result of `findNarrationIndices`. Defaulting it to an
+ * empty set keeps the raw "every text part breaks" behavior available.
+ */
+export function buildSegments(
+  parts: AgentUIMessage["parts"],
+  narration: Set<number> = new Set(),
+): Segment[] {
   const segments: Segment[] = [];
   let current: { part: AgentUIMessage["parts"][number]; index: number }[] = [];
 
@@ -210,7 +304,7 @@ function buildSegments(parts: AgentUIMessage["parts"]): Segment[] {
   };
 
   parts.forEach((part, index) => {
-    if (isWorkPart(part)) {
+    if (isWorkPart(part, index, narration)) {
       current.push({ part, index });
     } else {
       flush();
@@ -223,7 +317,8 @@ function buildSegments(parts: AgentUIMessage["parts"]): Segment[] {
 
 function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, dimmed }: AssistantMessageProps) {
   const parts = message.parts;
-  const segments = buildSegments(parts);
+  const narrationIndices = findNarrationIndices(parts, { isStreaming });
+  const segments = buildSegments(parts, narrationIndices);
 
   // Index of the last group segment — the only one that can still be "active"
   // (tools running, no answer text yet).
@@ -234,15 +329,34 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
     return -1;
   })();
 
-  // Does any non-empty text part exist after a given part index? If so, the
-  // group that precedes it has produced its answer and should fold.
-  const hasTextAfter = (index: number): boolean =>
+  // Does any *answer* text exist after a given part index? If so, the group
+  // that precedes it has produced its answer and should fold. Narration
+  // doesn't count — it lives inside the group and must not fold it early.
+  const hasAnswerTextAfter = (index: number): boolean =>
     parts.some(
-      (p, i) => i > index && p.type === "text" && p.text.length > 0,
+      (p, i) =>
+        i > index &&
+        p.type === "text" &&
+        p.text.trim().length > 0 &&
+        !narrationIndices.has(i),
     );
 
   const renderPart = (part: AgentUIMessage["parts"][number], i: number) => {
     if (part.type === "text") {
+      // Narration is a status line, not prose: render it muted and small, and
+      // leave it where it is — above the calls it introduced. (Hoisting it to
+      // the bottom as a "live status" reads as stale, because narration always
+      // has tool calls after it by definition, so the hoisted copy describes
+      // work the user can already see finished above it.)
+      if (narrationIndices.has(i)) {
+        return (
+          <Markdown
+            key={i}
+            source={part.text}
+            className="py-0.5 prose-p:my-0 prose-p:text-xs prose-p:text-muted-foreground"
+          />
+        );
+      }
       const isLastPart = i === parts.length - 1;
       return (
         <Markdown
@@ -424,10 +538,10 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
             renderPart(part, index),
           );
 
-          // No tool calls, fewer than 3 tool steps, or an in-flight approval
-          // the user must see/act on: render inline (no fold). Only runs of
-          // 3+ tool calls collapse into a "Completed N steps" block.
-          if (toolCount < 3 || hasPendingApproval(groupParts)) {
+          // Too few tool calls to be worth folding, or an in-flight approval
+          // the user must see/act on: render inline (no fold). Runs of
+          // MIN_TOOLS_TO_FOLD+ calls collapse into "Completed N steps".
+          if (toolCount < MIN_TOOLS_TO_FOLD || hasPendingApproval(groupParts)) {
             return (
               <div key={`g${si}`} className="flex w-full flex-col">
                 {rendered}
@@ -442,7 +556,7 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
           const isActive =
             isStreaming &&
             si === lastGroupSegmentIndex &&
-            !hasTextAfter(lastPartIndex);
+            !hasAnswerTextAfter(lastPartIndex);
 
           return (
             <StepGroup key={`g${si}`} stepCount={toolCount} isActive={isActive}>
