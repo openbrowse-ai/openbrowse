@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import {
+    HEADLESS_APPROVAL_DROP_TOOLS,
+    HEADLESS_SCHEDULED_DROP_TOOLS,
+} from "../../agent-transport";
 import type { ToolContext } from "../../driver";
 import type { BrowserTool } from "../../types";
 import {
@@ -110,22 +114,17 @@ describe("batchable registry invariants", () => {
    * explicitly asserted here.
    */
   it("excludes tools that headless runs drop", () => {
-    for (const name of [
-      // Dropped when `autoApprove` is false — all approval-gated.
-      "closeTabs",
-      "executeOnPage",
-      "Delete",
-      "install_skill",
-      "create_skill",
-      // Dropped from every scheduled run to prevent recursion. Note
-      // `list_scheduled_tasks` is read-only and would otherwise look
-      // like a fine batch candidate — it is not.
-      "create_scheduled_task",
-      "list_scheduled_tasks",
-      "update_scheduled_task",
-      // Dropped unless `allowDelegate`.
-      "delegate",
-    ]) {
+    // Reads the lists from `agent-transport` rather than restating them,
+    // so adding a tool to the headless filter automatically extends this
+    // invariant. `list_scheduled_tasks` is the case that motivates it: it
+    // is read-only and looks like a fine batch candidate, but a scheduled
+    // run drops it to prevent recursion.
+    const dropped = [
+      ...HEADLESS_APPROVAL_DROP_TOOLS,
+      ...HEADLESS_SCHEDULED_DROP_TOOLS,
+    ];
+    expect(dropped.length).toBeGreaterThan(0);
+    for (const name of dropped) {
       expect(BATCHABLE).not.toContain(name);
     }
   });

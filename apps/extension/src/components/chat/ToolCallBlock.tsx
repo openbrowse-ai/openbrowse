@@ -195,11 +195,15 @@ type ToolLabels = {
    */
   meta?: string;
   /**
-   * `warning` tints `meta` and swaps the leading dot for an alert
-   * glyph, for outcomes that partially succeeded — distinct from
-   * `errored`, where nothing usable came back.
+   * Tints `meta` and swaps the leading dot for an alert glyph.
+   *
+   * `warning` (amber) is for a partial success — some of the work landed,
+   * so the row must not read as a failure. `error` (red) is for an
+   * outcome that produced nothing usable, matching how `errored` rows
+   * render; the two are kept distinct because conflating them tells the
+   * user their partial results are gone.
    */
-  metaTone?: "muted" | "warning";
+  metaTone?: "muted" | "warning" | "error";
 };
 
 const TOOL_LABELS: Record<string, ToolLabels> = {
@@ -673,7 +677,9 @@ export function batchLabels(
     const topLevelError = (result as { error?: unknown } | null | undefined)
       ?.error;
     if (typeof topLevelError === "string") {
-      return { ...fallback, pending, done, meta: "Failed", metaTone: "warning" };
+      // Nothing came back at all, so this is a failure and not a partial
+      // success — red, like any other errored row.
+      return { ...fallback, pending, done, meta: "Failed", metaTone: "error" };
     }
     return {
       ...fallback,
@@ -754,22 +760,33 @@ export function ToolCallBlock({
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 
-  // A partially-successful outcome (some invocations of a batch failed).
-  // Distinct from `errored`, where nothing usable came back, so it gets
-  // the alert glyph but keeps the normal label color.
-  const partial = !pending && dynamicLabels.metaTone === "warning";
+  // An outcome that needs an alert glyph rather than the neutral dot:
+  // amber for a partial success (some work landed, so the label keeps its
+  // normal color), red for one that produced nothing usable.
+  const metaTone = dynamicLabels.metaTone;
+  const metaAlert = !pending && (metaTone === "warning" || metaTone === "error");
   const metaBadge = dynamicLabels.meta ? (
     <span
       className={cn(
         "text-[11px] ml-1 tabular-nums",
-        dynamicLabels.metaTone === "warning"
-          ? "text-amber-600/80 dark:text-amber-400/80"
-          : "text-muted-foreground/60",
+        metaTone === "error"
+          ? "text-red-600/70 dark:text-red-400/70"
+          : metaTone === "warning"
+            ? "text-amber-600/80 dark:text-amber-400/80"
+            : "text-muted-foreground/60",
       )}
     >
       {dynamicLabels.meta}
     </span>
   ) : null;
+  const metaAlertIcon = (
+    <AlertCircle
+      className={cn(
+        "size-3 shrink-0",
+        metaTone === "error" ? "text-red-500/80" : "text-amber-500/80",
+      )}
+    />
+  );
 
   // Denied row. Two render shapes (per-tool config in TOOL_LABELS):
   //
@@ -909,8 +926,8 @@ export function ToolCallBlock({
                 />
               ) : errored ? (
                 <AlertCircle className="size-3 shrink-0 text-red-500/80" />
-              ) : partial ? (
-                <AlertCircle className="size-3 shrink-0 text-amber-500/80" />
+              ) : metaAlert ? (
+                metaAlertIcon
               ) : (
                 <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
@@ -971,8 +988,8 @@ export function ToolCallBlock({
             />
           ) : errored ? (
             <AlertCircle className="size-3 shrink-0 text-red-500/80" />
-          ) : partial ? (
-            <AlertCircle className="size-3 shrink-0 text-amber-500/80" />
+          ) : metaAlert ? (
+            metaAlertIcon
           ) : (
             <span
               className={cn(

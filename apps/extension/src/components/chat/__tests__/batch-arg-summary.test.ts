@@ -1,5 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { summarizeArgs } from "../tool-results/batch";
+import { outputText, summarizeArgs } from "../tool-results/batch";
+
+describe("outputText", () => {
+  it("returns a string for an invocation that resolved to nothing", () => {
+    // `JSON.stringify(undefined)` is `undefined`, not "undefined", and TS
+    // types it as `string` — so an unguarded call put `undefined` into
+    // ExpandableText's required `text` prop.
+    expect(outputText(undefined)).toBe("No output.");
+    expect(typeof outputText(undefined)).toBe("string");
+  });
+
+  it("passes a string output through untouched", () => {
+    expect(outputText("plain text")).toBe("plain text");
+    expect(outputText("")).toBe("");
+  });
+
+  it("formats defined non-string values as indented JSON", () => {
+    expect(outputText({ tab: "t1" })).toBe('{\n  "tab": "t1"\n}');
+    expect(outputText(null)).toBe("null");
+    expect(outputText([1, 2])).toBe("[\n  1,\n  2\n]");
+    expect(outputText(false)).toBe("false");
+  });
+});
 
 describe("summarizeArgs", () => {
   it("keeps the argument that identifies the call", () => {

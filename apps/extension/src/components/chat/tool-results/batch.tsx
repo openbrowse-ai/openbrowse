@@ -72,6 +72,22 @@ export function summarizeArgs(childArgs: Record<string, unknown>): string {
     : summary;
 }
 
+/**
+ * Text for a successful invocation that has no custom renderer.
+ *
+ * `JSON.stringify(undefined)` returns `undefined` — not the string
+ * "undefined" — yet TypeScript types the call as returning `string`. Without
+ * this guard, an invocation that resolved to nothing would pass `undefined`
+ * into `ExpandableText`'s required `text` prop and crash the row. Reachable
+ * from a tool that returns nothing and from persisted rows, which
+ * `readBatchResults` accepts on `name` alone.
+ */
+export function outputText(output: unknown): string {
+  if (typeof output === "string") return output;
+  const json: string | undefined = JSON.stringify(output, null, 2);
+  return json ?? "No output.";
+}
+
 function InvocationRow({
   invocationResult,
   childArgs,
@@ -119,11 +135,7 @@ function InvocationRow({
             (ok ? (
               <div className="px-1 py-1">
                 <ExpandableText
-                  text={
-                    typeof output === "string"
-                      ? output
-                      : JSON.stringify(output, null, 2)
-                  }
+                  text={outputText(output)}
                   className="font-mono text-foreground/80"
                 />
               </div>

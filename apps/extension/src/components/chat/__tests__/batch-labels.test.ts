@@ -65,7 +65,25 @@ describe("batchLabels", () => {
     );
     expect(labels.done).toBe("Comparing pricing pages");
     expect(labels.meta).toBe("Failed");
-    expect(labels.metaTone).toBe("warning");
+    // `error`, not `warning`: nothing came back, so the row must read as a
+    // failure rather than as a partial success with results to inspect.
+    expect(labels.metaTone).toBe("error");
+  });
+
+  it("distinguishes a partial success from a total failure", () => {
+    const partial = batchLabels(
+      args("Comparing pricing pages", 4),
+      results(true, true, true, false),
+      fallback,
+    );
+    const total = batchLabels(
+      args("Comparing pricing pages", 4),
+      { error: "workspace unavailable" },
+      fallback,
+    );
+    expect(partial.metaTone).toBe("warning");
+    expect(total.metaTone).toBe("error");
+    expect(partial.metaTone).not.toBe(total.metaTone);
   });
 
   it("singularizes a one-read job", () => {

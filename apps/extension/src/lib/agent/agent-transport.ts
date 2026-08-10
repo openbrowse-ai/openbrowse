@@ -94,11 +94,7 @@ import {
   updateScheduledTaskTool,
   webSearchTool,
 } from "./tools";
-import {
-  buildBatchableRegistry,
-  createBatchTool,
-  MIN_INVOCATIONS as MIN_BATCH_INVOCATIONS,
-} from "./tools/batch";
+import { buildBatchableRegistry, createBatchTool } from "./tools/batch";
 import { createDelegateTool } from "./tools/delegate";
 import { createPythonTool } from "./tools/execute-python";
 import { createFsTools, isAnySpacePath } from "./tools/fs";
@@ -429,6 +425,30 @@ async function ensureAgentColor(
     return null;
   }
 }
+
+/**
+ * Tools dropped from a headless run that is NOT auto-approving: each needs
+ * a human to approve it and there is nobody there.
+ *
+ * Exported so invariants elsewhere track this list instead of restating
+ * it. In particular `createBrowserToolSet` builds `batch` BEFORE this
+ * filter runs, so a batchable entry here would stay reachable through
+ * `batch` in exactly the runs it was removed from.
+ */
+export const HEADLESS_APPROVAL_DROP_TOOLS = [
+  "closeTabs",
+  "executeOnPage",
+  "Delete",
+  "install_skill",
+  "create_skill",
+] as const;
+
+/** Scheduled runs must never create/modify scheduled tasks (no recursion). */
+export const HEADLESS_SCHEDULED_DROP_TOOLS = [
+  "create_scheduled_task",
+  "list_scheduled_tasks",
+  "update_scheduled_task",
+] as const;
 
 const TAB_INTERACTING_TOOLS = new Set([
   "readPage",
@@ -2838,15 +2858,18 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
           ([toolName]) => allow.has(toolName) && !deny.has(toolName),
         ),
       );
-      if (Object.keys(scopedRegistry).length >= MIN_BATCH_INVOCATIONS) {
+      // One surviving tool is enough: a valid call needs two
+      // INVOCATIONS, not two distinct tools, so an agent left with only
+      // `Read` can still batch two reads of different files.
+      if (Object.keys(scopedRegistry).length > 0) {
         subagentTools.batch = toSDKTool(
           createBatchTool(scopedRegistry),
           "batch",
           cfg.childConversationId,
         );
       } else {
-        // Too few batchable tools survive the filter to form a batch —
-        // drop the tool rather than advertise a useless registry.
+        // Nothing batchable survived the filter — drop the tool rather
+        // than advertise an empty registry to the model.
         delete subagentTools.batch;
       }
     }
@@ -2984,20 +3007,13 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       HEADLESS_DROP.add("delegate");
     }
     if (!headless.autoApprove) {
-      for (const k of [
-        "closeTabs",
-        "executeOnPage",
-        "Delete",
-        "install_skill",
-        "create_skill",
-      ]) {
+      for (const k of HEADLESS_APPROVAL_DROP_TOOLS) {
         HEADLESS_DROP.add(k);
       }
     }
-    // Scheduled runs must never create/modify scheduled tasks (no recursion).
-    HEADLESS_DROP.add("create_scheduled_task");
-    HEADLESS_DROP.add("list_scheduled_tasks");
-    HEADLESS_DROP.add("update_scheduled_task");
+    for (const k of HEADLESS_SCHEDULED_DROP_TOOLS) {
+      HEADLESS_DROP.add(k);
+    }
     const filtered: Record<string, ToolSet[string]> = {};
     for (const [name, sdkTool] of Object.entries(base)) {
       if (HEADLESS_DROP.has(name)) continue;
