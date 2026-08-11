@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { ThinkingConfig } from "../../types";
 import {
   buildThinkingProviderOptions,
+  isAnthropicAdaptiveThinkingModel,
   isGemini3Model,
   isGeminiFlashModel,
+  isThinkingAlwaysOn,
+  resolveThinkingProviderOptions,
   resolveThinkingVendor,
 } from "../thinking";
 
@@ -175,5 +178,136 @@ describe("buildThinkingProviderOptions — unknown", () => {
     expect(
       buildThinkingProviderOptions("ollama", "llama-3", BUDGET),
     ).toBeUndefined();
+  });
+});
+
+describe("isAnthropicAdaptiveThinkingModel", () => {
+  it("matches Sonnet/Opus 4.6+ and every 5.x family, in both id forms", () => {
+    for (const id of [
+      "claude-sonnet-4-6",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      // Family-agnostic on purpose: a new 5.x family shouldn't need a code
+      // change to be recognised as adaptive.
+      "claude-fable-5",
+      "anthropic/claude-opus-4.7",
+      "anthropic/claude-sonnet-4.6",
+    ]) {
+      expect(isAnthropicAdaptiveThinkingModel(id)).toBe(true);
+    }
+  });
+
+  it("rejects pre-4.6 models, including dated ids", () => {
+    for (const id of [
+      "claude-sonnet-4-5",
+      "claude-opus-4-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-1-20250805",
+      "claude-opus-4-5-20251101",
+      "anthropic/claude-opus-4.1",
+      // Legacy version-first ids predate adaptive thinking entirely.
+      "claude-3-opus-20240229",
+    ]) {
+      expect(isAnthropicAdaptiveThinkingModel(id)).toBe(false);
+    }
+  });
+
+  it("rejects non-Claude models", () => {
+    expect(isAnthropicAdaptiveThinkingModel("gpt-5.5")).toBe(false);
+    expect(isAnthropicAdaptiveThinkingModel("gemini-3.1-pro-preview")).toBe(
+      false,
+    );
+  });
+});
+
+describe("isThinkingAlwaysOn", () => {
+  it("is true for Anthropic adaptive models, direct and via the gateway", () => {
+    expect(isThinkingAlwaysOn("anthropic", "claude-opus-5")).toBe(true);
+    expect(isThinkingAlwaysOn("vercel", "anthropic/claude-opus-4.7")).toBe(
+      true,
+    );
+  });
+
+  it("is false for pre-adaptive Anthropic models and other vendors", () => {
+    expect(isThinkingAlwaysOn("anthropic", "claude-opus-4-5")).toBe(false);
+    expect(isThinkingAlwaysOn("openai", "gpt-5.5")).toBe(false);
+    expect(isThinkingAlwaysOn("google", "gemini-3.1-pro-preview")).toBe(false);
+    // A Claude id reached through a provider we can't resolve to a vendor
+    // isn't ours to force.
+    expect(isThinkingAlwaysOn("openrouter", "anthropic/claude-opus-4.7")).toBe(
+      false,
+    );
+  });
+});
+
+describe("resolveThinkingProviderOptions", () => {
+  it("requests summarized thinking for an adaptive model even with the toggle OFF", () => {
+    // The regression this fixes: with the toggle off we sent no `thinking`
+    // field at all, so Anthropic applied its `display: "omitted"` default and
+    // streamed thinking blocks with empty text — blank <Reasoning> blocks in
+    // the transcript, for tokens the user paid for anyway.
+    expect(
+      resolveThinkingProviderOptions("anthropic", "claude-opus-5", {
+        enabled: false,
+      }),
+    ).toEqual({
+      anthropic: { thinking: { type: "adaptive", display: "summarized" } },
+    });
+  });
+
+  it("forces it on when thinking settings are absent entirely (headless / MCP runs)", () => {
+    expect(
+      resolveThinkingProviderOptions("vercel", "anthropic/claude-opus-4.7"),
+    ).toEqual({
+      anthropic: { thinking: { type: "adaptive", display: "summarized" } },
+    });
+  });
+
+  it("still honours an explicit effort level when the toggle is on", () => {
+    expect(
+      resolveThinkingProviderOptions("anthropic", "claude-opus-5", {
+        enabled: true,
+        config: EFFORT_HIGH,
+      }),
+    ).toEqual({
+      anthropic: {
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      },
+    });
+  });
+
+  it("returns undefined with the toggle off for models that are not always-on", () => {
+    expect(
+      resolveThinkingProviderOptions("openai", "gpt-5.5", { enabled: false }),
+    ).toBeUndefined();
+    expect(
+      resolveThinkingProviderOptions("google", "gemini-2.5-flash"),
+    ).toBeUndefined();
+    expect(
+      resolveThinkingProviderOptions("anthropic", "claude-opus-4-5"),
+    ).toBeUndefined();
+  });
+
+  it("builds vendor defaults when enabled without a config", () => {
+    // Previously the call sites gated on `enabled && config`, so an enabled
+    // toggle with no persisted config silently sent nothing.
+    expect(
+      resolveThinkingProviderOptions("google", "gemini-2.5-flash", {
+        enabled: true,
+      }),
+    ).toEqual({
+      google: { thinkingConfig: { thinkingBudget: 8192, includeThoughts: true } },
+    });
+    expect(
+      resolveThinkingProviderOptions("google", "gemini-3.1-pro-preview", {
+        enabled: true,
+      }),
+    ).toEqual({
+      google: { thinkingConfig: { thinkingLevel: "medium", includeThoughts: true } },
+    });
   });
 });

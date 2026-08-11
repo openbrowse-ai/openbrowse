@@ -1,7 +1,7 @@
+import { Markdown } from "@/components/chat/Markdown";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Markdown } from "@/components/chat/Markdown";
 
 interface ReasoningProps {
   text: string;
@@ -31,11 +31,26 @@ export function Reasoning({
     }
   }, [isStreaming]);
 
+  // Anthropic's adaptive-thinking models (Opus 4.7+) emit thinking blocks
+  // whose text is empty unless the request asks for
+  // `thinking: { type: "adaptive", display: "summarized" }`. We only ask for
+  // that when the composer's Thinking toggle is on (see
+  // `buildThinkingProviderOptions`), so with the toggle off the stream still
+  // carries reasoning parts — just with no content. Rendering the collapsible
+  // for one of those gives a "Reasoning" header that expands to nothing.
+  //
+  // Drop the block once it has settled. While it is still streaming the
+  // header stays (it's a useful liveness cue, and text may simply not have
+  // arrived yet).
+  const isEmpty = text.trim().length === 0;
+
   const label = isStreaming
     ? "Thinking..."
     : durationSeconds != null && durationSeconds > 0
       ? `Thought for ${durationSeconds}s`
       : "Reasoning";
+
+  if (isEmpty && !isStreaming) return null;
 
   return (
     <div className={cn("w-full", className)}>

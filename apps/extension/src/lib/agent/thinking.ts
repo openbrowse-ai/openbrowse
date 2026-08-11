@@ -78,6 +78,57 @@ export function isGeminiFlashModel(modelId: string): boolean {
   return id.includes("gemini") && id.includes("flash");
 }
 
+/**
+ * Family + version matcher for Claude ids, tolerant of both id conventions
+ * (`claude-opus-4-7`, `anthropic/claude-opus-4.7`) and of a trailing date
+ * stamp (`claude-opus-4-5-20251101`). Group 1 is the family (`opus`,
+ * `sonnet`, `haiku`, ...), 2 the major version, 3 the optional minor.
+ *
+ * Legacy ids that put the version first (`claude-3-opus-20240229`) don't
+ * match, which is what we want — they long predate adaptive thinking.
+ */
+const CLAUDE_FAMILY_VERSION = /claude-([a-z]+)-(\d+)(?:-(\d+))?/;
+
+/**
+ * True when the model belongs to Anthropic's adaptive-thinking generation:
+ * Sonnet 4.6, Opus 4.6, and everything newer (>= 4.6).
+ *
+ * These take `thinking: { type: "adaptive" }`; older models take
+ * `{ type: "enabled", budgetTokens }`. The distinction is the whole reason
+ * `isThinkingAlwaysOn` exists — an adaptive model's thinking isn't optional,
+ * only its visibility is.
+ */
+export function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
+  const match = CLAUDE_FAMILY_VERSION.exec(normalizeModelId(modelId));
+  if (!match) return false;
+  const major = Number(match[2]);
+  if (!Number.isInteger(major)) return false;
+  const minor = match[3] != null ? Number(match[3]) : 0;
+  return major > 4 || (major === 4 && minor >= 6);
+}
+
+/**
+ * Whether thinking must be treated as always-on for this provider/model,
+ * regardless of the composer's Thinking toggle.
+ *
+ * True only for Anthropic's adaptive generation. Switching the toggle off
+ * there never stopped the model thinking — it only dropped
+ * `display: "summarized"` from the request, so Anthropic fell back to its
+ * `display: "omitted"` default and streamed thinking blocks whose text is
+ * empty. The tokens were spent either way; all the toggle bought was a
+ * transcript full of blank `<Reasoning>` blocks. So force it on and let the
+ * user see what they paid for.
+ */
+export function isThinkingAlwaysOn(
+  providerId: string,
+  modelId: string,
+): boolean {
+  return (
+    resolveThinkingVendor(providerId, modelId) === "anthropic" &&
+    isAnthropicAdaptiveThinkingModel(modelId)
+  );
+}
+
 const VALID_GEMINI3_LEVELS = new Set([
   "minimal",
   "low",
@@ -90,6 +141,11 @@ const VALID_GEMINI3_LEVELS = new Set([
  * the resolved vendor. Returns `undefined` when the vendor is unknown or the
  * config shape doesn't apply to the vendor.
  *
+ * `config` is optional so the always-on path (`resolveThinkingProviderOptions`
+ * with the toggle off) can request thinking without inventing an effort level
+ * or budget the user never chose — each vendor branch falls back to its own
+ * default, or omits the knob entirely.
+ *
  * The returned shape is always vendor-keyed (`{ google: … }`, `{ anthropic: …
  * }`, `{ openai: … }`), which is exactly what the gateway forwards — so the
  * same builder serves both direct and gateway-routed models.
@@ -97,7 +153,7 @@ const VALID_GEMINI3_LEVELS = new Set([
 export function buildThinkingProviderOptions(
   providerId: string,
   modelId: string,
-  config: ThinkingConfig,
+  config?: ThinkingConfig,
 ): Record<string, unknown> | undefined {
   const vendor = resolveThinkingVendor(providerId, modelId);
   if (!vendor) return undefined;
@@ -107,7 +163,7 @@ export function buildThinkingProviderOptions(
       // Gemini 3: thinkingLevel. Derive from an effort-style config; fall back
       // to "medium" for legacy budget-style configs persisted before Gemini 3.
       const level =
-        config.type === "effort" && VALID_GEMINI3_LEVELS.has(config.level)
+        config?.type === "effort" && VALID_GEMINI3_LEVELS.has(config.level)
           ? config.level
           : "medium";
       return {
@@ -118,7 +174,7 @@ export function buildThinkingProviderOptions(
     }
     // Gemini 2.5: thinkingBudget. Fall back to a sane default when an
     // effort-style config is somehow paired with a 2.5 model.
-    const budget = config.type === "budget" ? config.tokens : 8192;
+    const budget = config?.type === "budget" ? config.tokens : 8192;
     return {
       google: {
         thinkingConfig: { thinkingBudget: budget, includeThoughts: true },
@@ -127,7 +183,7 @@ export function buildThinkingProviderOptions(
   }
 
   if (vendor === "anthropic") {
-    if (config.type === "effort") {
+    if (config?.type === "effort") {
       return {
         anthropic: {
           thinking: { type: "adaptive", display: "summarized" },
@@ -141,8 +197,28 @@ export function buildThinkingProviderOptions(
   }
 
   // openai
-  if (config.type === "effort") {
+  if (config?.type === "effort") {
     return { openai: { reasoning: { effort: config.level } } };
   }
   return undefined;
+}
+
+/**
+ * The single entry point transports use to decide what thinking options a run
+ * should carry. Wraps `buildThinkingProviderOptions` with the always-on rule.
+ *
+ * Thinking is requested when EITHER the user enabled it, OR the model thinks
+ * unconditionally (`isThinkingAlwaysOn`). Living here rather than at the call
+ * sites means every path — side panel, SW host, headless, MCP task runner —
+ * gets the same answer for the same model.
+ */
+export function resolveThinkingProviderOptions(
+  providerId: string,
+  modelId: string,
+  thinking?: { enabled: boolean; config?: ThinkingConfig },
+): Record<string, unknown> | undefined {
+  const on =
+    thinking?.enabled === true || isThinkingAlwaysOn(providerId, modelId);
+  if (!on) return undefined;
+  return buildThinkingProviderOptions(providerId, modelId, thinking?.config);
 }

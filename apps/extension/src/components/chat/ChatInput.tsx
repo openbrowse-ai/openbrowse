@@ -25,6 +25,7 @@ import { ZoomableImage } from "@/components/ui/zoomable-image";
 import {
     isGemini3Model,
     isGeminiFlashModel,
+    isThinkingAlwaysOn,
     resolveThinkingVendor,
 } from "@/lib/agent/thinking";
 import { getImageSizeLimit } from "@/lib/agent/vision-limits";
@@ -1283,34 +1284,12 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
               }
               footerExtra={
                 selectedModelCapabilities?.includes("thinking") ? (
-                  <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
-                    <BrainIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    <Switch
-                      checked={thinkingEnabled ?? false}
-                      onCheckedChange={(checked) => {
-                        if (checked) {
-                          const defaultConfig = getDefaultThinkingConfig(
-                            selectedModel ?? "",
-                          );
-                          onThinkingChange?.(true, defaultConfig);
-                        } else {
-                          onThinkingChange?.(false, undefined);
-                        }
-                      }}
-                      className="scale-75 origin-left"
-                    />
-                    {thinkingEnabled ? (
-                      <ThinkingControl
-                        config={thinkingConfig}
-                        modelId={selectedModel ?? ""}
-                        onChange={(config) => onThinkingChange?.(true, config)}
-                      />
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        Thinking
-                      </span>
-                    )}
-                  </div>
+                  <ThinkingFooter
+                    modelId={selectedModel ?? ""}
+                    thinkingEnabled={thinkingEnabled}
+                    thinkingConfig={thinkingConfig}
+                    onThinkingChange={onThinkingChange}
+                  />
                 ) : null
               }
             />
@@ -1494,6 +1473,70 @@ function getDefaultThinkingConfig(compoundModelId: string): ThinkingConfig {
     return { type: "effort", level: "medium" };
   const range = getBudgetRange(compoundModelId);
   return { type: "budget", tokens: range.default };
+}
+
+/**
+ * True when the (compound) model always thinks, so the Thinking toggle should
+ * be locked on. See `isThinkingAlwaysOn`.
+ */
+function isThinkingAlwaysOnCompound(compoundModelId: string): boolean {
+  const { providerId, modelId } = splitCompoundModelId(compoundModelId);
+  return isThinkingAlwaysOn(providerId, modelId);
+}
+
+/**
+ * The Thinking row in the model-selector footer: a toggle plus the
+ * effort/budget control.
+ *
+ * On Anthropic's adaptive generation (Sonnet 4.6, Opus 4.6+) the toggle is
+ * locked on, because switching it off never saved anything — those models
+ * think on every turn regardless, and all the off state did was withhold
+ * `display: "summarized"` so the reasoning came back empty. The budget control
+ * is suppressed there too: adaptive thinking has no `budget_tokens` knob, so a
+ * slider would be reporting a number the request never carries.
+ */
+function ThinkingFooter({
+  modelId,
+  thinkingEnabled,
+  thinkingConfig,
+  onThinkingChange,
+}: {
+  modelId: string;
+  thinkingEnabled?: boolean;
+  thinkingConfig?: ThinkingConfig;
+  onThinkingChange?: (enabled: boolean, config?: ThinkingConfig) => void;
+}) {
+  const alwaysOn = isThinkingAlwaysOnCompound(modelId);
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 border-t border-border">
+      <BrainIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <Switch
+        checked={alwaysOn || (thinkingEnabled ?? false)}
+        disabled={alwaysOn}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            onThinkingChange?.(true, getDefaultThinkingConfig(modelId));
+          } else {
+            onThinkingChange?.(false, undefined);
+          }
+        }}
+        className="scale-75 origin-left"
+      />
+      {alwaysOn ? (
+        <span className="text-xs text-muted-foreground">
+          Thinking (always on)
+        </span>
+      ) : thinkingEnabled ? (
+        <ThinkingControl
+          config={thinkingConfig}
+          modelId={modelId}
+          onChange={(config) => onThinkingChange?.(true, config)}
+        />
+      ) : (
+        <span className="text-xs text-muted-foreground">Thinking</span>
+      )}
+    </div>
+  );
 }
 
 function ThinkingControl({
