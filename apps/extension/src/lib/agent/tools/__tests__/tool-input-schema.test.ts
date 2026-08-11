@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { createBatchTool } from "../batch";
 import { clickElementTool } from "../click-element";
 import { closeTabsTool } from "../close-tabs";
 import { createSkillTool } from "../create-skill";
@@ -45,6 +46,7 @@ import { webSearchTool } from "../web-search";
 
 const fsTools = createFsTools();
 const pythonTool = createPythonTool();
+const batchTool = createBatchTool();
 
 // Mirrors `browserTools` in agent-transport.ts. Add new tools here when
 // they're registered there.
@@ -81,6 +83,7 @@ const allTools = [
   ["LS", fsTools.lsTool],
   ["Delete", fsTools.deleteTool],
   ["Move", fsTools.moveTool],
+  ["batch", batchTool],
 ] as const;
 
 describe("tool input schemas (Anthropic compatibility)", () => {

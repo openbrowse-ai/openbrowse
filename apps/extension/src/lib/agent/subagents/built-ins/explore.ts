@@ -34,6 +34,9 @@ export const exploreAgent: AgentDefinition = {
     "Grep",
     "LS",
     "setTaskTitle",
+    // Rebuilt by the subagent runner over the intersection of this list
+    // and the batchable registry, so it can never widen the toolset.
+    "batch",
   ],
   defaultModel: undefined,
   maxSteps: 100,

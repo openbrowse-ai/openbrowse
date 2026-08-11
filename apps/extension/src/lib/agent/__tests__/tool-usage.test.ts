@@ -172,6 +172,82 @@ describe("scanToolUsage", () => {
   });
 });
 
+describe("scanToolUsage — batch calls", () => {
+  it("sees skill loads nested inside a batch", () => {
+    const calls: ToolCallLike[] = [
+      {
+        toolName: "batch",
+        input: {
+          invocations: [
+            { name: "skill", arguments: { name: "data-plumbing" } },
+            { name: "snapshot", arguments: { tab: "t1" } },
+          ],
+        },
+      },
+    ];
+    expect(scanToolUsage(calls, null)).toEqual({
+      connectorIds: [],
+      skillNames: ["data-plumbing"],
+      spaceFiles: [],
+    });
+  });
+
+  it("sees space-file reads nested inside a batch", () => {
+    const calls: ToolCallLike[] = [
+      {
+        toolName: "batch",
+        input: {
+          invocations: [
+            { name: "Read", arguments: { file_path: "spaces/s1/workspace/a.md" } },
+            { name: "Read", arguments: { file_path: "/workspace/private.md" } },
+          ],
+        },
+      },
+    ];
+    expect(scanToolUsage(calls, "s1")).toEqual({
+      connectorIds: [],
+      skillNames: [],
+      spaceFiles: ["a.md"],
+    });
+  });
+
+  it("accepts JSON-string arguments (Claude hedging on z.any)", () => {
+    const calls: ToolCallLike[] = [
+      {
+        toolName: "batch",
+        input: {
+          invocations: [{ name: "skill", arguments: '{"name":"aso"}' }],
+        },
+      },
+    ];
+    expect(scanToolUsage(calls, null).skillNames).toEqual(["aso"]);
+  });
+
+  it("contributes nothing for a malformed or partial batch input", () => {
+    for (const input of [undefined, {}, { invocations: "nope" }]) {
+      expect(scanToolUsage([{ toolName: "batch", input }], "s1")).toEqual({
+        connectorIds: [],
+        skillNames: [],
+        spaceFiles: [],
+      });
+    }
+  });
+
+  it("still scans sibling direct calls in the same step", () => {
+    const calls: ToolCallLike[] = [
+      { toolName: "skill", input: { name: "direct" } },
+      {
+        toolName: "batch",
+        input: { invocations: [{ name: "skill", arguments: { name: "batched" } }] },
+      },
+    ];
+    expect(scanToolUsage(calls, null).skillNames).toEqual([
+      "direct",
+      "batched",
+    ]);
+  });
+});
+
 describe("mergeDistinct", () => {
   it("appends new items preserving first-seen order", () => {
     expect(mergeDistinct(["a"], ["b", "c"])).toEqual(["a", "b", "c"]);

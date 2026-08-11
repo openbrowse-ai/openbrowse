@@ -36,6 +36,7 @@ const TOOL_LABELS: Record<string, string> = {
   executePython: "Running Python",
   executeCode: "Running code",
   extract: "Extracting from page",
+  batch: "Running batched reads",
   todoWrite: "Updating todo list",
   searchMemory: "Searching memory",
   createArtifact: "Creating artifact",

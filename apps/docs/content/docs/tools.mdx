@@ -50,6 +50,42 @@ The agent navigates the web and interacts with elements just like a human user. 
 | --- | --- |
 | `extract` | `{ tab, instruction, selector?, schema? }`. Extract structured data from a tab using its accessibility tree. Preferred over raw DOM-scraping via `executeOnPage` for text-based data like search results, product lists, table rows, or articles. URL fields (`{ type: "string", format: "uri" }`) are substituted with numeric IDs and rehydrated to prevent hallucination. |
 
+## Batching
+
+| Tool | Description |
+| --- | --- |
+| `batch` | `{ description, invocations: [{ name, arguments }, ...] }`. Run 2–8 independent **read-only** tools concurrently in one call. Results come back in `results`, in the same order as `invocations`, each as `{ name, ok, output?, error? }`. |
+
+Batching collapses several round-trips into one. It is most useful when the agent already knows every argument up front — reading three tabs, grepping two patterns, or firing several `webSearch` queries.
+
+```js
+batch({
+  description: "Comparing pricing pages",
+  invocations: [
+    { name: "snapshot", arguments: { tab: "t1", mode: "viewport" } },
+    { name: "readPage", arguments: { tab: "t2" } },
+    { name: "webSearch", arguments: { query: "competitor pricing" } }
+  ]
+})
+```
+
+`description` is a short present-participle phrase naming the work in the user's terms — it becomes the label on the tool call in chat. The agent writes the phrase; the interface adds progress and outcome. A batch labelled `Comparing pricing pages` reads as **"Comparing pricing pages… 4 reads"** while it runs, then **"Comparing pricing pages · 4 of 4"** when every call succeeds, or **"Comparing pricing pages · 3 of 4"** with an amber alert when one fails. The phrase never changes tense, so it stays accurate regardless of the language the agent is writing in.
+
+Batchable tools: `snapshot`, `readPage`, `extract`, `read_network_requests`, `read_console_messages`, `listTabs`, `webSearch`, `Read`, `Glob`, `Grep`, `LS`, `searchMemory`, `skill`, `list_artifacts`, `read_artifact_diagnostics`.
+
+<Callout title="Reads only, by design">
+  Approval gating (per-site allowlists, plan/act modes, the `executeOnPage`
+  static read check) lives in the tool-call wrapper, not in the tools
+  themselves — so anything reached through `batch` would skip it. Rather
+  than duplicate that logic, `batch` only accepts tools that need none of
+  it: no clicking, typing, navigating, writing, or code execution, and no
+  `screenshot` (nesting images would defeat screenshot pruning during
+  compaction). Batching an unsupported tool returns an error for that one
+  invocation and leaves the others untouched.
+</Callout>
+
+Invocations run concurrently and cannot see each other’s output, so calls whose arguments depend on a previous result — an `@ref` from a snapshot, a URL from a search — must be issued separately. Subagents get a `batch` scoped to their own allowed tools, so batching can never widen a subagent’s reach.
+
 ## Code Execution
 
 The agent can execute code in three sandboxed environments depending on what it's doing.

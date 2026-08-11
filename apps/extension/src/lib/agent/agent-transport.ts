@@ -94,6 +94,7 @@ import {
   updateScheduledTaskTool,
   webSearchTool,
 } from "./tools";
+import { buildBatchableRegistry, createBatchTool } from "./tools/batch";
 import { createDelegateTool } from "./tools/delegate";
 import { createPythonTool } from "./tools/execute-python";
 import { createFsTools, isAnySpacePath } from "./tools/fs";
@@ -424,6 +425,30 @@ async function ensureAgentColor(
     return null;
   }
 }
+
+/**
+ * Tools dropped from a headless run that is NOT auto-approving: each needs
+ * a human to approve it and there is nobody there.
+ *
+ * Exported so invariants elsewhere track this list instead of restating
+ * it. In particular `createBrowserToolSet` builds `batch` BEFORE this
+ * filter runs, so a batchable entry here would stay reachable through
+ * `batch` in exactly the runs it was removed from.
+ */
+export const HEADLESS_APPROVAL_DROP_TOOLS = [
+  "closeTabs",
+  "executeOnPage",
+  "Delete",
+  "install_skill",
+  "create_skill",
+] as const;
+
+/** Scheduled runs must never create/modify scheduled tasks (no recursion). */
+export const HEADLESS_SCHEDULED_DROP_TOOLS = [
+  "create_scheduled_task",
+  "list_scheduled_tasks",
+  "update_scheduled_task",
+] as const;
 
 const TAB_INTERACTING_TOOLS = new Set([
   "readPage",
@@ -884,6 +909,7 @@ export function createBrowserToolSet(
     executePython: toSDKTool(pythonTool, "executePython", cid),
     extract: toSDKTool(extractTool, "extract", cid),
     webSearch: toSDKTool(webSearchTool, "webSearch", cid),
+    batch: toSDKTool(createBatchTool(), "batch", cid),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite", cid),
     proposePlan: toSDKTool(proposePlanTool, "proposePlan", cid),
     skill: toSDKTool(skillTool, "skill", cid),
@@ -2819,6 +2845,35 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       subagentTools[name] = sdkTool;
     }
 
+    // `batch` must be REBUILT, never inherited. The parent's instance
+    // closes over the full batchable registry, so passing it through
+    // would let a subagent reach read tools its `allowedTools`
+    // deliberately omits — e.g. `explore` would gain `webSearch` and
+    // `recallMemory` for free, through `batch`. Re-derive it over the
+    // intersection so a subagent's batch surface can never exceed its
+    // direct surface.
+    if (subagentTools.batch) {
+      const scopedRegistry = Object.fromEntries(
+        Object.entries(buildBatchableRegistry()).filter(
+          ([toolName]) => allow.has(toolName) && !deny.has(toolName),
+        ),
+      );
+      // One surviving tool is enough: a valid call needs two
+      // INVOCATIONS, not two distinct tools, so an agent left with only
+      // `Read` can still batch two reads of different files.
+      if (Object.keys(scopedRegistry).length > 0) {
+        subagentTools.batch = toSDKTool(
+          createBatchTool(scopedRegistry),
+          "batch",
+          cfg.childConversationId,
+        );
+      } else {
+        // Nothing batchable survived the filter — drop the tool rather
+        // than advertise an empty registry to the model.
+        delete subagentTools.batch;
+      }
+    }
+
     const maxSteps = cfg.agentDef.maxSteps ?? 30;
     let stepCount = 0;
 
@@ -2952,20 +3007,13 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       HEADLESS_DROP.add("delegate");
     }
     if (!headless.autoApprove) {
-      for (const k of [
-        "closeTabs",
-        "executeOnPage",
-        "Delete",
-        "install_skill",
-        "create_skill",
-      ]) {
+      for (const k of HEADLESS_APPROVAL_DROP_TOOLS) {
         HEADLESS_DROP.add(k);
       }
     }
-    // Scheduled runs must never create/modify scheduled tasks (no recursion).
-    HEADLESS_DROP.add("create_scheduled_task");
-    HEADLESS_DROP.add("list_scheduled_tasks");
-    HEADLESS_DROP.add("update_scheduled_task");
+    for (const k of HEADLESS_SCHEDULED_DROP_TOOLS) {
+      HEADLESS_DROP.add(k);
+    }
     const filtered: Record<string, ToolSet[string]> = {};
     for (const [name, sdkTool] of Object.entries(base)) {
       if (HEADLESS_DROP.has(name)) continue;

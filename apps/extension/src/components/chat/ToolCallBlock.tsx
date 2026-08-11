@@ -5,6 +5,11 @@ import {
 } from "@/components/ui/collapsible";
 import { RegistryIcon } from "@/components/ui/registry-icon";
 import { toolResultStore, toolTabInfoStore } from "@/lib/agent/agent-transport";
+import {
+  readBatchDescription,
+  readBatchInvocations,
+  readBatchResults,
+} from "@/lib/agent/tools/batch-args";
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronRight, Globe, X } from "lucide-react";
 import type { ReactNode } from "react";
@@ -13,6 +18,7 @@ import { resolveMcpToolDisplay } from "./mcp-tool-display";
 import { ArtifactResult } from "./tool-results/artifact";
 import { ArtifactDiagnosticsResult } from "./tool-results/artifact-diagnostics";
 import { ComputerResult } from "./tool-results/computer";
+import { BatchResult } from "./tool-results/batch";
 import { DelegateResult } from "./tool-results/delegate";
 import { CodeResult } from "./tool-results/execute-code";
 import { PythonResult } from "./tool-results/execute-python";
@@ -57,6 +63,24 @@ type ResultRenderer = (props: {
 }) => ReactNode;
 
 const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
+  batch: ({ args, result }) => (
+    <BatchResult
+      args={args}
+      result={result}
+      // Reuse each child tool's own result card. `toolCallId` is only
+      // read by renderers that subscribe to per-call side channels
+      // (`selectTab`, `delegate`), neither of which is batchable, so an
+      // empty string is safe here.
+      renderChild={(name, childArgs, childResult) =>
+        BUILTIN_RESULT_RENDERERS[name]?.({
+          args: childArgs,
+          result: childResult,
+          toolCallId: "",
+          state: "result",
+        })
+      }
+    />
+  ),
   snapshot: ({ result }) => <SnapshotResult result={result} />,
   screenshot: ({ result }) => <ScreenshotResult result={result} />,
   computer: ({ args, result }) => (
@@ -143,31 +167,46 @@ interface ToolCallBlockProps {
   errorKind?: "failed" | "interrupted";
 }
 
-const TOOL_LABELS: Record<
-  string,
-  {
-    pending: string;
-    done: string;
-    /**
-     * Suffix appended after a strikethrough'd `done` label in the
-     * denied row (default behavior for all tools). E.g. `done: "Ran
-     * Python"` + `denied: "Network blocked"` → `~~Ran Python~~ Network
-     * blocked`. Defaults to "Denied" when absent.
-     */
-    denied?: string;
-    /**
-     * Full replacement label for the denied row. When set, the denied
-     * row renders this text WITHOUT strikethrough and WITHOUT a suffix
-     * — i.e. the label IS the outcome message. Used when the strikethrough
-     * convention reads as self-contradictory: e.g. `proposePlan`'s
-     * `done` is "Plan approved", which strikethrough'd reads as "the
-     * plan wasn't approved" — technically correct but confusing. With
-     * `deniedReplace: "Make changes requested"` the row simply reads
-     * "Make changes requested" — the user's actual decision.
-     */
-    deniedReplace?: string;
-  }
-> = {
+type ToolLabels = {
+  pending: string;
+  done: string;
+  /**
+   * Suffix appended after a strikethrough'd `done` label in the
+   * denied row (default behavior for all tools). E.g. `done: "Ran
+   * Python"` + `denied: "Network blocked"` → `~~Ran Python~~ Network
+   * blocked`. Defaults to "Denied" when absent.
+   */
+  denied?: string;
+  /**
+   * Full replacement label for the denied row. When set, the denied
+   * row renders this text WITHOUT strikethrough and WITHOUT a suffix
+   * — i.e. the label IS the outcome message. Used when the strikethrough
+   * convention reads as self-contradictory: e.g. `proposePlan`'s
+   * `done` is "Plan approved", which strikethrough'd reads as "the
+   * plan wasn't approved" — technically correct but confusing. With
+   * `deniedReplace: "Make changes requested"` the row simply reads
+   * "Make changes requested" — the user's actual decision.
+   */
+  deniedReplace?: string;
+  /**
+   * Short status metadata rendered after the label (e.g. "3 of 4").
+   * Owned by the interface, not the model: tools describe WHAT they
+   * did, the row reports how it went.
+   */
+  meta?: string;
+  /**
+   * Tints `meta` and swaps the leading dot for an alert glyph.
+   *
+   * `warning` (amber) is for a partial success — some of the work landed,
+   * so the row must not read as a failure. `error` (red) is for an
+   * outcome that produced nothing usable, matching how `errored` rows
+   * render; the two are kept distinct because conflating them tells the
+   * user their partial results are gone.
+   */
+  metaTone?: "muted" | "warning" | "error";
+};
+
+const TOOL_LABELS: Record<string, ToolLabels> = {
   readPage: { pending: "Reading page...", done: "Read page" },
   screenshot: { pending: "Taking screenshot...", done: "Took screenshot" },
   snapshot: { pending: "Taking snapshot...", done: "Took snapshot" },
@@ -201,6 +240,7 @@ const TOOL_LABELS: Record<
     deniedReplace: "Make changes requested",
   },
   extract: { pending: "Extracting data...", done: "Extracted data" },
+  batch: { pending: "Running batch...", done: "Ran batch" },
   webFetch: { pending: "Fetching URL...", done: "Fetched URL" },
   webSearch: { pending: "Searching the web...", done: "Searched the web" },
   closeTabs: { pending: "Closing tabs...", done: "Closed tabs" },
@@ -589,6 +629,82 @@ export function artifactDiagnosticsLabels(
   return { ...fallback, done: "No render reported" };
 }
 
+/**
+ * Collapsed-row labels for `batch`.
+ *
+ * The model supplies a `description` naming the work in the user's terms
+ * ("Comparing pricing pages"); the row keeps that phrase VERBATIM from
+ * start to finish and lets the icon plus a trailing count carry the
+ * state. Rewriting the phrase into past tense on completion would mean
+ * conjugating arbitrary model text — brittle in English and wrong in
+ * every other language the user might prompt in.
+ *
+ * The count is only shown once results exist. `batch` resolves all of
+ * its invocations before returning a single aggregate output, so there
+ * is no honest mid-flight "2 of 4" to report; while running we state the
+ * size of the job instead.
+ */
+export function batchLabels(
+  args: Record<string, unknown>,
+  result: unknown,
+  fallback: ToolLabels,
+): ToolLabels {
+  const description = readBatchDescription(args);
+  const total = readBatchInvocations(args).length;
+  const results = readBatchResults(result);
+  const reads = total === 1 ? "1 read" : `${total} reads`;
+  // Without a description the label itself carries the count ("Ran 4
+  // reads"), so a trailing "4 of 4" would just say it twice.
+  const countInLabel = !description;
+
+  // No description (legacy row, or input still streaming): describe the
+  // shape of the work rather than showing the raw tool name.
+  const pending = description
+    ? `${description}...`
+    : total > 0
+      ? `Running ${reads}...`
+      : fallback.pending;
+  const done = description
+    ? description
+    : total > 0
+      ? `Ran ${reads}`
+      : fallback.done;
+
+  if (results.length === 0) {
+    // The tool itself failed, so `toSDKTool` swapped the whole output for
+    // `{ error }`. Report that plainly instead of implying 0 of N reads
+    // came back clean.
+    const topLevelError = (result as { error?: unknown } | null | undefined)
+      ?.error;
+    if (typeof topLevelError === "string") {
+      // Nothing came back at all, so this is a failure and not a partial
+      // success — red, like any other errored row.
+      return { ...fallback, pending, done, meta: "Failed", metaTone: "error" };
+    }
+    return {
+      ...fallback,
+      pending,
+      done,
+      ...(total > 0 &&
+        !countInLabel && { meta: reads, metaTone: "muted" as const }),
+    };
+  }
+
+  const succeeded = results.filter((r) => r.ok).length;
+  const allOk = succeeded === results.length;
+  return {
+    ...fallback,
+    pending,
+    done,
+    // A clean run needs no tally when the label already counts the reads;
+    // a partial one always shows it, because that is the whole point.
+    ...(!(countInLabel && allOk) && {
+      meta: `${succeeded} of ${results.length}`,
+    }),
+    metaTone: allOk ? "muted" : "warning",
+  };
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -607,12 +723,8 @@ export function ToolCallBlock({
     resolveMcpToolDisplay(toolName);
   const connectorLabels =
     mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
-  const labels: {
-    pending: string;
-    done: string;
-    denied?: string;
-    deniedReplace?: string;
-  } = TOOL_LABELS[toolName] ??
+  const labels: ToolLabels =
+    TOOL_LABELS[toolName] ??
     connectorLabels ?? {
       pending: readableName ? `Running ${readableName}...` : `${toolName}...`,
       done: readableNameSentence ? readableNameSentence : toolName,
@@ -621,30 +733,60 @@ export function ToolCallBlock({
   // For webFetch, splice in the requested URL's host so the collapsed
   // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
   // rather than a generic "Fetching URL...".
-  const dynamicLabels =
-    toolName === "webSearch"
-      ? webSearchLabels(args, resolvedResult, labels)
-      : toolName === "webFetch"
-        ? webFetchLabels(args, labels)
-        : toolName === "computer"
-          ? computerLabels(args, labels)
-          : toolName === "closeTabs"
-            ? closeTabsLabels(args, labels)
-            : toolName === "create_scheduled_task" ||
-                toolName === "update_scheduled_task"
-              ? scheduledTaskLabels(toolName, args, labels)
-              : toolName === "Delete"
-                ? deleteLabels(args, labels)
-                : toolName === "executeOnPage"
-                  ? executeOnPageLabels(args, labels)
-                  : toolName === "patch_site_skill" ||
-                      toolName === "delete_site_skill"
-                    ? siteSkillLabels(args, labels)
-                    : toolName === "read_artifact_diagnostics"
-                      ? artifactDiagnosticsLabels(resolvedResult, labels)
-                      : labels;
+  const dynamicLabels: ToolLabels =
+    toolName === "batch"
+      ? batchLabels(args, resolvedResult, labels)
+      : toolName === "webSearch"
+        ? webSearchLabels(args, resolvedResult, labels)
+        : toolName === "webFetch"
+          ? webFetchLabels(args, labels)
+          : toolName === "computer"
+            ? computerLabels(args, labels)
+            : toolName === "closeTabs"
+              ? closeTabsLabels(args, labels)
+              : toolName === "create_scheduled_task" ||
+                  toolName === "update_scheduled_task"
+                ? scheduledTaskLabels(toolName, args, labels)
+                : toolName === "Delete"
+                  ? deleteLabels(args, labels)
+                  : toolName === "executeOnPage"
+                    ? executeOnPageLabels(args, labels)
+                    : toolName === "patch_site_skill" ||
+                        toolName === "delete_site_skill"
+                      ? siteSkillLabels(args, labels)
+                      : toolName === "read_artifact_diagnostics"
+                        ? artifactDiagnosticsLabels(resolvedResult, labels)
+                        : labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
+
+  // An outcome that needs an alert glyph rather than the neutral dot:
+  // amber for a partial success (some work landed, so the label keeps its
+  // normal color), red for one that produced nothing usable.
+  const metaTone = dynamicLabels.metaTone;
+  const metaAlert = !pending && (metaTone === "warning" || metaTone === "error");
+  const metaBadge = dynamicLabels.meta ? (
+    <span
+      className={cn(
+        "text-[11px] ml-1 tabular-nums",
+        metaTone === "error"
+          ? "text-red-600/70 dark:text-red-400/70"
+          : metaTone === "warning"
+            ? "text-amber-600/80 dark:text-amber-400/80"
+            : "text-muted-foreground/60",
+      )}
+    >
+      {dynamicLabels.meta}
+    </span>
+  ) : null;
+  const metaAlertIcon = (
+    <AlertCircle
+      className={cn(
+        "size-3 shrink-0",
+        metaTone === "error" ? "text-red-500/80" : "text-amber-500/80",
+      )}
+    />
+  );
 
   // Denied row. Two render shapes (per-tool config in TOOL_LABELS):
   //
@@ -784,6 +926,8 @@ export function ToolCallBlock({
                 />
               ) : errored ? (
                 <AlertCircle className="size-3 shrink-0 text-red-500/80" />
+              ) : metaAlert ? (
+                metaAlertIcon
               ) : (
                 <span className="size-1.5 rounded-full shrink-0 bg-muted-foreground/40" />
               )}
@@ -802,6 +946,7 @@ export function ToolCallBlock({
                   Failed
                 </span>
               )}
+              {metaBadge}
               {showTabBadge && <TabBadge toolCallId={toolCallId} />}
               <ChevronRight
                 className={cn(
@@ -843,6 +988,8 @@ export function ToolCallBlock({
             />
           ) : errored ? (
             <AlertCircle className="size-3 shrink-0 text-red-500/80" />
+          ) : metaAlert ? (
+            metaAlertIcon
           ) : (
             <span
               className={cn(
@@ -879,6 +1026,7 @@ export function ToolCallBlock({
               Failed
             </span>
           )}
+          {metaBadge}
           {showTabBadge && <TabBadge toolCallId={toolCallId} />}
           {!pending && (
             <ChevronRight
