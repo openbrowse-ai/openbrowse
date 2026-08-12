@@ -1,7 +1,7 @@
+import { Markdown } from "@/components/chat/Markdown";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronRightIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Markdown } from "@/components/chat/Markdown";
 
 interface ReasoningProps {
   text: string;
@@ -31,11 +31,27 @@ export function Reasoning({
     }
   }, [isStreaming]);
 
+  // A reasoning part can arrive carrying no text at all. Anthropic's adaptive
+  // generation (Sonnet 4.6, Opus 4.6+) withholds thinking text unless the
+  // request asks for `display: "summarized"` — which
+  // `resolveThinkingProviderOptions` now always does for those models,
+  // including when the Thinking toggle is off or no thinking settings exist.
+  // That covers the common case but not every one: `redacted_thinking` blocks
+  // surface as reasoning parts whose payload lives in provider metadata with
+  // no text deltas, and other providers have their own empty-block paths.
+  //
+  // Drop the block once it has settled, rather than render a "Reasoning"
+  // header that expands to nothing. While still streaming the header stays —
+  // it's a useful liveness cue, and text may simply not have arrived yet.
+  const isEmpty = text.trim().length === 0;
+
   const label = isStreaming
     ? "Thinking..."
     : durationSeconds != null && durationSeconds > 0
       ? `Thought for ${durationSeconds}s`
       : "Reasoning";
+
+  if (isEmpty && !isStreaming) return null;
 
   return (
     <div className={cn("w-full", className)}>

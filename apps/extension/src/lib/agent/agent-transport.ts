@@ -57,7 +57,7 @@ import {
   renderTabLegend,
 } from "./tab-legend";
 import { tabRegistry } from "./tab-registry";
-import { buildThinkingProviderOptions } from "./thinking";
+import { resolveThinkingProviderOptions } from "./thinking";
 import { mergeDistinct, scanToolUsage } from "./tool-usage";
 import {
   clickElementTool,
@@ -2128,14 +2128,14 @@ function createChatOnlyTransport(args: {
     thinkingConfig,
   } = args;
 
-  let providerOptions: ToolLoopAgentSettings["providerOptions"];
-  if (thinkingConfig?.enabled && thinkingConfig.config) {
-    providerOptions = buildThinkingProviderOptions(
-      providerId,
-      actualModelId,
-      thinkingConfig.config,
-    ) as ToolLoopAgentSettings["providerOptions"];
-  }
+  // Resolves to options whenever the user enabled thinking OR the model
+  // thinks unconditionally (Anthropic's adaptive generation). See
+  // `resolveThinkingProviderOptions`.
+  const providerOptions = resolveThinkingProviderOptions(
+    providerId,
+    actualModelId,
+    thinkingConfig,
+  ) as ToolLoopAgentSettings["providerOptions"];
 
   let needsMidStreamCompaction = false;
   let transportLastTotalTokens = 0;
@@ -2632,19 +2632,18 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     setTaskTitle: toSDKTool(setTaskTitleTool, "setTaskTitle"),
   };
 
-  let providerOptions: ToolLoopAgentSettings["providerOptions"];
-  if (thinkingConfig?.enabled && thinkingConfig.config) {
-    // Resolve the underlying vendor (handles both direct providers and
-    // gateway-routed `vendor/model` ids) and build the vendor-keyed options.
-    // For Gemini this also picks `thinkingLevel` (Gemini 3) vs `thinkingBudget`
-    // (Gemini 2.5) and sets `includeThoughts` so reasoning summaries stream
-    // back. See `./thinking` for the full dispatch.
-    providerOptions = buildThinkingProviderOptions(
-      provider.id,
-      actualModelId,
-      thinkingConfig.config,
-    ) as ToolLoopAgentSettings["providerOptions"];
-  }
+  // Resolve the underlying vendor (handles both direct providers and
+  // gateway-routed `vendor/model` ids) and build the vendor-keyed options.
+  // For Gemini this also picks `thinkingLevel` (Gemini 3) vs `thinkingBudget`
+  // (Gemini 2.5) and sets `includeThoughts` so reasoning summaries stream
+  // back. Anthropic's adaptive generation gets thinking even with the toggle
+  // off — it thinks either way, so the toggle only ever hid the output. See
+  // `./thinking` for the full dispatch.
+  const providerOptions = resolveThinkingProviderOptions(
+    provider.id,
+    actualModelId,
+    thinkingConfig,
+  ) as ToolLoopAgentSettings["providerOptions"];
 
   // The runner that the `delegate` tool uses to actually spawn a nested
   // ToolLoopAgent. Closes over `model`, `parentTools`, and `providerOptions`;
