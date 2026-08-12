@@ -231,6 +231,7 @@ const TOOL_LABELS: Record<string, ToolLabels> = {
   Delete: { pending: "Deleting...", done: "Deleted" },
   Move: { pending: "Moving...", done: "Moved" },
   todoWrite: { pending: "Updating plan...", done: "Updated plan" },
+  askUser: { pending: "Asking you...", done: "You answered" },
   proposePlan: {
     pending: "Drafting plan...",
     done: "Plan approved",

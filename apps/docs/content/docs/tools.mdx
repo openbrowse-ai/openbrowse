@@ -131,6 +131,20 @@ For complex, multi-step operations, the agent maintains a structured plan visibl
 | --- | --- |
 | `todoWrite` | Create or update the conversation's persistent task list. Status changes (pending → in_progress → completed) drive the Progress UI. |
 
+## Asking You
+
+The agent works autonomously and picks a reasonable default rather than checking in. `askUser` is the narrow exception: when a decision is genuinely yours and getting it wrong is expensive or irreversible — which flight to book, which saved card to pay with, which account to post from — it pauses and asks.
+
+| Tool | Description |
+| --- | --- |
+| `askUser` | Ask 1-4 multiple-choice questions and wait. Each question has a short header, 2-4 labelled options, and optional multi-select. |
+
+The question replaces the chat composer, so answering is the only thing in front of you. Questions are shown one at a time — move between them with the arrow keys, the back/forward arrows, or the progress dots in the header. Pick options with the number keys, type a custom answer in the always-present free-text box (which takes multiple lines; `Shift`+`Enter` for a newline, `Esc` to hand the arrow keys back), or choose **Skip all questions** to hand the whole call back to the agent — that discards anything you'd already answered and it proceeds on its best interpretation, telling you what it assumed. To skip just one question, leave it blank and move on: a blank question is reported as unanswered rather than as an empty answer.
+
+The agent is genuinely stopped while a question is open: `askUser` runs in your browser rather than in the agent loop, so the turn ends and a new one starts when you answer. That means a question survives a reload, a side-panel close, and a browser restart — and there's no deadline to answer it. Nothing is held open while it waits, so you can leave a question sitting and answer it tomorrow; the agent picks up from your answer whenever it arrives.
+
+Questions are unavailable where there's nobody to ask: scheduled tasks, runs driven by an external MCP host, and subagents never get the tool.
+
 ## Memory
 
 Persistent memory across conversations. See [Memory](/docs/memory) for details.

@@ -60,9 +60,11 @@ import { tabRegistry } from "./tab-registry";
 import { resolveThinkingProviderOptions } from "./thinking";
 import { mergeDistinct, scanToolUsage } from "./tool-usage";
 import {
+  ASK_USER_TOOL_NAME,
   clickElementTool,
   closeTabsTool,
   createArtifactTool,
+  createAskUserTool,
   createScheduledTaskTool,
   createSkillTool,
   deleteArtifactTool,
@@ -449,6 +451,18 @@ export const HEADLESS_SCHEDULED_DROP_TOOLS = [
   "list_scheduled_tasks",
   "update_scheduled_task",
 ] as const;
+
+/**
+ * Tools dropped from EVERY headless run, including auto-approving ones.
+ *
+ * `HEADLESS_APPROVAL_DROP_TOOLS` is about consent — `autoApprove` grants
+ * it upfront, so those tools come back. This list is about presence:
+ * there is no human on the surface at all, so a tool whose entire purpose
+ * is to elicit a human answer can never be satisfied. `askUser` has no
+ * `execute`, so calling it would simply END the run mid-task with an
+ * unanswered question and nothing to show the caller.
+ */
+export const HEADLESS_NO_HUMAN_DROP_TOOLS = [ASK_USER_TOOL_NAME] as const;
 
 const TAB_INTERACTING_TOOLS = new Set([
   "readPage",
@@ -912,6 +926,11 @@ export function createBrowserToolSet(
     batch: toSDKTool(createBatchTool(), "batch", cid),
     todoWrite: toSDKTool(todoWriteTool, "todoWrite", cid),
     proposePlan: toSDKTool(proposePlanTool, "proposePlan", cid),
+    // No `toSDKTool` and no `cid`: `askUser` is a client-side tool with no
+    // `execute`, so there is no tool call to pin a conversation to and
+    // nothing for the approval/allowlist wrapper to gate. See
+    // `tools/ask-user.ts`.
+    [ASK_USER_TOOL_NAME]: createAskUserTool(),
     skill: toSDKTool(skillTool, "skill", cid),
     install_skill: toSDKTool(installSkillTool, "install_skill", cid),
     create_skill: toSDKTool(createSkillTool, "create_skill", cid),
@@ -2839,6 +2858,13 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       ...subagentOnlyTools,
     })) {
       if (name === "delegate") continue; // depth cap
+      // A subagent runs nested INSIDE the parent's `delegate` tool call,
+      // driven by its own `ToolLoopAgent` with no renderer attached. A
+      // client-side tool there can never be answered: the child loop would
+      // just stop with an unresolved call and return empty text to the
+      // parent. Agent definitions can't opt in via `allowedTools` either —
+      // this guard runs first, deliberately.
+      if (name === ASK_USER_TOOL_NAME) continue;
       if (!allow.has(name)) continue;
       if (deny.has(name)) continue;
       subagentTools[name] = sdkTool;
@@ -3011,6 +3037,11 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       }
     }
     for (const k of HEADLESS_SCHEDULED_DROP_TOOLS) {
+      HEADLESS_DROP.add(k);
+    }
+    // Unconditional — unlike the approval list, `autoApprove` does not
+    // bring these back. See HEADLESS_NO_HUMAN_DROP_TOOLS.
+    for (const k of HEADLESS_NO_HUMAN_DROP_TOOLS) {
       HEADLESS_DROP.add(k);
     }
     const filtered: Record<string, ToolSet[string]> = {};

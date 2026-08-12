@@ -13,7 +13,9 @@ import type { ModelOption } from "./ModelPicker";
 import { PendingMentionBubble } from "./PendingMentionBubble";
 import { computeShowThinking } from "./compute-show-thinking";
 import { PlanApprovalCard } from "./PlanApprovalCard";
+import { QuestionCard } from "./QuestionCard";
 import { findPendingPlanApproval } from "./find-pending-plan-approval";
+import { findPendingQuestion } from "./find-pending-question";
 import type { ProposePlanInput } from "@/lib/agent/tools/propose-plan";
 import {
   Conversation,
@@ -231,6 +233,7 @@ export function ChatView({
     handleRetryFromUser,
     confirmEdit,
     approveToolCall,
+    answerQuestion,
     isViewer,
     setAgentModel,
     setThinkingSettings,
@@ -389,6 +392,17 @@ export function ChatView({
   // list. Cheap regardless — the scan is O(latest-message-parts).
   const pendingPlanApproval = useMemo(
     () => findPendingPlanApproval(messages),
+    [messages],
+  );
+
+  // Same contract for a pending `askUser` call: while one is answerable
+  // the composer is replaced with a {@link QuestionCard}. `askUser` is a
+  // client-side tool rather than an approval-gated one, so the pending
+  // state is `input-available` on the LAST message — see
+  // `findPendingQuestion` for why "last message" (not "last assistant
+  // message") is the requirement.
+  const pendingQuestion = useMemo(
+    () => findPendingQuestion(messages),
     [messages],
   );
 
@@ -1072,6 +1086,12 @@ export function ChatView({
               approvalId={pendingPlanApproval.approvalId}
               onApprove={(id) => approveToolCall({ id, approved: true })}
               onDeny={(id) => approveToolCall({ id, approved: false })}
+            />
+          ) : pendingQuestion ? (
+            <QuestionCard
+              toolCallId={pendingQuestion.toolCallId}
+              questions={pendingQuestion.questions}
+              onAnswer={answerQuestion}
             />
           ) : (
             <ChatInput

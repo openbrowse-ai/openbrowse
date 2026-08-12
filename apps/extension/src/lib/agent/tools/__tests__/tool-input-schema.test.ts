@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { askUserParameters } from "../ask-user";
 import { createBatchTool } from "../batch";
 import { clickElementTool } from "../click-element";
 import { closeTabsTool } from "../close-tabs";
@@ -84,6 +85,10 @@ const allTools = [
   ["Delete", fsTools.deleteTool],
   ["Move", fsTools.moveTool],
   ["batch", batchTool],
+  // `askUser` is a client-side tool (no `execute`), so it has no
+  // `BrowserTool` wrapper — but its schema still ships to the provider and
+  // is still subject to the same top-level-object requirement.
+  ["askUser", { parameters: askUserParameters }],
 ] as const;
 
 describe("tool input schemas (Anthropic compatibility)", () => {
