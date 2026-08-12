@@ -79,6 +79,9 @@ const BUILTIN_RESULT_RENDERERS: Record<string, ResultRenderer> = {
           state: "result",
         })
       }
+      // Reuse each child tool's own row label too, so an invocation reads
+      // the same as the call would on its own.
+      childLabel={resolveToolLabels}
     />
   ),
   snapshot: ({ result }) => <SnapshotResult result={result} />,
@@ -167,7 +170,7 @@ interface ToolCallBlockProps {
   errorKind?: "failed" | "interrupted";
 }
 
-type ToolLabels = {
+export type ToolLabels = {
   pending: string;
   done: string;
   /**
@@ -706,6 +709,61 @@ export function batchLabels(
   };
 }
 
+/**
+ * The label a tool's collapsed row shows: the tool's static entry (or its
+ * MCP connector's) refined by any tool-specific dynamic label function.
+ *
+ * Returns `undefined` when nothing tool-specific applies, so each caller
+ * chooses its own fallback — `ToolCallBlock` shows a generic
+ * "Running <name>...", while a batch child row keeps its argument summary
+ * instead of degrading to the bare tool name. Every tool with a dynamic
+ * label function also has a `TOOL_LABELS` entry, so a missing entry is a
+ * sufficient signal that there is nothing specific to say.
+ *
+ * Exported, and injected into `BatchResult`, so an invocation inside a
+ * `batch` reads the same as the same call made directly — `Searched “bio
+ * AI startups” — 8 results` rather than `webSearch  query: bio AI
+ * startups`. Injected rather than imported for the same reason as
+ * `renderChild`: importing this module from `tool-results/batch` would
+ * form a cycle.
+ */
+export function resolveToolLabels(
+  toolName: string,
+  args: Record<string, unknown>,
+  result: unknown,
+): ToolLabels | undefined {
+  const { mcpInfo } = resolveMcpToolDisplay(toolName);
+  const base =
+    TOOL_LABELS[toolName] ??
+    mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, result) ??
+    null;
+  if (!base) return undefined;
+
+  return toolName === "batch"
+    ? batchLabels(args, result, base)
+    : toolName === "webSearch"
+      ? webSearchLabels(args, result, base)
+      : toolName === "webFetch"
+        ? webFetchLabels(args, base)
+        : toolName === "computer"
+          ? computerLabels(args, base)
+          : toolName === "closeTabs"
+            ? closeTabsLabels(args, base)
+            : toolName === "create_scheduled_task" ||
+                toolName === "update_scheduled_task"
+              ? scheduledTaskLabels(toolName, args, base)
+              : toolName === "Delete"
+                ? deleteLabels(args, base)
+                : toolName === "executeOnPage"
+                  ? executeOnPageLabels(args, base)
+                  : toolName === "patch_site_skill" ||
+                      toolName === "delete_site_skill"
+                    ? siteSkillLabels(args, base)
+                    : toolName === "read_artifact_diagnostics"
+                      ? artifactDiagnosticsLabels(result, base)
+                      : base;
+}
+
 export function ToolCallBlock({
   toolName,
   toolCallId,
@@ -722,42 +780,21 @@ export function ToolCallBlock({
   const resolvedResult = result ?? toolResultStore.get(toolCallId);
   const { mcpInfo, readableName, readableNameSentence } =
     resolveMcpToolDisplay(toolName);
-  const connectorLabels =
-    mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? null;
+  // The tool's static entry. Kept separate from `dynamicLabels` because
+  // the denied paths below read `deniedReplace`/`denied` off it — the
+  // per-tool helpers only re-shape pending/done.
   const labels: ToolLabels =
     TOOL_LABELS[toolName] ??
-    connectorLabels ?? {
+    mcpInfo?.connector.formatLabel?.(mcpInfo.toolName, resolvedResult) ?? {
       pending: readableName ? `Running ${readableName}...` : `${toolName}...`,
       done: readableNameSentence ? readableNameSentence : toolName,
     };
-
-  // For webFetch, splice in the requested URL's host so the collapsed
-  // row shows the user something concrete (e.g. "Fetching openbrowse.ai...")
-  // rather than a generic "Fetching URL...".
+  // Tool-specific text where we have it — e.g. webFetch splices in the
+  // requested URL's host so the row reads "Fetching openbrowse.ai..."
+  // rather than a generic "Fetching URL...". Falls back to the static
+  // entry, which is what `resolveToolLabels` returning `undefined` means.
   const dynamicLabels: ToolLabels =
-    toolName === "batch"
-      ? batchLabels(args, resolvedResult, labels)
-      : toolName === "webSearch"
-        ? webSearchLabels(args, resolvedResult, labels)
-        : toolName === "webFetch"
-          ? webFetchLabels(args, labels)
-          : toolName === "computer"
-            ? computerLabels(args, labels)
-            : toolName === "closeTabs"
-              ? closeTabsLabels(args, labels)
-              : toolName === "create_scheduled_task" ||
-                  toolName === "update_scheduled_task"
-                ? scheduledTaskLabels(toolName, args, labels)
-                : toolName === "Delete"
-                  ? deleteLabels(args, labels)
-                  : toolName === "executeOnPage"
-                    ? executeOnPageLabels(args, labels)
-                    : toolName === "patch_site_skill" ||
-                        toolName === "delete_site_skill"
-                      ? siteSkillLabels(args, labels)
-                      : toolName === "read_artifact_diagnostics"
-                        ? artifactDiagnosticsLabels(resolvedResult, labels)
-                        : labels;
+    resolveToolLabels(toolName, args, resolvedResult) ?? labels;
 
   const showTabBadge = TAB_TOOLS.has(toolName);
 
