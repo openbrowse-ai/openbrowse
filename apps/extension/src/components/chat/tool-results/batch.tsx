@@ -27,6 +27,21 @@ interface Props {
     childArgs: Record<string, unknown>,
     childResult: unknown,
   ) => ReactNode | undefined;
+  /**
+   * The label the child tool's own collapsed row would show, so a batched
+   * `webSearch` reads `Searched “…” — 8 results` rather than the raw tool
+   * name plus a `key: value` argument dump.
+   *
+   * Injected for the same reason as `renderChild`: the label table lives
+   * in `ToolCallBlock` and importing it would form a cycle. Returns
+   * `undefined` for a tool with no specific label, in which case the row
+   * keeps its argument summary.
+   */
+  childLabel: (
+    name: string,
+    childArgs: Record<string, unknown>,
+    childResult: unknown,
+  ) => { pending: string; done: string } | undefined;
 }
 
 /**
@@ -92,14 +107,19 @@ function InvocationRow({
   invocationResult,
   childArgs,
   renderChild,
+  childLabel,
 }: {
   invocationResult: BatchInvocationResult;
   childArgs: Record<string, unknown>;
   renderChild: Props["renderChild"];
+  childLabel: Props["childLabel"];
 }) {
   const [open, setOpen] = useState(false);
   const { name, ok, output, error } = invocationResult;
-  const summary = summarizeArgs(childArgs);
+  // Prefer the label the tool would show on its own row; fall back to an
+  // argument summary for tools that have no specific label.
+  const summary =
+    childLabel(name, childArgs, output)?.done ?? summarizeArgs(childArgs);
   // A failed invocation may still carry output — tools that report
   // failure in-band (`{ results: [], error }`) hand back a payload their
   // own renderer already presents well. Prefer that over our error text.
@@ -168,7 +188,12 @@ function InvocationRow({
  * is still streaming there is no result yet, so the requested invocations
  * render as inert rows.
  */
-export function BatchResult({ args, result, renderChild }: Props) {
+export function BatchResult({
+  args,
+  result,
+  renderChild,
+  childLabel,
+}: Props) {
   const invocations = readBatchInvocations(args);
   const results = readBatchResults(result);
 
@@ -191,20 +216,24 @@ export function BatchResult({ args, result, renderChild }: Props) {
     if (invocations.length === 0) return null;
     return (
       <div className="ml-3 mt-1 flex flex-col border-l border-muted pb-1 pl-3 text-xs">
-        {invocations.map((invocation, index) => (
-          <div
-            key={`${invocation.name}-${index}`}
-            className="flex items-center gap-1.5 py-1"
-          >
-            <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
-            <span className="shrink-0 font-mono text-foreground/70">
-              {invocation.name}
-            </span>
-            <span className="truncate text-muted-foreground/70">
-              {summarizeArgs(argsOf(invocation.arguments))}
-            </span>
-          </div>
-        ))}
+        {invocations.map((invocation, index) => {
+          const childArgs = argsOf(invocation.arguments);
+          return (
+            <div
+              key={`${invocation.name}-${index}`}
+              className="flex items-center gap-1.5 py-1"
+            >
+              <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+              <span className="shrink-0 font-mono text-foreground/70">
+                {invocation.name}
+              </span>
+              <span className="truncate text-muted-foreground/70">
+                {childLabel(invocation.name, childArgs, undefined)?.pending ??
+                  summarizeArgs(childArgs)}
+              </span>
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -217,6 +246,7 @@ export function BatchResult({ args, result, renderChild }: Props) {
           invocationResult={invocationResult}
           childArgs={argsOf(invocations[index]?.arguments)}
           renderChild={renderChild}
+          childLabel={childLabel}
         />
       ))}
     </div>
