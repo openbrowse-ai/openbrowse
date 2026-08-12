@@ -31,17 +31,18 @@ export function Reasoning({
     }
   }, [isStreaming]);
 
-  // Anthropic's adaptive-thinking models (Opus 4.7+) emit thinking blocks
-  // whose text is empty unless the request asks for
-  // `thinking: { type: "adaptive", display: "summarized" }`. We only ask for
-  // that when the composer's Thinking toggle is on (see
-  // `buildThinkingProviderOptions`), so with the toggle off the stream still
-  // carries reasoning parts — just with no content. Rendering the collapsible
-  // for one of those gives a "Reasoning" header that expands to nothing.
+  // A reasoning part can arrive carrying no text at all. Anthropic's adaptive
+  // generation (Sonnet 4.6, Opus 4.6+) withholds thinking text unless the
+  // request asks for `display: "summarized"` — which
+  // `resolveThinkingProviderOptions` now always does for those models,
+  // including when the Thinking toggle is off or no thinking settings exist.
+  // That covers the common case but not every one: `redacted_thinking` blocks
+  // surface as reasoning parts whose payload lives in provider metadata with
+  // no text deltas, and other providers have their own empty-block paths.
   //
-  // Drop the block once it has settled. While it is still streaming the
-  // header stays (it's a useful liveness cue, and text may simply not have
-  // arrived yet).
+  // Drop the block once it has settled, rather than render a "Reasoning"
+  // header that expands to nothing. While still streaming the header stays —
+  // it's a useful liveness cue, and text may simply not have arrived yet.
   const isEmpty = text.trim().length === 0;
 
   const label = isStreaming

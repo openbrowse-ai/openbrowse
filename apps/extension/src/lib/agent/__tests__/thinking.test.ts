@@ -190,8 +190,9 @@ describe("isAnthropicAdaptiveThinkingModel", () => {
       "claude-opus-4-8",
       "claude-opus-5",
       "claude-sonnet-5",
-      // Family-agnostic on purpose: a new 5.x family shouldn't need a code
-      // change to be recognised as adaptive.
+      // From 5.x on the check is family-agnostic, so a family that isn't
+      // adaptive at 4.x (Haiku) and one we've never seen both qualify.
+      "claude-haiku-5",
       "claude-fable-5",
       "anthropic/claude-opus-4.7",
       "anthropic/claude-sonnet-4.6",
@@ -205,6 +206,9 @@ describe("isAnthropicAdaptiveThinkingModel", () => {
       "claude-sonnet-4-5",
       "claude-opus-4-5",
       "claude-haiku-4-5",
+      // Boundary: family-agnostic detection starts at 5.x, so a 4.6 Haiku is
+      // NOT assumed adaptive — Anthropic documents only Sonnet/Opus there.
+      "claude-haiku-4-6",
       "claude-opus-4-1-20250805",
       "claude-opus-4-5-20251101",
       "anthropic/claude-opus-4.1",

@@ -90,11 +90,16 @@ export function isGeminiFlashModel(modelId: string): boolean {
 const CLAUDE_FAMILY_VERSION = /claude-([a-z]+)-(\d+)(?:-(\d+))?/;
 
 /**
- * True when the model belongs to Anthropic's adaptive-thinking generation:
- * Sonnet 4.6, Opus 4.6, and everything newer (>= 4.6).
+ * True when the model belongs to Anthropic's adaptive-thinking generation.
  *
- * These take `thinking: { type: "adaptive" }`; older models take
- * `{ type: "enabled", budgetTokens }`. The distinction is the whole reason
+ * Scope follows what Anthropic documents. On the 4.x line that is exactly
+ * Sonnet 4.6 and Opus 4.6+: Haiku 4.5 ships alongside them on the older
+ * shape, and a Haiku 4.6 is not documented as adaptive, so we don't assume one
+ * would be. From 5.x on the check is family-agnostic, so a new family arrives
+ * supported without a code change.
+ *
+ * Adaptive models take `thinking: { type: "adaptive" }`; older ones take
+ * `{ type: "enabled", budgetTokens }`. That difference is the whole reason
  * `isThinkingAlwaysOn` exists — an adaptive model's thinking isn't optional,
  * only its visibility is.
  */
@@ -103,8 +108,11 @@ export function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
   if (!match) return false;
   const major = Number(match[2]);
   if (!Number.isInteger(major)) return false;
+  if (major > 4) return true;
+  if (major !== 4) return false;
+  if (match[1] !== "sonnet" && match[1] !== "opus") return false;
   const minor = match[3] != null ? Number(match[3]) : 0;
-  return major > 4 || (major === 4 && minor >= 6);
+  return minor >= 6;
 }
 
 /**
