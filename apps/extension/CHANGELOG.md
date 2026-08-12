@@ -1,5 +1,46 @@
 # openbrowse
 
+## 0.16.0
+
+### Minor Changes
+
+- 4b2ead9: **New `askUser` tool: the agent can ask you a multiple-choice question and wait for the answer.**
+
+  When a decision is genuinely yours and guessing wrong is expensive or irreversible — which of three flights to book, which saved card to pay with, which account to post from — the agent now asks instead of picking. The question replaces the chat composer (the slot the plan-approval card uses), so answering is the only thing in front of you.
+
+  - **The bar is deliberately high, because the default is still autonomy.** The system prompt tells the agent to pick a reasonable interpretation and keep going, and this doesn't relax that: the description rules out permission questions ("should I continue?"), anything it could read off the page, and anything with a sensible default. Everything it's blocked on goes in ONE call — 1-4 questions, 2-4 options each, since a second call is a second interruption.
+  - **Asking costs the agent its turn, by design.** Registered without an `execute`, which makes it a client-side tool: the agent loop stops on a call it can't resolve, so the run terminates cleanly and the pending question lives in the persisted message list rather than a promise held open in the service worker. A question survives a reload, a side-panel close and an MV3 restart, needs no keepalive, and has **no answer deadline** — nothing is held open while it waits, so it can be answered the next day. Answering writes the tool result and starts a fresh turn.
+  - **One question at a time.** Four questions with four described options each is far taller than the composer slot, and stacking them pushed the submit button below the fold. The card paginates — `Question N of M`, clickable progress pips, back/forward arrows — capped just short of the panel viewport with only the question body scrolling, so the action row is always reachable. `←` / `→` navigate from anywhere except the multiline free-text box, where they move the caret (`Alt`/`Cmd` + arrow works there too); `1`-`9` pick options, Enter runs the primary button, `Shift`+`Enter` is a newline.
+  - **The buttons say what they do.** The primary reads "Next question" until the last question and then "Submit answers", and stays disabled until the question on screen is answered — otherwise it walked straight past an untouched question. The secondary reads "Skip all questions", not the ambiguous "Decide for me": it always resolves the whole call and discards answers already given, which the old label left to guesswork. Sending a partly-filled set is a separate intent, and stays available from the primary button. On a single-select question the free-text box _replaces_ a picked option rather than adding to it, so the output can't carry a choice and contradicting text at once.
+  - **Answers come back structured.** `{ outcome: "answered" | "dismissed", answers: [{ question, header, selected, other? }] }` — selections as an array rather than a comma-joined string, which is lossy for any label containing a comma and has to survive serialize → chatDb → compaction; and skipped questions omitted rather than returned with an empty `selected`, which would read to the model as "replied and said nothing".
+  - **Unavailable wherever there is no human.** Dropped from every headless run — scheduled tasks and MCP `task` — unconditionally rather than only when auto-approval is off, since `autoApprove` grants consent but cannot supply an answer. Also blocked for subagents, ahead of the `allowedTools` filter.
+
+  **Three layers had to learn that "waiting on the user" isn't "stranded".** A pending `askUser` rests in `input-available`, which everywhere else in the codebase is a reliable orphan signal, so each of these terminalized the question before it could be answered — the user saw a struck-through "You answered / Interrupted" row for a question they were never shown. Same shape of bug the `PlanApprovalCard` regression once had, and all three now key on the tool name rather than the state: `healSerializedParts` (rewrote the part to `output-error` on every run termination; now carved out beside `approval-requested`), `resolveToolPartState` (rendered it errored the moment streaming stopped, which is immediate since asking ends the turn), and the queue auto-flush watcher (would have drained a queued message over the open question and healed it away).
+
+  **Test surface.** 106 new tests across five suites: the pending-question finder (both AI-SDK part shapes, and the load-bearing "must be the last message" rule that `addToolOutput`'s `messages.at(-1)` scan imposes), the resume predicate (with regression guards for both `sendAutomaticallyWhen` helpers the SDK ships, neither of which is safe here), the tool schema, the card's keyboard resolver (extracted because its correctness turns entirely on where focus is), and the card's draft/output helpers. Plus carve-out tests for all three layers above and their inverses. All 2,956 tests pass; `tsc --noEmit` clean and `wxt build` succeeds.
+
+### Patch Changes
+
+- f04f48a: Always request visible reasoning from Anthropic's adaptive models, and stop rendering empty "Reasoning" blocks.
+
+  Anthropic's adaptive-thinking generation (Sonnet 4.6, Opus 4.6+) thinks on every turn whether or not you ask it to. The only thing the request controls is whether the thinking comes back: without an explicit `thinking: { type: "adaptive", display: "summarized" }` the provider applies its `display: "omitted"` default and returns thinking blocks whose text is empty. We only asked for `summarized` when the composer's Thinking toggle was on, so with it off the transcript filled up with `Reasoning` / `Thought for Ns` headers that expanded to a blank gutter — for tokens that were spent either way.
+
+  - **Thinking is now always on for those models.** `resolveThinkingProviderOptions` is the single entry point both transports use, and it requests thinking when either the user enabled it or `isThinkingAlwaysOn` says the model thinks unconditionally. Putting the rule there rather than at the call sites means the side panel, SW host, headless runs, and the MCP task runner all agree. `isAnthropicAdaptiveThinkingModel` follows the documented scope: on the 4.x line only Sonnet 4.6 and Opus 4.6+ qualify, and family-agnostic detection begins at 5.x, so a new 5.x family is recognised without a code change.
+  - **The toggle no longer lies.** For an always-on model the switch renders checked and disabled, labelled "Thinking (always on)". The budget slider is hidden there as well — adaptive thinking has no `budget_tokens` knob, so the slider was reporting a number the request never carried.
+  - **Blank reasoning parts are dropped.** Defence in depth for any provider that returns an empty thinking block: `Reasoning` returns `null` once a blank part has settled, while keeping the header during streaming where it doubles as a liveness cue and the text may simply not have arrived yet.
+  - **`buildThinkingProviderOptions` takes an optional config.** The always-on path has no user config to pass and shouldn't invent an effort level or budget nobody chose. As a side effect, an enabled toggle with no persisted config now sends vendor defaults instead of silently sending nothing.
+
+- 3e27887: **Batched tool calls now read like direct ones.** Expanding a `batch` row showed each invocation as its raw tool name plus a generic `key: value` argument dump — `webSearch  query: Kindle API read book content third party app…` — while the same call made on its own read `Searched “Kindle API read book content…” — 8 results`. Four batched searches gave no indication of whether any of them returned anything.
+
+  The cause was that label resolution wasn't reusable: it lived as an inline ternary chain inside the `ToolCallBlock` component body, so `tool-results/batch.tsx` had no way to ask what a tool's row would say and fell back to summarizing arguments. It's now an exported `resolveToolLabels(toolName, args, result)`, injected into `BatchResult` the same way `renderChild` already is — the label table lives in `ToolCallBlock`, and importing it from `tool-results/batch` would form a cycle.
+
+  - Child rows use the tool's own label, so a batched `webSearch` carries its query **and result count**, a batched `Grep` reads "Searched" rather than `Grep`, and a failed search reads "Search failed: …" instead of looking indistinguishable from a successful one.
+  - Rows for a batch whose input is still streaming use the same labels in their `pending` form.
+  - Tools with no specific label keep the existing argument summary rather than degrading to the bare tool name: `resolveToolLabels` returns `undefined` in that case and each caller picks its own fallback.
+  - No behaviour change for top-level rows. The denied paths still read `deniedReplace`/`denied` from the tool's static entry, which the per-tool helpers don't customize.
+
+  +9 tests on the extracted resolver, covering the reported `webSearch` case, static-only tools, result-derived labels, the `undefined` signal, and malformed arguments.
+
 ## 0.15.0
 
 ### Minor Changes
