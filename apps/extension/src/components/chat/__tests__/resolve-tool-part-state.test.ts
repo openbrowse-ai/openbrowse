@@ -224,6 +224,31 @@ describe("resolveToolPartState", () => {
   // ── Default opts (no isStreaming provided = undefined = falsy) ───────
   // Matches historical message renders where isStreaming is not passed.
 
+  it("pendingUserAction + isStreaming:false → 'call' (parked on the user, not orphaned)", () => {
+    // Regression: a pending `askUser` call rests in `input-available`
+    // because it is a client-side tool with no `execute`. Once the run
+    // ends `isStreaming` goes false, and without this flag the row
+    // rendered as a red "Interrupted" beside a question the user was
+    // actively being asked. The state alone can't tell the two apart —
+    // hence the caller-supplied discriminator.
+    const r = resolveToolPartState(
+      { state: "input-available" },
+      { isStreaming: false, pendingUserAction: true },
+    );
+    expect(r.state).toBe("call");
+    expect(r.errorKind).toBeUndefined();
+  });
+
+  it("pendingUserAction does not override a terminal state", () => {
+    // Once the user answers, the part is `output-available` and must
+    // render as a result — the flag is about the pending window only.
+    const r = resolveToolPartState(
+      { state: "output-available", output: { outcome: "answered" } },
+      { isStreaming: false, pendingUserAction: true },
+    );
+    expect(r.state).toBe("result");
+  });
+
   it("non-terminal state with no opts provided → 'errored' (treats undefined isStreaming as false)", () => {
     const r = resolveToolPartState({ state: "input-available" });
     expect(r.state).toBe("errored");

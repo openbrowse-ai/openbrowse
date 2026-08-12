@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
     HEADLESS_APPROVAL_DROP_TOOLS,
+    HEADLESS_NO_HUMAN_DROP_TOOLS,
     HEADLESS_SCHEDULED_DROP_TOOLS,
 } from "../../agent-transport";
 import type { ToolContext } from "../../driver";
@@ -122,6 +123,7 @@ describe("batchable registry invariants", () => {
     const dropped = [
       ...HEADLESS_APPROVAL_DROP_TOOLS,
       ...HEADLESS_SCHEDULED_DROP_TOOLS,
+      ...HEADLESS_NO_HUMAN_DROP_TOOLS,
     ];
     expect(dropped.length).toBeGreaterThan(0);
     for (const name of dropped) {

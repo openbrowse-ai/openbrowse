@@ -1061,7 +1061,7 @@ export default defineBackground({
             }
             const { kind, snippet, conversationId, origin } =
               message.payload as {
-                kind: "complete" | "approval-needed";
+                kind: "complete" | "approval-needed" | "question-pending";
                 conversationId: string;
                 snippet: string;
                 origin: "sidepanel" | "home";
@@ -1069,9 +1069,13 @@ export default defineBackground({
             const title =
               kind === "complete"
                 ? "OpenBrowse: Agent finished"
-                : "OpenBrowse: Approval needed";
+                : kind === "question-pending"
+                  ? "OpenBrowse: Question for you"
+                  : "OpenBrowse: Approval needed";
             const notifMessage =
-              kind === "complete" ? snippet : `${snippet} wants to run`;
+              kind === "complete" || kind === "question-pending"
+                ? snippet
+                : `${snippet} wants to run`;
             const notificationId = `openbrowse-${conversationId}-${Date.now()}`;
             chrome.notifications.create(
               notificationId,

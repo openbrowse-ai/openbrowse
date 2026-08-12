@@ -170,6 +170,63 @@ describe("healSerializedParts — heals non-terminal tool parts to output-error"
     expect(result.parts[2]).toBe(step); // same reference
   });
 
+  it("leaves a pending askUser call in input-available untouched", () => {
+    // Regression: `askUser` is a client-side tool (no `execute`), so the
+    // SDK ends the run with the call unresolved and waits for the renderer
+    // to answer it via `addToolOutput`. Healing it here rewrote the part to
+    // `output-error` inside run.ts's finally block — before any renderer
+    // could mount `QuestionCard` — so the user saw a struck-through "You
+    // answered / Interrupted" row for a question they were never asked.
+    // Same failure mode as the pre-fix `approval-requested` behavior.
+    const parts: SerializedUIPart[] = [
+      toolPart("input-available", {
+        toolName: "askUser",
+        input: {
+          questions: [
+            {
+              question: "Which flight should I book?",
+              header: "Flight",
+              options: [
+                { label: "Nonstop", description: "Costs more" },
+                { label: "One stop", description: "Cheapest" },
+              ],
+            },
+          ],
+        },
+      }),
+    ];
+    const result = healSerializedParts(parts);
+    expect(result.changed).toBe(false);
+    expect(result.parts[0]).toBe(parts[0]); // same reference, untouched
+    expect((result.parts[0] as { state: string }).state).toBe(
+      "input-available",
+    );
+  });
+
+  it("STILL heals input-available for every other tool", () => {
+    // The carve-out is keyed on the tool name, not the state: for a tool
+    // that has an `execute`, `input-available` at run termination genuinely
+    // is stranded — it would have run.
+    const parts: SerializedUIPart[] = [
+      toolPart("input-available", { toolName: "navigate" }),
+    ];
+    const result = healSerializedParts(parts);
+    expect(result.changed).toBe(true);
+    expect((result.parts[0] as { state: string }).state).toBe("output-error");
+  });
+
+  it("STILL heals an askUser call that never finished streaming its input", () => {
+    // `input-streaming` means the model was mid-arguments-emit when the run
+    // died. There is no complete question set to render, so this one is a
+    // real orphan even for askUser.
+    const parts: SerializedUIPart[] = [
+      toolPart("input-streaming", { toolName: "askUser" }),
+    ];
+    const result = healSerializedParts(parts);
+    expect(result.changed).toBe(true);
+    expect((result.parts[0] as { state: string }).state).toBe("output-error");
+  });
+
   it("heals stranded tools but preserves approval-requested in a mixed message", () => {
     // A message can carry both a genuinely stranded tool (input-streaming)
     // and an intentional approval-requested tool (the SDK paused for user

@@ -1,3 +1,5 @@
+export { ASK_USER_TOOL_NAME, createAskUserTool } from "./ask-user";
+export type { AskUserInput, AskUserOutput, AskUserQuestion } from "./ask-user";
 export {
   BATCHABLE,
   buildBatchableRegistry,

@@ -48,6 +48,7 @@
  */
 
 import type { SerializedUIPart } from "@/lib/agent/message-types";
+import { ASK_USER_TOOL_NAME } from "@/lib/agent/tools/ask-user";
 import { TOOL_HEAL_INTERRUPT_TEXT } from "@/lib/agent/heal-pending-tools";
 import { chatDb } from "@/lib/chat-db";
 
@@ -121,6 +122,33 @@ export function healSerializedParts(parts: SerializedUIPart[]): HealResult {
     // above for the full rationale. The SDK is parked here waiting for
     // the renderer's approval response; this is not a stranded state.
     if (state === "approval-requested") {
+      out.push(part);
+      continue;
+    }
+
+    // `askUser` in `input-available` is the SAME kind of intentional
+    // resting state, reached by a different mechanism: it is a
+    // client-side tool (no `execute`), so the SDK ends the run with the
+    // call unresolved and waits for the renderer to supply the output via
+    // `addToolOutput`. For every OTHER tool, `input-available` at run
+    // termination genuinely is stranded — the tool would have executed —
+    // which is why this is keyed on the tool name rather than the state.
+    //
+    // Healing it was the pre-fix behavior and it made `QuestionCard`
+    // impossible to mount: the run's finally block rewrote the part to
+    // `output-error` before any renderer could surface it, so the user
+    // saw a struck-through "You answered / Interrupted" row for a
+    // question they were never asked. Same failure mode, same shape, as
+    // the `PlanApprovalCard` regression described above.
+    //
+    // Same trade-off too: if the SW dies and no renderer ever reopens the
+    // conversation, the row stays `input-available`. The renderer's
+    // `healPendingTools` terminalizes it on the next user action, which is
+    // the correct point — by then the user has abandoned the question.
+    if (
+      state === "input-available" &&
+      (part as { toolName?: unknown }).toolName === ASK_USER_TOOL_NAME
+    ) {
       out.push(part);
       continue;
     }

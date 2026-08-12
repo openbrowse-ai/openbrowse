@@ -14,6 +14,7 @@ import { StepGroup } from "./StepGroup";
 import { GeneratingIndicator } from "./GeneratingIndicator";
 import { ZoomableImage } from "@/components/ui/zoomable-image";
 import { capturedToolOrigins, allowToolOnSite, setCloseTabsAlwaysAllowed } from "@/lib/agent/agent-transport";
+import { ASK_USER_TOOL_NAME } from "@/lib/agent/tools/ask-user";
 import { memo } from "react";
 import "@/components/chat/tool-previews";
 
@@ -64,7 +65,7 @@ const TOOL_HEAL_INTERRUPT_TEXT =
  */
 export function resolveToolPartState(
   p: { state?: unknown; output?: unknown; errorText?: unknown; approval?: unknown },
-  opts: { isStreaming?: boolean } = {},
+  opts: { isStreaming?: boolean; pendingUserAction?: boolean } = {},
 ): {
   state: "call" | "result" | "denied" | "errored";
   result?: unknown;
@@ -125,6 +126,16 @@ export function resolveToolPartState(
   // A call awaiting approval is suspended but genuinely live from the user's
   // perspective — it hasn't timed out or been interrupted, it's just paused.
   if (state === "approval-requested") {
+    return { state: "call" };
+  }
+
+  // Same for a call parked on any other kind of user action. `askUser` is
+  // the case that needs this: it's a client-side tool, so it rests in
+  // `input-available` — a state that is otherwise a reliable orphan signal
+  // once streaming stops. The caller decides, because the state alone
+  // can't distinguish "waiting for the user" from "the turn died before
+  // this tool ran".
+  if (opts.pendingUserAction) {
     return { state: "call" };
   }
 
@@ -266,13 +277,26 @@ function countToolParts(parts: { type: string }[]): number {
 }
 
 /**
- * True if a group contains an in-flight approval request. Such a group must
- * never be folded — the user needs to see and act on the prompt.
+ * True if a group contains a tool call that is waiting on the user — an
+ * in-flight approval request, or a pending `askUser` question. Such a group
+ * must never be folded: the user needs to see what they're being asked.
  */
 function hasPendingApproval(parts: AgentUIMessage["parts"]): boolean {
-  return parts.some(
-    (p) => (p as { state?: unknown }).state === "approval-requested",
-  );
+  return parts.some((p) => {
+    const state = (p as { state?: unknown }).state;
+    if (state === "approval-requested") return true;
+    return state === "input-available" && isAskUserPart(p);
+  });
+}
+
+/**
+ * True for a tool part that is an `askUser` call, in either AI-SDK part
+ * shape (`tool-askUser` from the live stream, `dynamic-tool` + `toolName`
+ * once rehydrated from chatDb).
+ */
+function isAskUserPart(part: { type?: unknown; toolName?: unknown }): boolean {
+  if (part.type === `tool-${ASK_USER_TOOL_NAME}`) return true;
+  return part.type === "dynamic-tool" && part.toolName === ASK_USER_TOOL_NAME;
 }
 
 export type Segment =
@@ -411,7 +435,11 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
                 />
               );
             }
-            const toolState = resolveToolPartState(part, { isStreaming });
+            const toolState = resolveToolPartState(part, {
+              isStreaming,
+              pendingUserAction:
+                part.state === "input-available" && isAskUserPart(part),
+            });
             const errorText =
               toolState.state === "errored" && "errorText" in part
                 ? ((part as { errorText?: string }).errorText ?? "")
@@ -500,7 +528,11 @@ function AssistantMessageImpl({ message, isStreaming = false, onToolApproval, di
                   />
                 );
               }
-              const toolState = resolveToolPartState(p, { isStreaming });
+              const toolState = resolveToolPartState(p, {
+                isStreaming,
+                pendingUserAction:
+                  p.state === "input-available" && isAskUserPart(part),
+              });
               const errorText =
                 toolState.state === "errored" && typeof p.errorText === "string"
                   ? (p.errorText as string)

@@ -86,6 +86,10 @@ export const AUTO_TIDY_CHECK_INTERVAL_MS = 60_000;
  *    migration. New code uses the per-conversation `agent-run:` Port and
  *    the `AGENT_RUN.APPROVE` payload type (see
  *    `entrypoints/background/agent-host/messages.ts`).
+ *  - AGENT_ANSWER: viewer→host forward of an `askUser` answer. `askUser`
+ *    is a client-side tool, so its result is produced in the renderer
+ *    (`addToolOutput`) rather than by the SW; a viewer surface therefore
+ *    needs the same host bridge that AGENT_APPROVE provides for approvals.
  *
  * `AGENT_STOP` (defined inline elsewhere) is reused for viewer→host stop.
  *
@@ -99,6 +103,7 @@ export const RUNTIME_MESSAGES = {
   STREAM_PARTS: "STREAM_PARTS",
   STREAM_DONE: "STREAM_DONE",
   AGENT_APPROVE: "AGENT_APPROVE",
+  AGENT_ANSWER: "AGENT_ANSWER",
   AGENT_RUN_START: AGENT_RUN.START,
   AGENT_RUN_STOP: AGENT_RUN.STOP,
   AGENT_RUN_APPROVE: AGENT_RUN.APPROVE,

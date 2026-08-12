@@ -11,6 +11,11 @@ import {
 } from "@/lib/agent/agent-transport";
 import { setTargetTabId } from "@/lib/agent/active-tab";
 import { healPendingTools } from "@/lib/agent/heal-pending-tools";
+import { shouldAutoResume } from "@/lib/agent/should-auto-resume";
+import {
+  ASK_USER_TOOL_NAME,
+  type AskUserOutput,
+} from "@/lib/agent/tools/ask-user";
 import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
 import { normalizeToolInputForPersistence } from "@/lib/agent/tool-input-normalize";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
@@ -431,6 +436,24 @@ function dbMessageToUIMessage(m: {
   return { id: m.id, role: m.role, parts };
 }
 
+/**
+ * Pull the first question text out of a persisted `askUser` tool part, for
+ * the "question pending" notification. Returns null for any shape it
+ * doesn't recognize; the caller falls back to a generic line.
+ */
+function firstQuestionText(part: { input?: unknown }): string | null {
+  const input = part.input;
+  if (typeof input !== "object" || input === null) return null;
+  const questions = (input as { questions?: unknown }).questions;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const first = questions[0];
+  if (typeof first !== "object" || first === null) return null;
+  const text = (first as { question?: unknown }).question;
+  return typeof text === "string" && text.length > 0
+    ? text.slice(0, 120)
+    : null;
+}
+
 interface ChatInstance {
   chat: Chat<AgentMessage>;
   conversationId: string;
@@ -467,59 +490,13 @@ function getOrCreateChat(
   const chat = new Chat<AgentMessage>({
     transport: transport ?? undefined,
     generateId,
-    // Resume the agent loop after the user approves a tool call. We
-    // provide our own implementation instead of the SDK's
-    // `lastAssistantMessageIsCompleteWithApprovalResponses`. The SDK
-    // reference omits `output-denied` from its terminal set, which
-    // strands tool calls that `healPendingTools` resolved to
-    // `output-denied` (the resume would never fire and the approved
-    // sibling call would be permanently orphaned in `approval-responded`
-    // with no output). Our version adds `output-denied` so a denied/
-    // healed call counts as terminal.
-    //
-    // We require at least one `approval-responded` part to trigger a
-    // resume at all, then only resume once EVERY tool in the last step
-    // has reached a terminal state. `approval-responded` is included in
-    // the terminal set on purpose: the just-approved call itself sits in
-    // that state, so excluding it would make `.every()` impossible to
-    // satisfy. This prevents a premature resume while sibling tools are
-    // still streaming, and ensures the loop picks up the approved call
-    // after the rest of the step finishes.
-    sendAutomaticallyWhen: ({ messages }: { messages: import("ai").UIMessage[] }) => {
-      const message = messages[messages.length - 1];
-      if (!message || message.role !== "assistant") return false;
-
-      const lastStepStartIndex = message.parts.reduce(
-        (lastIndex: number, part: import("ai").UIMessage["parts"][number], index: number) =>
-          part.type === "step-start" ? index : lastIndex,
-        -1,
-      );
-
-      const lastStepTools = message.parts
-        .slice(lastStepStartIndex + 1)
-        .filter(isToolUIPart);
-
-      // Must have at least one approval response to trigger resume. This
-      // guard is also load-bearing for the empty-array case: with no
-      // tools, `some()` is false here so we return early and never reach
-      // the `.every()` below (which would vacuously return true).
-      const hasApprovalResponse = lastStepTools.some(
-        (p) => p.state === "approval-responded",
-      );
-      if (!hasApprovalResponse) return false;
-
-      // Every tool in the last step must be terminal. `output-denied`
-      // (added vs. the SDK reference) and `approval-responded` (the
-      // just-approved call awaiting execution) both count — see the
-      // block comment above for why.
-      return lastStepTools.every(
-        (p) =>
-          p.state === "output-available" ||
-          p.state === "output-error" ||
-          p.state === "output-denied" ||
-          p.state === "approval-responded",
-      );
-    },
+    // Resume the agent loop after the user approves a tool call, or
+    // answers an `askUser` question. The predicate lives in
+    // `lib/agent/should-auto-resume.ts` — extracted so it can be unit
+    // tested without this hook's React/transport import graph, and
+    // documented there with the reasons we use neither of the SDK's
+    // built-in helpers.
+    sendAutomaticallyWhen: shouldAutoResume,
     onFinish: async ({ message }) => {
       // Clear the cross-context "agent is running" indicator. onFinish
       // fires for every terminal state (success, abort, disconnect,
@@ -548,6 +525,23 @@ function getOrCreateChat(
       const hasApprovalPending = parts.some(
         (p) => p.type === "dynamic-tool" && p.state === "approval-requested"
       );
+      // A pending `askUser` call is the client-side-tool analogue of a
+      // pending approval: the turn is over but the TASK is not, and the
+      // user has to act before anything else happens. It therefore takes
+      // the same branch as an approval, for two reasons:
+      //
+      //  - "Agent finished" would be a lie, and that notification is the
+      //    thing the user acts on when the surface isn't focused;
+      //  - the `chatInstances` eviction in the final branch would drop the
+      //    live chat while the question is still on screen. Answering
+      //    would then land on a rehydrated instance rather than the one
+      //    the card was rendered from.
+      const pendingQuestion = parts.find(
+        (p): p is Extract<typeof p, { type: "dynamic-tool" }> =>
+          p.type === "dynamic-tool" &&
+          p.toolName === ASK_USER_TOOL_NAME &&
+          p.state === "input-available",
+      );
       if (hasApprovalPending) {
         const approvalTool = parts.find(
           (p): p is Extract<typeof p, { type: "dynamic-tool" }> =>
@@ -560,6 +554,22 @@ function getOrCreateChat(
               kind: "approval-needed",
               conversationId,
               snippet: approvalTool?.toolName ?? "A tool",
+              origin,
+            },
+          });
+        }
+      } else if (pendingQuestion) {
+        if (!document.hasFocus()) {
+          chrome.runtime.sendMessage({
+            type: "AGENT_NOTIFY",
+            payload: {
+              kind: "question-pending",
+              conversationId,
+              // Lead with the question itself so the notification is
+              // actionable at a glance.
+              snippet:
+                firstQuestionText(pendingQuestion) ??
+                "The agent needs your input",
               origin,
             },
           });
@@ -670,6 +680,16 @@ export function useAgentChat({
   const [isViewer, setIsViewer] = useState(false);
   const isViewerRef = useRef(false);
   isViewerRef.current = isViewer;
+
+  /**
+   * Late-bound handle on `answerQuestion`, which is declared far below (it
+   * depends on `addToolOutput` from `useChat`). The AGENT_ANSWER host
+   * bridge is registered before that point, so it reads through this ref
+   * rather than closing over a value that doesn't exist yet.
+   */
+  const answerQuestionRef = useRef<
+    ((toolCallId: string, output: AskUserOutput) => void) | null
+  >(null);
 
   // Sequence guard that drops stale/out-of-order frames received from
   // the SW host's STREAM_PARTS broadcast (viewer-receiver side).
@@ -960,6 +980,7 @@ export function useAgentChat({
     error,
     clearError,
     addToolApprovalResponse,
+    addToolOutput,
   } = useChat<AgentMessage>({ chat });
 
   // Mirror of `messages` for callbacks that run after an `await` boundary,
@@ -1717,6 +1738,44 @@ export function useAgentChat({
     return () => chrome.runtime.onMessage.removeListener(onMessage);
   }, [conversationId, isViewer, addToolApprovalResponse]);
 
+  // Host-side answer forwarding: the `askUser` counterpart to the
+  // AGENT_APPROVE bridge above. A viewer tab can't resolve the pending
+  // `input-available` part (it lives in the host's in-memory chat), so it
+  // broadcasts AGENT_ANSWER and the owner applies it here.
+  useEffect(() => {
+    if (!conversationId) return;
+    if (isViewer) return;
+    const cid = conversationId;
+    const onMessage = (msg: unknown) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const m = msg as {
+        type?: string;
+        conversationId?: string;
+        toolCallId?: string;
+        output?: unknown;
+      };
+      if (m.type !== RUNTIME_MESSAGES.AGENT_ANSWER) return;
+      if (m.conversationId !== cid) return;
+      if (typeof m.toolCallId !== "string") return;
+      // Shape-check the forwarded payload before it becomes a tool result
+      // the model reads: this arrives over an open runtime channel, and an
+      // `output` missing `outcome` would fail `validateUIMessages` on the
+      // next hydrate rather than here.
+      const output = m.output as AskUserOutput | undefined;
+      if (
+        !output ||
+        typeof output !== "object" ||
+        !Array.isArray(output.answers) ||
+        (output.outcome !== "answered" && output.outcome !== "dismissed")
+      ) {
+        return;
+      }
+      answerQuestionRef.current?.(m.toolCallId, output);
+    };
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
+  }, [conversationId, isViewer]);
+
   useEffect(() => {
     const listener = (message: {
       type: string;
@@ -1870,13 +1929,26 @@ export function useAgentChat({
       .reverse()
       .find((m) => m.role === "assistant");
     if (lastAssistant) {
+      const isToolPart = (p: { type: string }) =>
+        p.type === "dynamic-tool" ||
+        (typeof p.type === "string" && p.type.startsWith("tool-"));
       const hasPendingApproval = lastAssistant.parts.some(
         (p) =>
-          (p.type === "dynamic-tool" ||
-            (typeof p.type === "string" && p.type.startsWith("tool-"))) &&
+          isToolPart(p) &&
           (p as { state?: string }).state === "approval-requested",
       );
       if (hasPendingApproval) return;
+      // Also defer while an `askUser` question is open. Draining the queue
+      // would send a user message, which runs `healPendingTools` and
+      // terminalizes the question the user is still looking at.
+      const hasPendingQuestion = lastAssistant.parts.some(
+        (p) =>
+          isToolPart(p) &&
+          (p as { state?: string }).state === "input-available" &&
+          (p.type === `tool-${ASK_USER_TOOL_NAME}` ||
+            (p as { toolName?: string }).toolName === ASK_USER_TOOL_NAME),
+      );
+      if (hasPendingQuestion) return;
     }
 
     let cancelled = false;
@@ -2943,6 +3015,78 @@ export function useAgentChat({
     [addToolApprovalResponse],
   );
 
+  /**
+   * Answer a pending `askUser` call.
+   *
+   * Three things have to happen, in this order:
+   *
+   * 1. **Viewer forwarding.** Same problem `approveToolCall` solves: when
+   *    this surface is a viewer, the local chat is a stale mirror and
+   *    `addToolOutput` would write the answer into a message list nobody
+   *    is driving. Forward to the host instead.
+   * 2. **`addToolOutput`.** Moves the part to `output-available`; the
+   *    `sendAutomaticallyWhen` predicate then starts the follow-up run
+   *    carrying the answer as a tool result.
+   * 3. **Persist.** The SW's stream persister wrote this assistant message
+   *    while the part was still `input-available`, and the resumed run
+   *    creates a NEW assistant message rather than rewriting the old row.
+   *    Without an explicit write, a reload re-surfaces the card for a
+   *    question the model has already been given an answer to. (Same class
+   *    of gap that `terminalizeApprovedToolCalls` closes for approvals.)
+   */
+  const answerQuestion = useCallback(
+    (toolCallId: string, output: AskUserOutput) => {
+      if (isViewerRef.current && conversationIdRef.current) {
+        try {
+          chrome.runtime
+            ?.sendMessage?.({
+              type: RUNTIME_MESSAGES.AGENT_ANSWER,
+              conversationId: conversationIdRef.current,
+              toolCallId,
+              output,
+            })
+            ?.catch?.(() => {});
+        } catch {
+          /* non-extension context; ignore */
+        }
+        return;
+      }
+
+      void addToolOutput({
+        tool: ASK_USER_TOOL_NAME,
+        toolCallId,
+        output,
+      } as Parameters<typeof addToolOutput>[0]);
+
+      // Mirror the same mutation onto the persisted row. We rebuild the
+      // part ourselves rather than reading it back from `messagesRef`,
+      // because `addToolOutput` runs inside the SDK's job executor and may
+      // not have applied yet.
+      const cid = conversationIdRef.current;
+      if (!cid) return;
+      const target = messagesRef.current.find((m) =>
+        m.parts.some(
+          (p) => (p as { toolCallId?: unknown }).toolCallId === toolCallId,
+        ),
+      );
+      if (!target) return;
+      const updated: AgentMessage = {
+        ...target,
+        parts: target.parts.map((p) =>
+          (p as { toolCallId?: unknown }).toolCallId === toolCallId
+            ? ({ ...p, state: "output-available", output } as typeof p)
+            : p,
+        ),
+      };
+      void persistHealedMessages(cid, [updated]).catch(() => {
+        // Best-effort: the in-memory answer already resumed the run. A
+        // failed write only costs us the post-reload view of it.
+      });
+    },
+    [addToolOutput],
+  );
+  answerQuestionRef.current = answerQuestion;
+
   return {
     messages,
     input,
@@ -2976,6 +3120,7 @@ export function useAgentChat({
     confirmEdit,
     addToolApprovalResponse,
     approveToolCall,
+    answerQuestion,
     stop,
     error,
     clearError,
