@@ -18,6 +18,12 @@ let capturedRunAction:
   | null = null;
 let mockBetweenSteps: ((stepIndex: number) => void | Promise<void>) | null =
   null;
+// Per-step provider usage the fake reports through `onStepFinish`. `null`
+// simulates a provider that reports no usage at all.
+let mockStepUsage: { inputTokens?: number; outputTokens?: number } | null = {
+  inputTokens: 100,
+  outputTokens: 20,
+};
 
 // Mock the `ai` module so we can drive `onStepFinish` and the streamed
 // UIMessages without a live model. `runCuaToolLoop` constructs
@@ -25,8 +31,8 @@ let mockBetweenSteps: ((stepIndex: number) => void | Promise<void>) | null =
 // truncation → budget-exceeded mapping.
 vi.mock("ai", () => {
   class FakeToolLoopAgent {
-    private onStepFinish?: () => void;
-    constructor(config: { onStepFinish?: () => void }) {
+    private onStepFinish?: (stepResult: unknown) => void;
+    constructor(config: { onStepFinish?: (stepResult: unknown) => void }) {
       this.onStepFinish = config.onStepFinish;
     }
     async stream() {
@@ -44,7 +50,11 @@ vi.mock("ai", () => {
         if (mockBetweenSteps) {
           await mockBetweenSteps(i);
         }
-        this.onStepFinish?.();
+        // Mirror the real SDK: `onStepFinish` receives the step result,
+        // whose `usage` carries the provider-reported token counts.
+        this.onStepFinish?.(
+          mockStepUsage === null ? {} : { usage: mockStepUsage },
+        );
       }
       return {
         toUIMessageStream: () => ({}) as never,
@@ -116,6 +126,7 @@ beforeEach(() => {
   mockFinalText = "";
   capturedRunAction = null;
   mockBetweenSteps = null;
+  mockStepUsage = { inputTokens: 100, outputTokens: 20 };
 });
 
 describe("executeAndShoot", () => {
@@ -267,6 +278,60 @@ describe("runCuaToolLoop — status mapping", () => {
   it("returns completed when under the step cap", async () => {
     mockSteps = 1;
     mockFinalText = "";
+    const result = await runCuaToolLoop(fakeRunConfig(5), fakeBuild());
+    expect(result.status).toBe("completed");
+  });
+});
+
+/**
+ * A CUA run's tokens used to be recorded nowhere: `onStepFinish` only
+ * incremented the step counter, so the run's spend landed in no
+ * conversation's `costUsd` and the child conversation's Context card stayed
+ * empty. `onStepUsage` is the hook the caller uses to attribute it. The
+ * callback stays here (rather than a chat-db write inside this module) so the
+ * loop keeps no persistence dependency — same rationale as `onUiMessage`.
+ */
+describe("runCuaToolLoop — usage reporting", () => {
+  it("reports each step's provider usage to onStepUsage", async () => {
+    mockSteps = 3;
+    mockFinalText = "done";
+    mockStepUsage = { inputTokens: 1_000, outputTokens: 250 };
+
+    const seen: Array<{ inputTokens?: number; outputTokens?: number }> = [];
+    await runCuaToolLoop(
+      { ...fakeRunConfig(5), onStepUsage: (u) => seen.push(u) },
+      fakeBuild(),
+    );
+
+    expect(seen).toEqual([
+      { inputTokens: 1_000, outputTokens: 250 },
+      { inputTokens: 1_000, outputTokens: 250 },
+      { inputTokens: 1_000, outputTokens: 250 },
+    ]);
+  });
+
+  it("skips the callback when the provider reports no usage", async () => {
+    mockSteps = 2;
+    mockFinalText = "done";
+    mockStepUsage = null;
+
+    const onStepUsage = vi.fn();
+    await runCuaToolLoop({ ...fakeRunConfig(5), onStepUsage }, fakeBuild());
+
+    expect(onStepUsage).not.toHaveBeenCalled();
+  });
+
+  it("still counts steps for the budget-exceeded mapping when usage is absent", async () => {
+    mockSteps = 3;
+    mockFinalText = "";
+    mockStepUsage = null;
+    const result = await runCuaToolLoop(fakeRunConfig(3), fakeBuild());
+    expect(result.status).toBe("budget-exceeded");
+  });
+
+  it("runs fine with no onStepUsage wired (optional hook)", async () => {
+    mockSteps = 1;
+    mockFinalText = "ok";
     const result = await runCuaToolLoop(fakeRunConfig(5), fakeBuild());
     expect(result.status).toBe("completed");
   });

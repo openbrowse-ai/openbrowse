@@ -13,6 +13,7 @@ import { setTargetTabId } from "@/lib/agent/active-tab";
 import { healPendingTools } from "@/lib/agent/heal-pending-tools";
 import { bindSharedTab } from "@/lib/agent/bind-shared-tab";
 import { normalizeToolInputForPersistence } from "@/lib/agent/tool-input-normalize";
+import { projectedNextPromptTokens } from "@/lib/agent/usage-aggregate";
 import { setAgentActive, setAgentInactive } from "@/lib/active-agents";
 import {
   abortAgentRun,
@@ -1429,9 +1430,9 @@ export function useAgentChat({
       // Under SW-host the agent loop runs in a different realm than this
       // hook, so the legacy `needsCompaction()` (which read a
       // module-scope `lastTotalTokens` mutated by the loop) always
-      // returned false here. We instead read the authoritative
-      // `conv.usage.totalTokens` that the SW persists to chat-db on
-      // every step, and feed it directly to `shouldCompact`.
+      // returned false here. We instead read the authoritative usage
+      // snapshot the SW persists to chat-db on every step —
+      // provider-reported counts, so it reflects what was actually sent.
       if (
         wasInitiator &&
         conversationId &&
@@ -1455,7 +1456,14 @@ export function useAgentChat({
             maxOutputTokens:
               conv.usage.maxOutputTokens ?? getCurrentModelDef()?.maxOutputTokens,
           };
-          if (shouldCompact(conv.usage.totalTokens, modelLimits)) {
+          // Deliberately the NEXT prompt's projected size, not current
+          // occupancy: this turn's output becomes part of the next request,
+          // and the threshold (`contextWindow - maxOutput - buffer`) is the
+          // room that request has to fit in. `occupiedTokens` is the number
+          // to show a user; this is the number to decide on.
+          if (
+            shouldCompact(projectedNextPromptTokens(conv.usage), modelLimits)
+          ) {
             runCompaction(cid, localMessages, { auto: true });
           }
         });

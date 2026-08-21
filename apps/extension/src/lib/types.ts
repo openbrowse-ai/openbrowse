@@ -385,13 +385,35 @@ export interface Conversation {
  * The two intentionally differ in scope.
  */
 export interface ConversationUsage {
-  /** Latest step's input tokens (current context input). */
+  /**
+   * Latest step's input tokens — i.e. how much of the context window the
+   * most recent request actually occupied, as reported by the provider.
+   *
+   * This is the honest "how full is the context" number and the one
+   * user-facing surfaces should show (see `occupiedTokens` in
+   * `lib/agent/usage-aggregate.ts`).
+   */
   inputTokens: number;
   /** Latest step's output tokens. */
   outputTokens: number;
-  /** inputTokens + outputTokens — the current context size. */
+  /**
+   * `inputTokens + outputTokens` for the latest step.
+   *
+   * NOT current occupancy — it's a projection of the NEXT request's prompt,
+   * since this step's output becomes part of it. That's what makes it the
+   * right input to the compaction trigger (`shouldCompact` compares it
+   * against `contextWindow - maxOutput - buffer`) and the WRONG input to a
+   * "percent of context window used" display, where it can exceed the
+   * input-only ceiling. Use `inputTokens` for display.
+   */
   totalTokens: number;
-  /** Cumulative USD spent across all steps in this conversation. */
+  /**
+   * Cumulative USD spent across all steps in this conversation.
+   *
+   * Scoped to THIS row only. A subagent's spend accumulates on its own child
+   * conversation row; callers that want a conversation's true total must add
+   * `sumSubagentCostUsd` (see `lib/agent/usage-aggregate.ts`).
+   */
   costUsd: number;
   /** Snapshot of the model's context window at write time. */
   contextWindow: number;

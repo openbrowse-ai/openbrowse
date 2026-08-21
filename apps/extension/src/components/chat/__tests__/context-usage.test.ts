@@ -32,7 +32,9 @@ describe("ContextUsage formatters", () => {
     expect(formatUsagePercent(1_000, 0)).toBe("0%");
     // rounds to nearest integer
     expect(formatUsagePercent(7_500, 200_000)).toBe("4%");
-    // clamps the display ceiling at 100% when total exceeds the window
+    // Defensive clamp. Callers now pass INPUT tokens, which can't exceed the
+    // window the provider accepted them into, so this should be unreachable
+    // in practice — but the value drives an SVG arc, so it must stay bounded.
     expect(formatUsagePercent(250_000, 200_000)).toBe("100%");
   });
 
@@ -42,7 +44,7 @@ describe("ContextUsage formatters", () => {
     expect(usagePercentValue(1_000, 0)).toBe(0);
     // rounds to nearest integer
     expect(usagePercentValue(7_500, 200_000)).toBe(4);
-    // clamps the ceiling at 100
+    // defensive clamp — see above
     expect(usagePercentValue(250_000, 200_000)).toBe(100);
   });
 
