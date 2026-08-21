@@ -8,6 +8,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  occupiedTokens,
+  sumSubagentCostUsd,
+} from "@/lib/agent/usage-aggregate";
 import { chatDb } from "@/lib/chat-db";
 import type { ConversationUsage } from "@/lib/types";
 import { getProvider } from "@/registry/providers";
@@ -33,23 +37,30 @@ export function formatCount(count: number): string {
   return tokenFmt.format(count);
 }
 
-/** Whole-number percent of context window used, clamped to 0–100; 0 when window is unknown. */
+/**
+ * Whole-number percent of context window used, clamped to 0–100; 0 when the
+ * window is unknown.
+ *
+ * `occupiedTokens` must be the latest request's INPUT tokens, not
+ * `usage.totalTokens` — see `ConversationUsage` in lib/types.ts for why the
+ * two differ. The clamp is now purely defensive (input tokens can't exceed
+ * the window the provider accepted them into); it stays because the value
+ * drives an SVG arc that would render wrong above 100.
+ */
 export function usagePercentValue(
-  totalTokens: number,
+  occupiedTokens: number,
   contextWindow: number,
 ): number {
   if (!contextWindow || contextWindow <= 0) return 0;
-  // totalTokens (input+output of the latest step) can exceed the input-only
-  // contextWindow when output is large; clamp the ceiling at 100.
-  return Math.min(100, Math.round((totalTokens / contextWindow) * 100));
+  return Math.min(100, Math.round((occupiedTokens / contextWindow) * 100));
 }
 
 /** Whole-number percent of context window used (clamped to 100); 0% when window is unknown. */
 export function formatUsagePercent(
-  totalTokens: number,
+  occupiedTokens: number,
   contextWindow: number,
 ): string {
-  return `${usagePercentValue(totalTokens, contextWindow)}%`;
+  return `${usagePercentValue(occupiedTokens, contextWindow)}%`;
 }
 
 /**
@@ -181,6 +192,12 @@ interface ConvSnapshot {
   createdAt: number;
   updatedAt: number;
   messageCount: number;
+  /**
+   * Cumulative spend across this conversation's subagent children. Kept
+   * separate from `usage.costUsd` (which is this row only) so the popover can
+   * show the split as well as the true total.
+   */
+  subagentCostUsd: number;
 }
 
 /**
@@ -205,9 +222,10 @@ export function ContextUsage({
     let mounted = true;
     async function refresh() {
       try {
-        const [conv, messageCount] = await Promise.all([
+        const [conv, messageCount, subagentCostUsd] = await Promise.all([
           chatDb.getConversation(conversationId),
           chatDb.getMessageCount(conversationId),
+          sumSubagentCostUsd(conversationId),
         ]);
         if (!mounted) return;
         if (!conv?.usage) {
@@ -220,6 +238,7 @@ export function ContextUsage({
           createdAt: conv.createdAt,
           updatedAt: conv.updatedAt,
           messageCount,
+          subagentCostUsd,
         });
       } catch (err) {
         // Transient DB error: keep the last-good snapshot rather than
@@ -238,8 +257,16 @@ export function ContextUsage({
 
   if (!snapshot) return null;
 
-  const { usage, title, createdAt, updatedAt, messageCount } = snapshot;
-  const showCost = usage.costUsd > 0;
+  const { usage, title, createdAt, updatedAt, messageCount, subagentCostUsd } =
+    snapshot;
+  // Context-window occupancy is the latest request's INPUT tokens. Using
+  // `totalTokens` here would charge the response against an input-only
+  // ceiling. See ConversationUsage in lib/types.ts.
+  const occupied = occupiedTokens(usage);
+  // A subagent's spend lands on its own child row, so the conversation's true
+  // cost is this row plus its children.
+  const totalCostUsd = usage.costUsd + subagentCostUsd;
+  const showCost = totalCostUsd > 0;
   const { providerLabel, modelLabel } = resolveModelsLabel(
     usage.modelIds,
     usage.modelId,
@@ -256,7 +283,7 @@ export function ContextUsage({
               aria-label="Context usage"
             >
               <ContextRing
-                percent={usagePercentValue(usage.totalTokens, usage.contextWindow)}
+                percent={usagePercentValue(occupied, usage.contextWindow)}
                 className={compact ? "size-3.5" : "size-4"}
               />
             </button>
@@ -265,21 +292,19 @@ export function ContextUsage({
         <TooltipContent align="end">
           <dl className="space-y-1">
             <div className="flex items-center justify-between gap-4">
-              <dd className="order-1 font-medium">
-                {formatTokens(usage.totalTokens)}
-              </dd>
-              <dt className="order-2 opacity-70">Tokens</dt>
+              <dd className="order-1 font-medium">{formatTokens(occupied)}</dd>
+              <dt className="order-2 opacity-70">Context</dt>
             </div>
             <div className="flex items-center justify-between gap-4">
               <dd className="order-1 font-medium">
-                {formatUsagePercent(usage.totalTokens, usage.contextWindow)}
+                {formatUsagePercent(occupied, usage.contextWindow)}
               </dd>
               <dt className="order-2 opacity-70">Usage</dt>
             </div>
             {showCost && (
               <div className="flex items-center justify-between gap-4">
                 <dd className="order-1 font-medium">
-                  {formatCost(usage.costUsd)}
+                  {formatCost(totalCostUsd)}
                 </dd>
                 <dt className="order-2 opacity-70">Cost</dt>
               </div>
@@ -297,13 +322,10 @@ export function ContextUsage({
             label="Context Limit"
             value={formatTokens(usage.contextWindow)}
           />
-          <DetailCell
-            label="Total Tokens"
-            value={formatTokens(usage.totalTokens)}
-          />
+          <DetailCell label="Context Used" value={formatTokens(occupied)} />
           <DetailCell
             label="Usage"
-            value={formatUsagePercent(usage.totalTokens, usage.contextWindow)}
+            value={formatUsagePercent(occupied, usage.contextWindow)}
           />
           <DetailCell
             label="Input Tokens"
@@ -313,7 +335,13 @@ export function ContextUsage({
             label="Output Tokens"
             value={formatTokens(usage.outputTokens)}
           />
-          <DetailCell label="Total Cost" value={formatCost(usage.costUsd)} />
+          <DetailCell label="Total Cost" value={formatCost(totalCostUsd)} />
+          {subagentCostUsd > 0 && (
+            <DetailCell
+              label="Subagent Cost"
+              value={formatCost(subagentCostUsd)}
+            />
+          )}
           <DetailCell label="Session Created" value={formatDateTime(createdAt)} />
           <DetailCell label="Last Activity" value={formatDateTime(updatedAt)} />
         </div>

@@ -38,6 +38,18 @@ export interface CuaRunConfig {
   abortSignal?: AbortSignal;
   /** Called with each assistant UIMessage so the runner can persist the trace. */
   onUiMessage?: (message: unknown) => void;
+  /**
+   * Called after each step with that step's provider-reported token usage,
+   * so the caller can attribute the run's tokens and cost to a conversation
+   * row. Kept as a callback rather than writing to chat-db here so this
+   * module stays free of persistence concerns (same rationale as
+   * `onUiMessage`). Fields may be undefined for providers that don't report
+   * usage.
+   */
+  onStepUsage?: (usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+  }) => void;
 }
 
 export interface CuaRunResult {

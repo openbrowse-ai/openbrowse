@@ -701,6 +701,53 @@ export function getAgentContext(): {
 
 const IMAGE_TOOLS = new Set(["screenshot"]);
 
+/**
+ * Fields on a tool's output that exist ONLY to drive the UI and must never
+ * enter the model's context.
+ *
+ * The AI SDK sends a tool's `execute` return value to the model verbatim
+ * (`createToolModelOutput` JSON-serializes it) unless the tool declares a
+ * `toModelOutput`. That makes any UI-only payload on an output a silent
+ * context leak — and one that no compaction pass can recover, because every
+ * pruner keys on the TOP-LEVEL `part.toolName` (`stripScreenshotsFromParts`,
+ * `keepOnlyLatestScreenshot`), so payload nested inside another tool's output
+ * is structurally invisible to them. This is the same hazard that keeps
+ * `screenshot` out of the batchable registry.
+ *
+ * `delegate` is the motivating case: `SubagentRunResult.transcript` carries
+ * every assistant message of the subagent run — each with the full `input`
+ * and `output` of every tool it called (DOM snapshots, page text, base64
+ * screenshots). `explore`/`general` run up to 100 steps, so a single
+ * delegation could push several hundred thousand tokens into the parent's
+ * prompt and keep re-sending them for the rest of the turn. The subagent
+ * contract is summary-only (`SubagentRunResult.finalText` is documented as
+ * "what the parent's LLM sees; the rest is metadata"), and the UI reads the
+ * trace from the child conversation via chat-db rather than from this field,
+ * so omitting it costs the renderer nothing.
+ *
+ * A Map (not an object literal) so a tool named e.g. `constructor` can't
+ * resolve a prototype property.
+ */
+const UI_ONLY_OUTPUT_FIELDS = new Map<string, readonly string[]>([
+  ["delegate", ["transcript"]],
+]);
+
+/**
+ * Shallow-copy `output` without `fields`. Returns the input unchanged when
+ * it isn't a plain object or carries none of the fields, so the common case
+ * allocates nothing.
+ */
+function omitUiOnlyFields(output: unknown, fields: readonly string[]): unknown {
+  if (output === null || typeof output !== "object" || Array.isArray(output)) {
+    return output;
+  }
+  const record = output as Record<string, unknown>;
+  if (!fields.some((f) => f in record)) return output;
+  const rest = { ...record };
+  for (const f of fields) delete rest[f];
+  return rest;
+}
+
 export const toolResultStore = new Map<string, unknown>();
 
 // Stores the tab ID captured at tool-call time for approval-required tools,
@@ -1128,6 +1175,7 @@ export function toSDKTool<TInput, TOutput>(
 ): ToolSet[string] {
   const isTabTool = TAB_INTERACTING_TOOLS.has(toolKey);
   const isImageTool = IMAGE_TOOLS.has(toolKey);
+  const uiOnlyOutputFields = UI_ONLY_OUTPUT_FIELDS.get(toolKey);
 
   const approvalRequired = t.approval?.required ?? false;
 
@@ -1822,7 +1870,15 @@ export function toSDKTool<TInput, TOutput>(
           ],
         };
       }
-    : undefined;
+    : uiOnlyOutputFields
+      ? // Project away UI-only payload before the model sees the result. The
+        // tool part persisted for the renderer keeps the full output —
+        // `toModelOutput` only rewrites the model-facing view.
+        ({ output }: { output: TOutput }) => ({
+          type: "json" as const,
+          value: omitUiOnlyFields(output, uiOnlyOutputFields) as JSONValue,
+        })
+      : undefined;
 
   // ToolSet[string] is Tool<any, any> — the SDK's Tool type uses conditional
   // types that can't be satisfied with generic type parameters.
@@ -2812,6 +2868,16 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         }
       }
 
+      // Resolve the CUA model's definition (pricing + context window) and
+      // its qualified key so the run's tokens and cost are attributed to
+      // the model that ACTUALLY executed. CUA commonly runs on a different
+      // model than the parent (an explicit `cuaModel` setting), so reusing
+      // the parent's `modelDef` here would misprice the run.
+      const cuaModelDef = cuaRegistryProvider.models.find(
+        (m) => m.id === cuaActualModelId,
+      );
+      const cuaQualifiedModelId = `${cuaRegistryProvider.id}:${cuaActualModelId}`;
+
       const result = await cuaProvider.runLoop({
         model: cuaModel,
         driver: extensionDriver,
@@ -2828,6 +2894,14 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
         conversationId: cfg.childConversationId,
         spaceColor: childSpaceColor,
         ...(cfg.abortSignal && { abortSignal: cfg.abortSignal }),
+        onStepUsage: (usage) => {
+          void recordUsageForStep(
+            cfg.childConversationId,
+            usage,
+            cuaModelDef,
+            cuaQualifiedModelId,
+          );
+        },
         onUiMessage: (m) => {
           if (!cuaPersister) return;
           persistChain = persistChain
@@ -2908,8 +2982,31 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
       instructions: cfg.systemPrompt,
       ...(providerOptions && { providerOptions }),
       experimental_context: cfg.toolContext,
-      onStepFinish: () => {
+      onStepFinish: (stepResult) => {
         stepCount += 1;
+        // Attribute the subagent's tokens to its OWN conversation row.
+        // Without this the run is invisible to accounting: the child's
+        // Context card stays empty, `useChildModel` can never resolve the
+        // model that actually executed, and — most importantly — the spend
+        // lands in no conversation's `costUsd`, so a delegation-heavy
+        // session under-reports cost by most of its actual total. The
+        // parent aggregates child cost at read time (see
+        // `sumSubagentCostUsd`), which keeps the roll-up idempotent even
+        // though the heal paths can finalize a child more than once.
+        //
+        // The subagent runs on the PARENT's resolved model (it's
+        // constructed with the same `model` above), so the parent's
+        // `modelDef` / `qualifiedModelId` are the correct attribution.
+        const usage = stepResult.usage;
+        void recordUsageForStep(
+          cfg.childConversationId,
+          {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+          },
+          modelDef,
+          qualifiedModelId,
+        );
       },
       stopWhen: stepCountIs(maxSteps),
     });

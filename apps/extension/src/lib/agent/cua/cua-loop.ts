@@ -350,8 +350,11 @@ export async function runCuaToolLoop(
     tools: tools as never,
     instructions: cfg.systemPrompt,
     ...(providerOptions && { providerOptions: providerOptions as never }),
-    onStepFinish: (() => {
+    onStepFinish: ((stepResult: {
+      usage?: { inputTokens?: number; outputTokens?: number };
+    }) => {
       stepCount += 1;
+      if (stepResult?.usage) cfg.onStepUsage?.(stepResult.usage);
     }) as never,
     stopWhen: stepCountIs(cfg.maxSteps) as never,
   });
