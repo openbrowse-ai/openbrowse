@@ -3,7 +3,12 @@ import ReactDOM from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import App from "./App";
+import { ensurePersistedStorage } from "@/lib/storage-persistence";
 import "./app.css";
+
+// See newtab/main.tsx: persist() is Window-only, so every document
+// surface opts in. Idempotent per document, and a no-op once granted.
+void ensurePersistedStorage();
 
 // `sidepanel.html` is loaded both in Chrome's side panel and inside the
 // detached popup window. The "sidepanel" port + SIDEPANEL_HELLO is the

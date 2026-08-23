@@ -4,7 +4,12 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 import { SettingsPage } from './SettingsPage'
 import { useOverlay } from '@/hooks/useOverlay'
+import { ensurePersistedStorage } from '@/lib/storage-persistence'
 import './app.css'
+
+// See newtab/main.tsx: persist() is Window-only, so every document
+// surface opts in. Idempotent per document, and a no-op once granted.
+void ensurePersistedStorage()
 
 function App() {
   const { OverlayPortal } = useOverlay();
