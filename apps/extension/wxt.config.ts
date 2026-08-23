@@ -124,6 +124,23 @@ export default defineConfig({
       "tabs",
       "tabGroups",
       "storage",
+      // Exempts this origin from quota limits AND from quota eviction.
+      // Without it the extension's default bucket is "best-effort", and
+      // Chrome deletes best-effort buckets whole — IndexedDB, OPFS and
+      // Cache together — under storage pressure (low disk), least
+      // recently used origin first. That is not hypothetical: a full
+      // disk wiped a real profile's conversations, memory, Space files
+      // and artifacts in one shot, and the LevelDB log recorded only
+      // "Creating DB ... since it was missing".
+      //
+      // Everything the agent authors — conversations in IndexedDB,
+      // memory markdown and Space uploads in OPFS — is local-only and
+      // unrecoverable, so eviction is data loss, not a cold cache.
+      //
+      // This adds no install-time permission warning, so it is safe to
+      // add to an already-published extension. See also
+      // `ensurePersistedStorage()` in `@/lib/storage-persistence`.
+      "unlimitedStorage",
       "offscreen",
       "activeTab",
       "alarms",
