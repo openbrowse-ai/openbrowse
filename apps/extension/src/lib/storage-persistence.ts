@@ -50,10 +50,19 @@ export type StoragePersistence = {
 };
 
 /**
- * Warn when an origin is within this many bytes of its quota. Chrome
- * derives the quota from total disk size, so shrinking headroom is the
- * earliest in-page signal that the disk is filling up and eviction is
- * becoming likely.
+ * Warn when `estimate()` reports fewer than this many bytes of quota left
+ * for this origin. Exceeding the quota makes IndexedDB / OPFS / Cache
+ * writes fail with `QuotaExceededError`, so this is a heads-up about that
+ * one specific failure.
+ *
+ * It is NOT a disk-pressure signal and does not predict eviction.
+ * Chromium sizes an origin quota from *total* disk size (~60% of it), and
+ * the Storage Standard requires that the quota "must not be a function of
+ * the available storage space on the device" - `estimate()` deliberately
+ * hides free space, because exposing it is a fingerprinting vector.
+ * Eviction keys on actual device free space and on browser-wide usage,
+ * neither of which is observable here. So low headroom means "this origin
+ * is near its own cap", not "the disk is nearly full".
  */
 const LOW_HEADROOM_BYTES = 256 * 1024 * 1024;
 
@@ -127,13 +136,13 @@ async function runEnsure(): Promise<StoragePersistence> {
 
   if (quota != null && usage != null && quota - usage < LOW_HEADROOM_BYTES) {
     console.warn(
-      "[storage] low headroom: " +
+      "[storage] low quota headroom: " +
         formatBytes(usage) +
         " used of " +
         formatBytes(quota) +
-        ". Chrome derives quota from free disk space, so this usually " +
-        "means the disk is nearly full. Writes may start failing with " +
-        "QuotaExceededError.",
+        " reported by estimate(). Writes will fail with " +
+        "QuotaExceededError once this origin exceeds its quota. This is " +
+        "remaining quota, not free disk space.",
     );
   }
 

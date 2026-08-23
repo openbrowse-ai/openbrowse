@@ -16,7 +16,8 @@ function stubStorage(storage: Record<string, unknown> | undefined) {
   vi.stubGlobal("navigator", storage === undefined ? {} : { storage });
 }
 
-const GIB = 1024 * 1024 * 1024;
+const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
 
 beforeEach(() => {
   _resetForTests();
@@ -107,13 +108,16 @@ describe("ensurePersistedStorage", () => {
     expect(a).toBe(b);
   });
 
-  it("warns when quota headroom is nearly exhausted", async () => {
-    // The early-warning signal for the exact condition that causes
-    // whole-bucket eviction: a disk with almost nothing left.
+  // LOW_HEADROOM_BYTES is 256 MiB and the comparison is strict (`<`), so
+  // 255 MiB warns and exactly 256 MiB does not. The next two cases pin
+  // that boundary. Note this tracks remaining *quota*, which is derived
+  // from total disk size - not free disk space, which estimate() does not
+  // expose - so it says nothing about eviction risk.
+  it("warns just under the 256 MiB quota-headroom threshold", async () => {
     stubStorage({
       estimate: vi
         .fn()
-        .mockResolvedValue({ usage: 40 * GIB, quota: 40 * GIB + 1024 }),
+        .mockResolvedValue({ usage: 40 * GIB, quota: 40 * GIB + 255 * MIB }),
       persisted: vi.fn().mockResolvedValue(false),
       persist: vi.fn().mockResolvedValue(false),
     });
@@ -121,8 +125,22 @@ describe("ensurePersistedStorage", () => {
     await ensurePersistedStorage();
 
     expect(console.warn).toHaveBeenCalledWith(
-      expect.stringContaining("low headroom"),
+      expect.stringContaining("low quota headroom"),
     );
+  });
+
+  it("does not warn at exactly 256 MiB of headroom", async () => {
+    stubStorage({
+      estimate: vi
+        .fn()
+        .mockResolvedValue({ usage: 40 * GIB, quota: 40 * GIB + 256 * MIB }),
+      persisted: vi.fn().mockResolvedValue(false),
+      persist: vi.fn().mockResolvedValue(true),
+    });
+
+    await ensurePersistedStorage();
+
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("does not warn when there is plenty of headroom", async () => {
