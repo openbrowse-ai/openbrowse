@@ -55,19 +55,20 @@
  *   covers them transparently.
  */
 
-import { readUIMessageStream, type UIMessageChunk } from "ai";
 import type { AgentUIMessage } from "@/lib/agent/message-types";
-import {
-  AGENT_RUN,
-  type AgentRunChunkPayload,
-  type AgentRunDonePayload,
-  type AgentRunErrorPayload,
-  type RunOrigin,
-} from "./messages";
-import type { AgentHostRegistry, RunHandle } from "./registry";
-import type { AssistantStreamPersister } from "./persist-stream";
-import type { SnapshotBroadcaster } from "./snapshot-broadcast";
 import { serializeParts } from "@/lib/agent/serialize-parts";
+import { requestMemorySync } from "@/lib/memory/sync/messages";
+import { readUIMessageStream, type UIMessageChunk } from "ai";
+import {
+    AGENT_RUN,
+    type AgentRunChunkPayload,
+    type AgentRunDonePayload,
+    type AgentRunErrorPayload,
+    type RunOrigin,
+} from "./messages";
+import type { AssistantStreamPersister } from "./persist-stream";
+import type { AgentHostRegistry, RunHandle } from "./registry";
+import type { SnapshotBroadcaster } from "./snapshot-broadcast";
 
 export interface StartRunArgs {
   conversationId: string;
@@ -442,6 +443,11 @@ function emitDone(handle: RunHandle): void {
   for (const port of Array.from(handle.subscribers)) {
     postToSubscriber(port, payload, (p) => handle.subscribers.delete(p));
   }
+  // A run may have authored memory. Sync cannot happen here: restoring a lapsed
+  // File System Access grant needs a user gesture, which a worker with no open
+  // window cannot produce (crbug.com/1359786). So ask any open surface to do it;
+  // with none open, the next surface to mount syncs on its own.
+  requestMemorySync();
 }
 
 function emitError(handle: RunHandle, message: string): void {

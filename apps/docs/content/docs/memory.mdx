@@ -1,40 +1,178 @@
 ---
 title: Memory
-description: The agent's persistent memory system for context across conversations.
+description: A folder of markdown files the agent writes and reads to carry context across conversations — plus optional sync between Chrome profiles.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The OpenBrowse agent features a persistent memory system. It can save, recall, update, and delete memories to keep track of your preferences, project context, and prior interactions across different sessions.
+Agent memory is a folder tree of plain markdown files. The agent authors and maintains it directly with the normal file tools — `Read`, `Write`, `Edit`, `Move`, `LS`, `Glob`, `Grep` — plus a `searchMemory` tool for retrieval. Writing a memory is just writing a file.
 
-<Callout type="info" title="Privacy First">
-  Memories are stored locally in your browser's extension storage. They are never sent to external servers or used for training.
+The files are the source of truth. IndexedDB holds a keyword + backlink index derived from them, and it is rebuilt from disk on startup, so hand edits and repairs are picked up automatically rather than fighting a hidden database.
+
+<Callout type="info" title="No server, no account">
+  Memory files live in your browser's origin-private filesystem (OPFS), local to
+  the Chrome profile. OpenBrowse has no backend: nothing is uploaded, and
+  nothing is used for training. Two honest caveats. Memory reaches your **model
+  provider** the way the rest of a conversation does — a compact index of titles
+  and descriptions goes into the system prompt each turn, and any note the agent
+  reads becomes part of that request, sent from your browser to the provider you
+  configured with your own key. And if you turn on [sync](#sync-across-profiles)
+  and put the folder somewhere a cloud client watches, that provider gets the
+  files. Both are your choice, not something OpenBrowse does on its own.
 </Callout>
 
-## Space-Scoped Memory
+## Where memory lives
 
-Memories are contextual. When the agent saves a memory, it is often scoped to the **Space** you are currently in. 
+| Path                         | Scope                                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `memory/**`                  | **Global** — durable knowledge about you and your world. Visible in every conversation and every Space.                     |
+| `spaces/<spaceId>/memory/**` | **Space-scoped** — knowledge about that [Space](/docs/spaces)'s project. Visible only inside it (globals stay visible too). |
 
-For example, if you tell the agent "Remember that my staging server is `https://staging.myapp.com`" while in your "Work" space, the agent will recall that fact when you are working in that space, but won't clutter your "Personal" space with work URLs.
+Organization inside those roots is emergent, not prescribed. There is no required folder structure and no fixed taxonomy: the default is a flat, descriptively named file per topic, with a folder created only once a natural cluster appears. The `[[link]]` graph does the organizing, not deep nesting.
 
-## How the Agent Uses Memory
+## What a memory file looks like
 
-The agent will automatically decide when to save or update memories based on your conversation. However, you can also explicitly instruct the agent to remember something:
+YAML frontmatter plus a body split into a compiled-truth section and a timeline:
 
-- _"Remember that I prefer my code in TypeScript."_
-- _"Save this PR link to memory."_
-- _"Update the staging URL in memory to the new domain."_
+```md
+---
+title: Garry Tan
+description: President & CEO of Y Combinator
+type: reference
+domain: ycombinator.com
+aliases: [gt]
+created: 2026-08-05
+updated: 2026-08-06
+---
 
-## Managing Memories
+# Compiled truth
 
-The agent manages memories autonomously using its tool suite (`saveMemory`, `recallMemory`, `updateMemory`, `deleteMemory`). 
+Current best understanding — read first. Works with [[jessica-livingston]]
+at [[y-combinator]].
 
-<Callout type="warn" title="Approval Required">
-  Updating or deleting existing memories requires your explicit approval to prevent the agent from accidentally overwriting important context.
+# Timeline
+
+- 2026-08-06 — Met at the YC dinner. [Source: [[chat]]]
+```
+
+The compiled-truth block is the current summary; timeline entries are appended rather than overwriting history, so the note keeps a record of how the agent's understanding changed.
+
+The format is a convention, not a schema. Every field is optional and a plain markdown note with no frontmatter at all still parses and stays searchable — the whole file is simply treated as compiled truth. `[Source: …]` markers render as clickable links in the viewer, either back to the conversation a fact came from or out to the page it was read from.
+
+## Links and the graph
+
+Notes reference each other with **bare-basename** `[[wikilinks]]`: `[[garry-tan]]` resolves to any `…/garry-tan.md` in scope, regardless of which folder it sits in. That makes links survive a `Move`, which is what allows the agent to reorganize memory without breaking anything.
+
+Links are parsed on every write — no model calls involved — into a link/backlink table. Two things fall out of that:
+
+- **Linked-to notes rank higher** in `searchMemory`, and a search also returns a one-hop "related via links" set.
+- **Settings → Memory has a graph view.** A force-directed view of the whole link graph: node size by backlink count, color by scope, and hollow "dangling" nodes for links whose note doesn't exist yet — a useful signal for entities the agent referenced but never wrote up.
+
+## How the agent works with memory
+
+There are no dedicated save/recall/update/delete memory tools. Recall is `searchMemory` or `Read`; save and update are `Write` and `Edit`; reorganizing is `Move`; forgetting is `Delete`. See the [Tools Reference](/docs/tools) for signatures.
+
+<Callout type="warn" title="Only Delete asks">
+  Writing, editing, and moving memory are **ungated** — the agent captures and
+  reorganizes as it goes, without a prompt. **Deleting** is the one memory
+  action that requires your approval. `Move` refuses to cross the memory
+  boundary in either direction, so it can't be used to smuggle a workspace file
+  into memory or to turn a delete into an unapproved one.
 </Callout>
 
-### Common Use Cases
+The agent decides when to write, but you can be explicit:
 
-- **Preferences:** Remember how you like tasks summarized or formatted.
-- **Projects:** Keep track of ongoing work, relevant URLs, and active PRs across sessions.
-- **Automation:** Store selectors or steps for a website you frequently automate.
+- _"Remember that I prefer TypeScript over JavaScript."_
+- _"Make a note about the people on the platform team."_
+- _"Forget what you know about my old staging URL."_
+
+## Managing memory yourself
+
+**Settings → Memory** is a file tree on the left and the note on the right. The viewer parses frontmatter into a header, offers a **Rendered ⟷ Source** toggle, renders `[[wikilinks]]` as links you can click to navigate between notes, and has Delete behind a confirmation. In a Space, memory files open in the same rail viewer as Space files.
+
+## Sync across profiles
+
+OPFS is partitioned per Chrome profile and Chrome never replicates it, so by default separate Work and Personal profiles mean two agents that know nothing about each other. Sync is the opt-in fix: point each profile at one shared folder — the **vault** — and their global memory converges.
+
+Only `memory/**` syncs. Space-scoped memory does not: a Space's id is a per-profile UUID with no portable identity, so there is no honest way to tell that "Work" in one profile is the same Space as "Work" in another.
+
+### Turning it on
+
+Go to **Settings → Memory → Memory sync → Choose folder…** and pick a folder. Then repeat that in each Chrome profile, choosing the **same folder** every time.
+
+Linking never deletes anything. The first pass has no history to compare against, so the two trees are simply unioned.
+
+Give each profile a label ("Work", "Personal") in the same panel. It's what conflicts are attributed to, so you can tell which profile made a change.
+
+### Across machines
+
+Put the vault in Dropbox, iCloud Drive, or Google Drive — or `git init` it — and memory follows you between machines. OpenBrowse has no server and no account, so there is nothing for it to sync _through_; a folder your existing tools already replicate is the whole mechanism. The tradeoff is that whatever guarantees you get across machines are your cloud client's or git's, not ours.
+
+### The folder is a real markdown vault
+
+The vault mirrors what Settings → Memory shows, one file at a time:
+
+```
+<vault>/
+├── memory/                          # mirrors memory/** 1:1
+│   ├── garry-tan.md
+│   └── projects/
+│       └── openbrowse.md
+└── .openbrowse/                     # sync metadata; hidden in Obsidian
+    ├── vault.json                   # vault id + schema version
+    ├── tombstones/                  # one file per deleted note
+    ├── conflicts/                   # copies that lost a conflict
+    └── lock                         # advisory cross-profile lock
+```
+
+So the vault is not an export format. Open it in Obsidian, read it, edit a note by hand, commit it and diff it in git — the next sync picks the change up as an ordinary edit. Metadata hides in a dotfolder, and paths beginning with `.` are rejected as memory notes, so sync bookkeeping can never be mistaken for something the agent should read.
+
+Non-markdown files are ignored rather than imported, and a pass caps out at 1,000 files and 1 MB per file. Anything skipped is reported in the status line instead of being silently dropped.
+
+### When sync runs
+
+Sync happens when an OpenBrowse surface (Settings, the side panel, the home tab) is open:
+
+- when a surface mounts, and each time one comes back to the foreground
+- after an agent run finishes, if a surface is open to do it
+- a few seconds after memory changes on disk, debounced
+- when you press **Sync now**
+
+It is a checkpoint operation, not a live channel — and that is a constraint, not a preference. Chrome does not reliably keep folder permission across browser sessions, and the permission can only be restored by `requestPermission()` under a user gesture, which a background service worker with no open window cannot produce ([crbug.com/1359786](https://crbug.com/1359786)). So the sync engine has to live in a page, and the service worker can only _ask_ whichever surface is open to run a pass.
+
+The visible consequence: near the start of a browser session you may see **"Reconnect the folder to resume syncing"** with a Reconnect button. That is routine, not an error — one click supplies the gesture Chrome wants. Until then, opportunistic passes skip silently rather than nagging you, and only **Sync now** reports problems, because that's the one you asked for.
+
+### Conflicts
+
+If the same note changed in two profiles since they last agreed, the newer version wins — by the note's `updated` frontmatter date, falling back to file modification time when the dates match. Frontmatter is preferred because copying a vault between machines, restoring a backup, or a cloud client rewriting timestamps all disturb mtime while leaving the note's own record of when it last meaningfully changed intact.
+
+The version that lost is never discarded. It is archived under `.openbrowse/conflicts/` and listed in Settings → Memory with **Restore** and **Dismiss**. Restore makes that copy the live note again; Dismiss throws it away. Archives sit outside `memory/` deliberately — the agent reads everything under `memory/`, so a second copy of a note parked there would surface the same fact twice and quietly corrupt the graph.
+
+### Deletes
+
+Deleting a note in one profile removes it in the others. Two deliberate biases both favor keeping data:
+
+- **An edit beats a concurrent delete.** Edit a note in one profile while deleting it in another and the edit wins — the note comes back, and the sync result says so rather than hiding it. Losing something you just wrote is worse than seeing something you deleted return.
+- **A note that simply vanished from the vault is restored, not deleted.** Deletes made through OpenBrowse always leave a tombstone. A file that is just missing is far more likely to be a half-synced cloud folder or an interrupted copy than an instruction to erase memory, so it gets pushed back.
+
+Tombstones are garbage-collected after 90 days. A profile that hasn't synced in longer than that can resurrect a note deleted elsewhere; that shows up in the status line as a restored note.
+
+### Stop syncing
+
+**Stop syncing** unlinks the folder and deletes nothing. The memory in this profile and the files in the vault both stay exactly as they are.
+
+<Callout type="warn" title="Pick a folder only you control">
+  Anything you put in the vault's `memory/` directory becomes readable by the
+  agent, which makes a shared or world-writable folder a prompt-injection
+  vector. Do not point sync at a folder other people can write to. The vault is
+  also plaintext markdown on your disk — that is what makes it inspectable and
+  Obsidian- and git-compatible, and it is not encrypted at rest.
+</Callout>
+
+## What tends to end up in memory
+
+- **You and your world** — role, preferences, the people you work with, recurring projects, decisions.
+- **Project context** — where things live, relevant URLs, active work, carried across sessions.
+- **References** — facts worth keeping, with a `[Source: …]` marker you can click to check.
+
+Per-site knowledge — navigation patterns, selectors, page quirks — goes into that domain's site skill instead of memory. Ephemeral things (current page contents, open tab URLs, one-off task details) are deliberately not written at all.

@@ -75,25 +75,30 @@ what Settings → Memory shows.
 │       └── openbrowse.md
 └── .openbrowse/                     # sync metadata; hidden from Obsidian
     ├── vault.json                   # { vaultId, schemaVersion, createdAt }
-    ├── manifest.json                # derived cache: path → { sha256, size, updated }
     ├── tombstones/
     │   └── <sha256-of-path>.json    # { path, deletedAt, profileId, profileLabel }
     ├── conflicts/
     │   └── 2026-09-07T14-22-01Z/
     │       └── memory/garry-tan.md  # the version that lost a conflict
+    ├── tmp/                         # staging for tmp-then-move writes
     └── lock                         # advisory; { profileId, acquiredAt }
 ```
 
 Two deliberate choices here:
 
-**`manifest.json` is a pure cache.** It exists to avoid re-hashing every file on every
-sync. It is fully derivable by walking the vault, so a torn or clobbered write is
-self-healing — we rebuild it. Nothing correctness-critical lives in it.
+**No hash-cache manifest.** An earlier draft of this design put a `manifest.json`
+in `.openbrowse/` to avoid rehashing files each pass. The implementation drops
+it: both sides rehash every file on every sync instead. Memory trees are
+markdown notes — tens to low hundreds of KB — so the hashing cost is
+negligible, and a cache that must be invalidated correctly against hand edits,
+cloud-rewritten mtimes, and concurrent writers is a bug surface bought for no
+measurable gain. If a tree ever grows large enough to matter, the fix is an
+mtime+size memo keyed locally, not a shared file in the vault.
 
-**Tombstones are one file per deletion, not entries in the manifest.** A deletion is the
+**Tombstones are one file per deletion, not entries in a shared file.** A deletion is the
 only fact that cannot be re-derived from the vault contents, so it must survive two
 profiles writing concurrently. Per-path files have no write contention and cannot suffer a
-lost update; had tombstones lived in `manifest.json`, one clobbering write would resurrect
+lost update; had tombstones shared a single JSON file, one clobbering write would resurrect
 every deleted note.
 
 **No generated `MEMORY.md`.** OpenBrowse already computes a memory index and injects it
@@ -165,7 +170,7 @@ graph). Settings surfaces "2 conflicts resolved — review" with per-file view/r
 ### Hashing
 
 `contentHash` in `lib/memory/format.ts` is 32-bit FNV-1a, which is fine for the local
-index but too weak to arbitrate cross-profile writes. The sync manifest uses SHA-256 via
+index but too weak to arbitrate cross-profile writes. Sync hashes with SHA-256 via
 `crypto.subtle.digest`, available in both pages and the service worker. The existing
 `contentHash` is left alone.
 
@@ -293,7 +298,7 @@ New:
 ```
 lib/memory/sync/
 ├── engine.ts              # pure three-way reconciliation
-├── types.ts               # MemorySyncTransport, manifest, tombstone, baseline
+├── types.ts               # MemorySyncTransport, tombstone, baseline, results
 ├── hash.ts                # SHA-256 over file contents
 ├── local-tree.ts          # OPFS memory/** port: list, read, write, delete
 ├── directory-transport.ts # File System Access implementation
@@ -324,8 +329,14 @@ idempotency (a second run writes nothing); rejection of traversal names, non-`.m
 space-scoped paths, oversized files, and file-count overflow.
 
 **Transport, against a fake directory handle:** `prompt` permission yields `lapsed`
-without throwing; a missing folder yields `missing`; tmp-then-move write path; manifest
-rebuild after a corrupt `manifest.json`; tombstone round-trip.
+without throwing; a missing folder yields `missing`; the tmp-then-move write path and its
+direct-write fallback; a corrupt `vault.json` is rewritten rather than fatal; tombstone and
+conflict-archive round-trips; refusal of unsafe vault paths.
+
+**Controller:** the profile id is minted once and stays stable; an opportunistic pass on a
+lapsed grant is silent while an explicit one reports; concurrent calls coalesce into a
+single pass; the self-writing flag clears even when a pass throws; unlinking forgets the
+vault without deleting anything.
 
 **Integration, real fake-OPFS + `memoryIndexDb`:** a pulled file becomes findable via
 `memoryStore.search`; a pulled delete drops its index row and its link edges; syncing
