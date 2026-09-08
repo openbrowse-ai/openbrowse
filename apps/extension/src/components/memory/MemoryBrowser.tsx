@@ -24,21 +24,28 @@ import { MemoryGraph } from "@/components/memory/MemoryGraph";
 import { openSourceChat } from "@/components/memory/source-chat";
 import { Input } from "@/components/ui/input";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { SkillFileTree } from "@/entrypoints/settings/skills/SkillFileTree";
 import { memoryDirPath } from "@/lib/memory/format";
 import {
-  memoryStore,
-  type MemoryGraphData,
-  type SearchResultItem,
+    memoryStore,
+    type MemoryGraphData,
+    type SearchResultItem,
 } from "@/lib/memory/store";
 import { vfsEvents } from "@/lib/vfs/events";
 import { OPFS } from "@/lib/vfs/opfs";
 import { Network, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 
 interface Scope {
   label: string;
@@ -70,6 +77,7 @@ export function MemoryBrowser({
   onOpenConversation,
   selectedPath,
   onSelectedPathChange,
+  headerAccessory,
 }: {
   spaceId: string | null;
   /** Show the global memory tree alongside the space tree (default true). */
@@ -98,6 +106,13 @@ export function MemoryBrowser({
    */
   selectedPath?: string | null;
   onSelectedPathChange?: (path: string | null) => void;
+  /**
+   * Extra control rendered into the sidebar header's icon row, left of Search.
+   * Exists so a host can add an affordance without stealing vertical space from
+   * the tree — the sidebar is a full-height master/detail, so anything stacked
+   * above it shortens both panes. Ignored by the `inline` variant.
+   */
+  headerAccessory?: ReactNode;
 }) {
   const [scopes, setScopes] = useState<Scope[]>([]);
   const [internalSelected, setInternalSelected] = useState<string | null>(null);
@@ -343,6 +358,7 @@ export function MemoryBrowser({
           <div className="flex items-center justify-between px-3 py-2 border-b border-border">
             <span className="text-sm font-medium">Memory</span>
             <div className="flex items-center gap-0.5">
+              {headerAccessory}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button

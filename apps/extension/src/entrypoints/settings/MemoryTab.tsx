@@ -1,7 +1,7 @@
 import { MemoryBrowser } from "@/components/memory/MemoryBrowser";
-import { MemorySyncSection } from "./memory-sync/MemorySyncSection";
 import { storage } from "@/lib/storage";
 import { useEffect, useState } from "react";
+import { MemorySyncButton } from "./memory-sync/MemorySyncButton";
 
 export function MemoryTab({
   selectedNote,
@@ -39,16 +39,12 @@ export function MemoryTab({
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <MemorySyncSection />
-      <div className="flex-1 min-h-0">
-        <MemoryBrowser
-          variant="sidebar"
-          spaceId={currentSpaceId}
-          selectedPath={selectedNote}
-          onSelectedPathChange={onSelectNote}
-        />
-      </div>
-    </div>
+    <MemoryBrowser
+      variant="sidebar"
+      spaceId={currentSpaceId}
+      selectedPath={selectedNote}
+      onSelectedPathChange={onSelectNote}
+      headerAccessory={<MemorySyncButton />}
+    />
   );
 }

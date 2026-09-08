@@ -1,8 +1,12 @@
 // src/entrypoints/settings/memory-sync/MemorySyncSection.tsx
 //
-// Settings > Memory, above the note tree: link a folder that carries the
-// agent's global memory between Chrome profiles, and report what the last sync
-// pass actually did.
+// The memory-sync panel: link a folder that carries the agent's global memory
+// between Chrome profiles, and report what the last pass actually did.
+//
+// Rendered inside a popover anchored on the Memory header (see
+// `MemorySyncButton`), not stacked above the tree. The Memory tab is a
+// full-height master/detail, so anything placed above it shortens both panes for
+// a control the user touches roughly twice per profile.
 //
 // Wording note: "lapsed" is phrased as a chore, not a fault. Chrome drops File
 // System Access grants at the start of every browser session, so a returning
@@ -14,7 +18,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useMemorySync } from "@/hooks/useMemorySync";
+import type { UseMemorySync } from "@/hooks/useMemorySync";
 import type { TransportStatus } from "@/lib/memory/sync/types";
 import type { MemorySyncLastResult } from "@/lib/types";
 import { useEffect, useState } from "react";
@@ -22,7 +26,12 @@ import { ConflictsPanel, formatAgo } from "./ConflictsPanel";
 
 const LABEL_INPUT_ID = "memory-sync-profile-label";
 
-export function MemorySyncSection() {
+/**
+ * Takes the hook's value rather than calling it, so the trigger button and the
+ * panel share one instance — two `useMemorySync()` calls would mean two sets of
+ * triggers and two sync passes racing each other.
+ */
+export function MemorySyncSection({ sync: state }: { sync: UseMemorySync }) {
   const {
     ready,
     status,
@@ -37,7 +46,7 @@ export function MemorySyncSection() {
     setLabel,
     restore,
     dismiss,
-  } = useMemorySync();
+  } = state;
 
   // Rendering nothing until the hook's first state read lands beats flashing
   // the "no folder linked" pitch at someone who linked one months ago.
@@ -48,7 +57,7 @@ export function MemorySyncSection() {
   const linked = status !== "unset";
 
   return (
-    <section className="space-y-3 border-b border-border p-4">
+    <div className="space-y-3">
       <div className="space-y-1">
         <h3 className="text-sm font-medium">Memory sync</h3>
         {linked ? (
@@ -131,7 +140,7 @@ export function MemorySyncSection() {
           onDismiss={dismiss}
         />
       )}
-    </section>
+    </div>
   );
 }
 
