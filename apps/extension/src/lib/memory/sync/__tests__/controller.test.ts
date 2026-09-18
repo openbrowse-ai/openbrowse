@@ -77,7 +77,27 @@ vi.mock("../directory-transport", () => ({
   }),
 }));
 
+const hints: { published: unknown[]; cleared: string[]; suggestion: unknown } = {
+  published: [],
+  cleared: [],
+  suggestion: null,
+};
+
+vi.mock("../discovery", () => ({
+  publishVaultHint: async (h: unknown) => {
+    hints.published.push(h);
+  },
+  clearVaultHint: async (id: string) => {
+    hints.cleared.push(id);
+  },
+  readVaultSuggestion: async () => hints.suggestion,
+  readOtherVaultHints: async () => (hints.suggestion ? [hints.suggestion] : []),
+}));
+
 const localList = vi.fn(async () => []);
+
+/** Records the options `linkVault` passes to the picker. */
+const pickerCalls: Array<Record<string, unknown>> = [];
 
 vi.mock("../local-tree", () => ({
   createOpfsMemoryTree: () => ({
@@ -96,10 +116,19 @@ beforeEach(() => {
   baselineStore.value = {};
   transportState.status = "granted";
   localList.mockClear();
+  hints.published = [];
+  hints.cleared = [];
+  hints.suggestion = null;
+  pickerCalls.length = 0;
+  vi.stubGlobal("showDirectoryPicker", async (opts: Record<string, unknown>) => {
+    pickerCalls.push(opts);
+    return fakeHandle;
+  });
 });
 
 afterEach(() => {
   vi.resetModules();
+  vi.unstubAllGlobals();
 });
 
 /** Fresh module instance, so the module-level in-flight/self-writing state resets. */
@@ -235,6 +264,9 @@ describe("unlinkVault", () => {
     expect(settings.vaultId).toBeNull();
     expect(handleStore.handle).toBeNull();
     expect(baselineStore.value["vault-1"]).toBeUndefined();
+    // Leaving a hint behind would keep advertising a folder this profile no
+    // longer uses.
+    expect(hints.cleared).toEqual([settings.profileId]);
   });
 });
 
@@ -246,5 +278,102 @@ describe("statusMessage", () => {
     );
     expect(statusMessage("granted")).toBe("");
     expect(statusMessage("missing")).toMatch(/moved or deleted/);
+  });
+});
+
+describe("linkVault", () => {
+  it("passes a picker id Chrome will accept, and starts in Documents", async () => {
+    // The id must be ASCII alphanumeric or `_` and at most 32 chars — a hyphen
+    // makes `showDirectoryPicker` throw TypeError, which would break the only
+    // way into this feature.
+    const { linkVault } = await loadController();
+
+    await linkVault();
+
+    expect(pickerCalls).toHaveLength(1);
+    const id = pickerCalls[0].id as string;
+    expect(id).toMatch(/^[A-Za-z0-9_]+$/);
+    expect(id.length).toBeLessThanOrEqual(32);
+    expect(pickerCalls[0].startIn).toBe("documents");
+    expect(pickerCalls[0].mode).toBe("readwrite");
+  });
+
+  it("advertises the linked vault to the user's other profiles", async () => {
+    const { linkVault, getSyncSettings } = await loadController();
+
+    await linkVault();
+
+    const settings = await getSyncSettings();
+    expect(hints.published).toEqual([
+      {
+        vaultId: "vault-1",
+        folderName: "vault",
+        profileId: settings.profileId,
+        profileLabel: settings.profileLabel,
+        updatedAt: expect.any(Number),
+      },
+    ]);
+  });
+
+  it("reports joining the folder another profile advertised", async () => {
+    hints.suggestion = {
+      vaultId: "vault-1",
+      folderName: "OpenBrowse",
+      profileId: "other",
+      profileLabel: "Work",
+      updatedAt: 1,
+    };
+    const { linkVault } = await loadController();
+
+    expect((await linkVault()).joinedSuggestion).toBe("matched");
+  });
+
+  it("flags picking a different folder than the advertised one", async () => {
+    // Silent divergence is the worst outcome here: both profiles look linked and
+    // memory simply never converges.
+    hints.suggestion = {
+      vaultId: "some-other-vault",
+      folderName: "Elsewhere",
+      profileId: "other",
+      profileLabel: "Work",
+      updatedAt: 1,
+    };
+    const { linkVault } = await loadController();
+
+    expect((await linkVault()).joinedSuggestion).toBe("mismatched");
+  });
+
+  it("reports no suggestion when nothing is advertised", async () => {
+    const { linkVault } = await loadController();
+    expect((await linkVault()).joinedSuggestion).toBe("none");
+  });
+});
+
+describe("getVaultSuggestion", () => {
+  it("offers another profile's vault while this one is unlinked", async () => {
+    hints.suggestion = {
+      vaultId: "vault-1",
+      folderName: "OpenBrowse",
+      profileId: "other",
+      profileLabel: "Work",
+      updatedAt: 1,
+    };
+    const { getVaultSuggestion } = await loadController();
+
+    expect((await getVaultSuggestion())?.folderName).toBe("OpenBrowse");
+  });
+
+  it("stops offering once this profile is linked", async () => {
+    hints.suggestion = {
+      vaultId: "vault-1",
+      folderName: "OpenBrowse",
+      profileId: "other",
+      profileLabel: "Work",
+      updatedAt: 1,
+    };
+    const { getVaultSuggestion, patchSyncSettings } = await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+
+    expect(await getVaultSuggestion()).toBeNull();
   });
 });

@@ -19,7 +19,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { UseMemorySync } from "@/hooks/useMemorySync";
-import type { TransportStatus } from "@/lib/memory/sync/types";
+import {
+  SUGGESTED_VAULT_FOLDER,
+  type TransportStatus,
+} from "@/lib/memory/sync/types";
 import type { MemorySyncLastResult } from "@/lib/types";
 import { useEffect, useState } from "react";
 import { ConflictsPanel, formatAgo } from "./ConflictsPanel";
@@ -38,6 +41,8 @@ export function MemorySyncSection({ sync: state }: { sync: UseMemorySync }) {
     settings,
     syncing,
     conflicts,
+    suggestion,
+    mismatch,
     error,
     link,
     reconnect,
@@ -68,6 +73,24 @@ export function MemorySyncSection({ sync: state }: { sync: UseMemorySync }) {
             </span>
             .
           </p>
+        ) : suggestion ? (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Your{" "}
+              <span className="font-medium text-foreground">
+                {suggestion.profileLabel || "other"}
+              </span>{" "}
+              profile syncs memory to a folder named{" "}
+              <span className="font-medium text-foreground">
+                {suggestion.folderName}
+              </span>
+              . Choose that same folder here to join it.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Pick a different folder and the two profiles just won't share
+              anything — we'll tell you if that happens.
+            </p>
+          </>
         ) : (
           <>
             <p className="text-xs text-muted-foreground">
@@ -75,6 +98,14 @@ export function MemorySyncSection({ sync: state }: { sync: UseMemorySync }) {
               agent's global memory stays in sync between them. Keep that folder
               in Dropbox, iCloud Drive, Google Drive, or a git repo and it
               follows you across machines too.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              No folder yet? Create{" "}
+              <code className="font-mono">
+                Documents/{SUGGESTED_VAULT_FOLDER}
+              </code>{" "}
+              — the picker opens in Documents, and you can make the folder from
+              there.
             </p>
             <p className="text-xs text-muted-foreground">
               Anything you put in the folder's{" "}
@@ -125,6 +156,13 @@ export function MemorySyncSection({ sync: state }: { sync: UseMemorySync }) {
         <Button variant="outline" size="sm" onClick={() => void link()}>
           Choose folder…
         </Button>
+      )}
+
+      {mismatch && (
+        <p className="text-xs text-amber-700 dark:text-amber-300">
+          This is a different folder than your other profile uses, so the two
+          won't share memory. Choose the same folder in both to link them.
+        </p>
       )}
 
       {error !== null && (

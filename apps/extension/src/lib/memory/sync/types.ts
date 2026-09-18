@@ -181,3 +181,43 @@ export function summarize(result: SyncResult): SyncResultSummary {
     ...(result.error ? { error: result.error } : {}),
   };
 }
+
+/**
+ * Folder name we suggest for the vault, under the user's Documents directory.
+ *
+ * Why a visible folder in Documents rather than a dotfolder in `$HOME` (the
+ * `~/.claude` / `~/.codex` / `~/.openbrowse` pattern):
+ *
+ *   - **Dotfolders are hidden in the OS file picker.** The user must pick this
+ *     folder by hand in every profile. On macOS and Windows a leading dot means
+ *     it isn't shown at all without a keyboard trick — disqualifying for the one
+ *     thing this folder has to be: pickable.
+ *   - **`startIn` cannot open `$HOME`.** The well-known values are `desktop`,
+ *     `documents`, `downloads`, `music`, `pictures`, `videos`. Documents is the
+ *     closest thing to "where the user's own files live".
+ *   - **The convention splits by audience, not by tool.** Dotfolders hold machine
+ *     state the user isn't meant to browse — exactly what `~/.openbrowse/`
+ *     already holds for the MCP broker. User-facing knowledge content goes
+ *     somewhere visible: basic-memory defaults to `~/basic-memory`, and Obsidian
+ *     vaults live wherever the user can find them. This vault is meant to be
+ *     opened in Obsidian, committed to git, and read by a human.
+ *   - On macOS with iCloud Drive's Desktop & Documents option enabled,
+ *     `~/Documents` is already replicated, so cross-machine sync comes free.
+ *
+ * The root is `OpenBrowse`, not `OpenBrowse Memory`: the vault root already
+ * *contains* `memory/` (naming the root "memory" would read as
+ * `…/memory/memory/`), and this leaves room for more to sync later. Any folder
+ * works — this is only what the UI suggests.
+ */
+export const SUGGESTED_VAULT_FOLDER = "OpenBrowse";
+
+/**
+ * `showDirectoryPicker`'s `id`, which makes Chrome reopen the picker where the
+ * user last left it.
+ *
+ * Must be ASCII alphanumeric or `_`, 32 characters or fewer — a hyphen makes the
+ * call throw `TypeError`. Paired with `startIn: "documents"`, a remembered
+ * directory wins when one exists and Documents is used otherwise: helpful the
+ * first time, unobtrusive afterwards.
+ */
+export const VAULT_PICKER_ID = "openbrowse_memory";

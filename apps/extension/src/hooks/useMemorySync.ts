@@ -25,6 +25,7 @@ import {
     dismissConflict,
     getStatus,
     getSyncSettings,
+    getVaultSuggestion,
     isSelfWriting,
     linkVault,
     listConflicts,
@@ -34,6 +35,7 @@ import {
     syncNow,
     unlinkVault,
 } from "@/lib/memory/sync/controller";
+import type { VaultHint } from "@/lib/memory/sync/discovery";
 import type { ConflictEntry, TransportStatus } from "@/lib/memory/sync/types";
 import type { MemorySyncSettings } from "@/lib/types";
 import { vfsEvents, type VfsChangeDetail } from "@/lib/vfs/events";
@@ -58,6 +60,19 @@ export interface UseMemorySync {
    */
   syncing: boolean;
   conflicts: ConflictEntry[];
+  /**
+   * A vault another of this user's profiles already linked, when this profile
+   * hasn't. Lets the UI name the folder to pick rather than leaving the user to
+   * remember it. Null when nothing is advertised — including the common case of
+   * profiles signed into different Google accounts.
+   */
+  suggestion: VaultHint | null;
+  /**
+   * Set when the user linked a folder that is *not* the one another profile
+   * advertised — the likeliest setup mistake, and otherwise invisible until they
+   * notice memory never converging. Cleared by the next explicit action.
+   */
+  mismatch: boolean;
   /** Error from the last *explicit* action, cleared on the next one. */
   error: string | null;
   link: () => Promise<void>;
@@ -75,6 +90,8 @@ export function useMemorySync(): UseMemorySync {
   const [settings, setSettings] = useState<MemorySyncSettings | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [conflicts, setConflicts] = useState<ConflictEntry[]>([]);
+  const [suggestion, setSuggestion] = useState<VaultHint | null>(null);
+  const [mismatch, setMismatch] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Survives re-renders without re-triggering effects.
@@ -96,6 +113,10 @@ export function useMemorySync(): UseMemorySync {
     } else {
       setConflicts([]);
     }
+    // Best-effort: no Chrome Sync, or profiles on different accounts, simply
+    // means no suggestion and the folder flow behaves as it always did.
+    const hint = await getVaultSuggestion().catch(() => null);
+    if (mounted.current) setSuggestion(hint);
   }, []);
 
   /** One sync pass. `opportunistic` suppresses error surfacing. */
@@ -194,10 +215,21 @@ export function useMemorySync(): UseMemorySync {
     settings,
     syncing,
     conflicts,
+    suggestion,
+    mismatch,
     error,
-    link: () => wrap(linkVault, true),
+    link: () =>
+      wrap(async () => {
+        setMismatch(false);
+        const result = await linkVault();
+        setMismatch(result.joinedSuggestion === "mismatched");
+      }, true),
     reconnect: () => wrap(reconnectVault, true),
-    unlink: () => wrap(unlinkVault, false),
+    unlink: () =>
+      wrap(async () => {
+        setMismatch(false);
+        await unlinkVault();
+      }, false),
     sync: () => run(false),
     setLabel: (label: string) =>
       wrap(() => patchSyncSettings({ profileLabel: label }), false),

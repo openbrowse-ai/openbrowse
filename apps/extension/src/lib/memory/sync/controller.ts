@@ -18,11 +18,18 @@ import {
     readStatus,
     requestVaultPermission,
 } from "./directory-transport";
+import {
+    clearVaultHint,
+    publishVaultHint,
+    readVaultSuggestion,
+    type VaultHint,
+} from "./discovery";
 import { reconcile } from "./engine";
 import { createOpfsMemoryTree } from "./local-tree";
 import {
     emptyResult,
     summarize,
+    VAULT_PICKER_ID,
     type ConflictEntry,
     type MemorySyncTransport,
     type SyncResult,
@@ -110,48 +117,93 @@ export async function getStatus(): Promise<TransportStatus> {
 }
 
 /**
+ * Result of a link attempt. `joinedSuggestion` tells the UI whether the user
+ * landed on the vault another profile advertised, so it can confirm success or
+ * warn that they picked a different folder — the single most likely setup mistake.
+ */
+export interface LinkVaultResult {
+  status: TransportStatus;
+  settings: MemorySyncSettings;
+  joinedSuggestion: "matched" | "mismatched" | "none";
+}
+
+/**
  * Prompt for a folder and link it. Must be called from a user gesture.
  *
  * Linking never deletes: the first pass has no baseline, so every path is
  * treated as new and the two trees are unioned.
  */
-export async function linkVault(): Promise<{
-  status: TransportStatus;
-  settings: MemorySyncSettings;
-}> {
+export async function linkVault(): Promise<LinkVaultResult> {
   const picker = (
     globalThis as unknown as {
       showDirectoryPicker?: (opts?: {
         id?: string;
         mode?: "read" | "readwrite";
+        startIn?: string;
       }) => Promise<FileSystemDirectoryHandle>;
     }
   ).showDirectoryPicker;
   if (!picker) throw new Error("This browser cannot pick a folder.");
 
-  const handle = await picker({ id: "openbrowse-memory", mode: "readwrite" });
+  const before = await getSyncSettings();
+  const suggestion = await readVaultSuggestion(before.profileId);
+
+  // `startIn` only applies the first time: once Chrome has a remembered directory
+  // for this picker id, that wins. So this helps a new user and stays out of the
+  // way of a returning one.
+  const handle = await picker({
+    id: VAULT_PICKER_ID,
+    mode: "readwrite",
+    startIn: "documents",
+  });
   const status = await readStatus(handle);
   if (status !== "granted") {
-    return { status, settings: await getSyncSettings() };
+    return { status, settings: before, joinedSuggestion: "none" };
   }
 
   const meta = await ensureVaultMeta(handle);
   await memorySyncDb.putHandle(handle);
 
-  const previous = await getSyncSettings();
   // Pointing at a different vault must start from a clean baseline; reusing the
   // old one would read the new vault's unknown files as our own deletions.
-  if (previous.vaultId && previous.vaultId !== meta.vaultId) {
-    await memorySyncDb.clearBaseline(previous.vaultId);
+  if (before.vaultId && before.vaultId !== meta.vaultId) {
+    await memorySyncDb.clearBaseline(before.vaultId);
   }
 
   const settings = await patchSyncSettings({
     enabled: true,
     vaultId: meta.vaultId,
     vaultName: handle.name,
-    profileLabel: previous.profileLabel || "",
+    profileLabel: before.profileLabel || "",
   });
-  return { status: "granted", settings };
+
+  // Advertise this vault so the user's other profiles can be pointed at it.
+  await publishVaultHint({
+    vaultId: meta.vaultId,
+    folderName: handle.name,
+    profileId: settings.profileId,
+    profileLabel: settings.profileLabel,
+    updatedAt: Date.now(),
+  });
+
+  const joinedSuggestion: LinkVaultResult["joinedSuggestion"] = !suggestion
+    ? "none"
+    : suggestion.vaultId === meta.vaultId
+      ? "matched"
+      : "mismatched";
+
+  return { status: "granted", settings, joinedSuggestion };
+}
+
+/**
+ * A vault another of the user's profiles has linked, when this profile hasn't.
+ * Null when nothing is advertised — which includes the common case of profiles
+ * on different Google accounts.
+ */
+export async function getVaultSuggestion(): Promise<VaultHint | null> {
+  const settings = await getSyncSettings();
+  if (settings.enabled && settings.vaultId) return null;
+  return readVaultSuggestion(settings.profileId);
 }
 
 /** Re-grant a lapsed permission. Must be called from a user gesture. */
@@ -169,6 +221,7 @@ export async function unlinkVault(): Promise<void> {
   const settings = await getSyncSettings();
   if (settings.vaultId) await memorySyncDb.clearBaseline(settings.vaultId);
   await memorySyncDb.clearHandle();
+  await clearVaultHint(settings.profileId);
   await patchSyncSettings({
     enabled: false,
     vaultId: null,
