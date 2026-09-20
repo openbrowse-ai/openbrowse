@@ -1,6 +1,7 @@
 import { MemoryBrowser } from "@/components/memory/MemoryBrowser";
 import { storage } from "@/lib/storage";
 import { useEffect, useState } from "react";
+import { MemorySyncButton } from "./memory-sync/MemorySyncButton";
 
 export function MemoryTab({
   selectedNote,
@@ -43,6 +44,7 @@ export function MemoryTab({
       spaceId={currentSpaceId}
       selectedPath={selectedNote}
       onSelectedPathChange={onSelectNote}
+      headerAccessory={<MemorySyncButton />}
     />
   );
 }

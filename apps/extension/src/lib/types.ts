@@ -73,6 +73,43 @@ export type CloudProvider =
   | "google"
   | "openai-compatible";
 
+/**
+ * Cross-profile memory sync state.
+ *
+ * `profileId` is minted locally on first setup: `chrome.runtime.id` is identical
+ * across a user's Chrome profiles, so it cannot distinguish them, and tombstones
+ * and conflict archives need to name which profile wrote them.
+ *
+ * The vault's directory handle and the sync baseline live in IndexedDB
+ * (`lib/memory/sync/db.ts`) — a handle is not JSON-serializable and the baseline
+ * is unbounded, so neither belongs in this blob.
+ */
+export interface MemorySyncSettings {
+  enabled: boolean;
+  /** Stable local id for this Chrome profile. */
+  profileId: string;
+  /** User-facing label, e.g. "Work". Shown on conflicts this profile caused. */
+  profileLabel: string;
+  /** Identity of the linked vault, or null when none is linked. */
+  vaultId: string | null;
+  /** Folder name, for display before permission is re-granted. */
+  vaultName: string | null;
+  lastSyncAt: number | null;
+  lastResult?: MemorySyncLastResult;
+}
+
+/** Counts from the most recent pass, enough to render the status line. */
+export interface MemorySyncLastResult {
+  ranAt: number;
+  pulled: number;
+  pushed: number;
+  deleted: number;
+  conflicts: number;
+  resurrected: number;
+  skipped: number;
+  error?: string;
+}
+
 export interface Settings {
   // General
   themeMode: ThemeMode;
@@ -94,6 +131,15 @@ export interface Settings {
 
   // Connectors
   mcpServers: McpServerConfig[];
+
+  /**
+   * Cross-profile memory sync (see
+   * docs/superpowers/specs/2026-09-07-memory-sync-design.md).
+   *
+   * Optional so pre-existing settings blobs keep type-checking; absent means
+   * "never set up", which is the default state.
+   */
+  memorySync?: MemorySyncSettings;
 
   /**
    * @deprecated Replaced by `mcpAfterTaskTabPolicy`. Kept on the
