@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
     clearVaultHint,
@@ -57,6 +57,13 @@ function hint(overrides: Partial<VaultHint> = {}): VaultHint {
 
 beforeEach(() => {
   installChrome();
+});
+
+// Matches the neighbouring suites. Vitest isolates per file today, so leaving the
+// `chrome` stub in place is currently harmless — but it would leak the moment
+// isolation were turned off for speed.
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("publishVaultHint", () => {
