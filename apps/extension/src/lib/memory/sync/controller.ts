@@ -13,31 +13,88 @@ import { storage } from "../../storage";
 import type { MemorySyncSettings } from "../../types";
 import { memorySyncDb } from "./db";
 import {
-    createDirectoryTransport,
-    ensureVaultMeta,
-    readStatus,
-    requestVaultPermission,
+  createDirectoryTransport,
+  ensureVaultMeta,
+  readStatus,
+  requestVaultPermission,
 } from "./directory-transport";
 import {
-    clearVaultHint,
-    publishVaultHint,
-    readVaultSuggestion,
-    type VaultHint,
+  clearVaultHint,
+  publishVaultHint,
+  readVaultSuggestion,
+  type VaultHint,
 } from "./discovery";
 import { reconcile } from "./engine";
 import { createOpfsMemoryTree } from "./local-tree";
 import {
-    emptyResult,
-    summarize,
-    VAULT_PICKER_ID,
-    type ConflictEntry,
-    type MemorySyncTransport,
-    type SyncResult,
-    type TransportStatus,
+  emptyResult,
+  summarize,
+  VAULT_PICKER_ID,
+  type ConflictEntry,
+  type MemorySyncTransport,
+  type SyncResult,
+  type TransportStatus,
 } from "./types";
 
 /** Web Locks name; scoped per storage partition, i.e. per Chrome profile. */
 const LOCK_NAME = "openbrowse:memory-sync";
+
+/**
+ * Minimum gap between *opportunistic* passes, shared across every document in
+ * this profile.
+ *
+ * Without a floor the trigger set gets chatty: the driver is mounted in the side
+ * panel and in every home/new-tab page, and each tab switch fires
+ * `visibilitychange` in the tab being revealed. A Cmd-T user with eight new-tab
+ * pages open would spend a permission query and a directory probe per switch.
+ * Correctness never depended on this — Web Locks serialize the passes and
+ * reconciliation is idempotent — it just stops the pointless work.
+ */
+export const OPPORTUNISTIC_FLOOR_MS = 10_000;
+
+/**
+ * `chrome.storage.session` rather than a module variable: the floor has to be
+ * shared across documents (and survive service-worker eviction), and it should
+ * reset when the browser restarts, which is exactly this store's lifetime.
+ */
+const LAST_ATTEMPT_KEY = "memorySyncLastAttemptAt";
+
+/**
+ * Whether an opportunistic pass may run now.
+ *
+ * Pure so the policy is testable without storage. The read-then-write around it
+ * is not atomic, so two documents can both pass the check — harmless, since the
+ * Web Lock serializes them and the second pass finds nothing to do.
+ */
+export function shouldRunOpportunistic(
+  lastAttemptAt: number | null,
+  now: number,
+  floorMs: number = OPPORTUNISTIC_FLOOR_MS,
+): boolean {
+  if (lastAttemptAt === null) return true;
+  // A clock that moved backwards (NTP correction, sleep/wake) must not lock sync
+  // out until the future timestamp passes.
+  if (lastAttemptAt > now) return true;
+  return now - lastAttemptAt >= floorMs;
+}
+
+async function claimOpportunisticSlot(
+  now: number,
+  floorMs: number,
+): Promise<boolean> {
+  try {
+    const stored = await chrome.storage.session.get(LAST_ATTEMPT_KEY);
+    const last = stored[LAST_ATTEMPT_KEY];
+    const lastAt = typeof last === "number" ? last : null;
+    if (!shouldRunOpportunistic(lastAt, now, floorMs)) return false;
+    await chrome.storage.session.set({ [LAST_ATTEMPT_KEY]: now });
+    return true;
+  } catch {
+    // No session storage in this context: fall through and let the Web Lock do
+    // the serializing rather than refusing to sync at all.
+    return true;
+  }
+}
 
 export { MEMORY_SYNC_REQUEST, requestMemorySync } from "./messages";
 
@@ -56,10 +113,6 @@ let inFlight: Promise<SyncResult> | null = null;
 
 /** Suppresses the `vfs:change` trigger while sync performs its own writes. */
 let selfWriting = false;
-
-export function isSyncing(): boolean {
-  return inFlight !== null;
-}
 
 export function isSelfWriting(): boolean {
   return selfWriting;
@@ -242,7 +295,22 @@ export interface SyncOptions {
    * for. The manual button passes false so problems are visible.
    */
   opportunistic?: boolean;
+  /**
+   * Overrides `OPPORTUNISTIC_FLOOR_MS` for this pass. Ignored unless
+   * `opportunistic`.
+   *
+   * The floor exists to damp *repeatable* triggers — refocus and on-disk writes,
+   * which fire per tab. A discrete one-off like "an agent run just finished" wants
+   * a much smaller floor: it happens once per run, and a 10-second window is wide
+   * enough for an unrelated earlier pass to swallow the very memory that run
+   * wrote, which would defeat the point of the trigger. A short floor still
+   * collapses the broadcast across N open surfaces into a single pass.
+   */
+  floorMs?: number;
 }
+
+/** Floor for the post-run trigger: enough to dedupe N surfaces, not to suppress. */
+export const POST_RUN_FLOOR_MS = 1_000;
 
 /**
  * Run one sync pass, or return an empty result when the vault is not usable.
@@ -256,6 +324,16 @@ export async function syncNow(opts: SyncOptions = {}): Promise<SyncResult> {
   if (inFlight) return inFlight;
 
   const run = (async (): Promise<SyncResult> => {
+    if (
+      opts.opportunistic &&
+      !(await claimOpportunisticSlot(
+        Date.now(),
+        opts.floorMs ?? OPPORTUNISTIC_FLOOR_MS,
+      ))
+    ) {
+      return emptyResult(Date.now());
+    }
+
     const settings = await getSyncSettings();
     if (!settings.enabled || !settings.vaultId) return emptyResult(Date.now());
 

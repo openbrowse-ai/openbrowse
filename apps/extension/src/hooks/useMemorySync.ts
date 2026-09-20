@@ -3,45 +3,33 @@
 // Drives opportunistic memory sync from an extension surface, and exposes the
 // state the Settings UI renders.
 //
-// Sync lives in a document rather than the service worker because restoring a
-// lapsed File System Access grant needs a user gesture (crbug.com/1359786). The
-// consequence is that sync is a checkpoint operation: it happens when a surface
-// is around, not continuously in the background.
+// The automatic triggers live in `useMemorySyncDriver`, which is also mounted
+// headlessly in the side panel and the home/new-tab shell so a run that writes
+// memory gets synced wherever the chat happened. This hook composes that driver
+// with the state the panel renders, and adds the explicit user actions.
 //
-// Triggers:
-//   - mount, and every time the document becomes visible again
-//   - a `memory-sync:request` message (the service worker after an agent run)
-//   - a debounced `vfs:change` under `memory/**`
-//   - the user pressing "Sync now"
-//
-// The first three are opportunistic: they skip silently when permission has
-// lapsed, so the user is never nagged and never sees an error they did not ask
-// for. Only the explicit button reports problems.
+// Only the explicit actions report errors. Automatic passes skip silently when
+// the folder grant has lapsed, so a user who has not reconnected is never nagged.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-    MEMORY_SYNC_REQUEST,
-    dismissConflict,
-    getStatus,
-    getSyncSettings,
-    getVaultSuggestion,
-    isSelfWriting,
-    linkVault,
-    listConflicts,
-    patchSyncSettings,
-    reconnectVault,
-    restoreConflict,
-    syncNow,
-    unlinkVault,
+  dismissConflict,
+  getStatus,
+  getSyncSettings,
+  getVaultSuggestion,
+  linkVault,
+  listConflicts,
+  patchSyncSettings,
+  reconnectVault,
+  restoreConflict,
+  syncNow,
+  unlinkVault,
 } from "@/lib/memory/sync/controller";
 import type { VaultHint } from "@/lib/memory/sync/discovery";
 import type { ConflictEntry, TransportStatus } from "@/lib/memory/sync/types";
 import type { MemorySyncSettings } from "@/lib/types";
-import { vfsEvents, type VfsChangeDetail } from "@/lib/vfs/events";
-
-/** Coalescing window for `vfs:change`-driven syncs. */
-const VFS_DEBOUNCE_MS = 3_000;
+import { useMemorySyncDriver } from "./useMemorySyncDriver";
 
 export interface UseMemorySync {
   /**
@@ -119,85 +107,43 @@ export function useMemorySync(): UseMemorySync {
     if (mounted.current) setSuggestion(hint);
   }, []);
 
-  /** One sync pass. `opportunistic` suppresses error surfacing. */
-  const run = useCallback(
-    async (opportunistic: boolean) => {
-      if (!mounted.current) return;
-      if (!opportunistic) {
-        setSyncing(true);
-        setError(null);
-      }
-      try {
-        const result = await syncNow({ opportunistic });
-        if (!opportunistic && result.error) setError(result.error);
-      } catch (e) {
-        if (!opportunistic) {
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      } finally {
-        if (mounted.current && !opportunistic) setSyncing(false);
-        await refresh();
-      }
-    },
-    [refresh],
-  );
+  /**
+   * An explicit, user-initiated pass. Automatic passes go through the driver and
+   * never surface errors; this one is the only path that does, because it is the
+   * only one the user asked for.
+   */
+  const run = useCallback(async () => {
+    if (!mounted.current) return;
+    setSyncing(true);
+    setError(null);
+    try {
+      const result = await syncNow();
+      if (result.error) setError(result.error);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (mounted.current) setSyncing(false);
+      await refresh();
+    }
+  }, [refresh]);
 
-  // Mount + visibility. A background surface can be frozen or throttled, so
-  // becoming visible again is the moment to catch up.
+  // Automatic triggers: mount, refocus, post-run broadcast, debounced memory
+  // writes. Shared with the headless mounts in the side panel and home shell.
+  useMemorySyncDriver({ onAfterPass: refresh });
+
   useEffect(() => {
     mounted.current = true;
-    void (async () => {
-      await refresh();
-      await run(true);
-    })();
-
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void run(true);
-    };
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       mounted.current = false;
-      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh, run]);
-
-  // The service worker asking any open surface to sync after an agent run.
-  useEffect(() => {
-    const listener = (msg: unknown) => {
-      if ((msg as { type?: string })?.type === MEMORY_SYNC_REQUEST) {
-        void run(true);
-      }
-    };
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [run]);
-
-  // Debounced local writes. Sync's own writes emit `vfs:change` too, so they are
-  // filtered by `isSelfWriting()`. That is an optimization, not the safety net:
-  // reconciliation is idempotent, so a self-triggered pass would find nothing to
-  // do and terminate anyway.
-  useEffect(() => {
-    const onChange = (event: Event) => {
-      if (isSelfWriting()) return;
-      const path = (event as CustomEvent<VfsChangeDetail>).detail?.path;
-      // Global memory only in v1; a space-scoped write is not our business.
-      if (typeof path !== "string" || !path.startsWith("memory/")) return;
-      if (vfsTimer.current) clearTimeout(vfsTimer.current);
-      vfsTimer.current = setTimeout(() => void run(true), VFS_DEBOUNCE_MS);
-    };
-    vfsEvents.addEventListener("vfs:change", onChange);
-    return () => {
-      vfsEvents.removeEventListener("vfs:change", onChange);
-      if (vfsTimer.current) clearTimeout(vfsTimer.current);
-    };
-  }, [run]);
+  }, []);
 
   const wrap = useCallback(
     async (fn: () => Promise<unknown>, thenSync: boolean) => {
       setError(null);
       try {
         await fn();
-        if (thenSync) await run(false);
+        if (thenSync) await run();
         else await refresh();
       } catch (e) {
         // An aborted folder picker is the user changing their mind, not an error.
@@ -230,7 +176,7 @@ export function useMemorySync(): UseMemorySync {
         setMismatch(false);
         await unlinkVault();
       }, false),
-    sync: () => run(false),
+    sync: () => run(),
     setLabel: (label: string) =>
       wrap(() => patchSyncSettings({ profileLabel: label }), false),
     restore: (entry: ConflictEntry) => wrap(() => restoreConflict(entry), true),

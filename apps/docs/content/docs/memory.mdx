@@ -143,16 +143,22 @@ Non-markdown files are ignored rather than imported, and a pass caps out at 1,00
 
 ### When sync runs
 
-Sync happens when an OpenBrowse surface (Settings, the side panel, the home tab) is open:
+Sync happens while an OpenBrowse surface is open — the side panel, the Alt+Space global chat popup, the home tab, or the Chrome new tab page. The new tab page counts deliberately: a Cmd-T quick chat is a normal way to use OpenBrowse, and memory written there would be a surprising thing to drop.
+
+A pass fires:
 
 - when a surface mounts, and each time one comes back to the foreground
-- after an agent run finishes, if a surface is open to do it
-- a few seconds after memory changes on disk, debounced
+- after an agent run finishes, in whichever surface is open
+- about three seconds after memory changes on disk, debounced
 - when you press **Sync now**
+
+Automatic passes have a shared floor of roughly 10 seconds between attempts, counted across every tab in the profile rather than per tab — otherwise eight open new tab pages would turn each tab switch into another permission query and directory probe. **Sync now** ignores the floor. Automatic passes also skip silently when the folder grant has lapsed; only **Sync now** reports problems, because that's the one you asked for.
 
 It is a checkpoint operation, not a live channel — and that is a constraint, not a preference. Chrome does not reliably keep folder permission across browser sessions, and the permission can only be restored by `requestPermission()` under a user gesture, which a background service worker with no open window cannot produce ([crbug.com/1359786](https://crbug.com/1359786)). So the sync engine has to live in a page, and the service worker can only _ask_ whichever surface is open to run a pass.
 
-The visible consequence: near the start of a browser session you may see **"Reconnect the folder to resume syncing"** with a Reconnect button. That is routine, not an error — one click supplies the gesture Chrome wants. Until then, opportunistic passes skip silently rather than nagging you, and only **Sync now** reports problems, because that's the one you asked for.
+That has one real gap, and it follows directly from the same constraint: **a run driven by an external MCP host has no OpenBrowse page open**, so nothing is listening for the request, and memory that run writes stays local until you next open a surface. It isn't lost — the next pass picks it up as an ordinary local edit. Scheduled runs don't have this problem, because the scheduler opens a pinned home tab to host the run, which brings the sync triggers with it.
+
+The other visible consequence: near the start of a browser session you may see **"Reconnect the folder to resume syncing"** with a Reconnect button. That is routine, not an error — one click supplies the gesture Chrome wants.
 
 ### Conflicts
 

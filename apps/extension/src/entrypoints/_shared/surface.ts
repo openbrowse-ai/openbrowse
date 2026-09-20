@@ -14,6 +14,13 @@ export type Surface = "home" | "newtab";
  * Only the pinned home tab hosts scheduled runs. The newtab page is
  * ephemeral (closes when the user navigates) and unsuitable as a
  * background-run host. See lib/agent/scheduled-run.ts:ensureHomePage.
+ *
+ * Note that memory sync deliberately does NOT follow this rule: `HomeApp` mounts
+ * `useMemorySyncDriver` on both surfaces. The distinction is what a dying host
+ * costs. A scheduled run loses its work; a sync pass is short and idempotent and
+ * only advances its baseline for paths that converged, so a new-tab page closing
+ * mid-pass costs nothing and the next pass repairs it. Excluding newtab there
+ * would mean a Cmd-T chat never syncs the memory it wrote.
  */
 export function shouldHostScheduledRuns(surface: Surface): boolean {
   return surface === "home";

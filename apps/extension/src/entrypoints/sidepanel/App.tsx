@@ -4,6 +4,7 @@ import { chatDb } from "@/lib/chat-db";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
 import { useTheme } from "@/hooks/useTheme";
+import { useMemorySyncDriver } from "@/hooks/useMemorySyncDriver";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatView } from "@/components/chat/ChatView";
 import { ChatPicker } from "@/components/chat/ChatPicker";
@@ -51,6 +52,10 @@ function readPopupParams() {
 
 export default function App() {
   useTheme();
+  // Keep memory sync running wherever a chat can happen. The side panel is where
+  // most runs originate, and sync cannot live in the service worker (a lapsed
+  // folder grant can only be restored from a user gesture — crbug.com/1359786).
+  useMemorySyncDriver();
   const { isPopupMode, isGlobalChat, originWindowId, originTabId, originUrl, initialConversationId, editArtifactId, seedPrompt, autoSubmit } = readPopupParams();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);

@@ -39,6 +39,7 @@ import {
 import { useActiveTabs } from "@/hooks/useActiveTabs";
 import { useFilePanelWidth } from "@/hooks/useFilePanelWidth";
 import { useTheme } from "@/hooks/useTheme";
+import { useMemorySyncDriver } from "@/hooks/useMemorySyncDriver";
 import { artifactsEvents, type ArtifactCreatedDetail } from "@/lib/artifacts/events";
 import { chatDb } from "@/lib/chat-db";
 import { FileSelectionContext } from "@/lib/file-selection-context";
@@ -85,6 +86,14 @@ interface HomeAppProps {
 
 export default function HomeApp({ surface }: HomeAppProps) {
   useTheme();
+  // Both surfaces run it, `newtab` included — deliberately unlike
+  // `shouldHostScheduledRuns`, which excludes the new-tab page for being
+  // ephemeral. That reasoning is right for a scheduled run, whose work is lost if
+  // the host dies; a sync pass is short and idempotent, and the baseline only
+  // advances for paths that actually converged, so a tab closing mid-pass costs
+  // nothing. Excluding newtab would instead mean the most common quick-chat flow
+  // (Cmd-T, ask something) never syncs what it learned.
+  useMemorySyncDriver();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
 

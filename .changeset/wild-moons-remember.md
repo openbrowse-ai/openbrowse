@@ -24,3 +24,16 @@ Also corrects `docs/memory.mdx`, which still documented the four memory tools re
 - **Fixes a picker `id` that would have thrown.** `showDirectoryPicker`'s `id` must be ASCII alphanumeric or `_`; ours contained a hyphen, which raises `TypeError` and would have broken the only entry point into the feature.
 
 **The sync panel no longer costs the memory tree any height.** It moved from a block stacked above `MemoryBrowser` — a full-height master/detail, so the block was permanently shortening both panes — into the Memory header's icon row as a popover. The icon carries an amber dot for a lapsed grant, a moved folder, or unresolved conflicts, so problems are visible without opening it.
+
+**Auto-sync now actually runs where chats happen.** The trigger loop was only ever mounted in Settings → Memory, which renders conditionally — so despite the service worker faithfully broadcasting a sync request after every agent run, the broadcast reached nobody unless that one settings tab happened to be open. In practice memory converged when you went looking for it.
+
+The triggers moved into a headless `useMemorySyncDriver`, mounted in the side panel (which also covers the Alt+Space global chat popup) and in the shared home shell (which also covers the **Chrome new tab page**) — four of the five `RunOrigin` values, plus scheduled runs, which open a pinned home tab and bring the triggers with them.
+
+Including the new tab page is a deliberate departure from the neighbouring `shouldHostScheduledRuns`, which excludes it for being ephemeral. That reasoning is right for a scheduled run, whose work is lost if the host dies; a sync pass is short and idempotent and only advances its baseline for paths that converged, so a tab closing mid-pass costs nothing. Excluding it would have meant the most common quick-chat flow — Cmd-T, ask something — never syncing what it learned.
+
+Two supporting details:
+
+- **A ~10s floor between automatic passes**, shared across tabs via `chrome.storage.session`. Without it, a user with eight new-tab pages open would spend a permission query and a directory probe on every tab switch. **Sync now** ignores it.
+- **The post-run trigger gets its own 1s floor**, because the shared 10s one was wide enough for an unrelated refocus pass seconds earlier to swallow the very memory a run had just written — defeating the trigger it exists for. A short floor still collapses the broadcast across every open surface into a single pass.
+
+One gap remains, and it follows from the same permission constraint rather than being separately fixable: a run driven by an external MCP host has no OpenBrowse page open, so memory it writes stays local until you next open a surface.

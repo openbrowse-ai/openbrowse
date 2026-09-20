@@ -110,6 +110,9 @@ vi.mock("../local-tree", () => ({
 
 const fakeHandle = { name: "vault" } as unknown as FileSystemDirectoryHandle;
 
+/** Backs the opportunistic floor, which lives in `chrome.storage.session`. */
+let sessionStore: Record<string, unknown> = {};
+
 beforeEach(() => {
   settingsStore.value = {};
   handleStore.handle = null;
@@ -120,9 +123,21 @@ beforeEach(() => {
   hints.cleared = [];
   hints.suggestion = null;
   pickerCalls.length = 0;
+  sessionStore = {};
   vi.stubGlobal("showDirectoryPicker", async (opts: Record<string, unknown>) => {
     pickerCalls.push(opts);
     return fakeHandle;
+  });
+  vi.stubGlobal("chrome", {
+    storage: {
+      session: {
+        get: async (key: string) =>
+          key in sessionStore ? { [key]: sessionStore[key] } : {},
+        set: async (items: Record<string, unknown>) => {
+          Object.assign(sessionStore, items);
+        },
+      },
+    },
   });
 });
 
@@ -375,5 +390,100 @@ describe("getVaultSuggestion", () => {
     await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
 
     expect(await getVaultSuggestion()).toBeNull();
+  });
+});
+
+describe("shouldRunOpportunistic", () => {
+  it("allows the first pass", async () => {
+    const { shouldRunOpportunistic, OPPORTUNISTIC_FLOOR_MS } =
+      await loadController();
+    expect(shouldRunOpportunistic(null, 1_000, OPPORTUNISTIC_FLOOR_MS)).toBe(true);
+  });
+
+  it("suppresses a pass inside the floor and allows one after it", async () => {
+    const { shouldRunOpportunistic } = await loadController();
+    expect(shouldRunOpportunistic(1_000, 1_000 + 9_999, 10_000)).toBe(false);
+    expect(shouldRunOpportunistic(1_000, 1_000 + 10_000, 10_000)).toBe(true);
+  });
+
+  it("recovers from a clock that moved backwards", async () => {
+    // Sleep/wake and NTP corrections can leave a future timestamp behind; without
+    // this sync would be locked out until real time caught up.
+    const { shouldRunOpportunistic } = await loadController();
+    expect(shouldRunOpportunistic(9_999_999, 1_000, 10_000)).toBe(true);
+  });
+});
+
+describe("the opportunistic floor in syncNow", () => {
+  it("runs the first opportunistic pass and skips an immediate second", async () => {
+    // The driver is mounted in the side panel and in every home/new-tab page, so
+    // tab switching would otherwise fire a pass per revealed tab.
+    const { syncNow, patchSyncSettings } = await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+
+    await syncNow({ opportunistic: true });
+    expect(localList).toHaveBeenCalledTimes(1);
+
+    await syncNow({ opportunistic: true });
+    expect(localList).toHaveBeenCalledTimes(1);
+  });
+
+  it("never throttles an explicit sync", async () => {
+    const { syncNow, patchSyncSettings } = await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+
+    await syncNow({ opportunistic: true });
+    await syncNow();
+    await syncNow();
+
+    expect(localList).toHaveBeenCalledTimes(3);
+  });
+
+  it("still syncs when session storage is unavailable", async () => {
+    // Better to let the Web Lock serialize than to refuse to sync at all.
+    const { syncNow, patchSyncSettings } = await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+    vi.stubGlobal("chrome", {});
+
+    await syncNow({ opportunistic: true });
+
+    expect(localList).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the post-run trigger's floor", () => {
+  it("is not suppressed by an unrelated pass moments earlier", async () => {
+    // The whole point of the post-run trigger is that a run's memory reaches the
+    // vault. A 10s floor would let a refocus pass 2s earlier swallow it.
+    const { syncNow, patchSyncSettings, POST_RUN_FLOOR_MS } =
+      await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+
+    await syncNow({ opportunistic: true });
+    expect(localList).toHaveBeenCalledTimes(1);
+
+    // Simulate the earlier pass having happened a couple of seconds ago.
+    sessionStore.memorySyncLastAttemptAt = Date.now() - 2_000;
+
+    await syncNow({ opportunistic: true, floorMs: POST_RUN_FLOOR_MS });
+    expect(localList).toHaveBeenCalledTimes(2);
+  });
+
+  it("still collapses the broadcast across several open surfaces", async () => {
+    // Every mounted driver receives the same message; only the first should work.
+    const { syncNow, patchSyncSettings, POST_RUN_FLOOR_MS } =
+      await loadController();
+    await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+
+    await syncNow({ opportunistic: true, floorMs: POST_RUN_FLOOR_MS });
+    await syncNow({ opportunistic: true, floorMs: POST_RUN_FLOOR_MS });
+    await syncNow({ opportunistic: true, floorMs: POST_RUN_FLOOR_MS });
+
+    expect(localList).toHaveBeenCalledTimes(1);
   });
 });
