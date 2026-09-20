@@ -23,14 +23,15 @@
 // throwing, and only `reconnect()` — called from a click — can restore access.
 
 import { timestampSlug } from "./engine";
-import { byteLength, sha256 } from "./hash";
+import { sha256 } from "./hash";
 import { isSafeRelPath } from "./paths";
 import type {
-    ConflictEntry,
-    FileEntry,
-    MemorySyncTransport,
-    Tombstone,
-    TransportStatus,
+  ConflictEntry,
+  FileEntry,
+  MemorySyncTransport,
+  Tombstone,
+  TransportStatus,
+  RemoteFileStat,
 } from "./types";
 
 const META_DIR = ".openbrowse";
@@ -57,8 +58,12 @@ interface VaultMeta {
  * shims rather than blanket `any` casts.
  */
 interface PermissionCapableHandle {
-  queryPermission?: (d: { mode: "read" | "readwrite" }) => Promise<PermissionState>;
-  requestPermission?: (d: { mode: "read" | "readwrite" }) => Promise<PermissionState>;
+  queryPermission?: (d: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
+  requestPermission?: (d: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
 }
 
 /** `move()` ships in Chrome but is absent from the TS DOM lib. */
@@ -76,25 +81,30 @@ export function createDirectoryTransport(
       return readStatus(root);
     },
 
-    async listFiles(): Promise<FileEntry[]> {
+    async listFiles(): Promise<RemoteFileStat[]> {
       const memory = await getDir(root, [MEMORY_DIR], false);
       if (!memory) return [];
-      const out: FileEntry[] = [];
+      const out: RemoteFileStat[] = [];
       for await (const relPath of walk(memory)) {
         const path = `${MEMORY_DIR}/${relPath}`;
         // Engine re-validates, but skipping junk here keeps the listing honest
-        // and avoids reading files we would only reject.
+        // and avoids statting files we would only reject.
         if (!isSafeRelPath(path)) continue;
-        const file = await readFileAt(memory, relPath);
-        if (!file) continue;
-        out.push({
-          path,
-          sha256: await sha256(file.content),
-          size: byteLength(file.content),
-          updated: file.lastModified,
-        });
+        // `getFile()` hands back metadata without reading the bytes, so a huge or
+        // hostile tree costs a stat per entry here and nothing more. Content is
+        // read later, by `hashFile`, and only for entries the engine accepted.
+        const stat = await statFileAt(memory, relPath);
+        if (!stat) continue;
+        out.push({ path, size: stat.size, updated: stat.lastModified });
       }
       return out;
+    },
+
+    async hashFile(path: string): Promise<string> {
+      const segments = requireSafeSegments(path);
+      const file = await readFileAtPath(root, segments);
+      if (file === null) throw new Error(`vault: missing ${path}`);
+      return sha256(file.content);
     },
 
     async readFile(path: string): Promise<string> {
@@ -137,7 +147,11 @@ export function createDirectoryTransport(
 
     async putTombstone(t: Tombstone): Promise<void> {
       const name = await tombstoneName(t.path);
-      await writeAtomic(root, [META_DIR, TOMBSTONE_DIR, name], JSON.stringify(t));
+      await writeAtomic(
+        root,
+        [META_DIR, TOMBSTONE_DIR, name],
+        JSON.stringify(t),
+      );
     },
 
     async dropTombstone(path: string): Promise<void> {
@@ -150,7 +164,11 @@ export function createDirectoryTransport(
       }
     },
 
-    async archiveConflict(path: string, content: string, at: number): Promise<void> {
+    async archiveConflict(
+      path: string,
+      content: string,
+      at: number,
+    ): Promise<void> {
       const segments = requireSafeSegments(path);
       await writeAtomic(
         root,
@@ -284,7 +302,9 @@ export async function ensureVaultMeta(
               ? parsed.schemaVersion
               : VAULT_SCHEMA_VERSION,
           createdAt:
-            typeof parsed.createdAt === "number" ? parsed.createdAt : Date.now(),
+            typeof parsed.createdAt === "number"
+              ? parsed.createdAt
+              : Date.now(),
         };
       }
     } catch {
@@ -297,7 +317,11 @@ export async function ensureVaultMeta(
     schemaVersion: VAULT_SCHEMA_VERSION,
     createdAt: Date.now(),
   };
-  await writeAtomic(root, [META_DIR, VAULT_FILE], JSON.stringify(meta, null, 2));
+  await writeAtomic(
+    root,
+    [META_DIR, VAULT_FILE],
+    JSON.stringify(meta, null, 2),
+  );
   return meta;
 }
 
@@ -410,14 +434,36 @@ async function readFileAt(
   const segments = relPath.split("/");
   const name = segments.pop();
   if (!name) return null;
-  const parent = segments.length
-    ? await getDir(dir, segments, false)
-    : dir;
+  const parent = segments.length ? await getDir(dir, segments, false) : dir;
   if (!parent) return null;
   try {
     const handle = await parent.getFileHandle(name);
     const file = await handle.getFile();
     return { content: await file.text(), lastModified: file.lastModified };
+  } catch (e) {
+    if (isNotFound(e)) return null;
+    throw e;
+  }
+}
+
+/**
+ * Size and mtime without reading the file. `getFile()` returns a `File` handle
+ * whose metadata is available immediately; only `.text()`/`.arrayBuffer()` would
+ * pull the bytes.
+ */
+async function statFileAt(
+  dir: FileSystemDirectoryHandle,
+  relPath: string,
+): Promise<{ size: number; lastModified: number } | null> {
+  const segments = relPath.split("/");
+  const name = segments.pop();
+  if (!name) return null;
+  const parent = segments.length ? await getDir(dir, segments, false) : dir;
+  if (!parent) return null;
+  try {
+    const handle = await parent.getFileHandle(name);
+    const file = await handle.getFile();
+    return { size: file.size, lastModified: file.lastModified };
   } catch (e) {
     if (isNotFound(e)) return null;
     throw e;

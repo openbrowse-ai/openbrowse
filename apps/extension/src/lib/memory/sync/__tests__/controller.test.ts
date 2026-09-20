@@ -20,7 +20,9 @@ vi.mock("@/lib/storage", () => ({
   },
 }));
 
-const handleStore: { handle: FileSystemDirectoryHandle | null } = { handle: null };
+const handleStore: { handle: FileSystemDirectoryHandle | null } = {
+  handle: null,
+};
 const baselineStore: { value: Record<string, Record<string, string>> } = {
   value: {},
 };
@@ -29,7 +31,12 @@ vi.mock("../db", () => ({
   memorySyncDb: {
     getHandle: async () =>
       handleStore.handle
-        ? { id: "vault", handle: handleStore.handle, name: "vault", linkedAt: 0 }
+        ? {
+            id: "vault",
+            handle: handleStore.handle,
+            name: "vault",
+            linkedAt: 0,
+          }
         : undefined,
     putHandle: async (h: FileSystemDirectoryHandle) => {
       handleStore.handle = h;
@@ -50,6 +57,13 @@ vi.mock("../db", () => ({
 
 const transportState = { status: "granted" as string };
 
+/** Observable conflict/archive traffic for the restore path. */
+const conflictState = {
+  archived: [] as Array<{ path: string; content: string }>,
+  dropped: [] as string[],
+  archivedContent: "restored copy",
+};
+
 vi.mock("../directory-transport", () => ({
   readStatus: async (handle: unknown) =>
     handle ? transportState.status : "unset",
@@ -69,19 +83,25 @@ vi.mock("../directory-transport", () => ({
     listTombstones: async () => [],
     putTombstone: async () => {},
     dropTombstone: async () => {},
-    archiveConflict: async () => {},
+    archiveConflict: async (path: string, content: string) => {
+      conflictState.archived.push({ path, content });
+    },
     listConflicts: async () => [],
-    readConflict: async () => "",
-    dropConflict: async () => {},
-    withLock: async <T,>(fn: () => Promise<T>) => fn(),
+    readConflict: async () => conflictState.archivedContent,
+    dropConflict: async (archivedPath: string) => {
+      conflictState.dropped.push(archivedPath);
+    },
+    hashFile: async () => "hash",
+    withLock: async <T>(fn: () => Promise<T>) => fn(),
   }),
 }));
 
-const hints: { published: unknown[]; cleared: string[]; suggestion: unknown } = {
-  published: [],
-  cleared: [],
-  suggestion: null,
-};
+const hints: { published: unknown[]; cleared: string[]; suggestion: unknown } =
+  {
+    published: [],
+    cleared: [],
+    suggestion: null,
+  };
 
 vi.mock("../discovery", () => ({
   publishVaultHint: async (h: unknown) => {
@@ -99,11 +119,28 @@ const localList = vi.fn(async () => []);
 /** Records the options `linkVault` passes to the picker. */
 const pickerCalls: Array<Record<string, unknown>> = [];
 
+/** Observable local `memory/**` for the restore path. */
+const localState = {
+  files: new Map<string, string>(),
+  writes: [] as Array<{ path: string; content: string }>,
+  readThrows: false,
+  writeThrows: false,
+};
+
 vi.mock("../local-tree", () => ({
   createOpfsMemoryTree: () => ({
     list: localList,
-    read: async () => "",
-    write: async () => {},
+    read: async (path: string) => {
+      if (localState.readThrows) throw new Error("no such file");
+      const found = localState.files.get(path);
+      if (found === undefined) throw new Error(`missing ${path}`);
+      return found;
+    },
+    write: async (path: string, content: string) => {
+      if (localState.writeThrows) throw new Error("disk full");
+      localState.writes.push({ path, content });
+      localState.files.set(path, content);
+    },
     remove: async () => {},
   }),
 }));
@@ -124,10 +161,20 @@ beforeEach(() => {
   hints.suggestion = null;
   pickerCalls.length = 0;
   sessionStore = {};
-  vi.stubGlobal("showDirectoryPicker", async (opts: Record<string, unknown>) => {
-    pickerCalls.push(opts);
-    return fakeHandle;
-  });
+  conflictState.archived = [];
+  conflictState.dropped = [];
+  conflictState.archivedContent = "restored copy";
+  localState.files = new Map();
+  localState.writes = [];
+  localState.readThrows = false;
+  localState.writeThrows = false;
+  vi.stubGlobal(
+    "showDirectoryPicker",
+    async (opts: Record<string, unknown>) => {
+      pickerCalls.push(opts);
+      return fakeHandle;
+    },
+  );
   vi.stubGlobal("chrome", {
     storage: {
       session: {
@@ -226,7 +273,8 @@ describe("syncNow", () => {
   });
 
   it("runs a pass and records the result in settings", async () => {
-    const { syncNow, getSyncSettings, patchSyncSettings } = await loadController();
+    const { syncNow, getSyncSettings, patchSyncSettings } =
+      await loadController();
     await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
     handleStore.handle = fakeHandle;
 
@@ -252,7 +300,8 @@ describe("syncNow", () => {
 
   it("clears the self-writing flag even when a pass fails", async () => {
     // A stuck flag would permanently suppress the `vfs:change` trigger.
-    const { syncNow, isSelfWriting, patchSyncSettings } = await loadController();
+    const { syncNow, isSelfWriting, patchSyncSettings } =
+      await loadController();
     await patchSyncSettings({ enabled: true, vaultId: "vault-1" });
     handleStore.handle = fakeHandle;
     localList.mockRejectedValueOnce(new Error("disk on fire"));
@@ -397,7 +446,9 @@ describe("shouldRunOpportunistic", () => {
   it("allows the first pass", async () => {
     const { shouldRunOpportunistic, OPPORTUNISTIC_FLOOR_MS } =
       await loadController();
-    expect(shouldRunOpportunistic(null, 1_000, OPPORTUNISTIC_FLOOR_MS)).toBe(true);
+    expect(shouldRunOpportunistic(null, 1_000, OPPORTUNISTIC_FLOOR_MS)).toBe(
+      true,
+    );
   });
 
   it("suppresses a pass inside the floor and allows one after it", async () => {
@@ -485,5 +536,70 @@ describe("the post-run trigger's floor", () => {
     await syncNow({ opportunistic: true, floorMs: POST_RUN_FLOOR_MS });
 
     expect(localList).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("restoreConflict", () => {
+  async function linked() {
+    const mod = await loadController();
+    await mod.patchSyncSettings({ enabled: true, vaultId: "vault-1" });
+    handleStore.handle = fakeHandle;
+    return mod;
+  }
+
+  const entry = {
+    archivedPath: ".openbrowse/conflicts/2026-09-07T00-00-00Z/memory/a.md",
+    path: "memory/a.md",
+    at: 0,
+  };
+
+  it("preserves the note it replaces instead of discarding it", async () => {
+    // Restoring is a change of mind, not a licence to destroy the other copy —
+    // "a losing version is never discarded" has to hold here too.
+    const { restoreConflict } = await linked();
+    localState.files.set("memory/a.md", "the live note");
+
+    await restoreConflict(entry);
+
+    expect(conflictState.archived).toEqual([
+      { path: "memory/a.md", content: "the live note" },
+    ]);
+    expect(localState.files.get("memory/a.md")).toBe("restored copy");
+    expect(conflictState.dropped).toEqual([entry.archivedPath]);
+  });
+
+  it("has nothing to preserve when the live note is already gone", async () => {
+    const { restoreConflict } = await linked();
+    localState.readThrows = true;
+
+    await restoreConflict(entry);
+
+    expect(conflictState.archived).toEqual([]);
+    expect(localState.writes).toHaveLength(1);
+    expect(conflictState.dropped).toEqual([entry.archivedPath]);
+  });
+
+  it("does not archive a byte-identical copy", async () => {
+    const { restoreConflict } = await linked();
+    localState.files.set("memory/a.md", "restored copy");
+
+    await restoreConflict(entry);
+
+    expect(conflictState.archived).toEqual([]);
+  });
+
+  it("keeps the original archive when the replacement write fails", async () => {
+    // Dropping the archive first would lose both versions.
+    const { restoreConflict } = await linked();
+    localState.files.set("memory/a.md", "the live note");
+    localState.writeThrows = true;
+
+    await expect(restoreConflict(entry)).rejects.toThrow(/disk full/);
+
+    expect(conflictState.dropped).toEqual([]);
+    // The note being replaced is still safely archived.
+    expect(conflictState.archived).toEqual([
+      { path: "memory/a.md", content: "the live note" },
+    ]);
   });
 });

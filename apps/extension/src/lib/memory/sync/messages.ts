@@ -25,7 +25,9 @@ export interface MemorySyncRequestMessage {
 export function requestMemorySync(): void {
   try {
     chrome.runtime
-      .sendMessage({ type: MEMORY_SYNC_REQUEST } satisfies MemorySyncRequestMessage)
+      .sendMessage({
+        type: MEMORY_SYNC_REQUEST,
+      } satisfies MemorySyncRequestMessage)
       .catch(() => {});
   } catch {
     // Messaging unavailable in this context.

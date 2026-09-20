@@ -5,6 +5,21 @@
 //
 // See docs/superpowers/specs/2026-09-07-memory-sync-design.md.
 
+/**
+ * Metadata-only view of a remote file: what can be known without reading it.
+ *
+ * `listFiles` returns these rather than hashed entries so the engine can apply
+ * `SyncLimits` *before* any content is read. Hashing the whole tree up front
+ * would mean a hostile or merely huge vault had already been decoded into memory
+ * by the time the caps rejected it, which makes the caps decorative.
+ */
+export interface RemoteFileStat {
+  path: string;
+  /** Byte length from `File.size` — no decode required. */
+  size: number;
+  updated: number;
+}
+
 /** A file as seen by either side of the sync. */
 export interface FileEntry {
   /** Path relative to the sync root, e.g. `memory/garry-tan.md`. */
@@ -70,7 +85,10 @@ export type TransportStatus =
 export interface MemorySyncTransport {
   readonly id: string;
   status(): Promise<TransportStatus>;
-  listFiles(): Promise<FileEntry[]>;
+  /** Metadata only. Content is read later, and only for entries that pass the limits. */
+  listFiles(): Promise<RemoteFileStat[]>;
+  /** SHA-256 of one file's contents. Called only for accepted entries. */
+  hashFile(path: string): Promise<string>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
   deleteFile(path: string): Promise<void>;

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-    clearVaultHint,
-    publishVaultHint,
-    readOtherVaultHints,
-    readVaultSuggestion,
-    type VaultHint,
+  clearVaultHint,
+  publishVaultHint,
+  readOtherVaultHints,
+  readVaultSuggestion,
+  type VaultHint,
 } from "../discovery";
 
 // Discovery rides `chrome.storage.sync`, which replicates through the user's
@@ -109,7 +109,9 @@ describe("publishVaultHint", () => {
 describe("readOtherVaultHints", () => {
   it("excludes this profile's own hint", async () => {
     await publishVaultHint(hint({ profileId: "profile-a" }));
-    await publishVaultHint(hint({ profileId: "profile-b", profileLabel: "Personal" }));
+    await publishVaultHint(
+      hint({ profileId: "profile-b", profileLabel: "Personal" }),
+    );
 
     const hints = await readOtherVaultHints("profile-a");
 

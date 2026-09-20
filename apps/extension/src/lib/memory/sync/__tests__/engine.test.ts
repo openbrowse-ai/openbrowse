@@ -2,19 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import { serializeMemory, type MemoryDoc } from "../../format";
 import {
-    conflictArchivePath,
-    decide,
-    pickConflictWinner,
-    reconcile,
-    timestampSlug,
+  conflictArchivePath,
+  decide,
+  pickConflictWinner,
+  reconcile,
+  timestampSlug,
 } from "../engine";
 import { byteLength, sha256 } from "../hash";
 import {
-    DEFAULT_SYNC_LIMITS,
-    type FileEntry,
-    type LocalTreePort,
-    type MemorySyncTransport,
-    type Tombstone,
+  DEFAULT_SYNC_LIMITS,
+  type FileEntry,
+  type LocalTreePort,
+  type MemorySyncTransport,
+  type Tombstone,
+  type RemoteFileStat,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,15 @@ async function entriesOf(side: FakeSide): Promise<FileEntry[]> {
     });
   }
   return out;
+}
+
+/** Metadata-only listing, as the transport contract now requires. */
+function statsOf(side: FakeSide): RemoteFileStat[] {
+  return [...side.files].map(([path, f]) => ({
+    path,
+    size: byteLength(f.content),
+    updated: f.updated,
+  }));
 }
 
 function makeLocal(
@@ -79,6 +89,8 @@ function makeTransport(
   archived: Array<{ path: string; content: string }>;
   writes: string[];
   deletions: string[];
+  /** Paths whose content was hashed — i.e. actually read. */
+  hashed: string[];
 } {
   const side: FakeSide = { files: new Map() };
   for (const [p, c] of Object.entries(initial)) {
@@ -88,6 +100,7 @@ function makeTransport(
   const archived: Array<{ path: string; content: string }> = [];
   const writes: string[] = [];
   const deletions: string[] = [];
+  const hashed: string[] = [];
   return {
     id: "fake",
     side,
@@ -95,8 +108,15 @@ function makeTransport(
     archived,
     writes,
     deletions,
+    hashed,
     status: async () => "granted",
-    listFiles: () => entriesOf(side),
+    listFiles: async () => statsOf(side),
+    hashFile: async (p) => {
+      hashed.push(p);
+      const f = side.files.get(p);
+      if (!f) throw new Error(`remote missing ${p}`);
+      return sha256(f.content);
+    },
     readFile: async (p) => {
       const f = side.files.get(p);
       if (!f) throw new Error(`remote missing ${p}`);
@@ -177,75 +197,101 @@ describe("decide", () => {
   const f = false;
 
   it("does nothing when both sides already agree", () => {
-    expect(decide({ local: "a", remote: "a", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: "a", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "noop",
     });
     // Agreement wins even if the baseline is stale or absent.
-    expect(decide({ local: "a", remote: "a", base: "old", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: "a", base: "old", tombstoned: f }),
+    ).toEqual({
       kind: "noop",
     });
-    expect(decide({ local: "a", remote: "a", base: null, tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: "a", base: null, tombstoned: f }),
+    ).toEqual({
       kind: "noop",
     });
   });
 
   it("pushes when only the local side moved", () => {
-    expect(decide({ local: "b", remote: "a", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "b", remote: "a", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "push",
     });
   });
 
   it("pulls when only the remote side moved", () => {
-    expect(decide({ local: "a", remote: "b", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: "b", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "pull",
     });
   });
 
   it("conflicts when both sides moved off the base", () => {
-    expect(decide({ local: "b", remote: "c", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "b", remote: "c", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "conflict",
     });
   });
 
   it("conflicts when two profiles independently created the same path", () => {
-    expect(decide({ local: "b", remote: "c", base: null, tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "b", remote: "c", base: null, tombstoned: f }),
+    ).toEqual({
       kind: "conflict",
     });
   });
 
   it("pushes a brand-new local file", () => {
-    expect(decide({ local: "a", remote: null, base: null, tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: null, base: null, tombstoned: f }),
+    ).toEqual({
       kind: "push",
     });
   });
 
   it("pulls a brand-new remote file", () => {
-    expect(decide({ local: null, remote: "a", base: null, tombstoned: f })).toEqual({
+    expect(
+      decide({ local: null, remote: "a", base: null, tombstoned: f }),
+    ).toEqual({
       kind: "pull",
     });
   });
 
   it("accepts a remote delete when the local copy is untouched", () => {
-    expect(decide({ local: "a", remote: null, base: "a", tombstoned: t })).toEqual({
+    expect(
+      decide({ local: "a", remote: null, base: "a", tombstoned: t }),
+    ).toEqual({
       kind: "delete-local",
     });
   });
 
   it("propagates a local delete when the remote copy is untouched", () => {
-    expect(decide({ local: null, remote: "a", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: null, remote: "a", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "delete-remote",
     });
   });
 
   it("lets a local edit beat a remote delete", () => {
-    expect(decide({ local: "b", remote: null, base: "a", tombstoned: t })).toEqual({
+    expect(
+      decide({ local: "b", remote: null, base: "a", tombstoned: t }),
+    ).toEqual({
       kind: "resurrect",
       direction: "push",
     });
   });
 
   it("lets a remote edit beat a local delete", () => {
-    expect(decide({ local: null, remote: "b", base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: null, remote: "b", base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "resurrect",
       direction: "pull",
     });
@@ -254,16 +300,22 @@ describe("decide", () => {
   it("restores a vault file that vanished without a tombstone", () => {
     // Never a delete: only OpenBrowse's own delete path writes tombstones, so a
     // merely-absent file is far more likely a half-synced folder than intent.
-    expect(decide({ local: "a", remote: null, base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: "a", remote: null, base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "push",
     });
   });
 
   it("forgets a path deleted on both sides", () => {
-    expect(decide({ local: null, remote: null, base: "a", tombstoned: f })).toEqual({
+    expect(
+      decide({ local: null, remote: null, base: "a", tombstoned: f }),
+    ).toEqual({
       kind: "drop-baseline",
     });
-    expect(decide({ local: null, remote: null, base: null, tombstoned: f })).toEqual({
+    expect(
+      decide({ local: null, remote: null, base: null, tombstoned: f }),
+    ).toEqual({
       kind: "noop",
     });
   });
@@ -314,9 +366,9 @@ describe("timestampSlug", () => {
     const slug = timestampSlug(Date.parse("2026-09-07T14:22:01.500Z"));
     expect(slug).toBe("2026-09-07T14-22-01Z");
     expect(slug).not.toMatch(/[:/\\]/);
-    expect(conflictArchivePath("memory/a.md", Date.parse("2026-09-07T14:22:01Z"))).toBe(
-      ".openbrowse/conflicts/2026-09-07T14-22-01Z/memory/a.md",
-    );
+    expect(
+      conflictArchivePath("memory/a.md", Date.parse("2026-09-07T14:22:01Z")),
+    ).toBe(".openbrowse/conflicts/2026-09-07T14-22-01Z/memory/a.md");
   });
 });
 
@@ -447,13 +499,23 @@ describe("reconcile", () => {
     expect(result.deletedLocal).toEqual([]);
     // The tombstone must be cleared, or the next pass would delete the note.
     expect(transport.tombstones.has("memory/contested.md")).toBe(false);
-    expect(transport.side.files.get("memory/contested.md")?.content).toBe(edited);
+    expect(transport.side.files.get("memory/contested.md")?.content).toBe(
+      edited,
+    );
   });
 
   it("archives the losing copy on conflict and never writes it into the tree", async () => {
     const base = doc({ title: "Both", truth: "base" });
-    const localContent = doc({ title: "Both", truth: "local", updated: "2026-03-01" });
-    const remoteContent = doc({ title: "Both", truth: "remote", updated: "2026-02-01" });
+    const localContent = doc({
+      title: "Both",
+      truth: "local",
+      updated: "2026-03-01",
+    });
+    const remoteContent = doc({
+      title: "Both",
+      truth: "remote",
+      updated: "2026-02-01",
+    });
 
     const local = makeLocal({ "memory/both.md": localContent });
     const transport = makeTransport({ "memory/both.md": remoteContent });
@@ -479,7 +541,9 @@ describe("reconcile", () => {
       { path: "memory/both.md", content: remoteContent },
     ]);
     expect([...transport.side.files.keys()]).toEqual(["memory/both.md"]);
-    expect(transport.side.files.get("memory/both.md")?.content).toBe(localContent);
+    expect(transport.side.files.get("memory/both.md")?.content).toBe(
+      localContent,
+    );
   });
 
   it("converges after a conflict — the next pass is a no-op", async () => {
@@ -631,6 +695,53 @@ describe("reconcile", () => {
         ]),
       );
       expect(result.pulled).toEqual(["memory/a.md"]);
+    });
+
+    it("never reads a file it is going to reject", async () => {
+      // The caps exist to bound a runaway or hostile vault. Hashing the whole tree
+      // up front would mean every file had already been decoded into memory by the
+      // time the caps rejected it, making them decorative.
+      const local = makeLocal({});
+      const transport = makeTransport({
+        "memory/huge.md": "x".repeat(4_000),
+        "memory/../escape.md": doc(),
+        "memory/notes.txt": "plain",
+        "memory/fine.md": doc(),
+      });
+
+      const { result } = await reconcile({
+        local,
+        transport,
+        baseline: {},
+        profile,
+        limits: { maxFiles: 10, maxBytes: 1_000, tombstoneTtlMs: 1_000 },
+      });
+
+      expect(transport.hashed).toEqual(["memory/fine.md"]);
+      expect(result.pulled).toEqual(["memory/fine.md"]);
+      expect(result.skipped.map((s) => s.path).sort()).toEqual([
+        "memory/../escape.md",
+        "memory/huge.md",
+        "memory/notes.txt",
+      ]);
+    });
+
+    it("stops hashing once the file cap is reached", async () => {
+      const transport = makeTransport({
+        "memory/a.md": doc(),
+        "memory/b.md": doc(),
+        "memory/c.md": doc(),
+      });
+
+      await reconcile({
+        local: makeLocal({}),
+        transport,
+        baseline: {},
+        profile,
+        limits: { maxFiles: 2, maxBytes: 1_000_000, tombstoneTtlMs: 1_000 },
+      });
+
+      expect(transport.hashed).toHaveLength(2);
     });
 
     it("ignores a tombstone that points outside the memory tree", async () => {

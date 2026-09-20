@@ -84,7 +84,6 @@ export function useMemorySync(): UseMemorySync {
 
   // Survives re-renders without re-triggering effects.
   const mounted = useRef(true);
-  const vfsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     const [nextStatus, nextSettings] = await Promise.all([

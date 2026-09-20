@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyRemotePath, isSafeRelPath, isSyncableLocalPath } from "../paths";
+import {
+  classifyRemotePath,
+  isSafeRelPath,
+  isSyncableLocalPath,
+} from "../paths";
 
 // A vault is a user-chosen directory that may be shared, cloud-synced, or
 // checked into a repo, so its contents are untrusted input. These are the tests
@@ -74,7 +78,9 @@ describe("classifyRemotePath", () => {
     expect(classifyRemotePath("conversations/1/workspace/x.md")).toBe(
       "not-global-memory",
     );
-    expect(classifyRemotePath("skills/evil/SKILL.md")).toBe("not-global-memory");
+    expect(classifyRemotePath("skills/evil/SKILL.md")).toBe(
+      "not-global-memory",
+    );
     expect(classifyRemotePath("x.md")).toBe("not-global-memory");
   });
 

@@ -120,10 +120,15 @@ describe("createOpfsMemoryTree", () => {
       await OPFS.writeFile("spaces/space-1/memory/scoped.md", original);
 
       await expect(
-        createOpfsMemoryTree().write("spaces/space-1/memory/scoped.md", "clobbered"),
+        createOpfsMemoryTree().write(
+          "spaces/space-1/memory/scoped.md",
+          "clobbered",
+        ),
       ).rejects.toThrow();
 
-      expect(await OPFS.readFile("spaces/space-1/memory/scoped.md")).toBe(original);
+      expect(await OPFS.readFile("spaces/space-1/memory/scoped.md")).toBe(
+        original,
+      );
     });
   });
 });

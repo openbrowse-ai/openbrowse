@@ -13,16 +13,17 @@
 import { parseMemory } from "../format";
 import { classifyRemotePath } from "./paths";
 import {
-    DEFAULT_SYNC_LIMITS,
-    emptyResult,
-    type Baseline,
-    type FileEntry,
-    type LocalTreePort,
-    type MemorySyncTransport,
-    type SyncLimits,
-    type SyncProfile,
-    type SyncResult,
-    type Tombstone,
+  DEFAULT_SYNC_LIMITS,
+  emptyResult,
+  type Baseline,
+  type FileEntry,
+  type LocalTreePort,
+  type MemorySyncTransport,
+  type SyncLimits,
+  type SyncProfile,
+  type SyncResult,
+  type Tombstone,
+  type RemoteFileStat,
 } from "./types";
 
 /** What to do with a single path. */
@@ -125,7 +126,8 @@ export function pickConflictWinner(args: {
 }): "local" | "remote" {
   const localDate = parseMemory(args.localContent).updated;
   const remoteDate = parseMemory(args.remoteContent).updated;
-  if (localDate !== remoteDate) return localDate > remoteDate ? "local" : "remote";
+  if (localDate !== remoteDate)
+    return localDate > remoteDate ? "local" : "remote";
   if (args.localUpdated !== args.remoteUpdated) {
     return args.localUpdated > args.remoteUpdated ? "local" : "remote";
   }
@@ -169,30 +171,39 @@ export async function reconcile(
   const nextBaseline: Baseline = { ...args.baseline };
 
   const localEntries = await args.local.list();
-  const remoteAll = await args.transport.listFiles();
+  const remoteStats = await args.transport.listFiles();
   const tombstones = await args.transport.listTombstones();
 
   const localByPath = new Map(localEntries.map((e) => [e.path, e]));
-  const remoteByPath = new Map<string, FileEntry>();
 
-  // Validate the remote listing before it can influence anything.
-  let accepted = 0;
-  for (const entry of remoteAll) {
-    const reason = classifyRemotePath(entry.path);
+  // Validate and bound the remote listing before reading a single byte. The
+  // limits exist to stop a runaway or hostile vault, which they cannot do if the
+  // whole tree has already been decoded in order to hash it.
+  const accepted: RemoteFileStat[] = [];
+  for (const stat of remoteStats) {
+    const reason = classifyRemotePath(stat.path);
     if (reason) {
-      result.skipped.push({ path: entry.path, reason });
+      result.skipped.push({ path: stat.path, reason });
       continue;
     }
-    if (entry.size > limits.maxBytes) {
-      result.skipped.push({ path: entry.path, reason: "too-large" });
+    if (stat.size > limits.maxBytes) {
+      result.skipped.push({ path: stat.path, reason: "too-large" });
       continue;
     }
-    if (accepted >= limits.maxFiles) {
-      result.skipped.push({ path: entry.path, reason: "too-many-files" });
+    if (accepted.length >= limits.maxFiles) {
+      result.skipped.push({ path: stat.path, reason: "too-many-files" });
       continue;
     }
-    accepted++;
-    remoteByPath.set(entry.path, entry);
+    accepted.push(stat);
+  }
+
+  // Content is touched only now, for entries that survived the filter.
+  const remoteByPath = new Map<string, { sha256: string; updated: number }>();
+  for (const stat of accepted) {
+    remoteByPath.set(stat.path, {
+      sha256: await args.transport.hashFile(stat.path),
+      updated: stat.updated,
+    });
   }
 
   // Only tombstones for paths we would accept can act on us; ignore the rest so
@@ -335,7 +346,10 @@ export function conflictArchivePath(path: string, at: number): string {
 
 /** `2026-09-07T14-22-01Z` — filename-safe and sorts chronologically. */
 export function timestampSlug(at: number): string {
-  return new Date(at).toISOString().replace(/\.\d+Z$/, "Z").replace(/:/g, "-");
+  return new Date(at)
+    .toISOString()
+    .replace(/\.\d+Z$/, "Z")
+    .replace(/:/g, "-");
 }
 
 /**

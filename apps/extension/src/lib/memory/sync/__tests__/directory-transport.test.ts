@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { makeFakeOpfs } from "@/lib/vfs/__tests__/fake-opfs";
 import {
-    createDirectoryTransport,
-    ensureVaultMeta,
-    readStatus,
+  createDirectoryTransport,
+  ensureVaultMeta,
+  readStatus,
 } from "../directory-transport";
 import { byteLength, sha256 } from "../hash";
 
@@ -31,7 +31,7 @@ function withPermission(
 }
 
 describe("createDirectoryTransport", () => {
-  it("round-trips a memory file and reports its hash and size", async () => {
+  it("round-trips a memory file and reports metadata without its content", async () => {
     const { root } = makeVault();
     const transport = createDirectoryTransport(root);
 
@@ -40,9 +40,33 @@ describe("createDirectoryTransport", () => {
     expect(await transport.readFile("memory/a.md")).toBe("hello");
     const listed = await transport.listFiles();
     expect(listed).toHaveLength(1);
-    expect(listed[0].path).toBe("memory/a.md");
-    expect(listed[0].sha256).toBe(await sha256("hello"));
-    expect(listed[0].size).toBe(byteLength("hello"));
+    expect(listed[0]).toEqual({
+      path: "memory/a.md",
+      size: byteLength("hello"),
+      updated: expect.any(Number),
+    });
+    // Hashing is a separate call, made only for entries the engine accepted.
+    expect(await transport.hashFile("memory/a.md")).toBe(await sha256("hello"));
+  });
+
+  it("reports size from File.size rather than re-encoding content", async () => {
+    // Multi-byte content is where a decode/re-encode round-trip would show up.
+    const { root } = makeVault();
+    const transport = createDirectoryTransport(root);
+    const content = "café — 日本語";
+
+    await transport.writeFile("memory/unicode.md", content);
+
+    const listed = await transport.listFiles();
+    expect(listed[0].size).toBe(byteLength(content));
+    expect(listed[0].size).toBeGreaterThan(content.length);
+  });
+
+  it("refuses to hash a path outside global memory", async () => {
+    const transport = createDirectoryTransport(makeVault().root);
+    await expect(transport.hashFile("memory/../escape.md")).rejects.toThrow(
+      /unsafe vault path/,
+    );
   });
 
   it("writes and lists nested memory paths", async () => {
@@ -81,9 +105,13 @@ describe("createDirectoryTransport", () => {
     const transport = createDirectoryTransport(root);
 
     expect(await transport.listFiles()).toEqual([]);
-    await expect(transport.readFile("memory/nope.md")).rejects.toThrow(/missing/);
+    await expect(transport.readFile("memory/nope.md")).rejects.toThrow(
+      /missing/,
+    );
     // Deleting something already gone is a no-op success, matching `OPFS.rm`.
-    await expect(transport.deleteFile("memory/nope.md")).resolves.toBeUndefined();
+    await expect(
+      transport.deleteFile("memory/nope.md"),
+    ).resolves.toBeUndefined();
   });
 
   it("deletes a file", async () => {

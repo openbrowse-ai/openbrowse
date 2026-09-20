@@ -1,6 +1,6 @@
 # Memory Sync Across Chrome Profiles — Design
 
-**Status:** Approved design, not yet implemented
+**Status:** Implemented
 **Date:** 2026-09-07
 **Scope:** Global memory (`memory/**`) only. Space-scoped memory is explicitly out of scope for v1.
 
@@ -81,7 +81,7 @@ what Settings → Memory shows.
     │   └── 2026-09-07T14-22-01Z/
     │       └── memory/garry-tan.md  # the version that lost a conflict
     ├── tmp/                         # staging for tmp-then-move writes
-    └── lock                         # advisory; { profileId, acquiredAt }
+    └── lock                         # advisory; { acquiredAt }
 ```
 
 Two deliberate choices here:
@@ -191,7 +191,7 @@ index but too weak to arbitrate cross-profile writes. Sync hashes with SHA-256 v
 - **Within a profile:** `navigator.locks.request("openbrowse:memory-sync", …)`. Web Locks
   are scoped per storage partition, i.e. per profile, which is exactly the needed scope —
   it stops two open surfaces (Settings and the side panel) from syncing at once.
-- **Across profiles:** an advisory `.openbrowse/lock` file carrying `{ profileId, acquiredAt }`,
+- **Across profiles:** an advisory `.openbrowse/lock` file carrying `{ acquiredAt }`,
   stolen if older than 60s. FSA offers no atomic exclusive create, so this is best-effort
   by construction. **The design is safe without it:** per-file hashing plus LWW means the
   worst outcome of a lost race is an extra entry in the conflict archive.
@@ -205,17 +205,28 @@ remain available later without rewriting reconciliation.
 interface MemorySyncTransport {
   readonly id: string;
   status(): Promise<TransportStatus>; // granted | lapsed | missing | denied | unset
-  reconnect(): Promise<TransportStatus>; // requires user activation
-  listFiles(): Promise<RemoteEntry[]>; // { path, sha256, size, updated }
+  listFiles(): Promise<RemoteFileStat[]>; // { path, size, updated } — metadata only
+  hashFile(path: string): Promise<string>; // called only for accepted entries
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
   deleteFile(path: string): Promise<void>;
   listTombstones(): Promise<Tombstone[]>;
   putTombstone(t: Tombstone): Promise<void>;
   dropTombstone(path: string): Promise<void>;
-  archiveConflict(path: string, content: string, at: string): Promise<void>;
+  archiveConflict(path: string, content: string, at: number): Promise<void>;
+  listConflicts(): Promise<ConflictEntry[]>;
+  readConflict(archivedPath: string): Promise<string>;
+  dropConflict(archivedPath: string): Promise<void>;
   withLock<T>(fn: () => Promise<T>): Promise<T>;
 }
+
+Re-granting a lapsed permission is deliberately **not** on this interface: it is
+specific to the File System Access transport and needs user activation, so it lives
+as a standalone `requestVaultPermission(handle)` that only the controller's
+`reconnectVault` calls. `listFiles` returns metadata only, and content is read
+through `hashFile` after the engine has applied `SyncLimits` — hashing the whole
+tree up front would mean a hostile or merely huge vault had already been decoded
+into memory by the time the caps rejected it.
 ```
 
 `lib/memory/sync/engine.ts` is pure reconciliation over this interface plus a local-tree

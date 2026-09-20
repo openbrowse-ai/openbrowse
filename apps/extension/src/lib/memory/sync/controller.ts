@@ -421,13 +421,31 @@ export async function listConflicts(): Promise<ConflictEntry[]> {
 export async function restoreConflict(entry: ConflictEntry): Promise<void> {
   const transport = await activeTransport();
   if (!transport) throw new Error(statusMessage(await getStatus()));
-  const content = await transport.readConflict(entry.archivedPath);
+  const archived = await transport.readConflict(entry.archivedPath);
+  const local = createOpfsMemoryTree();
+
+  // The live note we are about to overwrite is itself a version the user may want
+  // back — restoring the other side is a change of mind, not a licence to destroy
+  // a copy. Archive it first, so this stays the one thing the whole feature
+  // promises: a losing version is never discarded.
+  let current: string | null = null;
+  try {
+    current = await local.read(entry.path);
+  } catch {
+    // No live note at that path (deleted since the conflict) — nothing to keep.
+  }
+  if (current !== null && current !== archived) {
+    await transport.archiveConflict(entry.path, current, Date.now());
+  }
+
   selfWriting = true;
   try {
-    await createOpfsMemoryTree().write(entry.path, content);
+    await local.write(entry.path, archived);
   } finally {
     selfWriting = false;
   }
+  // Only after the replacement landed. A failed write throws above, leaving the
+  // original archive in place to retry from.
   await transport.dropConflict(entry.archivedPath);
 }
 
