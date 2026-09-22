@@ -1,3 +1,10 @@
+import {
+  handleOverlayHello,
+  OVERLAY_MAX_HEIGHT_RATIO,
+  postOverlayViewport,
+  watchOverlayViewport,
+} from "@/lib/overlay-frame";
+
 const OVERLAY_HOST_ID = "openbrowse-overlay-host";
 const TOAST_HOST_ID = "openbrowse-toast-host";
 const AGENT_TOAST_HOST_ID = "openbrowse-agent-toast-host";
@@ -109,8 +116,7 @@ function getOrCreateToastHost() {
 
 function performUndo(undoData: any) {
   chrome.runtime.sendMessage({ type: "OVERLAY_UNDO", undoData }).then(() => {
-    const host = document.getElementById(OVERLAY_HOST_ID);
-    const iframe = host?.shadowRoot?.querySelector("iframe");
+    const iframe = getOverlayIframe();
     if (iframe?.contentWindow) {
       iframe.contentWindow.postMessage(
         { type: "OPENBROWSE_UNDO_COMPLETE" },
@@ -888,6 +894,12 @@ function showAgentActiveToast() {
   container.appendChild(pill);
 }
 
+/** The palette iframe, if the overlay is currently mounted on this page. */
+function getOverlayIframe(): HTMLIFrameElement | null {
+  const host = document.getElementById(OVERLAY_HOST_ID);
+  return host?.shadowRoot?.querySelector("iframe") ?? null;
+}
+
 function removeOverlay() {
   document.getElementById(OVERLAY_HOST_ID)?.remove();
   document.body.style.overflow = "";
@@ -913,7 +925,13 @@ function createOverlay(action?: string) {
     .sb-frame {
       width: 580px;
       max-width: 90vw;
-      max-height: 70vh;
+      /*
+       * Backstop only: the palette is told this same budget in px (see
+       * lib/overlay-frame.ts) and fits itself to it. When this clamp was the
+       * only constraint it clipped the palette's search input instead of
+       * shrinking its lists.
+       */
+      max-height: ${OVERLAY_MAX_HEIGHT_RATIO * 100}vh;
       border: none;
       border-radius: 8px;
       background: transparent;
@@ -940,7 +958,11 @@ function createOverlay(action?: string) {
   document.body.appendChild(host);
   document.body.style.overflow = "hidden";
 
-  iframe.addEventListener("load", () => iframe.focus());
+  iframe.addEventListener("load", () => {
+    iframe.focus();
+    // Tell the palette how much room it has before it paints its first list.
+    postOverlayViewport(iframe);
+  });
 
   // Re-append toast host so it renders above the overlay
   const toastHost = document.getElementById(TOAST_HOST_ID);
@@ -1152,10 +1174,11 @@ export default defineContentScript({
         e.data?.type === "OPENBROWSE_OVERLAY_RESIZE" &&
         typeof e.data.height === "number"
       ) {
-        const host = document.getElementById(OVERLAY_HOST_ID);
-        const iframe = host?.shadowRoot?.querySelector("iframe");
+        const iframe = getOverlayIframe();
         if (iframe) iframe.style.height = `${e.data.height}px`;
       }
+      // The palette asking for its height budget now that it can receive it.
+      handleOverlayHello(e, getOverlayIframe());
       if (e.data?.type === "OPENBROWSE_TOAST") {
         showToast(e.data.message, e.data.undoData);
       }
@@ -1163,6 +1186,10 @@ export default defineContentScript({
         if (activeUndoHandler) activeUndoHandler();
       }
     });
+
+    // Keep the palette's height budget in sync with the page viewport. The
+    // iframe is read lazily, so one listener serves every open/close cycle.
+    watchOverlayViewport(getOverlayIframe);
 
     document.addEventListener("keydown", (e) => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;

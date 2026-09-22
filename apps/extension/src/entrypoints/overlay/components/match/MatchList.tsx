@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { scrollRowIntoView } from "../../scroll";
 import type { Match } from "../../search/matches";
 import { MatchRow } from "./MatchRow";
 
@@ -35,10 +36,10 @@ export function MatchList({
       | undefined;
     if (!el) return;
     if (!initialScrollDone.current) {
-      el.scrollIntoView({ block: "center" });
+      scrollRowIntoView(el, "center");
       initialScrollDone.current = true;
     } else {
-      el.scrollIntoView({ block: "nearest" });
+      scrollRowIntoView(el);
     }
   }, [focusIndex]);
 
@@ -51,7 +52,7 @@ export function MatchList({
   }
 
   return (
-    <div ref={listRef} className="max-h-72 overflow-y-auto overflow-x-hidden py-1">
+    <div ref={listRef} className="max-h-72 min-h-0 overflow-y-auto overflow-x-hidden py-1">
       {matches.map((m, i) => (
         <MatchRow
           key={m.id}

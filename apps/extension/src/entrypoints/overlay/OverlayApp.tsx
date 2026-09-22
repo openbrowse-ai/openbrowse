@@ -14,6 +14,7 @@ import { OverlayHeader } from "./components/OverlayHeader";
 import { OverlayResultList } from "./components/OverlayResultList";
 import { OverlayTabList, type ReorderEvent } from "./components/OverlayTabList";
 import { SpaceColorPicker } from "./components/SpaceColorPicker";
+import { useHostViewport } from "./hooks/useHostViewport";
 import { useTidyProgress } from "./hooks/useTidyProgress";
 import { buildMatches, MAX_RESULTS, type Match } from "./search/matches";
 import {
@@ -118,6 +119,9 @@ export function OverlayApp() {
   const [generatingTitles, setGeneratingTitles] = useState<Set<number>>(new Set());
   const [actionsOpen, setActionsOpen] = useState(false);
   const [ready, setReady] = useState(false);
+  // How tall the host lets us be. Drives the flex layout below so the search
+  // input and footer stay pinned and only the lists shrink.
+  const hostMaxHeight = useHostViewport();
   const tidyProgress = useTidyProgress();
   const inputRef = useRef<HTMLInputElement>(null);
   const createSpaceSubmitRef = useRef<(() => void) | null>(null);
@@ -1286,18 +1290,18 @@ export function OverlayApp() {
 
   return (
     <div
-      className="flex flex-col rounded-xl shadow-lg overflow-clip"
-      style={
-        themedStyles
-          ? {
-              background: themedStyles.borderGradient,
-              padding: "2.5px",
-            }
-          : undefined
-      }
+      className="flex min-h-0 flex-col rounded-xl shadow-lg overflow-clip"
+      style={{
+        ...(themedStyles
+          ? { background: themedStyles.borderGradient, padding: "2.5px" }
+          : null),
+        // No budget yet (the host hasn't answered) means lay out unbounded,
+        // which is the pre-handshake behavior. See useHostViewport.
+        ...(hostMaxHeight ? { maxHeight: hostMaxHeight } : null),
+      }}
     >
       <div
-        className={`flex flex-col rounded-xl overflow-clip ${!themedStyles ? "border border-border" : ""} bg-popover`}
+        className={`flex min-h-0 flex-col rounded-xl overflow-clip ${!themedStyles ? "border border-border" : ""} bg-popover`}
       >
         <OverlayHeader
           activeSpace={activeSpace}
@@ -1338,7 +1342,7 @@ export function OverlayApp() {
           />
         )}
         {scope && (
-          <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+          <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
             <span className="text-xs text-muted-foreground">Filtering</span>
             <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
               {scope === "artifact"
@@ -1359,119 +1363,127 @@ export function OverlayApp() {
             </button>
           </div>
         )}
-        {editingColor ? (
-          <SpaceColorPicker
-            initialColors={activeSpace?.colors ?? null}
-            initialColorMode={activeSpace?.colorMode ?? null}
-            systemDark={systemDark}
-            onSave={handleColorSave}
-            onPreview={handleColorPreview}
-          />
-        ) : configuringSpace ? (
-          <ConfigureSpaceView
-            name={activeSpace?.name ?? ""}
-            icon={activeSpace?.icon ?? null}
-            colors={activeSpace?.colors ?? null}
-            openTabCount={activeSpaceTabCount}
-            onUpdateName={handleUpdateSpaceName}
-            onUpdateIcon={handleUpdateSpaceIcon}
-            onEditColor={() => setEditingColor(true)}
-            onRemoveColor={handleRemoveColor}
-            onDeleteSpace={handleDeleteSpace}
-          />
-        ) : creatingSpace ? (
-          <CreateSpaceForm onSubmit={createSpaceAndOpen} submitRef={createSpaceSubmitRef} />
-        ) : scope ? (
-          <div className="max-h-80 overflow-y-auto overflow-x-hidden">
-            <OverlayResultList
-              groups={paletteExtras.groups}
-              focusOffset={0}
-              focusIndex={focusIndex}
-              onFocusIndex={handleFocusIndex}
-              onActivate={dispatchResultAction}
-              onScope={handleScope}
-              onExpand={handleExpandGroup}
+        {/*
+          Scrollable middle. This is the only region allowed to shrink when the
+          palette hits the host's height budget, so the search input above it
+          and the footer below it always stay inside the frame. Its children
+          carry `min-h-0` so their own `max-h-*` caps can shrink further.
+        */}
+        <div className="flex min-h-0 flex-col overflow-y-auto overflow-x-hidden">
+          {editingColor ? (
+            <SpaceColorPicker
+              initialColors={activeSpace?.colors ?? null}
+              initialColorMode={activeSpace?.colorMode ?? null}
+              systemDark={systemDark}
+              onSave={handleColorSave}
+              onPreview={handleColorPreview}
             />
-            {paletteExtras.groups.length === 0 && (
-              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-                No matching results.
-              </div>
-            )}
-          </div>
-        ) : isFlatMode ? (
-          <>
-            {(matches.length > 0 || extrasFlat.length === 0) && (
-              <MatchList
-                matches={matches}
+          ) : configuringSpace ? (
+            <ConfigureSpaceView
+              name={activeSpace?.name ?? ""}
+              icon={activeSpace?.icon ?? null}
+              colors={activeSpace?.colors ?? null}
+              openTabCount={activeSpaceTabCount}
+              onUpdateName={handleUpdateSpaceName}
+              onUpdateIcon={handleUpdateSpaceIcon}
+              onEditColor={() => setEditingColor(true)}
+              onRemoveColor={handleRemoveColor}
+              onDeleteSpace={handleDeleteSpace}
+            />
+          ) : creatingSpace ? (
+            <CreateSpaceForm onSubmit={createSpaceAndOpen} submitRef={createSpaceSubmitRef} />
+          ) : scope ? (
+            <div className="max-h-80 min-h-0 overflow-y-auto overflow-x-hidden">
+              <OverlayResultList
+                groups={paletteExtras.groups}
+                focusOffset={0}
                 focusIndex={focusIndex}
                 onFocusIndex={handleFocusIndex}
-                onAccept={(m) => execAction("open", matchToOverlayTab(m, windowId))}
-                onClose={(m) => execAction("close", matchToOverlayTab(m, windowId))}
-                onTogglePin={(m) =>
-                  execAction(m.pinned ? "unpin" : "pin", matchToOverlayTab(m, windowId))
-                }
-                onToggleFavorite={(m) => {
-                  const isFav =
-                    m.source === "favorite-open" ||
-                    m.source === "favorite-closed" ||
-                    favoriteUrls.has(m.url);
-                  execAction(isFav ? "unfavorite" : "favorite", matchToOverlayTab(m, windowId));
-                }}
-                emptyMessage={
-                  historyMode && !query.trim() ? "No history yet." : "No matching results."
-                }
+                onActivate={dispatchResultAction}
+                onScope={handleScope}
+                onExpand={handleExpandGroup}
               />
-            )}
-            {!historyMode && extraGroups.length > 0 && (
-              <div className="max-h-72 overflow-y-auto overflow-x-hidden">
-                <OverlayResultList
-                  groups={extraGroups}
-                  focusOffset={matches.length}
+              {paletteExtras.groups.length === 0 && (
+                <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  No matching results.
+                </div>
+              )}
+            </div>
+          ) : isFlatMode ? (
+            <>
+              {(matches.length > 0 || extrasFlat.length === 0) && (
+                <MatchList
+                  matches={matches}
                   focusIndex={focusIndex}
                   onFocusIndex={handleFocusIndex}
-                  onActivate={dispatchResultAction}
-                  onScope={handleScope}
-                  onExpand={handleExpandGroup}
-                  topDivider={matches.length > 0}
+                  onAccept={(m) => execAction("open", matchToOverlayTab(m, windowId))}
+                  onClose={(m) => execAction("close", matchToOverlayTab(m, windowId))}
+                  onTogglePin={(m) =>
+                    execAction(m.pinned ? "unpin" : "pin", matchToOverlayTab(m, windowId))
+                  }
+                  onToggleFavorite={(m) => {
+                    const isFav =
+                      m.source === "favorite-open" ||
+                      m.source === "favorite-closed" ||
+                      favoriteUrls.has(m.url);
+                    execAction(isFav ? "unfavorite" : "favorite", matchToOverlayTab(m, windowId));
+                  }}
+                  emptyMessage={
+                    historyMode && !query.trim() ? "No history yet." : "No matching results."
+                  }
                 />
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <OverlayTabList
-              tabs={orderedTabs}
-              focusIndex={focusIndex}
-              onFocusIndex={handleFocusIndex}
-              onOpen={(tab) => execAction("open", tab)}
-              onAction={(action, tab) => execAction(action, tab)}
-              onReorder={handleReorder}
-              onRenameSection={handleRenameSection}
-              onArchiveSection={handleArchiveSection}
-              renamingTabId={renamingTabId}
-              onStartRename={(tab) => setRenamingTabId(tab.id)}
-              onSubmitRename={submitRename}
-              onCancelRename={() => setRenamingTabId(null)}
-              favoriteUrls={favoriteUrls}
-              associatedTabIds={associatedTabIds}
-              favoriteAssociations={favoriteAssociationsMap}
-              isSearching={false}
-              historyMode={false}
-              generatingTitles={generatingTitles}
-            />
-            {zeroExtras.groups.length > 0 && (
-              <div className="max-h-60 overflow-y-auto overflow-x-hidden border-t border-border">
-                <OverlayResultList
-                  groups={zeroExtras.groups}
-                  focusOffset={orderedTabs.length}
-                  focusIndex={focusIndex}
-                  onFocusIndex={handleFocusIndex}
-                  onActivate={dispatchResultAction}
-                />
-              </div>
-            )}
-          </>
-        )}
+              )}
+              {!historyMode && extraGroups.length > 0 && (
+                <div className="max-h-72 min-h-0 overflow-y-auto overflow-x-hidden">
+                  <OverlayResultList
+                    groups={extraGroups}
+                    focusOffset={matches.length}
+                    focusIndex={focusIndex}
+                    onFocusIndex={handleFocusIndex}
+                    onActivate={dispatchResultAction}
+                    onScope={handleScope}
+                    onExpand={handleExpandGroup}
+                    topDivider={matches.length > 0}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <OverlayTabList
+                tabs={orderedTabs}
+                focusIndex={focusIndex}
+                onFocusIndex={handleFocusIndex}
+                onOpen={(tab) => execAction("open", tab)}
+                onAction={(action, tab) => execAction(action, tab)}
+                onReorder={handleReorder}
+                onRenameSection={handleRenameSection}
+                onArchiveSection={handleArchiveSection}
+                renamingTabId={renamingTabId}
+                onStartRename={(tab) => setRenamingTabId(tab.id)}
+                onSubmitRename={submitRename}
+                onCancelRename={() => setRenamingTabId(null)}
+                favoriteUrls={favoriteUrls}
+                associatedTabIds={associatedTabIds}
+                favoriteAssociations={favoriteAssociationsMap}
+                isSearching={false}
+                historyMode={false}
+                generatingTitles={generatingTitles}
+              />
+              {zeroExtras.groups.length > 0 && (
+                <div className="max-h-60 min-h-0 overflow-y-auto overflow-x-hidden border-t border-border">
+                  <OverlayResultList
+                    groups={zeroExtras.groups}
+                    focusOffset={orderedTabs.length}
+                    focusIndex={focusIndex}
+                    onFocusIndex={handleFocusIndex}
+                    onActivate={dispatchResultAction}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
         {!configuringSpace && !editingColor && (
           <OverlayFooter
             actionsOpen={actionsOpen}

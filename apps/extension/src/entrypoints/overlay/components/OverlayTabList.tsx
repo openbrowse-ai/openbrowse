@@ -20,6 +20,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Archive, ArrowLeft, Bookmark, ChevronDown, ChevronRight, Clock, GripVertical, Heart, Pencil, Pin, RotateCcw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { OverlayTab } from "../OverlayApp";
+import { scrollRowIntoView } from "../scroll";
 
 function formatRelativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -509,10 +510,10 @@ export function OverlayTabList({
     const el = listRef.current?.querySelector(`[data-tab-index="${focusIndex}"]`) as HTMLElement | undefined;
     if (!el) return;
     if (!initialScrollDone.current) {
-      el.scrollIntoView({ block: "center" });
+      scrollRowIntoView(el, "center");
       initialScrollDone.current = true;
     } else {
-      el.scrollIntoView({ block: "nearest" });
+      scrollRowIntoView(el);
     }
   }, [focusIndex]);
 
@@ -636,7 +637,7 @@ export function OverlayTabList({
 
   if (!canDrag) {
     return (
-      <div ref={listRef} className="max-h-72 overflow-y-auto overflow-x-hidden py-1">
+      <div ref={listRef} className="max-h-72 min-h-0 overflow-y-auto overflow-x-hidden py-1">
         {sections.map((section, gi) => renderSection(section, gi))}
       </div>
     );
@@ -650,7 +651,7 @@ export function OverlayTabList({
   const bookmarkSections = sections.filter((s) => s.zone === "bookmark");
 
   return (
-    <div ref={listRef} className="max-h-72 overflow-y-auto overflow-x-hidden py-1">
+    <div ref={listRef} className="max-h-72 min-h-0 overflow-y-auto overflow-x-hidden py-1">
       {pinnedSections.length > 0 && (
         <DndContext
           sensors={sensors}
