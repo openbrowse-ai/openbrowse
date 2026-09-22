@@ -27,7 +27,7 @@ export function AutoTidyBanner({ notification, onDismiss }: AutoTidyBannerProps)
   if (parts.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 mx-2 mt-2 rounded-lg bg-muted/50 text-xs text-muted-foreground border border-border/50">
+    <div className="flex shrink-0 items-center gap-2 px-3 py-2 mx-2 mt-2 rounded-lg bg-muted/50 text-xs text-muted-foreground border border-border/50">
       <span className="flex-1">
         Tabs tidied {formatTimeAgo(notification.timestamp)} — {parts.join(", ")}
       </span>

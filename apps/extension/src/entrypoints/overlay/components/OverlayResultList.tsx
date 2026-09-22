@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { scrollRowIntoView } from "../scroll";
 import type {
     PaletteGroup,
     PaletteIcon,
@@ -59,7 +60,7 @@ export function OverlayResultList({
     const el = ref.current?.querySelector(
       `[data-result-index="${focusIndex}"]`,
     ) as HTMLElement | undefined;
-    el?.scrollIntoView({ block: "nearest" });
+    scrollRowIntoView(el);
   }, [focusIndex, localFocus]);
 
   if (groups.length === 0) return null;

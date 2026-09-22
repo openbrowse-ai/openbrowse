@@ -50,7 +50,7 @@ export function OverlayHeader({
 }: OverlayHeaderProps) {
   if (creatingSpace) {
     return (
-      <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5">
         <button
           onClick={onBack}
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
@@ -64,7 +64,7 @@ export function OverlayHeader({
 
   if (configuringSpace || editingColor) {
     return (
-      <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5">
         <button
           onClick={onBack}
           className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
@@ -88,7 +88,7 @@ export function OverlayHeader({
       : "Search tabs, chats, artifacts...  / for commands";
 
   return (
-    <div className="flex items-center gap-1.5 border-b border-border px-2 py-1.5">
+    <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-2 py-1.5">
       {historyMode ? (
         <Tooltip>
           <TooltipTrigger asChild>

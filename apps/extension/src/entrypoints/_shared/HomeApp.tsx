@@ -44,6 +44,12 @@ import { artifactsEvents, type ArtifactCreatedDetail } from "@/lib/artifacts/eve
 import { chatDb } from "@/lib/chat-db";
 import { FileSelectionContext } from "@/lib/file-selection-context";
 import { formatMessageAsMarkdown } from "@/lib/format-markdown";
+import {
+    handleOverlayHello,
+    OVERLAY_MAX_HEIGHT_RATIO,
+    postOverlayViewport,
+    watchOverlayViewport,
+} from "@/lib/overlay-frame";
 import { storage } from "@/lib/storage";
 import type { Space } from "@/lib/types";
 import {
@@ -384,13 +390,18 @@ export default function HomeApp({ surface }: HomeAppProps) {
       ) {
         overlayIframeRef.current.style.height = `${e.data.height}px`;
       }
+      handleOverlayHello(e, overlayIframeRef.current);
     };
     window.addEventListener("message", handleMessage);
+
+    // Keep the palette's height budget in sync with this window.
+    const stopViewportWatch = watchOverlayViewport(() => overlayIframeRef.current);
 
     return () => {
       chrome.runtime.onMessage.removeListener(listener);
       document.removeEventListener("keydown", handleKeydown);
       window.removeEventListener("message", handleMessage);
+      stopViewportWatch();
     };
   }, [showOverlay]);
 
@@ -1044,8 +1055,13 @@ export default function HomeApp({ surface }: HomeAppProps) {
             src={chrome.runtime.getURL(
               `/overlay.html${overlayAction ? `?action=${overlayAction}` : ""}`,
             )}
-            className="w-[580px] max-w-[90vw] max-h-[70vh] border-none rounded-lg"
-            onLoad={(e) => (e.currentTarget as HTMLIFrameElement).focus()}
+            className="w-[580px] max-w-[90vw] border-none rounded-lg"
+            style={{ maxHeight: `${OVERLAY_MAX_HEIGHT_RATIO * 100}vh` }}
+            onLoad={(e) => {
+              const frame = e.currentTarget as HTMLIFrameElement;
+              frame.focus();
+              postOverlayViewport(frame);
+            }}
           />
         </div>
       )}

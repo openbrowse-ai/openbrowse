@@ -1,3 +1,9 @@
+import {
+  handleOverlayHello,
+  OVERLAY_MAX_HEIGHT_RATIO,
+  postOverlayViewport,
+  watchOverlayViewport,
+} from "@/lib/overlay-frame";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export function useOverlay() {
@@ -63,13 +69,18 @@ export function useOverlay() {
       ) {
         iframeRef.current.style.height = `${e.data.height}px`;
       }
+      handleOverlayHello(e, iframeRef.current);
     };
     window.addEventListener("message", handleMessage);
+
+    // Keep the palette's height budget in sync with this window.
+    const stopViewportWatch = watchOverlayViewport(() => iframeRef.current);
 
     return () => {
       chrome.runtime.onMessage.removeListener(listener);
       document.removeEventListener("keydown", handleKeydown);
       window.removeEventListener("message", handleMessage);
+      stopViewportWatch();
     };
   }, [showOverlay]);
 
@@ -92,8 +103,13 @@ export function useOverlay() {
       <iframe
         ref={iframeRef}
         src={overlayUrl}
-        className="w-[580px] max-w-[90vw] max-h-[70vh] border-none rounded-lg"
-        onLoad={(e) => (e.currentTarget as HTMLIFrameElement).focus()}
+        className="w-[580px] max-w-[90vw] border-none rounded-lg"
+        style={{ maxHeight: `${OVERLAY_MAX_HEIGHT_RATIO * 100}vh` }}
+        onLoad={(e) => {
+          const frame = e.currentTarget as HTMLIFrameElement;
+          frame.focus();
+          postOverlayViewport(frame);
+        }}
       />
     </div>
   ) : null;

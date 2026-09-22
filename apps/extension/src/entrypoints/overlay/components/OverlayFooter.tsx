@@ -41,7 +41,7 @@ export function OverlayFooter({
   const [logoMenuOpen, setLogoMenuOpen] = useState(false);
 
   return (
-    <div className="relative flex items-center justify-between border-t border-border px-2 py-1.5">
+    <div className="relative flex shrink-0 items-center justify-between border-t border-border px-2 py-1.5">
       <div className="flex items-center gap-2">
         <LogoMenu open={logoMenuOpen} onOpenChange={setLogoMenuOpen} />
         {tidyProgress === "done" ? (
