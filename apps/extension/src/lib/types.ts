@@ -548,6 +548,8 @@ export type MessageType =
       config: Record<string, string>;
       modelId?: string;
       userMessage: string;
+      /** The chat being titled; lets session-routed providers group the request with it. */
+      conversationId?: string;
     }
   | { type: "DOWNLOAD_MODEL"; modelId: string }
   | {
@@ -570,6 +572,8 @@ export type MessageType =
       providerId: string;
       config: Record<string, string>;
       modelId?: string;
+      /** The chat owning the tab group (see GENERATE_CHAT_TITLE). */
+      conversationId?: string;
       context: {
         chatTitle: string;
         userMessage: string;

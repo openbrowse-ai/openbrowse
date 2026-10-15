@@ -2,6 +2,10 @@ import { DEFAULT_SETTINGS } from "@/lib/constants";
 import { storage } from "@/lib/storage";
 import type { AIProvider, ModelStatus, Settings } from "@/lib/types";
 import { getProvider } from "@/registry/providers";
+import {
+  conversationRequestContext,
+  oneShotRequestContext,
+} from "@/registry/providers/request-context";
 import { browserAI, doesBrowserSupportBrowserAI } from "@browser-ai/core";
 import { doesBrowserSupportWebLLM, webLLM } from "@browser-ai/web-llm";
 import {
@@ -597,7 +601,13 @@ export async function testConnectionFromRegistry(
     let model;
     if (provider.setup === "byok") {
       const resolvedModelId = modelId || provider.models[0]?.id || "";
-      model = await provider.createLanguageModel(config, resolvedModelId);
+      // A connection test belongs to no conversation: one fresh session id
+      // for this single request.
+      model = await provider.createLanguageModel(
+        config,
+        resolvedModelId,
+        oneShotRequestContext(),
+      );
     } else if (provider.setup === "browser-ai") {
       model = browserAI("text");
     } else if (provider.setup === "web-llm") {
@@ -634,6 +644,7 @@ export async function generateChatTitle(
   config: Record<string, string>,
   modelId: string,
   userMessage: string,
+  conversationId?: string,
 ): Promise<{ title: string }> {
   const { generateText } = await import("ai");
 
@@ -645,7 +656,13 @@ export async function generateChatTitle(
 
   let model;
   if (provider.setup === "byok") {
-    model = await provider.createLanguageModel(config, modelId);
+    model = await provider.createLanguageModel(
+      config,
+      modelId,
+      conversationId
+        ? conversationRequestContext(conversationId)
+        : oneShotRequestContext(),
+    );
   } else if (isLocal) {
     // Reuse the agent run's cached engine instead of constructing a second one
     // (createWebLLM / browserAI). A separate engine would re-load the model's
@@ -716,6 +733,7 @@ export async function generateGroupLabel(
     userMessage: string;
     tabs: { title: string; url: string }[];
   },
+  conversationId?: string,
 ): Promise<{ title: string; color: TabGroupColor }> {
   const { generateText } = await import("ai");
 
@@ -724,7 +742,13 @@ export async function generateGroupLabel(
 
   let model;
   if (provider.setup === "byok") {
-    model = await provider.createLanguageModel(config, modelId);
+    model = await provider.createLanguageModel(
+      config,
+      modelId,
+      conversationId
+        ? conversationRequestContext(conversationId)
+        : oneShotRequestContext(),
+    );
   } else if (provider.setup === "browser-ai") {
     model = browserAI("text");
   } else if (provider.setup === "web-llm") {

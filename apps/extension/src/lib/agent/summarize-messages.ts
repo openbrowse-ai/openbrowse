@@ -1,4 +1,5 @@
 import { storage } from "@/lib/storage";
+import { oneShotRequestContext } from "@/registry/providers/request-context";
 import {
     buildCompactionPrompt,
     getCompactionSystemPrompt,
@@ -53,9 +54,12 @@ export async function summarizeMessages(
     if (!resolved) return null;
 
     const config = settings.providerConfigs[resolved.provider.id] ?? {};
+    // Summarizes a referenced chat for the composer; it belongs to no running
+    // conversation, so it is its own one-shot session.
     const model = await resolved.provider.createLanguageModel(
       config,
       resolved.modelId,
+      oneShotRequestContext(),
     );
 
     const { generateText } = await import("ai");

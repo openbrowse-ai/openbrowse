@@ -4,6 +4,7 @@ import {
   urlToDomain,
 } from "@/lib/skills/site-skill-catalog";
 import type { ModelDefinition } from "@/registry/providers/types";
+import { conversationRequestContext } from "@/registry/providers/request-context";
 import type {
   ChatTransport,
   JSONValue,
@@ -2316,7 +2317,16 @@ export async function createAgentTransport(
   const requiredFields = provider.configSchema?.filter((f) => f.required) ?? [];
   if (!requiredFields.every((f) => !!config[f.key])) return null;
 
-  const model = await provider.createLanguageModel(config, actualModelId);
+  // Every request of this model instance (all steps of the tool loop, SDK
+  // retries) carries the conversation's id as its session id. The id is the
+  // persisted conversation id, so it is also identical on the next turn's
+  // freshly built transport and after a reload.
+  const sessionContext = conversationRequestContext(transportCid());
+  const model = await provider.createLanguageModel(
+    config,
+    actualModelId,
+    sessionContext,
+  );
   setCurrentAgentModel(model);
 
   // Tell the compaction trigger about the model's actual context window
@@ -2385,6 +2395,7 @@ export async function createAgentTransport(
           evaluatorLanguageModel = await evalProvider.createLanguageModel(
             evalConfig,
             evalActualModelId,
+            sessionContext,
           );
         } else {
           console.warn(
@@ -2431,6 +2442,7 @@ export async function createAgentTransport(
           curatorModelCache = await cProvider.createLanguageModel(
             cConfig,
             cActualModelId,
+            sessionContext,
           );
           return curatorModelCache;
         }
@@ -2817,9 +2829,12 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
           cuaActualModelId,
           cuaConfig,
         );
+        // A peer/incognito CUA run is its own conversation (its own id and
+        // history); an inline run belongs to this transport's conversation.
         cuaModel = await cuaRegistryProvider.createLanguageModel(
           cuaConfig,
           cuaActualModelId,
+          conversationRequestContext(cfg.childConversationId ?? transportCid()),
         );
       } catch (err) {
         return {

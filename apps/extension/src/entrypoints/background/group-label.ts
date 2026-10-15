@@ -56,6 +56,7 @@ export async function maybeGenerateGroupLabel(
       providerId: provider.id,
       config: settings.providerConfigs[provider.id] ?? {},
       modelId: agentSettings.agentModel,
+      conversationId,
       context: {
         chatTitle: conv.title,
         userMessage,

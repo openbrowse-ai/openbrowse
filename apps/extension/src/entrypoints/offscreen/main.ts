@@ -70,6 +70,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message.config,
           message.modelId,
           message.userMessage,
+          message.conversationId,
         );
       case "GENERATE_GROUP_LABEL":
         return generateGroupLabel(
@@ -77,6 +78,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           message.config,
           message.modelId,
           message.context,
+          message.conversationId,
         );
       case "PYTHON_EXECUTE":
         return getPyodideManager().runPython({

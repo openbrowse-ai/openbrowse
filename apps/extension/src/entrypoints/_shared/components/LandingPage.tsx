@@ -529,6 +529,7 @@ export function LandingPage({
               config,
               modelId: normalizedModelId,
               userMessage: baseText,
+              conversationId: convId,
             })
             .then((res: { title?: string } | undefined) => {
               if (res?.title) {

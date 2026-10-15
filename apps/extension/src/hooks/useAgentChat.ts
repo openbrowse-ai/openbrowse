@@ -87,6 +87,7 @@ import { DEFAULT_AGENT_SETTINGS, DEFAULT_SETTINGS } from "@/lib/constants";
 import { getMcpRegistry } from "@/lib/mcp";
 import { storage } from "@/lib/storage";
 import { providers as registryProviders } from "@/registry/providers";
+import { conversationRequestContext } from "@/registry/providers/request-context";
 import type {
   AgentSettings,
   CloudProvider,
@@ -1214,6 +1215,7 @@ export function useAgentChat({
         const compactionModel = await resolved.provider.createLanguageModel(
           config,
           resolved.modelId,
+          conversationRequestContext(convId),
         );
 
         const result = await generateText({
@@ -2448,6 +2450,7 @@ export function useAgentChat({
             config,
             modelId: normalizedModelId,
             userMessage: titleMessage,
+            conversationId: titleConvId,
           }).then((res: any) => {
             if (res?.title) {
               chatDb.updateConversation(titleConvId, { title: res.title });
