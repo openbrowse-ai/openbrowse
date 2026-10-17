@@ -17,27 +17,44 @@
 
 import type { LanguageModel } from "ai";
 
+/**
+ * Extra per-request options a caller can hand to a factory. Only the
+ * adapters that need them honour them; the rest ignore the argument.
+ */
+export interface SdkOptions {
+  /** Extra HTTP headers sent on every request of the model instance. */
+  headers?: Record<string, string>;
+}
+
 /** Async factory: user config + model id → AI SDK LanguageModel. */
 export type SdkFactory = (
   config: Record<string, string>,
   modelId: string,
+  options?: SdkOptions,
 ) => Promise<LanguageModel>;
 
 /** Maps the `npm` field from models.dev to a bundled SDK factory. */
 export const BUNDLED_PROVIDERS: Record<string, SdkFactory> = {
-  "@ai-sdk/anthropic": async (config, modelId) => {
+  "@ai-sdk/anthropic": async (config, modelId, options) => {
     const { createAnthropic } = await import("@ai-sdk/anthropic");
     const anthropic = createAnthropic({
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
-      // Required for direct browser calls; the extension is a first-party caller.
-      headers: { "anthropic-dangerous-direct-browser-access": "true" },
+      headers: {
+        ...options?.headers,
+        // Required for direct browser calls; the extension is a first-party caller.
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
     });
     return anthropic(modelId);
   },
-  "@ai-sdk/openai": async (config, modelId) => {
+  "@ai-sdk/openai": async (config, modelId, options) => {
     const { createOpenAI } = await import("@ai-sdk/openai");
-    const openai = createOpenAI({ apiKey: config.apiKey, baseURL: config.baseUrl });
+    const openai = createOpenAI({
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl,
+      headers: options?.headers,
+    });
     return openai(modelId);
   },
   "@ai-sdk/google": async (config, modelId) => {
@@ -45,12 +62,13 @@ export const BUNDLED_PROVIDERS: Record<string, SdkFactory> = {
     const google = createGoogleGenerativeAI({ apiKey: config.apiKey });
     return google(modelId);
   },
-  "@ai-sdk/openai-compatible": async (config, modelId) => {
+  "@ai-sdk/openai-compatible": async (config, modelId, options) => {
     const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible");
     const provider = createOpenAICompatible({
       name: config.name ?? "openai-compatible",
       apiKey: config.apiKey,
       baseURL: config.baseUrl,
+      headers: options?.headers,
     });
     return provider(modelId);
   },
@@ -125,6 +143,7 @@ export async function createLanguageModelFor(
   npm: string,
   config: Record<string, string>,
   modelId: string,
+  options?: SdkOptions,
 ): Promise<LanguageModel> {
   const factory = BUNDLED_PROVIDERS[npm];
   if (!factory) {
@@ -132,5 +151,5 @@ export async function createLanguageModelFor(
       `No bundled SDK for npm package "${npm}". This provider was unexpectedly surfaced; please file a bug.`,
     );
   }
-  return factory(config, modelId);
+  return factory(config, modelId, options);
 }

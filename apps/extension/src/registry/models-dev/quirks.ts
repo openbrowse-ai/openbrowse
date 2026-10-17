@@ -161,6 +161,22 @@ export const QUIRKS: Record<string, ProviderQuirks> = {
   },
 };
 
+/**
+ * Providers whose gateway routes (and prompt-caches) by a client-supplied
+ * session id, mapped to the header that carries it. The value sent is the
+ * request's `ModelRequestContext.sessionId`; nothing is sent without one.
+ *
+ * Kept apart from `QUIRKS` on purpose: any entry there marks the provider as
+ * "curated" and moves it to the top of the picker, which a header mapping
+ * alone must not do.
+ *
+ * - `opencode-go`: required — the endpoint answers HTTP 400 `MissingSessionID`
+ *   without it. https://opencode.ai/docs/go/
+ */
+export const SESSION_HEADER_BY_PROVIDER: Record<string, string> = {
+  "opencode-go": "x-opencode-session",
+};
+
 /** Convenience: returns the quirks entry for a provider id, or undefined. */
 export function getQuirks(providerId: string): ProviderQuirks | undefined {
   return QUIRKS[providerId];

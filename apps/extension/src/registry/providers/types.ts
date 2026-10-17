@@ -103,6 +103,23 @@ export interface ModelDefinition {
   status?: "alpha" | "beta" | "deprecated";
 }
 
+/**
+ * Per-request context handed to `createLanguageModel` by the caller.
+ * Providers read only what they need; most ignore it entirely.
+ */
+export interface ModelRequestContext {
+  /**
+   * Stable id grouping every request of one logical session. For anything
+   * that runs inside a conversation this is the conversation id (persisted in
+   * the chat DB, so it survives reloads and differs per conversation). One-off
+   * utility calls with no conversation (e.g. the connection test) pass a
+   * fresh id via `oneShotRequestContext()` from `./request-context`.
+   *
+   * Gateways that route by session (OpenCode Go) forward it as a header.
+   */
+  sessionId?: string;
+}
+
 export interface ProviderDefinition {
   /**
    * Unique identifier. Used as the storage key and to resolve icons.
@@ -146,9 +163,11 @@ export interface ProviderDefinition {
    *
    * @param config - User-provided config values (keyed by ConfigField.key)
    * @param modelId - The selected ModelDefinition.id
+   * @param context - Optional per-request context (session id, …)
    */
   createLanguageModel: (
     config: Record<string, string>,
     modelId: string,
+    context?: ModelRequestContext,
   ) => LanguageModel | Promise<LanguageModel>;
 }

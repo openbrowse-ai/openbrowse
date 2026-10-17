@@ -12,7 +12,7 @@ import type {
   ProviderDefinition,
 } from "@/registry/providers/types";
 import { createLanguageModelFor, isSupportedNpm } from "./bundled-sdks";
-import type { ProviderQuirks } from "./quirks";
+import { SESSION_HEADER_BY_PROVIDER, type ProviderQuirks } from "./quirks";
 import type { ModelsDevModel, ModelsDevProvider } from "./types";
 
 const DEFAULT_API_KEY_PLACEHOLDER = "sk-...";
@@ -184,6 +184,7 @@ export function fromModelsDevProvider(
 
   const defaultNpm = provider.npm ?? "";
   const defaultBaseUrl = provider.api;
+  const sessionHeader = SESSION_HEADER_BY_PROVIDER[provider.id];
 
   return {
     id: provider.id,
@@ -193,7 +194,7 @@ export function fromModelsDevProvider(
     setup: "byok",
     configSchema: configSchemaFor(provider, quirks),
     models,
-    createLanguageModel(config, modelId) {
+    createLanguageModel(config, modelId, context) {
       const override = modelOverrides.get(modelId);
       const npm = override?.npm ?? defaultNpm;
       let baseUrl = override?.api ?? defaultBaseUrl;
@@ -207,7 +208,14 @@ export function fromModelsDevProvider(
       const merged: Record<string, string> = baseUrl
         ? { ...config, baseUrl: config.baseUrl ?? baseUrl, name: provider.id }
         : config;
-      return createLanguageModelFor(npm, merged, modelId);
+      // The header goes in whichever adapter the model's protocol selected
+      // above (chat-completions, messages, responses, google), so it follows
+      // the per-model `npm` override instead of assuming one wire format.
+      const options =
+        sessionHeader && context?.sessionId
+          ? { headers: { [sessionHeader]: context.sessionId } }
+          : undefined;
+      return createLanguageModelFor(npm, merged, modelId, options);
     },
   };
 }

@@ -2079,6 +2079,7 @@ export default defineBackground({
               config: message.config,
               modelId: message.modelId,
               userMessage: message.userMessage,
+              conversationId: message.conversationId,
             });
             sendResponse(result);
           } catch (err) {
