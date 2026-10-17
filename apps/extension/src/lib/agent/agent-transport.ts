@@ -2991,8 +2991,28 @@ To minimize wasted rejection rounds: before producing a final response, re-read 
     const maxSteps = cfg.agentDef.maxSteps ?? 30;
     let stepCount = 0;
 
+    // A peer/incognito run is its own conversation (its own id and history),
+    // so its requests carry the child's session id rather than the parent's.
+    // Inline runs belong to this transport's conversation and share `model`.
+    let subagentModel = model;
+    if (cfg.childConversationId) {
+      try {
+        subagentModel = await provider.createLanguageModel(
+          config,
+          actualModelId,
+          conversationRequestContext(cfg.childConversationId),
+        );
+      } catch (err) {
+        return {
+          finalText: err instanceof Error ? err.message : String(err),
+          status: "failed",
+          errorMessage: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
     const subagent = new ToolLoopAgent({
-      model,
+      model: subagentModel,
       tools: subagentTools,
       instructions: cfg.systemPrompt,
       ...(providerOptions && { providerOptions }),
